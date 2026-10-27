@@ -21,7 +21,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # (the earlier tags, for the release notes)
 
@@ -34,7 +34,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) { 'SKIP=true' >> $env:GITHUB_ENV; 'A release for this tag exists already: nothing to do.' } else { 'SKIP=false' >> $env:GITHUB_ENV }
           exit 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: env.SKIP != 'true'
         with:
           python-version: '3.12'
@@ -90,7 +90,7 @@ jobs:
           python tools/release_notes.py $env:VERSION --out (Join-Path $env:RUNNER_TEMP 'notes.md')
           "DIST=$dist" >> $env:GITHUB_ENV
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: env.SKIP != 'true'
         with:
           name: RazorCAD-${{ env.VERSION }}

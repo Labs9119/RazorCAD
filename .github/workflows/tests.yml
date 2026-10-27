@@ -14,8 +14,8 @@ jobs:
     # (the runner takes some 40 times as long as a desktop PC: the whole run, about 85 s on one, took near 30 min)
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Install Playwright
@@ -23,7 +23,7 @@ jobs:
       - name: Check updater handoff
         run: python -m unittest discover -s tests -p test_updater.py -v
       # (the test times of earlier runs, so slowdowns are reported; each run stores its own)
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: tests/perf-history.json
           key: perf-${{ runner.os }}-${{ github.run_id }}
