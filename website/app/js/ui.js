@@ -30,6 +30,7 @@ import { revisionsDialog } from './revisions.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
+import * as P3 from './print3d.js';
 import { lenText, lenValue, fmtLen, lenWithUnit, areaWithUnit, volWithUnit } from './units.js';
 import { groupBodies } from './bodygroups.js';
 import * as W from './wcs.js';
@@ -738,6 +739,105 @@ const PM_SCHEMAS = {
     THIN_GROUP,
     ...SCOPE_GROUP,
   ],
+  // (3D printing fasteners: sizes from the part's print profile unless given; 3D Print tab)
+  fitClearance: [
+    { title: 'Fit Clearance', fields: [
+      { key: 'fit', type: 'select', label: 'Fit', options: [['press', 'Press'], ['snug', 'Snug'], ['sliding', 'Sliding'], ['loose', 'Loose']] },
+      { key: 'gap', type: 'expr', label: 'Gap (empty: the print profile’s for that fit)', unit: 'mm', optional: true },
+      { key: 'faces', type: 'faceList', hint: 'Click the faces that fit against another part: flat faces move in, a pin gets thinner, a hole wider, by the gap.' },
+    ] },
+  ],
+  printHinge: [
+    { title: 'Print-in-Place Hinge', fields: [
+      { key: 'knuckles', type: 'expr', label: 'Knuckles' },
+      { key: 'outer', type: 'expr', label: 'Knuckle diameter', unit: 'mm' },
+      { key: 'pin', type: 'expr', label: 'Pin diameter', unit: 'mm' },
+      { key: 'gap', type: 'expr', label: 'Gap (empty: 0.4)', unit: 'mm', optional: true },
+      { key: 'hHint', type: 'hint', text: 'Click the straight edge it turns about. Two bodies are made, printed together and turning on the pin: join each to its part with Combine.' },
+    ] },
+  ],
+  printSplit: [
+    { title: 'Split for Printing', fields: [
+      { key: 'tool', type: 'splitTool', label: 'Split at (a plane)' },
+      { key: 'dowels', type: 'expr', label: 'Dowels' },
+      { key: 'dowel', type: 'expr', label: 'Dowel diameter', unit: 'mm', show: (f) => +f.dowels !== 0 },
+      { key: 'dowelDepth', type: 'expr', label: 'Hole depth each side', unit: 'mm', show: (f) => +f.dowels !== 0 },
+      { key: 'clearance', type: 'expr', label: 'Clearance each side (empty: the profile’s snug fit)', unit: 'mm', optional: true, show: (f) => +f.dowels !== 0 },
+    ] },
+  ],
+  printableHole: [
+    { title: 'Printable Hole', fields: [
+      { key: 'shape', type: 'select', label: 'Top', options: [['teardrop', 'Teardrop (45°)'], ['flattop', 'Teardrop cut flat at the top of the hole']] },
+      { key: 'angle', type: 'expr', label: 'Holes within this of level', unit: '°' },
+      { key: 'faces', type: 'faceList', hint: 'Every hole lying on its side, up the part’s build direction (3D Print ▸ Place on Bed). Or click the holes to change only those.' },
+    ] },
+  ],
+  bridgingLayer: [
+    { title: 'Bridging Layer', fields: [
+      { key: 'mode', type: 'select', label: 'Kind', options: [['stepped', 'Steps (a slot, then a square)'], ['skin', 'A skin over the hole (drill it out)']] },
+      { key: 'steps', type: 'expr', label: 'Steps', show: (f) => f.mode !== 'skin' },
+      { key: 'layer', type: 'expr', label: 'Layer height (empty: the print profile’s)', unit: 'mm', optional: true },
+      { key: 'angle', type: 'expr', label: 'Direction of the first step', unit: '°', show: (f) => f.mode !== 'skin' },
+      { key: 'faces', type: 'faceList', hint: 'Click the flat face round the hole, facing down as it prints (a counterbore’s floor printed upside down).' },
+    ] },
+  ],
+  bedChamfer: [
+    { title: 'First-Layer Chamfer', fields: [
+      { key: 'size', type: 'expr', label: 'Chamfer', unit: 'mm' },
+      { key: 'bHint', type: 'hint', text: 'Every edge of the faces on the bed, in the part’s build orientation (3D Print ▸ Place on Bed), against the first layer spreading.' },
+    ] },
+  ],
+  printableOverhangs: [
+    { title: 'Printable Overhangs', fields: [
+      { key: 'angle', type: 'expr', label: 'Rounds whose axis is within this of level', unit: '°' },
+      { key: 'oHint', type: 'hint', text: 'Rounds facing down (up the part’s build direction) turned into 45° chamfers of the same size, which print without support.' },
+    ] },
+  ],
+  nutPocket: [
+    { title: 'Nut', fields: [
+      { key: 'size', type: 'select', label: 'Nut (ISO 4032)', options: () => Object.keys(P3.NUTS).map((k) => [k, k]) },
+      { key: 'clearance', type: 'expr', label: 'Clearance (each side; empty: the print profile’s)', unit: 'mm', optional: true },
+      { key: 'depth', type: 'expr', label: 'Pocket depth (empty: the nut’s height + clearance)', unit: 'mm', optional: true },
+      { key: 'angle', type: 'expr', label: 'Turn the flats by', unit: '°' },
+      { key: 'slot', type: 'check', label: 'Captive slot (below the face, running out sideways)' },
+      { key: 'slotDepth', type: 'expr', label: 'Slot below the face', unit: 'mm', show: (f) => !!f.slot },
+      { key: 'slotAngle', type: 'expr', label: 'Slot direction', unit: '°', show: (f) => !!f.slot },
+      { key: 'hole', type: 'check', label: 'The screw’s clearance hole through' },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
+  insertHole: [
+    { title: 'Insert', fields: [
+      { key: 'size', type: 'select', label: 'Insert', options: () => Object.keys(P3.INSERTS).map((k) => [k, k]) },
+      { key: 'diameter', type: 'expr', label: 'Hole diameter (empty: the table’s)', unit: 'mm', optional: true },
+      { key: 'length', type: 'expr', label: 'Insert length (empty: the table’s)', unit: 'mm', optional: true },
+      { key: 'relief', type: 'expr', label: 'Relief below it', unit: 'mm' },
+      { key: 'chamfer', type: 'expr', label: 'Lead-in chamfer', unit: 'mm' },
+      { key: 'iHint', type: 'hint', text: (f) => { const t = P3.INSERTS[f.size]; return t ? `Table: Ø${t[0]} hole, insert ${t[1]} long. Makers’ sizes differ: check yours and type them above if they do.` : ''; } },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
+  plasticScrewHole: [
+    { title: 'Screw', fields: [
+      { key: 'size', type: 'select', label: 'Screw', options: () => P3.SCREW_SIZES.map((k) => [k, k]) },
+      { key: 'pilot', type: 'expr', label: 'Pilot hole (empty: 0.85 × the screw’s size)', unit: 'mm', optional: true },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm' },
+      { key: 'head', type: 'select', label: 'Head', options: [['none', 'None'], ['cbore', 'Counterbore (cap screw)'], ['csink', 'Countersink']] },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
   hole: [
     { title: 'Hole Type', fields: [
       { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['cdrill', 'Counterdrill'], ['slot', 'Slot']] },
@@ -1242,7 +1342,7 @@ const PM_SCHEMAS = {
   shell: [
     { title: 'Parameters', fields: [{ key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' }, { key: 'outward', type: 'check', label: 'Shell outward' }] },
     { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces to remove (open the shell there). With none, the body is hollowed: a closed void inside.' }] },
-    { title: 'Walls of Their Own Thickness', show: (f) => !f.outward, fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
+    { title: 'Walls of Their Own Thickness', fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
   ],
   combine: [
     { title: 'Operation Type', fields: [{ key: 'op', type: 'select', label: 'Type', options: [['add', 'Add (union)'], ['subtract', 'Subtract'], ['common', 'Common (keep the overlap)']] }] },
@@ -2113,6 +2213,35 @@ export class UI {
         'sep',
         { icon: 'gear', label: 'Claude Settings', action: () => this.showClaudeSettings() },
       ],
+      // (3D Print: set up, add features, check, export; print3d.js)
+      print: [
+        { icon: 'gear', label: 'Print Profile', action: () => this.showPrintProfiles() },
+        { icon: 'body', label: 'Place on Bed', action: () => a.placeOnBed() },
+        { icon: 'eye', label: 'Show Bed', action: () => a.togglePrintBed(), active: !!a.printBedOn },
+        { icon: 'views', label: 'Auto-Orient', action: () => a.autoOrient() },
+        'sep',
+        { icon: 'hole', label: 'Nut Pocket', action: () => a.startFeature('nutPocket') },
+        { icon: 'hole', label: 'Insert Hole', action: () => a.startFeature('insertHole') },
+        { icon: 'hole', label: 'Screw Hole for Plastic', action: () => a.startFeature('plasticScrewHole') },
+        'sep',
+        { icon: 'hole', label: 'Printable Hole', action: () => a.startFeature('printableHole') },
+        { icon: 'rib', label: 'Bridging Layer', action: () => a.startFeature('bridgingLayer') },
+        { icon: 'chamfer', label: 'First-Layer Chamfer', action: () => a.startFeature('bedChamfer') },
+        { icon: 'chamfer', label: 'Printable Overhangs', action: () => a.startFeature('printableOverhangs') },
+        'sep',
+        { icon: 'offset', label: 'Fit Clearance', action: () => a.startFeature('fitClearance') },
+        { icon: 'axis', label: 'Print-in-Place Hinge', action: () => a.startFeature('printHinge') },
+        { icon: 'split', label: 'Split for Printing', action: () => a.startFeature('printSplit') },
+        'sep',
+        { icon: 'measure', label: 'Check Printability', action: () => a.checkPrintability() },
+        { icon: 'draftAnalysis', label: 'Overhang Map', action: () => a.overhangMap(), active: a.analysis?.kind === 'overhang' },
+        { icon: 'measure', label: 'Thickness Map', action: () => a.printThicknessMap(), active: a.analysis?.kind === 'thickness' },
+        'sep',
+        { icon: 'threemf', label: 'Export for Printing', action: () => a.exportForPrinting('3mf') },
+        { icon: 'stl', label: 'Export STL for Printing', action: () => a.exportForPrinting('stl') },
+        { icon: 'open', label: 'Open in Slicer', action: () => a.openInSlicer() },
+        { icon: 'cpattern', label: 'Calibrate Fits', action: () => a.calibrateFits() },
+      ],
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
@@ -2242,7 +2371,7 @@ export class UI {
 
   savePrefs() { platform.setPrefs(this.prefs || {}).catch?.(() => {}); }
   toolbarTabs() {
-    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
+    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['print', '3D Print'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
     for (const c of this.tbPrefs().custom) out.push({ id: 'custom:' + c.id, label: c.name, custom: true });
     out.push({ id: 'claude', label: 'Claude', html: `${icon('assistant')}Claude` });
     return out;
@@ -5660,6 +5789,19 @@ export class UI {
             select.value=control.curve?'@curve':control.point||'';
             select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
             if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
+            // (more connectors after the start, in order round the profile: as many on every profile, vertex to vertex)
+            if(control.point&&options.closed&&!f.thin){
+              const extra=control.extra||[];
+              extra.forEach((id,k)=>{
+                const pick=el('select',{'data-loft-connector-extra':`${i}:${k}`,'aria-label':`Connector ${k+2} vertex`});
+                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+                pick.value=id;pick.onchange=()=>a.setLoftConnection(ref,{...control,extra:extra.map((x,j)=>j===k?pick.value:x)});
+                const drop=el('button',{class:'pm-btn','data-loft-connector-extra-remove':`${i}:${k}`,title:'Remove this connector','aria-label':'Remove this connector',onclick:()=>a.setLoftConnection(ref,{...control,extra:extra.filter((_,j)=>j!==k)})},'✕');
+                const row=this.row(`Connector ${k+2}`,pick);row.appendChild(drop);body.appendChild(row);
+              });
+              const used=new Set([control.point,...extra]),free=options.points.filter(p=>!used.has(p.id));
+              if(free.length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-extra-add':i,onclick:()=>a.setLoftConnection(ref,{...control,extra:[...extra,free[0].id]})},'Add connector'));
+            }
           }
           if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;
@@ -6085,6 +6227,108 @@ export class UI {
     new MutationObserver((_, obs) => { if (!body.isConnected) { if (this._fix?.render === render) this._fix = null; obs.disconnect(); } }).observe($('#modal-root'), { childList: true });
   }
   refreshFixReferences() { this._fix?.render(); }
+
+  // ---- 3D Print tab: the print profiles (a printer and a material each), the slicer program
+  showPrintProfiles() {
+    const a = this.app, prefs = (this.prefs ||= {}), box = el('div', { class: 'print-profiles', 'data-print-profiles': '' });
+    let current = a.printProfile().name;
+    const render = () => {
+      box.innerHTML = '';
+      const all = P3.allProfiles(prefs), p = all.find((x) => x.name === current) || all[0];
+      const pick = el('select', { 'data-print-profile': '', 'aria-label': 'Print profile' });
+      for (const x of all) pick.appendChild(el('option', { value: x.name }, esc(x.name + (x.name === (prefs.printProfile || all[0].name) ? ' (default)' : ''))));
+      pick.value = p.name; pick.onchange = () => { current = pick.value; render(); };
+      box.appendChild(this.row('Profile', pick));
+      box.appendChild(el('div', { class: 'pm-hint' }, p.builtIn ? 'A starting profile: copy it to change its numbers.' : 'Your profile: its numbers can be changed here; every part that uses it follows.'));
+      const save = (next) => { prefs.printProfiles = [...(prefs.printProfiles || []).filter((x) => x.name !== p.name), next]; this.savePrefs(); if (a.printProfile().name === next.name) a.setPrintProfile(next.name); };
+      const num = (key, label, unit, get = () => p[key], set = (v) => ({ ...p, [key]: v })) => {
+        const input = el('input', { type: 'number', step: 'any', value: get() ?? '', 'data-print-field': key, 'aria-label': label });
+        input.disabled = !!p.builtIn;
+        input.onchange = () => { const v = input.value === '' ? null : +input.value; if (v != null && !(v >= 0)) { this.app.toast(`${label} can't be negative`, true); render(); return; } save(set(v)); };
+        const row = this.row(`${label}${unit ? ` (${unit})` : ''}`, input); box.appendChild(row);
+      };
+      ['X', 'Y', 'Z'].forEach((ax, i) => num('bed' + ax, `Bed ${ax}`, 'mm', () => p.bed[i], (v) => ({ ...p, bed: p.bed.map((q, j) => (j === i ? v : q)) })));
+      for (const [key, label, unit] of P3.PROFILE_FIELDS) num(key, label, unit);
+      for (const fit of ['press', 'snug', 'sliding', 'loose']) num('fit-' + fit, `Fit, ${fit}`, 'mm', () => p.fits?.[fit], (v) => ({ ...p, fits: { ...p.fits, [fit]: v } }));
+      const shrink = el('input', { type: 'checkbox', 'data-print-field': 'shrinks' }); shrink.checked = !!p.shrinks; shrink.disabled = !!p.builtIn;
+      shrink.onchange = () => save({ ...p, shrinks: shrink.checked });
+      const sl = el('label'); sl.append(shrink, document.createTextNode(' The material shrinks and warps (ABS, ASA, nylon)')); box.appendChild(this.row(null, sl, 'check'));
+      const acts = el('div', { class: 'pm-buttons' });
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-copy': '', onclick: async () => {
+        const name = (await this.promptText('Copy Print Profile', 'gear', 'Name of the new profile:', `${p.name} (copy)`))?.trim();
+        if (!name) return;
+        if (P3.allProfiles(prefs).some((x) => x.name === name)) { this.app.toast('A profile of that name is already there', true); return; }
+        prefs.printProfiles = [...(prefs.printProfiles || []), { ...p, name, builtIn: undefined }]; this.savePrefs(); current = name; render();
+      } }, 'Copy…'));
+      if (!p.builtIn) acts.appendChild(el('button', { class: 'pm-btn', 'data-print-delete': '', onclick: () => { prefs.printProfiles = (prefs.printProfiles || []).filter((x) => x.name !== p.name); if (prefs.printProfile === p.name) delete prefs.printProfile; this.savePrefs(); current = P3.allProfiles(prefs)[0].name; render(); } }, 'Delete'));
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-default': '', onclick: () => { prefs.printProfile = p.name; this.savePrefs(); render(); } }, 'Make default'));
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-use': '', onclick: () => { a.setPrintProfile(p.name); render(); } }, a.printProfile().name === p.name ? 'Used by this part' : 'Use for this part'));
+      box.appendChild(acts);
+      // the slicer program (Open in Slicer)
+      const prog = el('div', { class: 'pm-hint', 'data-slicer-path': '' }, prefs.slicerPath ? esc(prefs.slicerPath) : 'No slicer program chosen');
+      box.appendChild(this.row('Slicer program', prog));
+      if (platform.desktop) box.appendChild(el('button', { class: 'pm-btn', 'data-slicer-pick': '', onclick: async () => { const path = await platform.pickProgram(); if (path) { prefs.slicerPath = path; this.savePrefs(); render(); } } }, 'Choose slicer program…'));
+    };
+    render();
+    this.modal('Print Profile', 'gear', box, [{ label: 'Close', primary: true }]);
+  }
+  // ---- 3D Print tab: Auto-Orient's best three, each with its numbers, one to use
+  showAutoOrient(cands, use) {
+    const box = el('div', { 'data-auto-orient': '' }), f2 = (x) => +x.toFixed(2);
+    box.appendChild(el('div', { class: 'pm-hint' }, 'Ranked by support needed, then by how much sits on the bed, then by height.'));
+    let close = null;
+    cands.forEach((c, i) => {
+      const row = el('div', { class: 'print-finding' }, `<b>${i + 1}</b> support ${f2(c.support)} cm³ · on the bed ${f2(c.contact)} mm² · ${f2(c.height)} mm high `);
+      row.appendChild(el('button', { class: 'pm-btn', 'data-auto-orient-use': i, onclick: () => { use(c); close?.(); } }, 'Use'));
+      box.appendChild(row);
+    });
+    close = this.modal('Auto-Orient', 'views', box, [{ label: 'Close', primary: true }]).close;
+  }
+  // ---- 3D Print tab: Calibrate Fits: how to use the test piece, and the profile's fits set from it
+  showCalibrateFits(prof, pegs, path) {
+    const a = this.app, prefs = (this.prefs ||= {}), box = el('div', { 'data-calibrate-fits': '' });
+    box.appendChild(el('div', { class: 'pm-hint' }, `${path ? `Saved ${esc(String(path).split(/[\\/]/).pop())}. ` : ''}Print it, then try each peg (left to right: press, snug, sliding, loose) in the holes. Set each fit to the gap of the peg that fitted that way (a peg's gap is (6 − its diameter) / 2): the profile's fits change, and Fit Clearance uses them.`));
+    const fits = { ...(prof.fits || {}) };
+    for (const g of pegs) {
+      const input = el('input', { type: 'number', step: 'any', value: fits[g.fit], 'data-fit': g.fit, 'aria-label': `${g.fit} fit gap` });
+      input.onchange = () => { fits[g.fit] = +input.value; };
+      box.appendChild(this.row(`${g.fit[0].toUpperCase() + g.fit.slice(1)} (peg Ø${+g.d.toFixed(3)})`, input));
+    }
+    this.modal('Calibrate Fits', 'cpattern', box, [
+      { label: 'Save the fits', primary: true, action: () => {
+        // (a starting profile is kept as it is: the fits go into a copy of your own, used by this part)
+        const name = prof.builtIn ? `${prof.name} (calibrated)` : prof.name, next = { ...prof, name, fits, builtIn: undefined };
+        prefs.printProfiles = [...(prefs.printProfiles || []).filter((x) => x.name !== name), next]; this.savePrefs();
+        a.setPrintProfile(name);
+      } },
+      { label: 'Close' },
+    ]);
+  }
+  // ---- 3D Print tab: Check Printability's findings (numbered as on the model) and the part's print numbers
+  showPrintCheck(res, prof) {
+    const box = el('div', { class: 'print-check', 'data-print-check': '' }), s = res.stats, f1 = (x) => +x.toFixed(1), f2 = (x) => +x.toFixed(2);
+    const col = { fail: '#d63b2f', warn: '#c98f0a', info: '#5f6877', pass: '#22a046' }, word = { fail: 'Fail', warn: 'Warning', info: 'Note', pass: 'Pass' };
+    box.appendChild(el('div', { class: 'pm-hint' }, `${esc(prof.name)} · ${f1(s.size[0])} × ${f1(s.size[1])} × ${f1(s.size[2])} mm in its build orientation`));
+    let n = 0;
+    const list = el('div', { 'data-print-findings': '' });
+    for (const x of res.findings) {
+      const num = x.p ? String(++n) : '';
+      list.appendChild(el('div', { class: 'print-finding', 'data-level': x.level }, `<span style="color:${col[x.level]};font-weight:600">${word[x.level]}</span>${num ? ` <b>${num}</b>` : ''} ${esc(x.text)}`));
+    }
+    box.appendChild(list);
+    const facts = [`Volume ${f2(s.volume)} cm³`, `mass ${f1(s.mass)} g in ${esc(prof.material || prof.name)}`, s.filament != null ? `${f2(s.filament)} m of ${prof.filament} mm filament` : null, `on the bed ${f1(s.contact)} mm²`].filter(Boolean);
+    box.appendChild(el('div', { class: 'pm-hint', 'data-print-stats': '' }, facts.join(' · ')));
+    // (findings a print feature fixes: offered)
+    const fails = new Set(res.findings.filter((x) => x.level === 'fail').map((x) => x.check)), fix = [];
+    if (fails.has('overhang')) fix.push({ label: 'Printable Overhangs', action: () => { this.app.startFeature('printableOverhangs'); } });
+    if (fails.has('bed')) fix.push({ label: 'Split for Printing', action: () => { this.app.startFeature('printSplit'); } });
+    if (fails.has('contact') || fails.has('overhang') || fails.has('bridge')) fix.push({ label: 'Auto-Orient', action: () => { this.app.autoOrient(); } });
+    this.modal(`Check Printability — ${res.findings.filter((x) => x.level === 'fail').length} fails, ${res.findings.filter((x) => x.level === 'warn').length} warnings`, 'measure', box, [
+      ...fix,
+      { label: 'Clear the marks', action: () => { this.app.viewport.setPointMarks('print', null); } },
+      { label: 'Close', primary: true },
+    ]);
+  }
 
   showMassProps() {
     const a = this.app, geo = a.viewport.bodyGeo;

@@ -1535,6 +1535,52 @@ function sampleCircle3(g, n) {
   return pts;
 }
 
+// Where a spline of another sketch crosses a plane (distance(p): signed distance to it). The spline is rebuilt in its
+// own sketch's plane (found from its samples pts; a rigid map, so its pieces are the same Bézier pieces), and on each
+// cubic piece the distance is a cubic in t with the control points' distances as its Bernstein coefficients: its
+// roots, bracketed on 64 steps and halved to 1e-14, are the crossings. A straight spline: its samples.
+function splinePlaneCrossings(spl, pts, distance, tol) {
+  const o = spl.pts[0];
+  let N = [0, 0, 0];
+  for (let i = 1; i + 1 < pts.length; i++) N = N.map((v, k) => v + cross3(sub3(pts[i], o), sub3(pts[i + 1], o))[k]);
+  const far = pts.reduce((m, p) => (len3(sub3(p, o)) > len3(sub3(m, o)) ? p : m), o);
+  if (len3(N) < 1e-12 || len3(sub3(far, o)) < 1e-12) {
+    const out = [];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], da = distance(a), db = distance(b);
+      if (Math.abs(da) < tol) out.push(a);
+      if (da * db < 0) out.push(a.map((q, k) => q + (b[k] - q) * da / (da - db)));
+    }
+    if (pts.length && Math.abs(distance(pts.at(-1))) < tol) out.push(pts.at(-1));
+    return out;
+  }
+  const n = N.map((v) => v / len3(N)), u = sub3(far, o).map((v) => v / len3(sub3(far, o))), v = cross3(n, u);
+  const to2 = (p) => { const d = sub3(p, o); return [dot3(d, u), dot3(d, v)]; };
+  const to3 = (q) => [0, 1, 2].map((k) => o[k] + q[0] * u[k] + q[1] * v[k]);
+  const P = spl.pts.map(to2), H = spl.handles?.map(to2);
+  const pieces = spl.ctrl ? ctrlSplineBeziers(P, spl.degree ?? 3, !!spl.closed, spl.weights) : splineBeziers(P, !!spl.closed, H);
+  const out = [];
+  const near = (p) => out.some((q) => len3(sub3(p, q)) < 1e-7);
+  for (const g of pieces) {
+    const d = [g.a, g.c1, g.c2, g.b].map((q) => distance(to3(q)));
+    const f = (t) => { const s = 1 - t; return s * s * s * d[0] + 3 * s * s * t * d[1] + 3 * s * t * t * d[2] + t * t * t * d[3]; };
+    let t0 = 0, f0 = f(0);
+    if (Math.abs(f0) < tol) { const p = to3(g.a); if (!near(p)) out.push(p); }
+    for (let i = 1; i <= 64; i++) {
+      const t1 = i / 64, f1 = f(t1);
+      if (Math.abs(f1) < tol) { const p = to3(bezierAt(g, t1)); if (!near(p)) out.push(p); }
+      else if (f0 * f1 < 0 && Math.abs(f0) >= tol) {
+        let a = t0, b = t1, fa = f0;
+        for (let k = 0; k < 60 && b - a > 1e-14; k++) { const m = (a + b) / 2, fm = f(m); if (fa * fm <= 0) b = m; else { a = m; fa = fm; } }
+        const p = to3(bezierAt(g, (a + b) / 2));
+        if (!near(p)) out.push(p);
+      }
+      t0 = t1; f0 = f1;
+    }
+  }
+  return out;
+}
+
 // Intersections with a sketch plane. Coplanar curves retain their geometry.
 export function intersectCurve(fr, g) {
   if (!g) return [];
@@ -1555,8 +1601,8 @@ export function intersectCurve(fr, g) {
   } else {
     const pts = g.type === 'line' ? [g.a, g.b] : g.pts || [];
     if (pts.length && pts.every((p) => Math.abs(distance(p)) < tol)) return projectCurve(fr, g, { preserveSpline: true });
-    if (g.spline) return []; // Non-coplanar spline intersection needs a root solver.
-    for (let i = 1; i < pts.length; i++) {
+    if (g.spline) points = splinePlaneCrossings(g.spline, pts, distance, tol);
+    else for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i], da = distance(a), db = distance(b);
       if (Math.abs(da) < tol) points.push(a);
       if (da * db < 0) points.push(a.map((q, k) => q + (b[k] - q) * da / (da - db)));

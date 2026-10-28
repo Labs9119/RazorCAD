@@ -140,6 +140,43 @@ export function holeOrder(control,keys){
   if(out.length!==keys.length||out.some(i=>i<0)||new Set(out).size!==out.length)throw new Error('The holes paired by hand changed: pair them again');
   return out;
 }
+// A profile's further connectors (control.extra: vertex ids after its start, in order round it), as 3D points
+export function connectionExtras(sk,ref,frame,control){
+  const extra=control?.extra||[];if(!extra.length)return [];
+  if(!control.point)throw new Error(`${sk.name}: pick a start vertex before adding more connectors`);
+  const options=profileConnectionOptions(sk,ref);
+  return extra.map(id=>{const p=options.points.find(q=>q.id===id);if(!p)throw new Error(`${sk.name}: a connector point is missing or is no longer on this profile boundary; reselect it`);return S.fromFrame2D(frame,p.x,p.y);});
+}
+// Closed sections turned to run the same way round as the first (by their outlines' Newell normals)
+export function orientAlike(secs){
+  const newell=s=>{let n=[0,0,0];const pts=s.segs.map(g=>g.a);pts.forEach((p,i)=>{n=add(n,cross(p,pts[(i+1)%pts.length]));});return n;};
+  const ref=newell(secs[0]);
+  return secs.map((s,i)=>i&&dot(newell(s),ref)<0?reverseSection(s):s);
+}
+// Several connectors on every profile (anchors[i]: its K points, in the same order round each): each section split at
+// them and started at the first; between each two connectors, the profiles with fewer segments have their longest ones
+// halved (by length) until they all have as many. Connectors in another order round a profile would cross the loft's
+// sides, and are refused. Returns the sections, segment for segment matching.
+export function connectorChains(secs,anchors,names){
+  const K=anchors[0].length;
+  if(anchors.some(a=>a.length!==K))throw new Error(`Every profile needs the same number of connectors (${names[0]} has ${K})`);
+  const halve=g=>{const p=segAt(g,segLength(g)/2);return splitSectionAt({segs:[g]},p).segs;};
+  const chains=secs.map((s,i)=>{
+    let sec=s;for(const p of anchors[i])sec=splitSectionAt(sec,p);
+    const n=sec.segs.length,size=Math.max(1,...sec.segs.map(g=>length(sub(g.b,g.a))));
+    const at=anchors[i].map(p=>sec.segs.findIndex(g=>length(sub(g.a,p))<=1e-5*size));
+    if(at.some(j=>j<0))throw new Error(`${names[i]}: a connector is not on its outline; reselect it`);
+    const r=at.map(j=>(j-at[0]+n)%n);
+    for(let k=1;k<K;k++)if(!(r[k]>r[k-1]))throw new Error(`${names[i]}: its connectors are not in the same order round it as on the other profiles, so the loft's sides would cross; reorder them`);
+    const segs=[...sec.segs.slice(at[0]),...sec.segs.slice(0,at[0])];
+    return r.map((start,k)=>segs.slice(start,k+1<K?r[k+1]:n));
+  });
+  for(let k=0;k<K;k++){
+    const M=Math.max(...chains.map(c=>c[k].length));
+    for(const c of chains)while(c[k].length<M){let j=0;c[k].forEach((g,m)=>{if(segLength(g)>segLength(c[k][j]))j=m;});c[k].splice(j,1,...halve(c[k][j]));}
+  }
+  return chains.map(c=>({segs:c.flat()}));
+}
 export const reverseSection=s=>({...s,segs:s.segs.slice().reverse().map(g=>({...g,a:g.b,b:g.a,...(g.type==='bezier'?{c1:g.c2,c2:g.c1}:{}),...(g.type==='pts'?{pts:g.pts.slice().reverse(),L:g.L.map(x=>g.L.at(-1)-x).reverse()}: {})}))});
 
 export function applySectionConnections(matched,original,controls,expandCircles=false){

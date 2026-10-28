@@ -40,6 +40,7 @@ import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
+import * as P3 from './print3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 import { glb, viewportBodies } from './gltf.js';
 
@@ -706,6 +707,7 @@ class App {
     if (this._hoverFeature) this.highlightFeature(this._hoverFeature, 'featureHover');
     this.updateSketchDisplay();
     this.updatePlanes();
+    this.drawPrintBed();
     this.ui.renderTree();
     const n = this.result.errors.size;
     $('#status-rebuild').textContent = `Rebuild ${this.result.time.toFixed(0)} ms` + (n ? ` · ${n} error${n > 1 ? 's' : ''}` : '');
@@ -872,6 +874,137 @@ class App {
     else if (k === 'undercut') this.status(`Undercut check: green free along the pull direction, blue free against it, red undercut (${Math.round((this.viewport.undercutShare || 0) * 100)} % of the surface): the mould cannot release it either way. Click again to turn it off.`);
     else if (k === 'zebra') this.status('Zebra stripes: smooth (tangent / curvature-continuous) joins show stripes running on without a kink. Click again to turn them off.');
     else this.status('Ready');
+  }
+
+  // ---- 3D printing (print3d.js): the part's profile and build orientation, the bed, the maps, the check, the export
+  printProfile() { return P3.profileFor(this.doc, this.ui.prefs); }
+  // the part's build orientation: as set (Place on Bed), else its biggest flat face down
+  printOrientation() { return P3.orientationOf(this.doc) || (this.result?.body ? P3.biggestFlatDown(this.result.body) : P3.Y_UP); }
+  setPrintProfile(name) {
+    const p = P3.allProfiles(this.ui.prefs).find((x) => x.name === name);
+    if (!p) return;
+    this.doc.print = { ...(this.doc.print || {}), profile: p.name, p: { ...p, builtIn: undefined } };
+    this.commit();
+    this.drawPrintBed();
+    this.status(`Print profile: ${p.name}`);
+  }
+  // Place on Bed: the selected flat face down on the bed
+  placeOnBed() {
+    const s = this.selection;
+    if (s?.kind !== 'face' || !s.face?.normal) { this.toast('Select the face to lie on the bed, then Place on Bed', true); return; }
+    if (!s.face.planar) { this.toast('Pick a flat face to lie on the bed', true); return; }
+    this.doc.print = { ...(this.doc.print || {}), R: P3.faceDown(s.face.normal.toArray()) };
+    this.commit();
+    this.printBedOn = true;
+    this.drawPrintBed();
+    if (this.analysis?.kind === 'overhang') this.overhangMap(true);
+    this.status('The face is down on the bed: the checks and Export for Printing use this orientation');
+  }
+  // the bed drawn under the part (a grid, every 10 mm, and the printer's build volume), or taken away
+  togglePrintBed() { this.printBedOn = !this.printBedOn; this.drawPrintBed(); this.ui.renderCommandManager(); }
+  drawPrintBed() {
+    if (!this.printBedOn || this.mode !== 'part' || !this.result?.body?.bodies?.length) { this.viewport.setPrintBed(null); return; }
+    const R = this.printOrientation(), prof = this.printProfile(), m = P3.printMesh(this.result.body, R);
+    if (!m.P.length) { this.viewport.setPrintBed(null); return; }
+    const [bx, by, bz] = prof.bed, cx = (m.lo[0] + m.hi[0]) / 2, cy = (m.lo[1] + m.hi[1]) / 2, z = m.lo[2];
+    const x0 = cx - bx / 2, y0 = cy - by / 2, L = [], to = (p) => P3.back(R, p);
+    for (let x = 0; x <= bx + 1e-9; x += 10) L.push([to([x0 + x, y0, z]), to([x0 + x, y0 + by, z])]);
+    for (let y = 0; y <= by + 1e-9; y += 10) L.push([to([x0, y0 + y, z]), to([x0 + bx, y0 + y, z])]);
+    for (const [x, y] of [[0, 0], [bx, 0], [bx, by], [0, by]]) L.push([to([x0 + x, y0 + y, z]), to([x0 + x, y0 + y, z + bz])]);
+    for (const [a, b] of [[[0, 0], [bx, 0]], [[bx, 0], [bx, by]], [[bx, by], [0, by]], [[0, by], [0, 0]]]) L.push([to([x0 + a[0], y0 + a[1], z + bz]), to([x0 + b[0], y0 + b[1], z + bz])]);
+    this.viewport.setPrintBed(L);
+  }
+  // overhangs coloured against the profile's limit (up: the build direction in model axes)
+  overhangMap(force = false) {
+    const R = this.printOrientation(), prof = this.printProfile();
+    this.setAnalysis({ kind: 'overhang', up: P3.back(R, [0, 0, 1]), limit: prof.overhang, force });
+    if (this.analysis?.kind === 'overhang') this.status(`Overhangs: green fine, amber within 10° of the ${prof.overhang}° limit, red over it (needs support). Click Overhang Map again to turn it off.`);
+  }
+  // walls coloured against the profile: red under 2 extrusion widths, green to yellow up to 10 widths
+  printThicknessMap() { const w = this.printProfile().width; this.setAnalysis({ kind: 'thickness', min: 2 * w, max: 10 * w }); }
+  // Check Printability: every check in the build orientation, findings numbered on the model and listed
+  async checkPrintability() {
+    if (!this.result?.body?.bodies?.some((b) => b.kind !== 'surface')) { this.toast('There is no solid body to check', true); return null; }
+    const R = this.printOrientation(), prof = this.printProfile(), m = P3.printMesh(this.result.body, R);
+    const run = async () => {
+      // (the walls from a thickness map against the profile, the hollows and the volume from the kernel)
+      const keep = this.analysis;
+      this.viewport.setAnalysis({ kind: 'thickness', min: 2 * prof.width, max: 10 * prof.width });
+      const ts = this.viewport.thicknessStats;
+      this.viewport.setAnalysis(keep);
+      const ids = this.result.body.bodies.filter((b) => b.kind !== 'surface' && !b.context).map((b) => b.id);
+      const cavities = await this.kernel.request('printCavities', {});
+      const meas = await this.kernel.request('measure', { refs: ids.map((id) => ({ kind: 'body', id })) });
+      const volume = (meas.items || []).reduce((s, x) => s + (x.volume || 0), 0);
+      return P3.checkPrintability(m, prof, { thickness: ts && Number.isFinite(ts.min) ? { min: ts.min } : null, cavities, volume });
+    };
+    let res;
+    try { res = await this.withProgress('Checking printability…', run); } catch (e) { this.toast('Check Printability failed: ' + e.message, true); return null; }
+    this.lastPrintCheck = res;
+    const marked = res.findings.filter((x) => x.p);
+    this.viewport.setPointMarks('print', marked.map((x, i) => ({ p: x.p, text: String(i + 1), cls: x.level === 'fail' ? 'pick' : '' })));
+    this.ui.showPrintCheck(res, prof);
+    return res;
+  }
+  // Export for Printing: the part in its build orientation, on the bed's middle, as 3MF (or STL)
+  async exportForPrinting(format = '3mf') {
+    if (!this.result?.body) { this.toast('There is no solid body to export', true); return null; }
+    try {
+      const R = this.printOrientation(), prof = this.printProfile();
+      const bytes = await this.withProgress('Exporting for printing…', () => this.kernel.exportBody(format, null, this.exportInfo(), { print: { R, bed: prof.bed } }));
+      const path = await platform.saveBinary(`${this.safeName()}-print.${format}`, bytes, format);
+      if (path) this.lastPrintExport = path;
+      this.status(path ? `Exported ${String(path).split(/[\\/]/).pop()} for printing (${prof.name})` : 'Ready');
+      return path;
+    } catch (err) { this.toast('Export failed: ' + err.message, true); return null; }
+  }
+  // Open in Slicer: the last export for printing (or a new one) opened by the slicer program named in the settings
+  async openInSlicer() {
+    const prog = this.ui.prefs?.slicerPath;
+    if (!prog) { this.toast('Name your slicer program first: 3D Print ▸ Print Profile ▸ Slicer program', true); return; }
+    if (!platform.desktop) { this.toast('Open in Slicer works in the Windows app; in the browser, open the exported file in your slicer', true); return; }
+    const path = this.lastPrintExport || (await this.exportForPrinting('3mf'));
+    if (!path) return;
+    try { await platform.openWith(prog, path); this.status(`Opened ${String(path).split(/[\\/]/).pop()} in the slicer`); } catch (e) { this.toast('Could not start the slicer: ' + e.message, true); }
+  }
+
+  // Auto-Orient: the best three build orientations (least support, then most on the bed, then lowest), one picked
+  async autoOrient() {
+    if (!this.result?.body?.bodies?.some((b) => b.kind !== 'surface')) { this.toast('There is no solid body to orient', true); return null; }
+    const prof = this.printProfile();
+    let cands;
+    try { cands = await this.withProgress('Trying build orientations…', async () => P3.autoOrient(this.result.body, prof)); } catch (e) { this.toast('Auto-Orient failed: ' + e.message, true); return null; }
+    this.lastAutoOrient = cands;
+    this.ui.showAutoOrient(cands, (c) => { this.doc.print = { ...(this.doc.print || {}), R: P3.faceDown(c.n) }; this.commit(); this.printBedOn = true; this.drawPrintBed(); if (this.analysis?.kind === 'overhang') this.overhangMap(true); this.status(`Build orientation set: ${+c.support.toFixed(2)} cm³ of support, ${+c.contact.toFixed(0)} mm² on the bed`); });
+    return cands;
+  }
+  // Calibrate Fits: a test piece (a plate with four Ø6 holes, and pegs for the profile's press, snug, sliding and loose
+  // fits) exported for printing, then the profile's fits set from how they fitted. Built on a kernel of its own, so the
+  // open part stays as it is.
+  async calibrateFits() {
+    const prof = this.printProfile(), pegs = P3.calibrationPegs(prof), doc = M.newDoc();
+    doc.name = 'Fit test';
+    const plate = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }), pts = [[-30, -7.5], [30, -7.5], [30, 7.5], [-30, 7.5]].map((q) => S.addPoint(plate, ...q));
+    pts.forEach((id, i) => S.addLine(plate, id, pts[(i + 1) % 4]));
+    for (const g of pegs) S.addCircle(plate, S.addPoint(plate, g.x, 0), P3.CALIBRATION_HOLE / 2);
+    const strip = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }), sp = [[-30, 12.5], [30, 12.5], [30, 22.5], [-30, 22.5]].map((q) => S.addPoint(strip, ...q));
+    sp.forEach((id, i) => S.addLine(strip, id, sp[(i + 1) % 4]));
+    const pl = M.createFeature(doc, 'plane', { refs: [{ kind: 'plane', id: 'top' }], offset: 2 }), pins = M.createFeature(doc, 'sketch', { plane: { ref: pl.id } });
+    for (const g of pegs) S.addCircle(pins, S.addPoint(pins, g.x, 17.5), g.d / 2);
+    doc.features.push(plate, M.createFeature(doc, 'extrude', { sketch: plate.id, depth: 4 }), strip, M.createFeature(doc, 'extrude', { sketch: strip.id, depth: 2 }), pl, pins, M.createFeature(doc, 'extrude', { sketch: pins.id, depth: 8 }));
+    const k = new KernelClient({ threads: 1 });
+    let bytes;
+    try {
+      bytes = await this.withProgress('Making the fit test piece…', async () => {
+        await k.ready;
+        const r = await k.rebuild(doc);
+        if (r.errors?.length) throw new Error(r.errors.map((e) => e[1]).join('; '));
+        return k.exportBody('3mf', null, {}, { print: { R: P3.Y_UP, bed: prof.bed } });
+      });
+    } catch (e) { this.toast('Calibrate Fits failed: ' + e.message, true); return null; } finally { k.dispose?.() ?? k.worker?.terminate(); }
+    const path = await platform.saveBinary('fit-test.3mf', bytes, '3mf');
+    this.ui.showCalibrateFits(prof, pegs, path);
+    return { pegs, bytes };
   }
 
   // ---- interference: where solid bodies overlap
@@ -2227,7 +2360,7 @@ class App {
     const pm=this.pm,f=pm.feature,key=LR.refKey(ref);
     try{
       const source=this.result.sketches.get(LR.sourceId(ref));if(!source)throw new Error('The profile sketch is unavailable');
-      if(control)LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));
+      if(control){LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));LC.connectionExtras(source.sketch,ref,source.frame,control);}
       f.loftCorrespondence={...(f.loftCorrespondence||{})};
       if(control)Object.defineProperty(f.loftCorrespondence,key,{value:{...control},enumerable:true,writable:true,configurable:true});else delete f.loftCorrespondence[key];
       f.correspondenceMode='manual';pm.loftConnector=null;pm.loftHover=null;this.preview(rerender);this.updateSketchDisplay();return true;
@@ -2467,6 +2600,9 @@ class App {
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
+    if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
+    if (f.type === 'printHinge') return 'edge';
+    if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
     if (f.type === 'hole' && this.pm.holeEndPick && f.end === 'upToVertex') return 'vertex';
     if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
     if (f.type === 'boss' || f.type === 'snapHook') return 'faces';
@@ -2575,7 +2711,7 @@ class App {
       else if (f.type === 'chamfer' && f.chamferType === 'vertex') { const p = hit.point.toArray(), L = (f.vertices ||= []), i = L.findIndex((v) => Math.hypot(...v.p.map((x, k) => x - p[k])) < 1e-4); if (i >= 0) L.splice(i, 1); else L.push({ p }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
-      if (f.type === 'split') f.toolFace = { p: hit.p, n: hit.n };
+      if (f.type === 'split' || f.type === 'printSplit') { f.toolFace = { p: hit.p, n: hit.n }; if (f.type === 'printSplit') f.tool = null; }
       else if(['extrude','surfExtrude'].includes(f.type)&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
       else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='end2'&&f.side2){f.toFace2={p:hit.p,n:hit.n};f.toPlane2=null;}
       else { f.toFace = { p: hit.p, n: hit.n }; f.toPlane = null; }
@@ -2658,7 +2794,7 @@ class App {
     const f = this.pm.feature;
     if (f.type === 'freeform') {
       const hs = this.freeformHandles(f);
-      vp.setVertexMarkers(hs?.length ? { selected: hs.map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
+      vp.setVertexMarkers(hs?.length ? { selected: hs.filter((x) => !x.off).map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
     }
     if (mode === 'edge') {
       const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
@@ -3231,7 +3367,7 @@ class App {
     }
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot && ['plane', 'axis', 'point'].includes(kind)) return this.pmPickMate({ kind, id });
     let key = null;
-    if (kind === 'plane' && f.type === 'split') { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (kind === 'plane' && (f.type === 'split' || f.type === 'printSplit')) { f.toolFace = null; f.tool = id; this.preview(true); return true; }
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';
@@ -4210,7 +4346,10 @@ class App {
     const selBody = sel?.kind === 'body' ? this.bodyById(sel.id) : sel?.kind === 'face' ? this.result.bodies?.[sel.body] : null;
     if (['smCornerRelief', 'smClosedCorner'].includes(type)) props.body = selBody?.sheet ? selBody.id : sheets.length === 1 ? sheets[0].id : null;
     if (type === 'smTabSlot' && sel?.kind === 'edge') props.edge = { p: sel.p };
-    if (type === 'hole') {
+    // (3D printing shapes: the build orientation they are made for kept with the part)
+    if (['printableHole', 'bridgingLayer', 'bedChamfer', 'printableOverhangs'].includes(type) && !P3.orientationOf(doc)) doc.print = { ...(doc.print || {}), R: this.printOrientation() };
+    if (type === 'bridgingLayer' && sel?.kind === 'face' && sel.face.planar) props.faces = [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }];
+    if (['hole', 'nutPocket', 'insertHole', 'plasticScrewHole'].includes(type)) {
       if (!this.result.body) { this.toast('There is no body to put holes in', true); return; }
       props.faces = sel?.kind === 'face' && sel.face.planar ? [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }] : [];
       if (selF?.type === 'sketch') props.sketch = selF.id;
@@ -5013,7 +5152,7 @@ class App {
     return hs.map((x, i) => {
       const h = Number(this.result.ev(f['h' + i] ?? 0));
       const d = Number.isFinite(h) ? h - x.h : 0;
-      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h };
+      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h, off: !!x.off };
     });
   }
   freeformDown(e) {
@@ -5022,7 +5161,7 @@ class App {
     if (!hs) return false;
     const vp = this.viewport, m = vp.screenPos(e);
     let best = -1, bd = 9;
-    hs.forEach((x, i) => { const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
+    hs.forEach((x, i) => { if (x.off) return; const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
     if (best < 0) return false;
     vp.controls.drag = null; // (the press moves the handle: no view rotation)
     try { vp.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
