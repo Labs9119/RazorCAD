@@ -1884,6 +1884,10 @@ DWG import and export: DWG is a closed format with no free reader or writer that
 - **Keep the first item** measures from the first item to each next click (a third click replaces the second, not the first).
 - **Measured** lists the distances measured so far, most recent first.
 
+## DFM Check
+
+**Evaluate ▸ DFM Check** checks the solids for machining {idx:DFM check}{idx:manufacturability}: **sharp inside corners** (a concave straight edge between flat faces: a cutter leaves its radius there), inside rounds smaller than the **smallest cutter radius**, holes smaller than the **smallest hole** or deeper than a number of times their diameter, hole sizes that are not standard drills (whole or half millimetres up to 20, whole millimetres above: reamed, bored or clearance holes are reported as notes), and very small faces (often import slivers). Each finding is listed and numbered on the model; **Clear the marks** removes them. For thin walls use Thickness Analysis, for moulded parts Draft Analysis and Undercut Check, for sheet metal Sheet Metal Check.
+
 ## 3D Annotations
 
 **Evaluate ▸ 3D Annotation** puts product and manufacturing information on the model itself (model based definition) {idx:3D annotations}{idx:MBD}{idx:PMI}{idx:GD&T}: a **Note**, a **Dimension** between two points (its value measured, or given) with its tolerances, a **Geometric tolerance** (a feature control frame: the characteristic, a Ø zone if ticked, the tolerance and the datums), a **Datum** letter or a **Surface finish** (Ra). Fill in the dialog, then click the point on the model it is about (two points for a dimension). Each shows as a label with a leader to its point and follows the view. **Tools ▸ 3D Annotations…** lists them, to delete them or hide them all.

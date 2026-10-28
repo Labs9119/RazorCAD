@@ -4298,6 +4298,29 @@ class App {
     this.status(doc.rollbackAt ? `Rolled back to before ${M.findFeature(doc, doc.rollbackAt).name}. New features are inserted above the bar; drag it to the bottom to roll forward.` : 'Rolled forward to the end.');
   }
 
+  // DFM Check (machining): the kernel's findings listed, each shown on the model with a mark.
+  async dfmCheck(opts = null) {
+    if (!this.result?.body) { this.toast('There is no solid body to check', true); return null; }
+    const prev = this._dfmOpts || { minR: 1, minHole: 1, maxRatio: 10, tiny: 0.01 };
+    const v = opts || (await this.ui.promptFields('DFM Check', 'measure', [
+      { key: 'minR', label: 'Smallest cutter radius', type: 'expr', value: prev.minR },
+      { key: 'minHole', label: 'Smallest hole', type: 'expr', value: prev.minHole },
+      { key: 'maxRatio', label: 'Deepest hole (× its diameter)', type: 'expr', value: prev.maxRatio },
+      { key: 'tiny', label: 'Smallest face (mm²)', type: 'expr', value: prev.tiny },
+    ], 'Checks the solids for machining: sharp inside corners, small inside rounds, small or deep holes, hole sizes that are not standard drills, and very small faces. Thin walls: Evaluate ▸ Thickness Analysis; draft and undercuts: Draft Analysis and Undercut Check.'));
+    if (!v) return null;
+    const o = Object.fromEntries(Object.entries(v).filter(([k]) => k in prev).map(([k, x]) => [k, this.result.ev(String(x))]));
+    this._dfmOpts = o;
+    let found;
+    try { found = await this.withProgress('Checking…', () => this.kernel.request('dfmCheck', { opts: o })); } catch (e) { this.toast('DFM Check failed: ' + e.message, true); return null; }
+    this.viewport.setPointMarks('dfm', found.filter((x) => x.p).map((x, i) => ({ p: x.p, text: String(i + 1), cls: x.level === 'warn' ? 'pick' : '' })));
+    if (opts?.quiet) return found;
+    const box = document.createElement('div');
+    box.innerHTML = found.length ? `<ol style="margin:0;padding-left:22px;max-height:55vh;overflow:auto">${found.map((x) => `<li style="margin:3px 0">${x.level === 'warn' ? '⚠ ' : 'ⓘ '}${x.text.replace(/[&<>]/g, '')}</li>`).join('')}</ol>` : '<div class="pm-hint">Nothing found: no sharp inside corners, small or deep holes, odd hole sizes or very small faces.</div>';
+    this.ui.modal(`DFM Check — ${found.filter((x) => x.level === 'warn').length} warnings, ${found.filter((x) => x.level !== 'warn').length} notes`, 'measure', box, [{ label: 'Clear the marks', action: () => { this.viewport.setPointMarks('dfm', null); } }, { label: 'Close', primary: true }]);
+    return found;
+  }
+
   // ------------------------------------------------------------ rendering and decals (render.js)
   // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
   renderSetup() {

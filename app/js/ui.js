@@ -2043,6 +2043,7 @@ export class UI {
         { icon: 'interference', label: 'Interference Check', action: () => a.checkInterference() },
         { icon: 'zebra', label: 'Zebra Stripes', action: () => a.setAnalysis({ kind: 'zebra', density: 10 }), active: a.analysis?.kind === 'zebra' },
         { icon: 'camera', label: 'Render', action: () => a.renderView() },
+        { icon: 'measure', label: 'DFM Check', action: () => a.dfmCheck() },
         { icon: 'sketchPicture', label: 'Decal', action: () => a.addDecal() },
         { icon: 'curvature', label: 'Curvature', action: () => a.setAnalysis({ kind: 'curvature' }), active: a.analysis?.kind === 'curvature' },
         { icon: 'draftAnalysis', label: 'Draft Analysis', action: () => (a.analysis?.kind === 'draft' ? a.setAnalysis(null) : this.showDraftAnalysis()), active: a.analysis?.kind === 'draft' },

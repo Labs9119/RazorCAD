@@ -9849,6 +9849,50 @@ function defeatureShape(shape, maxR, maxD) {
   return { shape, fillets, holes };
 }
 
+// DFM check of solids for machining: sharp inside corners (a concave straight edge between flat faces: a cutter
+// leaves its radius there), inside rounds smaller than the smallest cutter (minR), holes smaller than minHole or
+// deeper than maxRatio × their diameter, hole sizes that are not standard drills (whole or half millimetres up to
+// 20, whole above), and very small faces (below tiny mm²). [{ kind, level: 'warn' | 'info', text, p }]
+function dfmCheck(list, { minR = 1, minHole = 1, maxRatio = 10, tiny = 0.01 } = {}) {
+  const out = [], f3 = (x) => +x.toFixed(3);
+  for (const rec of list) {
+    const shape = rec.shape, faces = shape.faces;
+    if (faces.length > 4000) { out.push({ kind: 'size', level: 'info', text: `${rec.id}: ${faces.length} faces, too many to check here` }); continue; }
+    for (const fc of faces) {
+      const s = surfOf(fc), area = faceArea(fc);
+      if (area < tiny) out.push({ kind: 'tiny', level: 'info', text: `A very small face (${f3(area)} mm²): an import artefact or a sliver?`, p: vec(fc.center) });
+      if (s.t !== 'CYLINDER') continue;
+      const closed = faceHasSeam(fc), ends = edgeEnds(fc.edges), ts = ends.map((q) => dot(sub(q, s.p), s.d)), t0 = Math.min(...ts), t1 = Math.max(...ts);
+      const mid = add(s.p, mul(s.d, (t0 + t1) / 2)), concave = !solidAt(shape, mid);
+      if (!concave) continue;
+      const D = 2 * s.r;
+      if (!closed) { if (s.r < minR - 1e-9) out.push({ kind: 'radius', level: 'warn', text: `An inside round R${f3(s.r)} is smaller than the smallest cutter (R${minR})`, p: vec(fc.center) }); continue; }
+      const depth = t1 - t0;
+      if (D < minHole - 1e-9) out.push({ kind: 'hole', level: 'warn', text: `A hole Ø${f3(D)} is smaller than Ø${minHole}`, p: vec(fc.center) });
+      if (depth > maxRatio * D + 1e-9) out.push({ kind: 'deep', level: 'warn', text: `A hole Ø${f3(D)} is ${f3(depth)} deep: ${f3(depth / D)} × its diameter (more than ${maxRatio} ×)`, p: vec(fc.center) });
+      const std = D <= 20 ? Math.abs(D * 2 - Math.round(D * 2)) < 1e-6 : Math.abs(D - Math.round(D)) < 1e-6;
+      if (!std) out.push({ kind: 'drill', level: 'info', text: `A hole Ø${f3(D)} is not a standard drill size (reamed, bored or a clearance hole?)`, p: vec(fc.center) });
+    }
+    // (sharp inside corners: concave straight edges between flat faces)
+    const edges = shape.edges;
+    if (edges.length > 20000) continue;
+    for (const e of edges) {
+      if (e.geomType !== 'LINE') continue;
+      const fs = adjacentFaces(shape, e);
+      if (fs.length !== 2 || fs.some((x) => x.geomType !== 'PLANE')) continue;
+      const a = vec(e.startPoint), b = vec(e.endPoint), d = unit(sub(b, a)), m = mul(add(a, b), 0.5), L = len(sub(b, a));
+      const [nA, nB] = fs.map((x) => unit(vec(x.normalAt())));
+      if (len(cross(nA, nB)) < 1e-6) continue;
+      // (the direction into face A from the edge: concave when it runs the way face B looks)
+      let tA = unit(cross(nA, d));
+      const eps = Math.max(1e-4, L * 1e-3);
+      if (new R.DistanceQuery(R.makeVertex(add(m, mul(tA, eps)))).distanceTo(fs[0]) > eps * 0.5) tA = mul(tA, -1);
+      if (dot(nB, tA) > 1e-6) out.push({ kind: 'corner', level: 'warn', text: `A sharp inside corner ${f3(L)} long: a cutter leaves its radius (add one of R${minR} or more, or plan for EDM)`, p: m });
+    }
+  }
+  return out;
+}
+
 // The faces of `body` that contain `edge`, in a stable order (by face centre).
 function adjacentFaces(body, edge) {
   const oc = R.getOC(), T = oc.TopAbs_ShapeEnum;
@@ -10975,6 +11019,10 @@ async function handleMessage(e) {
       result = await drawingPick(data.doc, data.view, data.p);
     } else if (type === 'drawingViews') {
       result = await drawingViews(data.doc, data.views || []);
+    } else if (type === 'dfmCheck') {
+      const list = data.bodyId ? lastSolids.filter((r) => r.id === data.bodyId) : lastSolids;
+      if (!list.length) throw new Error('There is no solid to check');
+      result = dfmCheck(list, data.opts || {});
     } else if (type === 'sheetCheck') {
       const rec = lastSolids.find((r) => r.id === data.bodyId && r.sheet);
       if (!rec) throw new Error('That body is not sheet metal');
