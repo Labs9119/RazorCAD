@@ -2497,6 +2497,7 @@ class App {
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
       if (['sweep', 'surfSweep'].includes(f.type) && f.orientation === 'surface') faceRefs.push(...(f.supportFaces || []));
+      if (f.type === 'shell') faceRefs.push(...(f.thickFaces || []));
       for (const r of faceRefs) { const i = vp.faceIndexNear(r.p); if (i >= 0) infos.push(vp.faceInfo(i)); }
       const ids = [...(f.bodies || []), f.main, f.body, ...(f.scopeAll === false ? f.scope || [] : [])].filter(Boolean);
       for (const id of new Set(ids)) { const bi = vp.bodyIndexOf(id); if (bi >= 0) infos.push(vp.bodyInfo(bi)); }
@@ -3290,12 +3291,12 @@ class App {
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
       if (['fillet', 'chamfer'].includes(f.type) && this.pm.faceEdgesPick) { this.addFaceEdges(fh); return; }
-      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : 'faces';
+      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
-      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}) });
+      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
       this.ui.renderPM();
       this.updateEdgeHighlights();
       this.preview();

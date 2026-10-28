@@ -254,7 +254,7 @@ export function createFeature(doc, type, props = {}) {
     // maxTris: meshes (STL / OBJ / 3MF) with more triangles are simplified to that many (0: never)
     import: { format: 'step', fileName: '', data: '', mergeBodies: false, maxTris: 80000 },
     // faces: picked face references { p, n }; bodies / main / body: body ids
-    shell: { faces: [], thickness: 2, outward: false },
+    shell: { thickFaces: [], faces: [], thickness: 2, outward: false },
     // consume: the tool bodies are used up (off: they are kept)
     combine: { op: 'add', main: null, bodies: [], consume: true },
     // tool: a plane id or a surface body id ('' + toolFace: a picked flat face); keep: all | positive | negative

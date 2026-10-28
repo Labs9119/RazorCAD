@@ -41,7 +41,8 @@ instead of changing the resulting geometry.
 | Patch | Per-edge G0/G1/G2, connected model-edge selection, a tangent reach per G1 edge, curves and points inside the opening it passes through | Sketch inputs as boundaries need an explicit product decision (planar sketch creation currently belongs to Planar Surface) |
 | Reference geometry | Constraint definitions listed above | Arbitrary curved-surface constraints/intersections and broader combinations with tangent/midplane constructions |
 | Fillet / Chamfer | Constant, variable (ends, vertices, points along edges), face fillets, full round, chord width, an edge's own size, setback corners, a face's edges at once; chamfers by distance, distance and angle, two distances, an edge's own distance, vertex chamfers | Conic and curvature-continuous fillet profiles (not offered by the geometry kernel) |
-| Shell, Hole, patterns, sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
+| Shell | Faces removed, inward or outward, small blends kept outside, walls of their own thickness, hollow bodies (no faces removed) | Walls of their own thickness on curved faces or outward |
+| Hole, patterns, sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
 
 ## Validation
 

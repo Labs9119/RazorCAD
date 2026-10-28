@@ -29,7 +29,7 @@ export async function run({threads=1}={}){
   {name:'cylinder outward',circle:true,outward:true,expected:outwardVolume(400*Math.PI,40*Math.PI)},
   {name:'excessive thickness',thickness:50,reject:/valid cavity/},
   {name:'collapsed cavity',thickness:20,reject:/valid cavity/},
-  {name:'no faces selected',faces:[],reject:/Select the faces/},
+  {name:'no faces selected hollows the body (a closed void)',faces:[],expected:60*40*30-56*36*26},
   {name:'zero thickness',thickness:0,reject:/greater than zero/},
   {name:'negative thickness',thickness:-2,reject:/greater than zero/},
   {name:'nonfinite thickness',thickness:Infinity,reject:/finite|zero|invalid|empty/i},

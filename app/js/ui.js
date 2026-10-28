@@ -1034,7 +1034,8 @@ const PM_SCHEMAS = {
   ],
   shell: [
     { title: 'Parameters', fields: [{ key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' }, { key: 'outward', type: 'check', label: 'Shell outward' }] },
-    { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList' }] },
+    { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces to remove (open the shell there). With none, the body is hollowed: a closed void inside.' }] },
+    { title: 'Walls of Their Own Thickness', show: (f) => !f.outward, fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
   ],
   combine: [
     { title: 'Operation Type', fields: [{ key: 'op', type: 'select', label: 'Type', options: [['add', 'Add (union)'], ['subtract', 'Subtract'], ['common', 'Common (keep the overlap)']] }] },
@@ -5218,6 +5219,7 @@ export class UI {
     const key = fd.key || 'faces', pm = a.pm;
     if (!Array.isArray(f[key])) f[key] = [];
     if (fd.sweepSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.sweepSupportPick ? ' on' : ''), 'data-sweep-support': '', onclick: () => { pm.sweepSupportPick = !pm.sweepSupportPick; pm.planarEdges = false; if (pm.sweepSupportPick) pm.sweepCanvas = false; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, 'Select faces in canvas'));
+    if (fd.shellThick) body.appendChild(el('button', { class: 'pm-btn' + (pm.shellThickPick ? ' on' : ''), 'data-shell-thick': '', onclick: () => { pm.shellThickPick = !pm.shellThickPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select walls in canvas'));
     if (fd.patchSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.patchSupportPick ? ' on' : ''), 'data-patch-support': '', onclick: () => { pm.patchSupportPick = !pm.patchSupportPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select support faces'));
     if (fd.loftEnd) body.appendChild(el('button', { class: 'pm-btn' + (pm.loftEndSlot === key ? ' on' : ''), 'data-loft-end-faces': key, onclick: () => { pm.loftEndSlot = pm.loftEndSlot === key ? null : key; pm.loftDraft = null; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, `Select ${fd.loftEnd} support faces`));
     body.appendChild(el('div', { class: 'pm-hint' }, esc(fd.hint || 'Click faces on the model to add or remove them.')));
@@ -5225,6 +5227,7 @@ export class UI {
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, esc(fd.empty || 'No faces selected')));
     f[key].forEach((r, i) => {
       const li = el('div', { class: 'li sel' }, `${icon('plane')}<span>${esc(fd.itemLabel || 'Face')}&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`);
+      if (fd.shellThick) { const own = this.exprInput(r.t ?? '', 'mm', (value) => { r.t = value; a.preview(); }); own.dataset.shellWallThickness = i; own.title = 'This wall’s thickness'; li.insertBefore(own, li.querySelector('.x')); }
       li.querySelector('.x').onclick = () => { f[key].splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
       ul.appendChild(li);
     });

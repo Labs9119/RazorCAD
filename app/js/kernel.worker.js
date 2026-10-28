@@ -4582,9 +4582,56 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'shell': {
           needEdges('Shell');
-          if (!f.faces?.length) throw new Error('Select the faces to remove on the model');
           const t = ev(f.thickness);
           if (!Number.isFinite(t) || t <= 0) throw new Error('Thickness must be a finite number greater than zero');
+          // (thickFaces: walls of a thickness of their own, { p, n, t }: inward, the material behind each flat face down
+          // to its own depth is kept, the piece of it that touches the face)
+          const own = (f.thickFaces || []).map((r) => ({ r, t: ev(r.t) }));
+          if (own.some((x) => !(Number.isFinite(x.t) && x.t > 0))) throw new Error('A wall’s own thickness must be greater than zero');
+          if (own.length && f.outward) throw new Error('Walls of their own thickness need an inward shell');
+          const thicken = (rec, shape, removed) => {
+            let out = shape;
+            for (const { r, t: ti } of own) {
+              if (ti <= t + 1e-12) throw new Error('A wall’s own thickness must be more than the shell’s (it adds to the wall)');
+              const hit = findFaceAny([rec], r);
+              if (!hit || hit.face.geomType !== 'PLANE') throw new Error('A wall of its own thickness must be a flat face of the body');
+              if (removed.some((x) => x.isSame(hit.face))) throw new Error('A removed face cannot have a thickness of its own');
+              const n = unit(vec(hit.face.normalAt())), c = flatCentre(hit.face), b = bbox(rec.shape), big = b.diag + len(sub(b.center, c)) + 100;
+              const nn = mul(n, -1), u = unit(cross(nn, Math.abs(nn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+              const slab = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(c, u, nn)).extrude(ti);
+              const behind = solidsOf(rec.shape.intersect(slab)).filter((piece) => { const q = new R.DistanceQuery(piece); try { return q.distanceTo(hit.face) < 1e-7; } finally { q.delete(); } });
+              for (const piece of behind) out = out.fuse(piece);
+            }
+            return out;
+          };
+          if (!f.faces?.length) {
+            // (no faces removed: hollow, the body offset inward by the thickness cut out of it, a closed void inside)
+            if (f.outward) throw new Error('A hollow shell (no faces removed) goes inward');
+            const rec0 = solids.length === 1 ? solids[0] : solids.find((s) => s.id === f.body);
+            if (!rec0) throw new Error(solids.length ? 'Hollowing (no faces removed) works on a part of one body: select faces to remove' : 'There is no body to shell');
+            const oc = R.getOC();let inner = null;
+            for (const join of [oc.GeomAbs_JoinType.GeomAbs_Arc, oc.GeomAbs_JoinType.GeomAbs_Intersection]) {
+              const mk = new oc.BRepOffsetAPI_MakeOffsetShape();
+              try {
+                mk.PerformByJoin(rec0.shape.wrapped, -t, Math.max(1e-7, Math.min(1e-4, t * 1e-3)), oc.BRepOffset_Mode.BRepOffset_Skin, false, false, join, false);
+                if (!mk.IsDone()) continue;
+                const raw = mk.Shape(); let s; try { s = R.cast(raw); } finally { raw.delete(); }
+                const solid = solidsOf(s).length ? s : (() => { try { return R.makeSolid([s]); } catch (e) { if (isFatal(e)) throw e; return null; } })();
+                const v = solid ? Math.abs(preciseVolume(solid)) : 0, v0 = preciseVolume(rec0.shape);
+                // (and a full thickness in from the outside everywhere: an offset through itself is not a void)
+                if (solid && v > 0 && v < v0 - 1e-9) {
+                  const q = new R.DistanceQuery(solid);let gap = 0;
+                  try { gap = Math.min(...rec0.shape.faces.map((fc) => q.distanceTo(fc))); } finally { q.delete(); }
+                  if (gap > t * (1 - 1e-6) && Math.abs(preciseVolume(solid.cut(rec0.shape))) < v0 * 1e-9) { inner = solid; break; }
+                }
+              } catch (e) { if (isFatal(e)) throw e; } finally { mk.delete(); }
+            }
+            if (!inner) throw new Error('The body could not be hollowed at this thickness (its walls would run into each other)');
+            const out = thicken(rec0, rec0.shape.cut(inner), []);
+            replaceSolid(rec0, unify(out), f.id);
+            res.notes[f.id] = 'Hollow: a closed void inside';
+            break;
+          }
           const pickedHits=f.faces.map((r)=>findFaceAny(solids,r));
           if(pickedHits.some((h)=>!h))throw new Error('A selected face could not be found in the model');
           const hits=pickedHits.filter((hit,i)=>pickedHits.findIndex((other)=>other.body===hit.body&&other.face.isSame(hit.face))===i);
@@ -4655,6 +4702,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           if (!out) throw new Error('The shell could not be built with a valid cavity — try a smaller thickness, remove different faces, or place Shell before fillets and chamfers');
           if(sharpJoins&&!res.notes[f.id])res.notes[f.id]='Sharp joins used between offset faces';
+          if (own.length) out = thicken(rec, out, hits.map((h) => h.face));
           replaceSolid(rec, unify(out), f.id);
           break;
         }

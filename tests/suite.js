@@ -5060,6 +5060,16 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (edges of their own size, chord width, full round, vertex chamfers; rejections); the panel's face edges pick and edge sizes`};
   },
 
+  async 'shell-walls-and-hollow'() {
+    const {run,fixture}=await import('/tests/shell-options-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    const pick=document.querySelector('[data-shell-thick]');if(!pick)return {ok:false,detail:'No wall thickness pick in the Shell panel'};
+    pick.click();await settle();if(a.pickMode()!=='faces'||!a.pm.shellThickPick)return {ok:false,detail:`Pick mode for walls: ${a.pickMode()}`};
+    a.cancelPM?.();await settle();
+    return {ok:true,detail:`${native.results.length} kernel cases (walls of their own thickness, hollow bodies; rejections); the panel's wall pick`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();
