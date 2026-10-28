@@ -271,6 +271,11 @@ export const platform = {
     return name;
   },
 
+  // 3D printing (desktop): a slicer program picked in a file dialog (its path, or null), and a file this session saved
+  // opened with it
+  async pickProgram() { return desktop ? api().pick_program() : null; },
+  async openWith(program, path) { if (!desktop) throw new Error('Only in the Windows app'); return api().open_with(program, path); },
+
   async saveBinary(name, bytes, kind) {
     if (desktop) return api().save_binary(name, b64(bytes), kind);
     browserDownload(bytes, name, 'application/octet-stream');

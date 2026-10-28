@@ -30,6 +30,7 @@ import { revisionsDialog } from './revisions.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
+import * as P3 from './print3d.js';
 import { lenText, lenValue, fmtLen, lenWithUnit, areaWithUnit, volWithUnit } from './units.js';
 import { groupBodies } from './bodygroups.js';
 import * as W from './wcs.js';
@@ -2113,6 +2114,20 @@ export class UI {
         'sep',
         { icon: 'gear', label: 'Claude Settings', action: () => this.showClaudeSettings() },
       ],
+      // (3D Print: set up, add features, check, export; print3d.js)
+      print: [
+        { icon: 'gear', label: 'Print Profile', action: () => this.showPrintProfiles() },
+        { icon: 'body', label: 'Place on Bed', action: () => a.placeOnBed() },
+        { icon: 'eye', label: 'Show Bed', action: () => a.togglePrintBed(), active: !!a.printBedOn },
+        'sep',
+        { icon: 'measure', label: 'Check Printability', action: () => a.checkPrintability() },
+        { icon: 'draftAnalysis', label: 'Overhang Map', action: () => a.overhangMap(), active: a.analysis?.kind === 'overhang' },
+        { icon: 'measure', label: 'Thickness Map', action: () => a.printThicknessMap(), active: a.analysis?.kind === 'thickness' },
+        'sep',
+        { icon: 'threemf', label: 'Export for Printing', action: () => a.exportForPrinting('3mf') },
+        { icon: 'stl', label: 'Export STL for Printing', action: () => a.exportForPrinting('stl') },
+        { icon: 'open', label: 'Open in Slicer', action: () => a.openInSlicer() },
+      ],
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
@@ -2242,7 +2257,7 @@ export class UI {
 
   savePrefs() { platform.setPrefs(this.prefs || {}).catch?.(() => {}); }
   toolbarTabs() {
-    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
+    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['print', '3D Print'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
     for (const c of this.tbPrefs().custom) out.push({ id: 'custom:' + c.id, label: c.name, custom: true });
     out.push({ id: 'claude', label: 'Claude', html: `${icon('assistant')}Claude` });
     return out;
@@ -6098,6 +6113,70 @@ export class UI {
     new MutationObserver((_, obs) => { if (!body.isConnected) { if (this._fix?.render === render) this._fix = null; obs.disconnect(); } }).observe($('#modal-root'), { childList: true });
   }
   refreshFixReferences() { this._fix?.render(); }
+
+  // ---- 3D Print tab: the print profiles (a printer and a material each), the slicer program
+  showPrintProfiles() {
+    const a = this.app, prefs = (this.prefs ||= {}), box = el('div', { class: 'print-profiles', 'data-print-profiles': '' });
+    let current = a.printProfile().name;
+    const render = () => {
+      box.innerHTML = '';
+      const all = P3.allProfiles(prefs), p = all.find((x) => x.name === current) || all[0];
+      const pick = el('select', { 'data-print-profile': '', 'aria-label': 'Print profile' });
+      for (const x of all) pick.appendChild(el('option', { value: x.name }, esc(x.name + (x.name === (prefs.printProfile || all[0].name) ? ' (default)' : ''))));
+      pick.value = p.name; pick.onchange = () => { current = pick.value; render(); };
+      box.appendChild(this.row('Profile', pick));
+      box.appendChild(el('div', { class: 'pm-hint' }, p.builtIn ? 'A starting profile: copy it to change its numbers.' : 'Your profile: its numbers can be changed here; every part that uses it follows.'));
+      const save = (next) => { prefs.printProfiles = [...(prefs.printProfiles || []).filter((x) => x.name !== p.name), next]; this.savePrefs(); if (a.printProfile().name === next.name) a.setPrintProfile(next.name); };
+      const num = (key, label, unit, get = () => p[key], set = (v) => ({ ...p, [key]: v })) => {
+        const input = el('input', { type: 'number', step: 'any', value: get() ?? '', 'data-print-field': key, 'aria-label': label });
+        input.disabled = !!p.builtIn;
+        input.onchange = () => { const v = input.value === '' ? null : +input.value; if (v != null && !(v >= 0)) { this.app.toast(`${label} can't be negative`, true); render(); return; } save(set(v)); };
+        const row = this.row(`${label}${unit ? ` (${unit})` : ''}`, input); box.appendChild(row);
+      };
+      ['X', 'Y', 'Z'].forEach((ax, i) => num('bed' + ax, `Bed ${ax}`, 'mm', () => p.bed[i], (v) => ({ ...p, bed: p.bed.map((q, j) => (j === i ? v : q)) })));
+      for (const [key, label, unit] of P3.PROFILE_FIELDS) num(key, label, unit);
+      for (const fit of ['press', 'snug', 'sliding', 'loose']) num('fit-' + fit, `Fit, ${fit}`, 'mm', () => p.fits?.[fit], (v) => ({ ...p, fits: { ...p.fits, [fit]: v } }));
+      const shrink = el('input', { type: 'checkbox', 'data-print-field': 'shrinks' }); shrink.checked = !!p.shrinks; shrink.disabled = !!p.builtIn;
+      shrink.onchange = () => save({ ...p, shrinks: shrink.checked });
+      const sl = el('label'); sl.append(shrink, document.createTextNode(' The material shrinks and warps (ABS, ASA, nylon)')); box.appendChild(this.row(null, sl, 'check'));
+      const acts = el('div', { class: 'pm-buttons' });
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-copy': '', onclick: async () => {
+        const name = (await this.promptText('Copy Print Profile', 'gear', 'Name of the new profile:', `${p.name} (copy)`))?.trim();
+        if (!name) return;
+        if (P3.allProfiles(prefs).some((x) => x.name === name)) { this.app.toast('A profile of that name is already there', true); return; }
+        prefs.printProfiles = [...(prefs.printProfiles || []), { ...p, name, builtIn: undefined }]; this.savePrefs(); current = name; render();
+      } }, 'Copy…'));
+      if (!p.builtIn) acts.appendChild(el('button', { class: 'pm-btn', 'data-print-delete': '', onclick: () => { prefs.printProfiles = (prefs.printProfiles || []).filter((x) => x.name !== p.name); if (prefs.printProfile === p.name) delete prefs.printProfile; this.savePrefs(); current = P3.allProfiles(prefs)[0].name; render(); } }, 'Delete'));
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-default': '', onclick: () => { prefs.printProfile = p.name; this.savePrefs(); render(); } }, 'Make default'));
+      acts.appendChild(el('button', { class: 'pm-btn', 'data-print-use': '', onclick: () => { a.setPrintProfile(p.name); render(); } }, a.printProfile().name === p.name ? 'Used by this part' : 'Use for this part'));
+      box.appendChild(acts);
+      // the slicer program (Open in Slicer)
+      const prog = el('div', { class: 'pm-hint', 'data-slicer-path': '' }, prefs.slicerPath ? esc(prefs.slicerPath) : 'No slicer program chosen');
+      box.appendChild(this.row('Slicer program', prog));
+      if (platform.desktop) box.appendChild(el('button', { class: 'pm-btn', 'data-slicer-pick': '', onclick: async () => { const path = await platform.pickProgram(); if (path) { prefs.slicerPath = path; this.savePrefs(); render(); } } }, 'Choose slicer program…'));
+    };
+    render();
+    this.modal('Print Profile', 'gear', box, [{ label: 'Close', primary: true }]);
+  }
+  // ---- 3D Print tab: Check Printability's findings (numbered as on the model) and the part's print numbers
+  showPrintCheck(res, prof) {
+    const box = el('div', { class: 'print-check', 'data-print-check': '' }), s = res.stats, f1 = (x) => +x.toFixed(1), f2 = (x) => +x.toFixed(2);
+    const col = { fail: '#d63b2f', warn: '#c98f0a', info: '#5f6877', pass: '#22a046' }, word = { fail: 'Fail', warn: 'Warning', info: 'Note', pass: 'Pass' };
+    box.appendChild(el('div', { class: 'pm-hint' }, `${esc(prof.name)} · ${f1(s.size[0])} × ${f1(s.size[1])} × ${f1(s.size[2])} mm in its build orientation`));
+    let n = 0;
+    const list = el('div', { 'data-print-findings': '' });
+    for (const x of res.findings) {
+      const num = x.p ? String(++n) : '';
+      list.appendChild(el('div', { class: 'print-finding', 'data-level': x.level }, `<span style="color:${col[x.level]};font-weight:600">${word[x.level]}</span>${num ? ` <b>${num}</b>` : ''} ${esc(x.text)}`));
+    }
+    box.appendChild(list);
+    const facts = [`Volume ${f2(s.volume)} cm³`, `mass ${f1(s.mass)} g in ${esc(prof.material || prof.name)}`, s.filament != null ? `${f2(s.filament)} m of ${prof.filament} mm filament` : null, `on the bed ${f1(s.contact)} mm²`].filter(Boolean);
+    box.appendChild(el('div', { class: 'pm-hint', 'data-print-stats': '' }, facts.join(' · ')));
+    this.modal(`Check Printability — ${res.findings.filter((x) => x.level === 'fail').length} fails, ${res.findings.filter((x) => x.level === 'warn').length} warnings`, 'measure', box, [
+      { label: 'Clear the marks', action: () => { this.app.viewport.setPointMarks('print', null); } },
+      { label: 'Close', primary: true },
+    ]);
+  }
 
   showMassProps() {
     const a = this.app, geo = a.viewport.bodyGeo;

@@ -776,6 +776,70 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  async 'print-check-details'() {
+    // the hole, pin and overhang checks: a 20 × 20 × 10 block with a Ø1 hole through it (under Ø1.5: fails), a Ø1.5 pin
+    // 5 high on it (under Ø2: fails), and a wedge on one side whose underside faces down 60° from vertical (over 45°:
+    // fails) next to one at 30° (fine)
+    const a = window.app, P3 = await import('/js/print3d.js'), S = await import('/js/sketchmodel.js'), doc = M.newDoc();
+    const poly = (sk, pts) => { const p = pts.map((q) => S.addPoint(sk, ...q)); p.forEach((id, i) => S.addLine(sk, id, p[(i + 1) % p.length])); };
+    const s1 = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }); poly(s1, [[-10, -10], [10, -10], [10, 10], [-10, 10]]);
+    const h = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }); S.addCircle(h, S.addPoint(h, -5, 0), 0.5);
+    const pl = M.createFeature(doc, 'plane', { refs: [{ kind: 'plane', id: 'top' }], offset: 10 }), pin = M.createFeature(doc, 'sketch', { plane: { ref: pl.id } }); S.addCircle(pin, S.addPoint(pin, 5, 0), 0.75);
+    // (wedges in the Front plane: x from 10 out, y: the underside 60° from vertical runs from (10, 4) to (10 + 6·tan60°… kept
+    // short: out 3, down 3·cot60° = 1.732); the other at 30°: out 3, down 3·cot30° = 5.196)
+    const w = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); poly(w, [[10, 10], [10, 10 - 3 / Math.tan(Math.PI / 3)], [13, 10]]);
+    const w2 = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); poly(w2, [[-10, 10], [-13, 10], [-10, 10 - 3 / Math.tan(Math.PI / 6)]]);
+    doc.features.push(s1, M.createFeature(doc, 'extrude', { sketch: s1.id, depth: 10 }), h, M.createFeature(doc, 'extrude', { sketch: h.id, op: 'cut', end: 'through2' }),
+      pl, pin, M.createFeature(doc, 'extrude', { sketch: pin.id, depth: 5 }), w, M.createFeature(doc, 'extrude', { sketch: w.id, depth: 4, symmetric: true }), w2, M.createFeature(doc, 'extrude', { sketch: w2.id, depth: 4, symmetric: true }));
+    doc.print = { R: P3.Y_UP };
+    await a.newDocument?.(); closeModals(); await a.setDoc(doc); await a.rebuild();
+    if (a.result.errors.size) return { ok: false, detail: JSON.stringify([...a.result.errors]) };
+    const res = await a.checkPrintability(); closeModals(); a.viewport.setPointMarks('print', null);
+    const t = res.findings.map((x) => `${x.level}: ${x.text}`), has = (re) => t.some((x) => re.test(x));
+    const want = [/^fail: Hole Ø1 mm: under Ø1\.5 mm/, /^fail: Pin Ø1\.5 mm: under Ø2 mm/, /^fail: Overhang 60°: over the 45° limit/];
+    const missing = want.filter((re) => !has(re)), stray = t.filter((x) => /Overhang 30/.test(x));
+    return { ok: !missing.length && !stray.length, detail: missing.length || stray.length ? `missing ${missing.join(', ')}; stray ${stray}; got ${JSON.stringify(t)}` : t.filter((x) => /^fail/.test(x)).join('; ') };
+  },
+
+  async 'print-tab-checks'() {
+    // 3D Print, phases 1 and 2: a T (a 40 × 20 × 10 block, a 64 × 20 × 2 shelf on it, Y up as the print's Z up): the
+    // shelf's undersides are bridges 12 mm across (over the 10 mm limit), the support under them 2 × 240 × 10 mm³,
+    // the volume 8000 + 2560 mm³ (13.09 g of PLA, 4.39 m of 1.75 mm filament); exported for printing it sits on the
+    // bed (z 0 to 12) at its middle (110, 110); a hollowed cube's void found (16³ mm³)
+    const a = window.app, P3 = await import('/js/print3d.js'), S = await import('/js/sketchmodel.js'), doc = M.newDoc();
+    const rect = (sk, x0, z0, x1, z1) => { const p = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map((q) => S.addPoint(sk, ...q)); p.forEach((id, i) => S.addLine(sk, id, p[(i + 1) % 4])); };
+    const s1 = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }); rect(s1, -20, -10, 20, 10);
+    const pl = M.createFeature(doc, 'plane', { refs: [{ kind: 'plane', id: 'top' }], offset: 10 }), s2 = M.createFeature(doc, 'sketch', { plane: { ref: pl.id } }); rect(s2, -32, -10, 32, 10);
+    doc.features.push(s1, M.createFeature(doc, 'extrude', { sketch: s1.id, depth: 10 }), pl, s2, M.createFeature(doc, 'extrude', { sketch: s2.id, depth: 2 }));
+    doc.print = { R: P3.Y_UP };
+    await a.newDocument?.(); closeModals(); await a.setDoc(doc); await a.rebuild(); await wait(100);
+    const bad = [], close = (x, y, t = 1e-6) => Math.abs(x - y) <= t;
+    if (P3.allProfiles({}).length !== 4 || P3.profileFor(doc, {}).name !== 'PLA, 0.4 mm nozzle') bad.push('profiles');
+    for (const n of [[0, 1, 0], [0, -1, 0], [1, 0, 0], [0.3, -0.5, 0.81]]) { const q = P3.turn(P3.faceDown(n), n.map((x) => x / Math.hypot(...n))); if (!close(q[2], -1, 1e-9)) bad.push(`faceDown ${n}`); }
+    const res = await a.checkPrintability(); closeModals();
+    const fails = res.findings.filter((x) => x.level === 'fail'), st = res.stats;
+    if (fails.length !== 2 || !fails.every((x) => x.check === 'bridge' && /Bridge 12 mm/.test(x.text))) bad.push(`findings ${JSON.stringify(res.findings.map((x) => x.text))}`);
+    if (!close(st.support, 4.8, 1e-6)) bad.push(`support ${st.support}`);
+    if (!close(st.volume, 10.56, 1e-6) || !close(st.mass, 10.56 * 1.24, 1e-6) || !close(st.filament, 10.56 / (Math.PI * 0.0875 ** 2) / 100, 1e-6)) bad.push(`volume ${st.volume} mass ${st.mass} filament ${st.filament}`);
+    if (!close(st.contact, 800, 1e-6)) bad.push(`contact ${st.contact}`);
+    const stl = await a.kernel.exportBody('stl', null, {}, { print: { R: P3.Y_UP, bed: [220, 220] } }), dv = new DataView(stl.buffer, stl.byteOffset), n = dv.getUint32(80, true);
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let t = 0; t < n; t++) for (let v = 1; v <= 3; v++) for (let c = 0; c < 3; c++) { const x = dv.getFloat32(84 + 50 * t + 12 * v + 4 * c, true); lo[c] = Math.min(lo[c], x); hi[c] = Math.max(hi[c], x); }
+    if (!(n > 0) || !close(lo[2], 0, 1e-4) || !close(hi[2], 12, 1e-4) || !close((lo[0] + hi[0]) / 2, 110, 1e-4) || !close((lo[1] + hi[1]) / 2, 110, 1e-4) || !close(hi[0] - lo[0], 64, 1e-4)) bad.push(`STL ${n} triangles, ${lo} to ${hi}`);
+    const mf = await a.kernel.exportBody('3mf', null, {}, { print: { R: P3.Y_UP, bed: [220, 220] } });
+    if (mf[0] !== 0x50 || mf[1] !== 0x4b) bad.push('3MF is not a zip');
+    a.overhangMap(); if (a.analysis?.kind !== 'overhang') bad.push('Overhang Map'); a.overhangMap();
+    a.togglePrintBed(); if (!a.viewport.printBed || a.viewport.printBed.geometry.getAttribute('position').count < 50) bad.push('bed not drawn'); a.togglePrintBed();
+    if (!document.querySelector('[data-tab="print"]') && !a.ui.toolbarTabs().some((t) => t.id === 'print')) bad.push('no 3D Print tab');
+    // a closed void: a 20 mm cube hollowed 2 thick
+    const h = M.newDoc(), hs = M.createFeature(h, 'sketch', { plane: { ref: 'front' } }); rect(hs, -10, -10, 10, 10);
+    h.features.push(hs, M.createFeature(h, 'extrude', { sketch: hs.id, depth: 20 }), M.createFeature(h, 'shell', { faces: [], thickness: 2 }));
+    await a.setDoc(h); await a.rebuild();
+    const cav = await a.kernel.request('printCavities', {});
+    if (cav.length !== 1 || !close(cav[0].volume, 4096, 1e-6)) bad.push(`cavities ${JSON.stringify(cav)}`);
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `2 bridges of 12 mm found, support ${st.support} cm³, ${+st.volume.toFixed(2)} cm³ = ${+st.mass.toFixed(2)} g, ${+st.filament.toFixed(2)} m of filament; exported on the bed (z 0 to 12, centred); the overhang map and the bed; a hollow cube's void 4096 mm³` };
+  },
+
   async 'loft-more-connectors-panel'() {
     // the Profile Correspondence panel's Add connector / remove buttons: one more connector on each square profile
     // builds (the same square, 2000 mm³), one removed again leaves the counts unequal and the loft says so

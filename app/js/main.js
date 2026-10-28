@@ -40,6 +40,7 @@ import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
+import * as P3 from './print3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 import { glb, viewportBodies } from './gltf.js';
 
@@ -706,6 +707,7 @@ class App {
     if (this._hoverFeature) this.highlightFeature(this._hoverFeature, 'featureHover');
     this.updateSketchDisplay();
     this.updatePlanes();
+    this.drawPrintBed();
     this.ui.renderTree();
     const n = this.result.errors.size;
     $('#status-rebuild').textContent = `Rebuild ${this.result.time.toFixed(0)} ms` + (n ? ` · ${n} error${n > 1 ? 's' : ''}` : '');
@@ -872,6 +874,98 @@ class App {
     else if (k === 'undercut') this.status(`Undercut check: green free along the pull direction, blue free against it, red undercut (${Math.round((this.viewport.undercutShare || 0) * 100)} % of the surface): the mould cannot release it either way. Click again to turn it off.`);
     else if (k === 'zebra') this.status('Zebra stripes: smooth (tangent / curvature-continuous) joins show stripes running on without a kink. Click again to turn them off.');
     else this.status('Ready');
+  }
+
+  // ---- 3D printing (print3d.js): the part's profile and build orientation, the bed, the maps, the check, the export
+  printProfile() { return P3.profileFor(this.doc, this.ui.prefs); }
+  // the part's build orientation: as set (Place on Bed), else its biggest flat face down
+  printOrientation() { return P3.orientationOf(this.doc) || (this.result?.body ? P3.biggestFlatDown(this.result.body) : P3.Y_UP); }
+  setPrintProfile(name) {
+    const p = P3.allProfiles(this.ui.prefs).find((x) => x.name === name);
+    if (!p) return;
+    this.doc.print = { ...(this.doc.print || {}), profile: p.name, p: { ...p, builtIn: undefined } };
+    this.commit();
+    this.drawPrintBed();
+    this.status(`Print profile: ${p.name}`);
+  }
+  // Place on Bed: the selected flat face down on the bed
+  placeOnBed() {
+    const s = this.selection;
+    if (s?.kind !== 'face' || !s.face?.normal) { this.toast('Select the face to lie on the bed, then Place on Bed', true); return; }
+    if (!s.face.planar) { this.toast('Pick a flat face to lie on the bed', true); return; }
+    this.doc.print = { ...(this.doc.print || {}), R: P3.faceDown(s.face.normal.toArray()) };
+    this.commit();
+    this.printBedOn = true;
+    this.drawPrintBed();
+    if (this.analysis?.kind === 'overhang') this.overhangMap(true);
+    this.status('The face is down on the bed: the checks and Export for Printing use this orientation');
+  }
+  // the bed drawn under the part (a grid, every 10 mm, and the printer's build volume), or taken away
+  togglePrintBed() { this.printBedOn = !this.printBedOn; this.drawPrintBed(); this.ui.renderCommandManager(); }
+  drawPrintBed() {
+    if (!this.printBedOn || this.mode !== 'part' || !this.result?.body?.bodies?.length) { this.viewport.setPrintBed(null); return; }
+    const R = this.printOrientation(), prof = this.printProfile(), m = P3.printMesh(this.result.body, R);
+    if (!m.P.length) { this.viewport.setPrintBed(null); return; }
+    const [bx, by, bz] = prof.bed, cx = (m.lo[0] + m.hi[0]) / 2, cy = (m.lo[1] + m.hi[1]) / 2, z = m.lo[2];
+    const x0 = cx - bx / 2, y0 = cy - by / 2, L = [], to = (p) => P3.back(R, p);
+    for (let x = 0; x <= bx + 1e-9; x += 10) L.push([to([x0 + x, y0, z]), to([x0 + x, y0 + by, z])]);
+    for (let y = 0; y <= by + 1e-9; y += 10) L.push([to([x0, y0 + y, z]), to([x0 + bx, y0 + y, z])]);
+    for (const [x, y] of [[0, 0], [bx, 0], [bx, by], [0, by]]) L.push([to([x0 + x, y0 + y, z]), to([x0 + x, y0 + y, z + bz])]);
+    for (const [a, b] of [[[0, 0], [bx, 0]], [[bx, 0], [bx, by]], [[bx, by], [0, by]], [[0, by], [0, 0]]]) L.push([to([x0 + a[0], y0 + a[1], z + bz]), to([x0 + b[0], y0 + b[1], z + bz])]);
+    this.viewport.setPrintBed(L);
+  }
+  // overhangs coloured against the profile's limit (up: the build direction in model axes)
+  overhangMap(force = false) {
+    const R = this.printOrientation(), prof = this.printProfile();
+    this.setAnalysis({ kind: 'overhang', up: P3.back(R, [0, 0, 1]), limit: prof.overhang, force });
+    if (this.analysis?.kind === 'overhang') this.status(`Overhangs: green fine, amber within 10° of the ${prof.overhang}° limit, red over it (needs support). Click Overhang Map again to turn it off.`);
+  }
+  // walls coloured against the profile: red under 2 extrusion widths, green to yellow up to 10 widths
+  printThicknessMap() { const w = this.printProfile().width; this.setAnalysis({ kind: 'thickness', min: 2 * w, max: 10 * w }); }
+  // Check Printability: every check in the build orientation, findings numbered on the model and listed
+  async checkPrintability() {
+    if (!this.result?.body?.bodies?.some((b) => b.kind !== 'surface')) { this.toast('There is no solid body to check', true); return null; }
+    const R = this.printOrientation(), prof = this.printProfile(), m = P3.printMesh(this.result.body, R);
+    const run = async () => {
+      // (the walls from a thickness map against the profile, the hollows and the volume from the kernel)
+      const keep = this.analysis;
+      this.viewport.setAnalysis({ kind: 'thickness', min: 2 * prof.width, max: 10 * prof.width });
+      const ts = this.viewport.thicknessStats;
+      this.viewport.setAnalysis(keep);
+      const ids = this.result.body.bodies.filter((b) => b.kind !== 'surface' && !b.context).map((b) => b.id);
+      const cavities = await this.kernel.request('printCavities', {});
+      const meas = await this.kernel.request('measure', { refs: ids.map((id) => ({ kind: 'body', id })) });
+      const volume = (meas.items || []).reduce((s, x) => s + (x.volume || 0), 0);
+      return P3.checkPrintability(m, prof, { thickness: ts && Number.isFinite(ts.min) ? { min: ts.min } : null, cavities, volume });
+    };
+    let res;
+    try { res = await this.withProgress('Checking printability…', run); } catch (e) { this.toast('Check Printability failed: ' + e.message, true); return null; }
+    this.lastPrintCheck = res;
+    const marked = res.findings.filter((x) => x.p);
+    this.viewport.setPointMarks('print', marked.map((x, i) => ({ p: x.p, text: String(i + 1), cls: x.level === 'fail' ? 'pick' : '' })));
+    this.ui.showPrintCheck(res, prof);
+    return res;
+  }
+  // Export for Printing: the part in its build orientation, on the bed's middle, as 3MF (or STL)
+  async exportForPrinting(format = '3mf') {
+    if (!this.result?.body) { this.toast('There is no solid body to export', true); return null; }
+    try {
+      const R = this.printOrientation(), prof = this.printProfile();
+      const bytes = await this.withProgress('Exporting for printing…', () => this.kernel.exportBody(format, null, this.exportInfo(), { print: { R, bed: prof.bed } }));
+      const path = await platform.saveBinary(`${this.safeName()}-print.${format}`, bytes, format);
+      if (path) this.lastPrintExport = path;
+      this.status(path ? `Exported ${String(path).split(/[\\/]/).pop()} for printing (${prof.name})` : 'Ready');
+      return path;
+    } catch (err) { this.toast('Export failed: ' + err.message, true); return null; }
+  }
+  // Open in Slicer: the last export for printing (or a new one) opened by the slicer program named in the settings
+  async openInSlicer() {
+    const prog = this.ui.prefs?.slicerPath;
+    if (!prog) { this.toast('Name your slicer program first: 3D Print ▸ Print Profile ▸ Slicer program', true); return; }
+    if (!platform.desktop) { this.toast('Open in Slicer works in the Windows app; in the browser, open the exported file in your slicer', true); return; }
+    const path = this.lastPrintExport || (await this.exportForPrinting('3mf'));
+    if (!path) return;
+    try { await platform.openWith(prog, path); this.status(`Opened ${String(path).split(/[\\/]/).pop()} in the slicer`); } catch (e) { this.toast('Could not start the slicer: ' + e.message, true); }
   }
 
   // ---- interference: where solid bodies overlap

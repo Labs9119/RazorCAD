@@ -353,8 +353,8 @@ export class KernelClient {
   expect(on) { this.expecting = Math.max(0, (this.expecting || 0) + (on ? 1 : -1)); }
 
   // bodyId: export only that body; info: { [bodyId]: { name, color } }
-  exportBody(format, bodyId = null, info = {}) {
-    return this.request('export', { format, bodyId, info });
+  exportBody(format, bodyId = null, info = {}, opts = {}) {
+    return this.request('export', { format, bodyId, info, opts });
   }
 
   featureFaces(id) {

@@ -276,6 +276,19 @@ export class Viewport {
         c.set(s >= lim + 1e-9 ? 0x22a046 : s <= -lim - 1e-9 ? 0xd63b2f : 0xf2c12e);
         out[3 * i] = c.r; out[3 * i + 1] = c.g; out[3 * i + 2] = c.b;
       }
+    } else if (a.kind === 'overhang') {
+      // (3D printing: each face's slope facing down from vertical against the profile's limit, up the build direction
+      // a.up: green fine (and on the bed), amber within 10° of the limit, red over it: needs support)
+      const u = new THREE.Vector3(...a.up).normalize(), lim = a.limit ?? 45;
+      let hBed = Infinity;
+      for (let i = 0; i < n; i++) hBed = Math.min(hBed, pos[3 * i] * u.x + pos[3 * i + 1] * u.y + pos[3 * i + 2] * u.z);
+      const tolH = 1e-3 * (1 + (this.bodyDiag?.() || 1));
+      for (let i = 0; i < n; i++) {
+        const sl = nor[3 * i] * u.x + nor[3 * i + 1] * u.y + nor[3 * i + 2] * u.z, h = pos[3 * i] * u.x + pos[3 * i + 1] * u.y + pos[3 * i + 2] * u.z;
+        const ang = sl < 0 ? (Math.asin(Math.min(1, -sl)) * 180) / Math.PI : 0, bed = h < hBed + tolH && sl < -0.999;
+        c.set(bed || ang <= lim - 10 ? 0x22a046 : ang <= lim ? 0xf2c12e : 0xd63b2f);
+        out[3 * i] = c.r; out[3 * i + 1] = c.g; out[3 * i + 2] = c.b;
+      }
     } else if (a.kind === 'thickness' || a.kind === 'undercut') {
       // (rays through the shaded mesh: thickness, from each point in along the inward normal to where it comes out;
       // undercut, from each point along the pull direction and against it, a face neither way free is undercut)
@@ -478,6 +491,18 @@ export class Viewport {
   }
 
   // Small marks at points, following the view: key names the set (replaced as a whole); list: [{ p, text, cls }].
+  // The printer's bed (3D Print tab): line segments in model axes ([[p, q], …]), or null to take it away
+  setPrintBed(lines) {
+    if (this.printBed) { this.scene.remove(this.printBed); this.printBed.geometry.dispose(); this.printBed.material.dispose(); this.printBed = null; }
+    if (lines?.length) {
+      const g = new THREE.BufferGeometry().setFromPoints(lines.flatMap(([p, q]) => [new THREE.Vector3(...p), new THREE.Vector3(...q)]));
+      this.printBed = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x8a94a3, transparent: true, opacity: 0.7 }));
+      this.printBed.renderOrder = 1;
+      this.scene.add(this.printBed);
+    }
+    this.requestRender?.();
+  }
+
   setPointMarks(key, list) {
     this._marks ||= new Map();
     const old = this._marks.get(key);

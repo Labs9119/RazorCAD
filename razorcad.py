@@ -784,7 +784,30 @@ class Api:
         if not path:
             return None
         write_atomic(path, base64.b64decode(b64), binary=True)
+        # (files saved this session: the only ones Open in Slicer will hand to another program)
+        self._saved_exports = (getattr(self, '_saved_exports', set()) | {os.path.normcase(os.path.abspath(path))})
         return path
+
+    # --- 3D printing: a slicer program opens an exported file ---------------------------------------
+    def pick_program(self):
+        """A program (.exe) chosen by the user in a file dialog: the slicer Open in Slicer starts. Its path, or None."""
+        path = first(self._file_dialog(webview.FileDialog.OPEN, file_types=('Programs (*.exe)', 'All files (*.*)')))
+        if not path or not os.path.isfile(path):
+            return None
+        self._slicer = os.path.normcase(os.path.abspath(path))
+        return path
+
+    def open_with(self, program, path):
+        """Start the slicer program (one the user picked, an .exe that exists) with a file this session saved. True:
+        started."""
+        prog = os.path.normcase(os.path.abspath(str(program or '')))
+        target = os.path.normcase(os.path.abspath(str(path or '')))
+        if not prog.endswith('.exe') or not os.path.isfile(prog):
+            raise ValueError('The slicer program was not found: pick it again')
+        if target not in getattr(self, '_saved_exports', set()) or not os.path.isfile(target):
+            raise ValueError('Export the part for printing first')
+        subprocess.Popen([prog, target], close_fds=True)
+        return True
 
     def pick_folder(self):
         folder = first(self._file_dialog(webview.FileDialog.FOLDER))

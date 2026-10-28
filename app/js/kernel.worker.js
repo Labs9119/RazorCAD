@@ -2023,6 +2023,36 @@ async function parse3MF(bytes) {
 }
 
 // Mesh export: OBJ text, or a 3MF package (zip, stored).
+// Binary STL of meshes ({ V, T }): its 80-byte header, the count, then each triangle's normal, corners and 0
+function stlBinary(parts) {
+  const n = parts.reduce((x, pt) => x + pt.T.length / 3, 0), buf = new ArrayBuffer(84 + 50 * n), dv = new DataView(buf);
+  const head = 'RazorCAD STL export (millimetres)';
+  for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  dv.setUint32(80, n, true);
+  let o = 84;
+  for (const { V, T } of parts) for (let k = 0; k < T.length; k += 3) {
+    const p = [0, 1, 2].map((j) => [V[3 * T[k + j]], V[3 * T[k + j] + 1], V[3 * T[k + j] + 2]]);
+    const nn = unit(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+    for (const v of [nn, ...p]) for (const c of v) { dv.setFloat32(o, Number.isFinite(c) ? c : 0, true); o += 4; }
+    dv.setUint16(o, 0, true); o += 2;
+  }
+  return new Uint8Array(buf);
+}
+// Closed hollows inside the solids (for the printability check): each solid's shells, the biggest its outside, the rest
+// voids inside it: [{ body, volume (mm³), p (a point on it) }]
+function printCavities(list) {
+  const oc = R.getOC(), out = [];
+  for (const rec of list) {
+    const ex = new oc.TopExp_Explorer(rec.shape.wrapped, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE), shells = [];
+    while (ex.More()) { shells.push(R.cast(ex.Current())); ex.Next(); }
+    ex.delete();
+    if (shells.length < 2) continue;
+    const vols = shells.map((sh) => { try { const mk = new oc.BRepBuilderAPI_MakeSolid(sh.wrapped); try { const so = R.cast(mk.Solid()); return Math.abs(preciseVolume(so)); } finally { mk.delete(); } } catch (e) { if (isFatal(e)) throw e; return 0; } });
+    const outer = vols.indexOf(Math.max(...vols));
+    shells.forEach((sh, i) => { if (i !== outer && vols[i] > 0) out.push({ body: rec.id, volume: vols[i], p: vec(sh.faces[0].pointOnSurface(0.5, 0.5)) }); });
+  }
+  return out;
+}
 function meshArrays(shape) {
   const b = bbox(shape), m = shape.mesh({ tolerance: Math.max(0.002, b.diag * 0.0002), angularTolerance: 0.1 });
   return { V: m.vertices, T: m.triangles };
@@ -8541,14 +8571,33 @@ function updateProjections(f, frame, body, sketches, surfaceShapes = []) {
 }
 
 // Export all bodies, or just one (bodyId). `info` maps body ids to { name, color } so the
-// STEP file carries each body's name and material colour.
-async function exportBody(format, bodyId = null, info = {}) {
+// STEP file carries each body's name and material colour. opts.print { R (nine numbers: model to print axes), bed
+// [x, y] }: for printing (3MF, OBJ, STL), the mesh turned into the build orientation, its lowest point on the bed
+// (z = 0) and its middle over the bed's middle.
+async function exportBody(format, bodyId = null, info = {}, opts = {}) {
   if (!lastBody && !lastSurfaces.length) throw new Error('There is no body to export');
   let list = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
   if (!bodyId && lastContext.size) list = list.filter((s) => !lastContext.has(s.id));
   if (bodyId) {
     list = list.filter((s) => s.id === bodyId);
     if (!list.length) throw new Error('That body no longer exists');
+  }
+  if (opts.print) {
+    const { R: M, bed } = opts.print, parts = list.map((r) => ({ name: info[r.id]?.name || lastName, ...meshArrays(r.shape) }));
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const pt of parts) {
+      const V = Float32Array.from(pt.V);
+      for (let k = 0; k < V.length; k += 3) {
+        const x = pt.V[k], y = pt.V[k + 1], z = pt.V[k + 2], q = [M[0] * x + M[1] * y + M[2] * z, M[3] * x + M[4] * y + M[5] * z, M[6] * x + M[7] * y + M[8] * z];
+        for (let c = 0; c < 3; c++) { V[k + c] = q[c]; lo[c] = Math.min(lo[c], q[c]); hi[c] = Math.max(hi[c], q[c]); }
+      }
+      pt.V = V;
+    }
+    const shift = [(bed?.[0] ?? 0) / 2 - (lo[0] + hi[0]) / 2, (bed?.[1] ?? 0) / 2 - (lo[1] + hi[1]) / 2, -lo[2]];
+    for (const pt of parts) for (let k = 0; k < pt.V.length; k += 3) for (let c = 0; c < 3; c++) pt.V[k + c] += shift[c];
+    if (format === '3mf') return threeMF(parts);
+    if (format === 'obj') return new TextEncoder().encode(objText(parts));
+    return stlBinary(parts);
   }
   // (a part shown Z up: written in its axes, turned +90° about X: RazorCAD's (x, y, z) is the file's (x, −z, y))
   if (docUp === 'z') list = list.map((s) => ({ ...s, shape: s.shape.clone().rotate(90, [0, 0, 0], [1, 0, 0]) }));
@@ -11713,7 +11762,7 @@ async function handleMessage(e) {
       }
       result.kernelMemoryMB = Math.round(R.getOC().wasmMemory.buffer.byteLength / 1048576);
     } else if (type === 'export') {
-      result = await exportBody(data.format, data.bodyId || null, data.info || {});
+      result = await exportBody(data.format, data.bodyId || null, data.info || {}, data.opts || {});
       transfer = [result.buffer];
     } else if (type === 'exportFaceDXF') {
       result = exportFaceDXF(data.ref);
@@ -11793,6 +11842,8 @@ async function handleMessage(e) {
       result = await drawingPick(data.doc, data.view, data.p);
     } else if (type === 'drawingViews') {
       result = await drawingViews(data.doc, data.views || []);
+    } else if (type === 'printCavities') {
+      result = printCavities(data.bodyId ? lastSolids.filter((r) => r.id === data.bodyId) : lastSolids.filter((r) => !lastContext.has(r.id)));
     } else if (type === 'dfmCheck') {
       const list = data.bodyId ? lastSolids.filter((r) => r.id === data.bodyId) : lastSolids;
       if (!list.length) throw new Error('There is no solid to check');
