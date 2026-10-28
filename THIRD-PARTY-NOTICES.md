@@ -9,7 +9,7 @@ texts are linked; each one also comes with that project's source.
 | Component | Use | License |
 |---|---|---|
 | [Open CASCADE Technology](https://dev.opencascade.org/) | B-rep geometry kernel (compiled to WebAssembly in `replicad_single.wasm`, and with threads in `replicad_multi.wasm`) | [LGPL-2.1 with the Open CASCADE Exception 1.0](https://dev.opencascade.org/resources/licensing) |
-| [replicad-opencascadejs](https://github.com/sgenoud/replicad/tree/main/packages/replicad-opencascadejs) / [opencascade.js](https://github.com/donalffons/opencascade.js) | The WebAssembly builds of Open CASCADE and their JavaScript bindings: single-thread (`replicad_single.js`, `.wasm`) and multi-threaded (`replicad_multi.js`, `.wasm`), both from replicad commit a0bc495 | [LGPL-2.1](https://github.com/donalffons/opencascade.js/blob/master/LICENSE) |
+| [opencascade.js](https://github.com/taucad/opencascade.js) (taucad v3.1.0) with [replicad-opencascadejs](https://github.com/sgenoud/replicad/tree/main/packages/replicad-opencascadejs)'s bindings | Builds Open CASCADE for WebAssembly and makes its JavaScript bindings: single-thread (`replicad_single.js`, `.wasm`) and multi-threaded (`replicad_multi.js`, `.wasm`), built by RazorCAD from source (`tools/kernel/`) | [LGPL-2.1](https://github.com/donalffons/opencascade.js/blob/master/LICENSE) |
 | [replicad](https://github.com/sgenoud/replicad) | CAD modelling library on top of Open CASCADE (`replicad.js`, `casting-*.js`) | [MIT](https://github.com/sgenoud/replicad/blob/main/LICENSE) |
 | [opentype.js](https://github.com/opentypejs/opentype.js) | Font parsing for sketch text (bundled inside `replicad.js`) | [MIT](https://github.com/opentypejs/opentype.js/blob/master/LICENSE) |
 | [three.js](https://threejs.org/) r169 | 3D display (`three.module.js`) | [MIT](https://github.com/mrdoob/three.js/blob/dev/LICENSE) |
@@ -18,22 +18,32 @@ texts are linked; each one also comes with that project's source.
 
 ### Changes to the bundled libraries
 
-RazorCAD changes three of these files to fix memory leaks in the kernel; see `KERNEL-MEMORY-FINDINGS.md`.
-Each change is marked with a `RazorCAD:` comment or uses a `razorcad` name.
+RazorCAD builds its geometry kernel (`replicad_single.wasm`, `replicad_multi.wasm`) itself, from Open CASCADE 8.0.1
+and opencascade.js v3.1.0, and changes the files below. The source of every change, the exact versions and the steps
+to build the same kernel are in `tools/kernel/` (see its `README.md`).
 
-- `app/vendor/replicad/replicad_single.js` (opencascade.js bindings, LGPL-2.1): two hooks so RazorCAD can
-  free kernel objects (`razorcadDtors`, `razorcadOnHandle`).
-- `app/vendor/replicad/replicad_multi.js` (opencascade.js bindings, LGPL-2.1): the same two hooks, and the number
-  of threads a kernel starts, and the processor count Open CASCADE sees, taken from `razorcadThreads`. The changes
-  are made by `tools/patch_replicad_multi.py` from the published file (replicad commit a0bc495).
+- **Open CASCADE Technology (LGPL-2.1 with the Open CASCADE Exception)**, compiled into both `.wasm` files, is
+  **modified** by two patches, both speed changes that give the same results: `tools/kernel/occt_patches/`
+  `patch_lab_mesh_classifier.py` (BRepMesh_Classifier) and `patch_lab_class3d_lazy.py` (BRepClass3d_SolidExplorer,
+  BRepClass3d_SClassifier). Each patch script contains the changed code and the checksums of the original files it
+  applies to.
+- The `.wasm` files also contain RazorCAD's own C++ (`tools/kernel/build-config/wrappers/lab-*.cpp` and
+  `tools/native/surface-patch.cpp`, GPL-3.0-or-later like the rest of RazorCAD) and replicad's wrappers (MIT,
+  unchanged), linked with the bindings listed in `tools/kernel/build-config/*.yml`.
+- `app/vendor/replicad/replicad_single.js` and `replicad_multi.js` (opencascade.js bindings, LGPL-2.1): hooks so
+  RazorCAD can free kernel objects (`razorcadDtors`, `razorcadOnHandle`); in the multi-threaded one, the number of
+  threads a kernel starts and the processor count Open CASCADE sees, taken from `razorcadThreads`, and its threads
+  loaded from the same address as itself. Made by `tools/patch_surface_kernel_loader.py` from the linked files. See
+  `KERNEL-MEMORY-FINDINGS.md`.
 - `app/vendor/replicad/replicad.js` and `casting-rs4QjB74.js` (replicad, MIT): temporary objects are freed
   straight after use. `iterTopo` in `casting-rs4QjB74.js` groups the shapes it has met by hash code, so
-  listing faces and edges doesn't compare each with all the others.
+  listing faces and edges doesn't compare each with all the others. Each change is marked with a `RazorCAD:`
+  comment or uses a `razorcad` name.
 
-`replicad_single.wasm` and `replicad_multi.wasm` (Open CASCADE) are not modified. As the LGPL requires, you may replace these library
-files with your own modified versions: they are plain files in this repository, and `build.bat` bundles them
-into `RazorCAD.exe`. The Open CASCADE source is available from https://dev.opencascade.org/ and
-https://github.com/Open-Cascade-SAS/OCCT.
+As the LGPL requires, you may replace these library files with your own modified versions: they are plain files in
+this repository, and `build.bat` bundles them into `RazorCAD.exe`. `tools/kernel/README.md` says how to rebuild
+them with your own changes. The Open CASCADE source is available from https://dev.opencascade.org/ and
+https://github.com/Open-Cascade-SAS/OCCT, opencascade.js from https://github.com/taucad/opencascade.js.
 
 ## In RazorCAD.exe and the installer (bundled by PyInstaller)
 

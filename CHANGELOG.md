@@ -18,6 +18,9 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 - Fixed with it: Delete Fillet refuses a face that is not a round or chamfer (a flat face, a hole's or a boss's side)
   instead of handing it to the defeaturing; Defeature counts a counterbored hole with its drill point as one hole, and
   says "fillets", not "fillet faces".
+- The kernel's sources are in the repository: `tools/kernel/` has RazorCAD's two Open CASCADE patches, its own
+  C++ additions, the build settings and scripts to build the same kernel again (`tools/kernel/README.md`), and
+  `THIRD-PARTY-NOTICES.md` now says that Open CASCADE is modified, and how.
 - Checked: the full suite (231 tests), the kernel probes (surface patches at 16, 32 and 128; guided lofts and hard
   cases, single- and multi-threaded, with the lifetime hooks), the defeaturing and PMI cases on one thread and on four,
   and the desktop window (a fillet deleted exactly, a STEP file written with its PMI).
