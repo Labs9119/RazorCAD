@@ -111,6 +111,7 @@ export const TYPE_INFO = {
   draft: { base: 'Draft', icon: 'draft' },
   spattern: { base: 'Sketch Driven Pattern', icon: 'spattern' },
   curvePattern: { base: 'Curve Driven Pattern', icon: 'curvePattern' },
+  tablePattern: { base: 'Table Driven Pattern', icon: 'spattern' },
   fillPattern: { base: 'Fill Pattern', icon: 'fillPattern' },
   rib: { base: 'Rib', icon: 'rib' },
   dome: { base: 'Dome', icon: 'dome' },
@@ -176,7 +177,7 @@ export const SHEET_TYPES = new Set(['smBase', 'smFlange', 'smCornerRelief', 'smC
 
 // Features that need a sketch (the first unused one is offered by default).
 // features a pattern or mirror can copy (anything that changes the bodies at a place)
-export const PATTERN_SKIP = new Set(['structMember', 'weldTrim', 'weldBead', 'sketch', 'plane', 'axis', 'point', 'helix', 'sketch3d', 'projCurve', 'compCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'combine', 'deleteBody', 'deleteSurface', 'moveBody', 'scale', 'import', 'knit', 'surfSolid', 'meshRepair', 'smConvert', 'smUnfold', 'smFold', 'split']);
+export const PATTERN_SKIP = new Set(['structMember', 'weldTrim', 'weldBead', 'sketch', 'plane', 'axis', 'point', 'helix', 'sketch3d', 'projCurve', 'compCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'tablePattern', 'curvePattern', 'fillPattern', 'combine', 'deleteBody', 'deleteSurface', 'moveBody', 'scale', 'import', 'knit', 'surfSolid', 'meshRepair', 'smConvert', 'smUnfold', 'smFold', 'split']);
 export const SKETCH_FEATURES = new Set(['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'surfPlanar', 'helix', 'wrap', 'smBase', 'smExtrude', 'smSketchBend', 'smJog', 'smEtch', 'rib']);
 
 // Sketches a feature uses (they are hidden and shown under it in the tree once used).
@@ -235,6 +236,7 @@ export function createFeature(doc, type, props = {}) {
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
+    tablePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', plane: null, table: '20, 0; 0, 20; 20, 20, 45' },
     curvePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', path: null, count: 4, spacing: 'equal', distance: 20, reverse: false, align: 'translate' },
     // Fill: copies on a 'square' | 'staggered' grid over a flat face, margin from its edges
     fillPattern: { feature: null, features: [], face: null, spacing: 15, layout: 'square', angle: 0, margin: 3 },

@@ -3868,7 +3868,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
         return found;
       };
       // (a folder named in the features: what is in it, before the pattern, that a pattern can copy)
-      const FOLDER_SKIP = new Set(['sketch', 'sketch3d', 'plane', 'axis', 'point', 'helix', 'compCurve', 'projCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern']);
+      const FOLDER_SKIP = new Set(['sketch', 'sketch3d', 'plane', 'axis', 'point', 'helix', 'compCurve', 'projCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'tablePattern']);
       const patternSources = (pf) => {
         const at = doc.features.findIndex((x) => x.id === pf.id);
         const fromFolders = (x) => {
@@ -4312,6 +4312,31 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const base = pts.reduce((b, q) => (len(sub(q, c0)) - dot(sub(q, c0), s2.frame.n) * 0 < len(sub(b, c0)) ? q : b), pts[0]);
           await patternAll(f, pts.filter((q) => q !== base).map((q) => xMove(sub(q, base))));
           res.notes[f.id] = `${pts.length - 1} cop${pts.length === 2 ? 'y' : 'ies'} at the sketch points`;
+          break;
+        }
+        case 'tablePattern': {
+          // Table-driven pattern: a copy at each row of a table (x, y and optionally an angle, from the feature, in the
+          // plane's directions; the angle turns the copy about the plane's normal through the feature). The plane: one
+          // chosen, or the feature's own sketch plane (else Front)
+          let fr;
+          if (f.plane) fr = resolveFrame(f.plane);
+          else { const sd = patternSources(f).ids[0], sf = sd && doc.features.find((x) => x.id === sd); fr = (sf?.sketch && sketches.get(sf.sketch)?.frame) || STD.front; }
+          const rows = String(f.table || '').split(/[\n;]+/).map((r) => r.trim()).filter((r) => r && !/^[#/]/.test(r));
+          const xs = [];
+          for (const [i, r] of rows.entries()) {
+            const cells = r.split(/[,\t]/.test(r) ? /\s*[,\t]\s*/ : /\s+/).filter(Boolean); // (spaces part the cells only when there are no commas or tabs)
+            if (i === 0 && cells.some((c) => /^[A-Za-z]/.test(c) && !(c in vars))) continue; // (a header row)
+            if (cells.length < 2 || cells.length > 3) throw new Error(`Row ${i + 1} of the table needs x, y and optionally an angle`);
+            const [x, y, a = 0] = cells.map((c) => ev(c));
+            if (![x, y, a].every(Number.isFinite)) throw new Error(`Row ${i + 1} of the table is not numbers`);
+            if (Math.abs(x) < 1e-12 && Math.abs(y) < 1e-12 && Math.abs(a) < 1e-12) continue; // (the feature itself)
+            const t = add(mul(fr.u, x), mul(fr.v, y));
+            xs.push(Math.abs(a) > 1e-12 ? xChain(xTurn(a, patternCentre(f), fr.n), xMove(t)) : xMove(t));
+          }
+          if (!xs.length) throw new Error('Give the table rows: x, y (and an angle) from the feature for each copy');
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
+          await patternAll(f, xs);
+          res.notes[f.id] = `${xs.length} cop${xs.length === 1 ? 'y' : 'ies'} from the table`;
           break;
         }
         case 'curvePattern': {

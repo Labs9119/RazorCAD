@@ -1063,6 +1063,14 @@ const PM_SCHEMAS = {
       { key: 'cpHint', type: 'hint', text: 'The copies start at the point of the curve nearest the feature (a sketch, 3D sketch or helix).' },
     ] },
   ],
+  tablePattern: [
+    patternSources('Features to Pattern'),
+    { title: 'Table', fields: [
+      { key: 'plane', type: 'plane', label: 'Plane (empty: the feature’s sketch plane)' },
+      { key: 'table', type: 'text', label: 'Rows: x, y, angle', placeholder: '20, 0; 0, 20; 20, 20, 45' },
+      { key: 'tpHint', type: 'hint', text: 'Each row puts a copy x and y from the feature, along the plane’s directions; a third number turns it (°) about the plane’s normal through the feature. Rows can be pasted from a spreadsheet (commas, tabs or spaces; a header row is skipped) and can use variables.' },
+    ] },
+  ],
   fillPattern: [
     patternSources('Features to Pattern', 'none'),
     { title: 'Fill Boundary', fields: [{ key: 'face', type: 'pick', label: 'Face', what: 'flatface' }] },
@@ -1824,6 +1832,7 @@ export class UI {
         { icon: 'mirror', label: 'Mirror', action: () => a.startFeature('mirror') },
         { icon: 'spattern', label: 'Sketch Driven Pattern', action: () => a.startFeature('spattern') },
         { icon: 'curvePattern', label: 'Curve Driven Pattern', action: () => a.startFeature('curvePattern') },
+        { icon: 'spattern', label: 'Table Driven Pattern', action: () => a.startFeature('tablePattern') },
         { icon: 'fillPattern', label: 'Fill Pattern', action: () => a.startFeature('fillPattern') },
         'sep',
         { icon: 'fillet', label: 'Fillet', action: () => a.startFeature('fillet') },

@@ -2322,7 +2322,7 @@ class App {
     if (f.type === 'point' && f.pointType === 'vertex') return 'vertex';
     if (f.type === 'point' && (f.pointType === 'arcCenter' || f.pointType === 'edgeMid')) return 'edge';
     // (a pattern: faces of the features to copy, or bodies to copy whole)
-    if (['lpattern', 'cpattern', 'spattern', 'curvePattern'].includes(f.type)) return f.pick === 'bodies' ? 'body' : 'faces';
+    if (['lpattern', 'cpattern', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) return f.pick === 'bodies' ? 'body' : 'faces';
     if (f.type === 'mirror') return 'body';
     return null;
   }
@@ -2544,7 +2544,7 @@ class App {
     } else if (['smCornerRelief', 'smClosedCorner', 'smFold'].includes(f.type)) {
       if (!b?.sheet) { this.toast('Select a sheet metal body'); return true; }
       f.body = f.body === id ? null : id;
-    } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern'].includes(f.type)) {
+    } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) {
       f.bodies = Array.isArray(f.bodies) ? f.bodies : [];
       toggle(f.bodies);
     } else if (f.type === 'moveBody' || f.type === 'split') {
@@ -3293,7 +3293,7 @@ class App {
       const fh = this.faceAt(e);
       if (!fh) {
         // (a pattern: a plane clicked goes to the panel as before, e.g. for a direction)
-        const p = ['lpattern', 'cpattern', 'spattern', 'curvePattern'].includes(this.pm.feature?.type) ? this.pickAt(e) : null;
+        const p = ['lpattern', 'cpattern', 'spattern', 'curvePattern', 'tablePattern'].includes(this.pm.feature?.type) ? this.pickAt(e) : null;
         if (p?.kind === 'plane') G.STD_PLANES[p.id] ? this.treePickPlane(p.id) : this.treePickFeature(p.id);
         return;
       }
@@ -3962,7 +3962,7 @@ class App {
       const withCircle = [...doc.features].reverse().find((x) => x.type === 'sketch' && x.curves?.some((c) => c.type === 'circle'));
       if (withCircle) props.sketch = withCircle.id;
     }
-    if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern'].includes(type)) {
+    if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'tablePattern'].includes(type)) {
       const ok = (f) => f && !M.PATTERN_SKIP.has(f.type) && !f.suppressed;
       const src = ok(selF) ? selF : [...doc.features].reverse().find(ok);
       if (!src) { this.toast('Create a feature to pattern first (e.g. an extrude, a cut, a hole or a fillet).', true); return; }

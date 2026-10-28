@@ -5322,7 +5322,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     await a.okPM();await settle();
     const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0],want=200*200*5-2*Math.PI*20;
     if(a.result.errors.size||!m||Math.abs(m.volume-want)>1e-6)return {ok:false,detail:`Pattern skipping 2: volume ${m?.volume} (expected ${want})`};
-    return {ok:true,detail:`${native.results.length} kernel cases (total length, symmetric, second direction for the feature only, skips, circular rings; rejections); the panel's skip and spacing`};
+    return {ok:true,detail:`${native.results.length} kernel cases (total length, symmetric, second direction for the feature only, skips, circular rings, table driven; rejections); the panel's skip and spacing`};
   },
 
   async 'sheet-bend-tables-partial-flanges'() {

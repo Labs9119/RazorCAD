@@ -918,9 +918,10 @@ Patterns and mirrors copy features or bodies. Any feature that changes the bodie
 | **Mirror** | About a plane or flat face |
 | **Sketch Driven Pattern** | At every point (or circle centre) of a sketch |
 | **Curve Driven Pattern** | Along a sketch, 3D sketch or helix, spaced evenly to the end or at a set distance; moved, or turned to follow the curve |
+| **Table Driven Pattern** | A copy for each row of a table: **x, y** from the feature along a plane's directions (the feature's own sketch plane when none is chosen) and optionally an **angle** turning the copy about the plane's normal through the feature. Rows are separated by `;` or new lines, cells by commas, tabs or spaces, so a table pasted from a spreadsheet works (a header row is skipped); cells can be sums or use variables |
 | **Fill Pattern** | On a square or staggered grid over a flat face, kept a margin from its edges (for example a perforated panel) |
 
-{idx:Sketch Driven Pattern}{idx:Curve Driven Pattern}{idx:Fill Pattern}
+{idx:Sketch Driven Pattern}{idx:Curve Driven Pattern}{idx:Table Driven Pattern}{idx:Fill Pattern}
 
 **Linear Pattern options** {idx:Linear Pattern, options}: **Distance → From the first to the last** spreads the instances over a total length instead of setting the spacing between each two. **Spacing grows by** makes each spacing that much more than the one before (a negative value: less), for copies that spread out or close up. **Symmetric** adds as many again the other way from the feature. With a second direction, **Pattern the feature only** copies just the feature along it, not the whole first row (an L of copies).
 
