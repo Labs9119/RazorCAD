@@ -28,6 +28,7 @@ export const RELATION_INFO = {
   splineTangent: { label: 'Tangent (spline)', glyph: 'T' },
   fix: { label: 'Fixed', glyph: '⚓' },
   block: { label: 'Block (rigid)', glyph: '▣' },
+  equation: { label: 'Equation', glyph: 'ƒ' },
   projected: { label: 'On Edge (projected)', glyph: '⇲' },
   sketchPattern: { label: 'Sketch Pattern', glyph: '⋮' },
   offset: { label: 'Offset', glyph: '⇉' },
@@ -320,6 +321,7 @@ export function makeSystem(sk, ev) {
           }, [...A.deps, ...(B ? B.deps : []), ...rest.flatMap(([P]) => P.deps), ...sizes.map(([i]) => i)], k);
           break;
         }
+        case 'equation':
         case 'sketchPattern':
         case 'projected': {
           // linked geometry: points (and radius) follow their source

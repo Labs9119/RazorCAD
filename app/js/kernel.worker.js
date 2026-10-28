@@ -3925,6 +3925,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // (with cuts waiting: the body it was drawn on is worked out only if asked for, by sectionCurves)
           sketchBodies.set(f.id, pending.length ? { body: null, lazy: { base: body, tools: pending.map((x) => x.tool) }, frame, surfaces: surfaces.map((x) => x.shape) } : { body, frame, surfaces: surfaces.map((x) => x.shape) });
           if (f.entities) S.migrateSketch(f, vars);
+          if (f.constraints?.some((k) => k.type === 'equation')) S.updateEquationCurves(f, vars);
           const lost = updateProjections(f, frame, dense ? null : body, sketches, surfaces.map((x) => x.shape));
           const sol = solveSketch(f, ev);
           sketches.set(f.id, { frame, sk: f });

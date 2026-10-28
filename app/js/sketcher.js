@@ -565,6 +565,7 @@ export class Sketcher {
 
   // ------------------------------------------------------------ solving
   solve(opts) {
+    if (this.f.constraints.some((k) => k.type === 'equation')) S.updateEquationCurves(this.f, this.app.result?.vars || {});
     const r = solveSketch(this.f, this.ev, opts);
     this.solveOk = r.ok && !r.bad.length;
     this.solveMsg = r.bad[0] || (r.ok ? '' : 'Cannot solve: conflicting relations or dimensions');
@@ -1943,6 +1944,36 @@ export class Sketcher {
     if (v.del) { ui.prefs.blocks = list.filter((x) => x !== b); ui.savePrefs(); this.app.status(`Block "${b.name}" deleted.`); return; }
     this.blockIns = { ...b, angle: +this.app.result.ev(v.angle) || 0, linked: !!v.linked };
     this.setTool('block');
+  }
+
+  // Equation Curve: a new one, or the selected one set again
+  async equationCurve() {
+    const sk = this.f, selId = this.sel.size === 1 ? [...this.sel][0] : null;
+    const old = selId ? sk.constraints.find((k) => k.type === 'equation' && k.refs[0] === selId) : null;
+    const eq = old?.eq || { kind: 'explicit', x: 't', y: '10*sin(x*9)', t1: 0, t2: 40, n: 40 };
+    const v = await this.app.ui.promptFields(old ? 'Edit Equation Curve' : 'Equation Curve', 'spline', [
+      { key: 'kind', label: 'Form', type: 'select', options: [['explicit', 'y = f(x)'], ['parametric', 'x = f(t), y = g(t)']], value: eq.kind },
+      { key: 'x', label: 'x(t) (parametric)', type: 'expr', value: eq.x },
+      { key: 'y', label: 'y(x), or y(t)', type: 'expr', value: eq.y },
+      { key: 't1', label: 'From (x or t)', type: 'expr', value: eq.t1 },
+      { key: 't2', label: 'To', type: 'expr', value: eq.t2 },
+      { key: 'n', label: 'Pieces', type: 'expr', value: eq.n },
+      ...(old ? [] : [{ key: 'construction', label: 'Construction geometry', type: 'check', value: false }]),
+    ], 'Sketch coordinates in mm; part variables can be used, and the curve follows them. sin, cos and tan take degrees (e.g. y = 5*sin(x*360/40)). A parametric curve ending where it starts is closed.');
+    if (!v || !this.active) return;
+    const next = { kind: v.kind, x: String(v.x), y: String(v.y), t1: String(v.t1), t2: String(v.t2), n: String(v.n) };
+    const vars = this.app.result?.vars || {};
+    try {
+      if (old) {
+        const c = S.getCurve(sk, selId);
+        let P = S.equationPoints(next, vars);
+        if (c.closed && P.length > 1) P = P.slice(0, -1);
+        if (P.length === c.pts.length) { old.eq = next; S.updateEquationCurves(sk, vars); }
+        else { S.deleteItems(sk, [selId]); this.sel = new Set([S.addEquationCurve(sk, next, vars, c.construction)]); }
+      } else this.sel = new Set([S.addEquationCurve(sk, next, vars, !!v.construction)]);
+    } catch (e) { this.app.toast(e.message, true); return; }
+    this.changed();
+    this.app.status('Equation curve: a spline through the equation’s points, held there by an Equation relation (select it and use Equation Curve again to change it).');
   }
 
   // ------------------------------------------------------------ sketch pictures (sk.pictures), to trace over

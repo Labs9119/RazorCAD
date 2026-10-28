@@ -182,7 +182,7 @@ export function blockData(sk, ids) {
     if (o.handles) o.handles = o.handles.map(fixO);
     return o;
   });
-  const ks = sk.constraints.filter((k) => k.type !== 'fix' && k.type !== 'block' && k.type !== 'projected' && k.type !== 'offset' && k.type !== 'offsetGeometry' && !k.offsetGroup && k.type !== 'sketchPattern' && !k.driven && k.refs.every((r) => all.has(fixO(r))))
+  const ks = sk.constraints.filter((k) => k.type !== 'fix' && k.type !== 'block' && k.type !== 'equation' && k.type !== 'projected' && k.type !== 'offset' && k.type !== 'offsetGeometry' && !k.offsetGroup && k.type !== 'sketchPattern' && !k.driven && k.refs.every((r) => all.has(fixO(r))))
     .map((k) => ({ ...JSON.parse(JSON.stringify(k)), refs: k.refs.map(fixO) }));
   return { points: P.map((q) => ({ ...q, x: +(q.x - cx).toFixed(6), y: +(q.y - cy).toFixed(6) })), curves: cs, constraints: ks };
 }
@@ -214,6 +214,48 @@ export function pasteItems(sk, data, x, y, map = new Map()) {
   }
   return out;
 }
+// Equation driven curves: a spline through n + 1 points of y = f(x), x from t1 to t2 (kind 'explicit'), or of x(t),
+// y(t), t from t1 to t2 ('parametric'), held there by an 'equation' relation ({ eq: { kind, x, y, t1, t2, n }, pts:
+// the points' places }). The places are worked out again from the variables each time the sketch is solved
+// (updateEquationCurves). Trig functions take degrees. A parametric curve ending where it starts is closed.
+export function equationPoints(eq, vars = {}) {
+  const t1 = evaluate(eq.t1, vars), t2 = evaluate(eq.t2, vars), n = Math.round(evaluate(eq.n ?? 40, vars));
+  if (!(n >= 2 && n <= 2000)) throw new Error('An equation curve needs 2 to 2000 pieces');
+  if (!(Math.abs(t2 - t1) > 1e-12)) throw new Error('The curve’s start and end must differ');
+  const name = eq.kind === 'explicit' ? 'x' : 't', out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = t1 + ((t2 - t1) * i) / n, at = { ...vars, [name]: t };
+    let p;
+    try { p = eq.kind === 'explicit' ? [t, evaluate(eq.y, at)] : [evaluate(eq.x, at), evaluate(eq.y, at)]; } catch (e) { throw new Error(`The equation gives no number at ${name} = ${+t.toFixed(6)} (${e.message})`); }
+    out.push(p);
+  }
+  return out;
+}
+const loopsBack = (P) => P.length > 3 && Math.hypot(P[0][0] - P.at(-1)[0], P[0][1] - P.at(-1)[1]) < 1e-9;
+export function addEquationCurve(sk, eq, vars = {}, construction = false) {
+  let P = equationPoints(eq, vars);
+  const closed = eq.kind !== 'explicit' && loopsBack(P);
+  if (closed) P = P.slice(0, -1);
+  const ids = P.map(([x, y]) => addPoint(sk, x, y)), id = addSpline(sk, ids, closed, construction);
+  addRel(sk, 'equation', [id], { eq: { ...eq }, pts: Object.fromEntries(ids.map((pid, i) => [pid, P[i]])) });
+  return id;
+}
+// The equation curves' points where their equations put them now (a variable changed). An equation that fails here
+// leaves its curve as it was.
+export function updateEquationCurves(sk, vars = {}) {
+  for (const k of sk.constraints) {
+    if (k.type !== 'equation') continue;
+    const c = getCurve(sk, k.refs[0]);
+    if (!c?.pts) continue;
+    let P;
+    try { P = equationPoints(k.eq, vars); } catch { continue; }
+    if (c.closed && loopsBack(P)) P = P.slice(0, -1);
+    if (P.length !== c.pts.length) continue;
+    k.pts = Object.fromEntries(c.pts.map((pid, i) => [pid, P[i]]));
+    c.pts.forEach((pid, i) => { const q = getPoint(sk, pid); if (q) { q.x = P[i][0]; q.y = P[i][1]; } });
+  }
+}
+
 // Sketch pictures (sk.pictures: [{ id, name, src (data URL), x, y (its centre), w, h, angle (°), opacity }]), to trace
 // over. Scaled about point a so the line a–b on it is trueLen long.
 export function scalePicture(pic, a, b, trueLen) {

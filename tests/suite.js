@@ -5361,6 +5361,11 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (rounds, chamfers, a concave round, ring rounds at a boss deleted or resized; defeaturing holes and rounds by size); the two panels`};
   },
 
+  async 'equation-curves'() {
+    const {run}=await import('/tests/equation-curve-cases.js'),native=await run({threads:threadsPerKernel()});
+    return native.ok?{ok:true,detail:`${native.results.length} cases (explicit points, fully defined, a closed parametric loop, a failing equation refused, extruded loops following a variable)`}:{ok:false,detail:native};
+  },
+
   async 'sketch-pictures'() {
     const M=await import('/js/model.js'),S=await import('/js/sketchmodel.js'),{packFeature}=await import('/js/kernelclient.js');
     const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
