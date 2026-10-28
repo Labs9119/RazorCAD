@@ -2658,7 +2658,7 @@ class App {
     const f = this.pm.feature;
     if (f.type === 'freeform') {
       const hs = this.freeformHandles(f);
-      vp.setVertexMarkers(hs?.length ? { selected: hs.map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
+      vp.setVertexMarkers(hs?.length ? { selected: hs.filter((x) => !x.off).map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
     }
     if (mode === 'edge') {
       const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
@@ -5013,7 +5013,7 @@ class App {
     return hs.map((x, i) => {
       const h = Number(this.result.ev(f['h' + i] ?? 0));
       const d = Number.isFinite(h) ? h - x.h : 0;
-      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h };
+      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h, off: !!x.off };
     });
   }
   freeformDown(e) {
@@ -5022,7 +5022,7 @@ class App {
     if (!hs) return false;
     const vp = this.viewport, m = vp.screenPos(e);
     let best = -1, bd = 9;
-    hs.forEach((x, i) => { const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
+    hs.forEach((x, i) => { if (x.off) return; const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
     if (best < 0) return false;
     vp.controls.drag = null; // (the press moves the handle: no view rotation)
     try { vp.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }

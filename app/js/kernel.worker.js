@@ -5447,7 +5447,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           } else surfaces = surfaces.map((r) => (r === rec ? bodyRec(rec.id, sewn, f.id) : r));
           res.detected[f.id] = { handles: ff.handles };
           const kept = { G0: 'its edges kept', G1: `tangent (G1) kept at its edges: within ${+ff.angle.toFixed(6)}°`, G2: `tangent and curvature (G2) kept at its edges: within ${+ff.angle.toFixed(6)}° and ${ff.curvature.toExponential(2)} /mm` }[f.keep || 'G1'];
-          res.notes[f.id] = `Face reshaped by ${nu} × ${nv} handles (met to ${ff.miss.toExponential(1)} mm), ${kept}`;
+          const keptNote = ff.trimmed ? `moved inside its edges only, so tangent and curvature (G2) kept there: within ${+ff.angle.toFixed(6)}° and ${ff.curvature.toExponential(2)} /mm` : kept;
+          res.notes[f.id] = `Face reshaped by ${nu} × ${nv} handles${ff.trimmed && ff.handles.some((h) => h.off) ? ` (${ff.handles.filter((h) => !h.off).length} on the face)` : ''} (met to ${ff.miss.toExponential(1)} mm), ${keptNote}`;
           break;
         }
         case 'editFillet': {
@@ -10314,7 +10315,14 @@ function freeformFace(F, nu, nv, heights, keep) {
   const N = Math.max(10, 2 * k + 2 * Math.max(nu, nv) + 2);
   let srf, u0 = 0, u1 = 1, v0 = 0, v1 = 1, outward;
   try {
-    if (F.clone().innerWires().length) throw new Error('The face to reshape has holes in it: reshape a face without holes');
+    // (a face with holes, a flat face of another outline, a trimmed freeform face: freeformTrimmed)
+    const holes = F.clone().innerWires().length, es0 = F.edges, quad = F.geomType === 'PLANE' && es0.length === 4 && es0.every((e) => e.geomType === 'LINE');
+    let untrimmed = false;
+    if (F.geomType === 'BSPLINE_SURFACE') {
+      const ad = new oc.BRepAdaptor_Surface(F.wrapped, false);
+      try { const bs = ad.BSpline(), bb = bs.Bounds(0, 0, 0, 0), b = F.UVBounds, tol = 1e-7 * Math.max(1, Math.abs(bb.U2 - bb.U1), Math.abs(bb.V2 - bb.V1)); untrimmed = !bs.IsUPeriodic() && !bs.IsVPeriodic() && [b.uMin - bb.U1, b.uMax - bb.U2, b.vMin - bb.V1, b.vMax - bb.V2].every((x) => Math.abs(x) <= tol); bs.delete?.(); } finally { ad.delete(); }
+    }
+    if (holes || (F.geomType === 'PLANE' && !quad) || (F.geomType === 'BSPLINE_SURFACE' && !untrimmed)) return freeformTrimmed(F, nu, nv, heights);
     const gf = new oc.BRepGProp_Face(F.wrapped, false);
     const normalAt = (u, v) => { const p = new oc.gp_Pnt(), n = new oc.gp_Vec(); try { gf.Normal(u, v, p, n); return unit([n.X(), n.Y(), n.Z()]); } finally { p.delete(); n.delete(); } };
     owned.push(gf);
@@ -10354,7 +10362,7 @@ function freeformFace(F, nu, nv, heights, keep) {
         void U;
       }
       outward = (u, v) => normalAt(u, v);
-    } else throw new Error('Freeform reshapes flat faces with four straight edges and untrimmed freeform (B-spline) faces');
+    } else throw new Error('Freeform reshapes flat faces (any outline, with holes) and freeform (B-spline) faces, not rounds or other curved faces');
     // (the parameters of the control points: Greville abscissae)
     const greville = (U) => {
       const deg = U ? srf.UDegree() : srf.VDegree(), nk = U ? srf.NbUKnots() : srf.NbVKnots(), flat = [];
@@ -10410,6 +10418,101 @@ function freeformFace(F, nu, nv, heights, keep) {
     return { face, handles, miss, angle, curvature };
   } finally { srf?.delete(); owned.reverse().forEach((x) => x.delete()); }
 }
+// Freeform on a face of any outline, holes and all (a flat face, or a trimmed freeform face): its surface as an exact,
+// finely knotted B-spline (a flat face: a bilinear patch over its box in its plane; a freeform face: its own surface),
+// of which only the control points whose whole span of influence lies inside the face, clear of every edge, move.
+// The surface is then the same as before in a band along every edge, so the face meets its neighbours exactly as it
+// did: contact, tangent plane and curvature (G2) whatever is asked. Handles outside the outline are left out (off).
+function freeformTrimmed(F, nu, nv, heights) {
+  const oc = R.getOC(), owned = [], own = (x) => (owned.push(x), x), deg = 3;
+  const P = (q) => { try { return [q.X(), q.Y(), q.Z()]; } finally { q.delete(); } };
+  let srf, face;
+  try {
+    const b = F.UVBounds;
+    let fu0, fu1, fv0, fv1, toNew, outward;
+    if (F.geomType === 'PLANE') {
+      const N = 26, m = N - 3, corner = (u, v) => vec(F.pointOnSurface(u, v)), C = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+      const pts = own(new oc.NCollection_Array2_gp_Pnt(1, N, 1, N));
+      // (Greville points of uniform cubic knots, end multiplicity 4: the patch's own parameters, so it is exactly the plane)
+      const flat = [0, 0, 0, ...Array.from({ length: m + 1 }, (_, i) => i / m), 1, 1, 1], gr = Array.from({ length: N }, (_, i) => (flat[i + 1] + flat[i + 2] + flat[i + 3]) / 3);
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const s0 = gr[i], t0 = gr[j], q = add(add(mul(C[0], (1 - s0) * (1 - t0)), mul(C[1], s0 * (1 - t0))), add(mul(C[2], s0 * t0), mul(C[3], (1 - s0) * t0)));
+        const g = new oc.gp_Pnt(...q); try { pts.SetValue(i + 1, j + 1, g); } finally { g.delete(); }
+      }
+      const kn = () => { const kk = own(new oc.NCollection_Array1_double(1, m + 1)), mm = own(new oc.NCollection_Array1_int(1, m + 1)); for (let i = 0; i <= m; i++) { kk.SetValue(i + 1, i / m); mm.SetValue(i + 1, i === 0 || i === m ? 4 : 1); } return [kk, mm]; };
+      const [uk, um] = kn(), [vk, vm] = kn();
+      srf = new oc.Geom_BSplineSurface(pts, uk, vk, um, vm, deg, deg, false, false);
+      fu0 = 0; fu1 = 1; fv0 = 0; fv1 = 1;
+      toNew = (p) => { const [u, v] = F.uvCoordinates(p); return [(u - b.uMin) / (b.uMax - b.uMin), (v - b.vMin) / (b.vMax - b.vMin)]; };
+      const n0 = unit(vec(F.normalAt())); outward = () => n0;
+    } else if (F.geomType === 'BSPLINE_SURFACE') {
+      const ad = new oc.BRepAdaptor_Surface(F.wrapped, false);
+      try { srf = new oc.Geom_BSplineSurface(ad.BSpline()); } finally { ad.delete(); }
+      if (srf.IsUPeriodic() || srf.IsVPeriodic()) throw new Error('Freeform cannot reshape a closed (periodic) freeform face');
+      if (srf.UDegree() < deg || srf.VDegree() < deg) srf.IncreaseDegree(Math.max(deg, srf.UDegree()), Math.max(deg, srf.VDegree()));
+      fu0 = b.uMin; fu1 = b.uMax; fv0 = b.vMin; fv1 = b.vMax;
+      // (refined over the face's own range: about 24 spans across it each way)
+      for (let i = 1; i < 24; i++) { srf.InsertUKnot(fu0 + ((fu1 - fu0) * i) / 24, 1, 1e-9, false); srf.InsertVKnot(fv0 + ((fv1 - fv0) * i) / 24, 1, 1e-9, false); }
+      toNew = (p) => F.uvCoordinates(p);
+      const gf = own(new oc.BRepGProp_Face(F.wrapped, false));
+      outward = (u, v) => { const p = new oc.gp_Pnt(), n = new oc.gp_Vec(); try { gf.Normal(u, v, p, n); return unit([n.X(), n.Y(), n.Z()]); } finally { p.delete(); n.delete(); } };
+    } else throw new Error('Freeform reshapes flat faces (any outline, with holes) and freeform (B-spline) faces');
+    const knots = (U) => { const nk = U ? srf.NbUKnots() : srf.NbVKnots(), flat = []; for (let i = 1; i <= nk; i++) { const x = U ? srf.UKnot(i) : srf.VKnot(i), mlt = U ? srf.UMultiplicity(i) : srf.VMultiplicity(i); for (let j = 0; j < mlt; j++) flat.push(x); } return flat; };
+    const kU = knots(true), kV = knots(false), du = srf.UDegree(), dv = srf.VDegree(), NU = srf.NbUPoles(), NV = srf.NbVPoles();
+    const gu = Array.from({ length: NU }, (_, i) => { let s = 0; for (let j = 1; j <= du; j++) s += kU[i + j]; return s / du; });
+    const gv = Array.from({ length: NV }, (_, i) => { let s = 0; for (let j = 1; j <= dv; j++) s += kV[i + j]; return s / dv; });
+    // (inside the face: on it; the edges' points in the surface's parameters, to keep every moved span clear of them)
+    const dq = own(new R.DistanceQuery(F)), onFace = (u, v) => dq.distanceTo(R.makeVertex(P(srf.Value(u, v)))) < 1e-6;
+    const edgeUV = []; for (const e of F.edges) for (let i = 0; i <= 80; i++) edgeUV.push(toNew(vec(e.pointAt(i / 80))));
+    const mu = 0.02 * (fu1 - fu0), mv = 0.02 * (fv1 - fv0);
+    const free = Array.from({ length: NU }, (_, i) => Array.from({ length: NV }, (_, j) => {
+      const a0 = kU[i] - mu, a1 = kU[i + du + 1] + mu, b0 = kV[j] - mv, b1 = kV[j + dv + 1] + mv;
+      return onFace((kU[i] + kU[i + du + 1]) / 2, (kV[j] + kV[j + dv + 1]) / 2) && !edgeUV.some(([u, v]) => u >= a0 && u <= a1 && v >= b0 && v <= b1);
+    }));
+    if (!free.some((r) => r.some(Boolean))) throw new Error('The face is too narrow to reshape inside its edges');
+    const base = [], nrm = [];
+    for (let i = 0; i < NU; i++) { base.push([]); nrm.push([]); for (let j = 0; j < NV; j++) { base[i].push(P(srf.Pole(i + 1, j + 1))); nrm[i].push(outward(gu[i], gv[j])); } }
+    const S = (x, a0, a1) => (x - a0) / (a1 - a0);
+    const tent = (x, H, a) => { const nodes = [0, ...Array.from({ length: H }, (_, i) => (i + 1) / (H + 1)), 1], c = nodes[a + 1], l = nodes[a], r = nodes[a + 2]; return x <= l || x >= r ? 0 : x < c ? (x - l) / (c - l) : (r - x) / (r - c); };
+    const grid = [];
+    for (let bb = 0; bb < nv; bb++) for (let aa = 0; aa < nu; aa++) grid.push({ a: aa, b: bb, uv: [fu0 + ((fu1 - fu0) * (aa + 1)) / (nu + 1), fv0 + ((fv1 - fv0) * (bb + 1)) / (nv + 1)] });
+    for (const g of grid) g.on = onFace(...g.uv);
+    const act = grid.map((g, i) => (g.on ? i : -1)).filter((i) => i >= 0);
+    if (!act.length) throw new Error('None of the handles is on the face: use more handles');
+    const at = grid.map((g) => P(srf.Value(...g.uv))), hn = grid.map((g) => outward(...g.uv));
+    const setPoles = (c) => {
+      for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) {
+        if (!free[i][j]) continue;
+        let d = 0;
+        act.forEach((q, k) => { const g = grid[q]; d += c[k] * tent(S(gu[i], fu0, fu1), nu, g.a) * tent(S(gv[j], fv0, fv1), nv, g.b); });
+        const p = new oc.gp_Pnt(...add(base[i][j], mul(nrm[i][j], d))); try { srf.SetPole(i + 1, j + 1, p); } finally { p.delete(); }
+      }
+    };
+    const rise = () => act.map((q) => dot(sub(P(srf.Value(...grid[q].uv)), at[q]), hn[q]));
+    const A = [];
+    for (let k = 0; k < act.length; k++) { const c = Array(act.length).fill(0); c[k] = 1; setPoles(c); rise().forEach((x, i) => { (A[i] ||= [])[k] = x; }); }
+    const want = act.map((q) => heights[q] ?? 0), c = solveLinear(A, want);
+    if (!c) throw new Error('A handle is too close to the face’s edges or holes to move it: use fewer handles');
+    setPoles(c);
+    const miss = Math.max(0, ...rise().map((x, i) => Math.abs(x - want[i])));
+    // (the face: the reshaped surface inside the face's own edges, its holes added; the edges' curves on the surface made)
+    const mk = own(new oc.BRepBuilderAPI_MakeFace(srf, F.clone().outerWire().wrapped, true));
+    for (const w of F.clone().innerWires()) mk.Add(w.wrapped);
+    if (!mk.IsDone()) throw new Error('The reshaped face could not be made');
+    const fx = own(new oc.ShapeFix_Face(mk.Face()));
+    fx.Perform();
+    face = R.cast(fx.Face());
+    // (checked along the face's edges: the tangent plane and the curvature as the face had them)
+    let angle = 0, curvature = 0;
+    for (const e of F.edges) for (const t of [0.15, 0.35, 0.5, 0.65, 0.85]) {
+      const p = vec(e.pointAt(t)), q = compareSurfaceContinuity(R, F, face, p, vec(e.tangentAt(t)), { leftUV: F.uvCoordinates(p), rightUV: face.uvCoordinates(p) });
+      angle = Math.max(angle, q.angle); curvature = Math.max(curvature, q.curvatureError);
+    }
+    const handles = grid.map((g, i) => ({ p: P(srf.Value(...g.uv)), n: hn[i], h: heights[i] ?? 0, ...(g.on ? {} : { off: true }) }));
+    return { face, handles, miss, angle, curvature, trimmed: true };
+  } catch (e) { face?.delete?.(); throw e; } finally { srf?.delete(); owned.reverse().forEach((x) => x.delete?.()); }
+}
+
 // x for A x = b (Gaussian elimination, partial pivoting); null: singular
 function solveLinear(A, b) {
   const n = b.length, M = A.map((r, i) => [...r, b[i]]);

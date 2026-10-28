@@ -33,7 +33,21 @@ export async function run({threads=1}={}){
     const bad=fixture({faces:[{p:[0,8+Math.SQRT1_2*2,8+Math.SQRT1_2*2]}],keep:'G1'});
     bad.doc.features.splice(2,0,M.createFeature(bad.doc,'fillet',{radius:2,edges:[{p:[0,10,10]}]}));
     const rb=await k.rebuild(bad.doc);
-    results.push({name:'a round (not flat, not a B-spline) refused, saying why',ok:rb.errors.some(e=>/four straight edges/.test(e[1])),errors:rb.errors});
+    results.push({name:'a round (not flat, not a B-spline) refused, saying why',ok:rb.errors.some(e=>/not rounds or other curved faces/.test(e[1])),errors:rb.errors});
+    // trimmed faces: only the control points whose influence lies inside the face move, so the face is unchanged in a
+    // band along its edges: it meets them in tangent plane and curvature (G2) whatever is asked
+    const trimmed=async(name,make,opts,check)=>{
+      const doc=M.newDoc(),sk=M.createFeature(doc,'sketch',{plane:{ref:'top'}});make(sk);
+      const f=M.createFeature(doc,'freeform',{faces:[{p:[opts.at??0,10,0]}],keep:'G1',...opts.f});doc.features.push(sk,M.createFeature(doc,'extrude',{sketch:sk.id,depth:10}),f);
+      const r=await k.rebuild(doc),note=r.notes?.[f.id]||'',hs=r.detected?.[f.id]?.handles||[],vol=await volume(r);
+      const met=/met to ([\d.e+-]+) mm/.exec(note),a=/within ([\d.e+-]+)°/.exec(note),c=/and ([\d.e+-]+) \/mm/.exec(note);
+      const ok=!r.errors.length&&!!met&&+met[1]<1e-6&&!!a&&+a[1]<1e-5&&!!c&&+c[1]<1e-6&&/curvature \(G2\) kept/.test(note)&&check(vol,hs,note);
+      results.push({name,ok,volume:vol,note,errors:r.errors,off:hs.filter(h=>h.off).length});
+    };
+    const disc=sk=>S.addCircle(sk,'O',10);
+    await trimmed('a round face (a disc): one handle up 3 at its middle, G2 at its circular edge',disc,{f:{nu:1,nv:1,h0:3}},(v,hs)=>v>Math.PI*1000+1&&hs.length===1&&Math.hypot(hs[0].p[0],hs[0].p[1]-13,hs[0].p[2])<1e-6);
+    await trimmed('a face with a hole: four handles up 2, G2 at its edges and round the hole',sk=>{const p=[[-20,-10],[20,-10],[20,10],[-20,10]].map(q=>S.addPoint(sk,...q));p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));S.addCircle(sk,'O',3);},{at:10,f:{nu:2,nv:2,h0:2,h1:2,h2:2,h3:2}},(v,hs)=>v>(800-9*Math.PI)*10+1&&hs.length===4&&hs.every(h=>Math.abs(h.p[1]-12)<1e-6));
+    await trimmed('a 6 × 6 grid on the disc: the four corner handles are off it and left out',disc,{f:{nu:6,nv:6,...Object.fromEntries(Array.from({length:36},(_,i)=>['h'+i,1]))}},(v,hs,note)=>hs.length===36&&hs.filter(h=>h.off).length===4&&/\(32 on the face\)/.test(note)&&v>Math.PI*1000+1);
   }finally{k.worker.terminate();}
   return {ok:results.every(r=>r.ok),results};
 }
