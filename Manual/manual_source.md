@@ -1591,6 +1591,7 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 | **Width** {idx:Width mate} | The second component centred between two faces of the first: pick a face of each, then the first component's other face, then the second's (two parallel faces each: a tongue in a slot) |
 | **Slot** {idx:Slot mate} | A pin (a cylinder's axis) or a point kept the set distance from a straight edge (0: on it; the slot's side edge with the pin's radius), free to slide between the edge's ends and stopped there |
 | **Path** {idx:Path mate} | A point (a vertex, an edge's middle, a sphere's centre) kept on a curved or circular edge of another component, free to move along it |
+| **Cam** {idx:Cam mate} | A follower kept touching a cam's curved edge (a plate cam's outline): a roller (a cylinder's axis) its radius from the edge, seen along the roller's axis, or a point at the set distance. Guide the follower with another mate (a Slot or a Concentric on a pivot) and turn the cam: the follower rides on it |
 | **Symmetric** {idx:Symmetric mate} | Two faces, edges or vertices kept mirror images of each other about a plane: pick them, then the plane (or a flat face) between them |
 
 - Flat faces count as planes; cylinders, cones and circular edges as axes; spheres and vertices as points.
@@ -1692,7 +1693,7 @@ The tree's **Exploded Views** folder lists them. Double-click one to explode or 
 
 The motion is worked out step by step and the mates carry the other components along, gear and rack-pinion mates included. **Play / Stop** ([[Space]]), back to the start, a slider to go through the steps, the number of steps, the duration and **Loop**. Where the mates can't follow, the panel says at which step.
 
-**Detect collisions** (on for new studies) checks every step: parts that collide show in red as the motion plays, and the panel names the first collision and its step. **Stop at the first collision** ends the motion at the step before it.
+**Detect collisions** (on for new studies) checks every step: parts that collide show in red as the motion plays, and the panel names the first collision and its step. **Stop at the first collision** ends the motion at the step before it. {idx:clearance} **Clearance** between two components (choose them in the panel) works out, at every step, the least distance between them from their display meshes, and the panel gives the least of all and its step (in red when they touch).
 
 ✔ keeps the study in the assembly's **Motion Studies** folder: double-click one to play it; right-click to edit, rename or delete it. Closing the panel puts the assembly back as it was: a motion study never moves the assembly itself.
 

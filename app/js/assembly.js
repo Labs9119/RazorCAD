@@ -76,6 +76,8 @@ export const MATE_TYPES = {
   // (slot: a pin or point the set distance from a straight edge, between its ends; path: a point on a curved edge)
   slot: { label: 'Slot', icon: 'mateDistance', value: 'mm' },
   path: { label: 'Path', icon: 'mateTangent' },
+  // (cam: a follower (a point, or a roller: an axis) kept its radius from a cam's curved edge, in the plane square to it)
+  cam: { label: 'Cam', icon: 'mateTangent', value: 'mm' },
   symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
 };
 
@@ -179,6 +181,22 @@ function mateEquations(m, A, B, C = null, D = null) {
     for (const k of [0, 1, 2]) eqs.push(() => nearest()[k]);
     return eqs;
   }
+  if (t === 'cam') {
+    // (the cam: the one with the polyline; the follower's distance to it, seen along the follower's axis (a roller) or
+    // straight (a point), held at the value: the roller's radius)
+    const [F, Cm] = B().pts && !A().pts ? [A, B] : A().pts && !B().pts ? [B, A] : [A, B];
+    eqs.push(() => {
+      const f = F(), pts = Cm().pts, d = f.kind === 'axis' ? unit(f.d) : null;
+      const flat = (q) => (d ? sub(q, mul(d, dot(sub(q, f.p), d))) : q);
+      let bd = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const a = flat(pts[i - 1]), e = sub(flat(pts[i]), a), ee = dot(e, e), s = ee > 0 ? Math.max(0, Math.min(1, dot(sub(f.p, a), e) / ee)) : 0;
+        bd = Math.min(bd, len(sub(f.p, add(a, mul(e, s)))));
+      }
+      return bd - v;
+    });
+    return eqs;
+  }
   if (t === 'width') {
     // (B's two faces parallel to A's, their middle plane on A's)
     if (!C || !D) return eqs;
@@ -265,9 +283,9 @@ export function mateChoices(A, B) {
     case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
     case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
     case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
-    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path'] : []), 'lock'];
+    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
-    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path'] : []), 'lock'];
+    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
     default: return ['lock'];
   }
 }
@@ -2343,6 +2361,7 @@ export class AssemblyEditor {
     // aligned or not: as they face now (the least turning; Flip for the other way)
     const dA = A.n || A.d, dB = B.n || B.d;
     pm.align = dA && dB ? (dot(dA, dB) >= 0 ? 1 : -1) : -1;
+    if (pm.type === 'cam') { const fol = A.pts && !B.pts ? B : A; pm.value ??= r6(fol.kind === 'axis' && fol.r > 0 ? fol.r : 0); }
     if (pm.type === 'distance') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
       if (plane) { const d = dot(plane.n, sub(other.p, plane.p)); pm.side = d >= 0 ? 1 : -1; pm.value ??= r6(Math.abs(d)); }

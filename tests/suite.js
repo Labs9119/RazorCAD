@@ -2317,6 +2317,18 @@ const UI = {
       const r = A.solveAssembly(doc), p = doc.components[1].pos, rr = Math.hypot(p[0], p[1]);
       out.push({ name: 'path', ok: r.ok && Math.abs(p[2]) < 1e-9 && Math.abs(rr - 20) < 20 * (1 - Math.cos(Math.PI / 256)) + 1e-9, p });
     }
+    // (a cam: an eccentric disc R30 about (5, 0); a roller R6, its axis along Z, kept on the line x = 0 by a slot; the
+    // cam mate puts it 6 from the disc: y = √(36² − 5²))
+    {
+      const pts = Array.from({ length: 513 }, (_, i) => { const t = (i / 512) * 2 * Math.PI; return [5 + 30 * Math.cos(t), 30 * Math.sin(t), 0]; });
+      const doc = { components: [comp('base', true), comp('f', false, [0.5, 40, 0])], mates: [
+        { id: 's', type: 'slot', value: 0, a: { comp: 'f', ...ax([0, 0, 0], [0, 0, 1], 6) }, b: { comp: 'base', kind: 'axis', p: [0, 0, 0], d: [0, 1, 0], len: 100 } },
+        { id: 'c', type: 'cam', value: 6, a: { comp: 'base', kind: 'point', p: pts[0], pts }, b: { comp: 'f', ...ax([0, 0, 0], [0, 0, 1], 6) } }] };
+      const r = A.solveAssembly(doc), p = doc.components[1].pos, want = Math.sqrt(36 * 36 - 25);
+      out.push({ name: 'cam', ok: r.ok && Math.abs(p[0]) < 1e-9 && Math.abs(p[1] - want) < 30 * (1 - Math.cos(Math.PI / 512)) + 1e-6, p, want });
+      const ch = A.mateChoices({ kind: 'axis', p: [0, 0, 0], d: [0, 0, 1], r: 6 }, { kind: 'point', p: pts[0], pts });
+      out.push({ name: 'cam offered for a roller and a curved edge', ok: ch.includes('cam') });
+    }
     const ok = out.every((x) => x.ok);
     return ok ? { ok: true, detail: out.map((x) => `${x.name} ✓`).join(', ') } : { ok: false, detail: out };
   },
@@ -2632,8 +2644,16 @@ ENDSEC;END-ISO-10303-21;`;
     ] };
     const r2 = motionFrames(doc2, { driver: { kind: 'mate', mate: 'd1', to: 40 }, steps: 10 }, (v, o) => A.solveAssembly(v, o));
     const bx = r2.frames[r2.frames.length - 1].find((f) => f.id === 'b').pos[0];
+    // (clearance from display meshes: two 10 mm cubes 25 apart along X are 15 apart; the second turned 45° about Z is
+    // 15 − 5(√2 − 1) from the first, its edge nearest)
+    const C = await import('/js/collide.js');
+    const cube = (() => { const v = [], t = []; for (const x of [0, 10]) for (const y of [0, 10]) for (const z of [0, 10]) v.push(x - 5, y - 5, z - 5); for (const f of [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]]) t.push(f[0], f[1], f[2], f[0], f[2], f[3]); return { vertices: Float32Array.from(v), triangles: Uint32Array.from(t), faceGroups: [] }; })();
+    const Mx = (x, deg = 0) => new THREE.Matrix4().makeRotationZ((deg * Math.PI) / 180).setPosition(x, 0, 0);
+    const c1 = C.meshesDistance(cube, Mx(0), cube, Mx(25)).d, c2 = C.meshesDistance(cube, Mx(0), cube, Mx(25, 45)).d;
+    const clearOk = Math.abs(c1 - 15) < 1e-6 && Math.abs(c2 - (20 - 5 * Math.SQRT2)) < 1e-5;
+    if (!clearOk) return { ok: false, detail: `clearance ${c1} and ${c2}` };
     const ok = !r.error && r.done === 72 && Math.abs((turnB * 180) / Math.PI + 360) < 0.01 && Math.abs(rackX - 2 * Math.PI * 10 * 2) < 0.01 && !r2.error && Math.abs(bx - 40) < 1e-4;
-    return ok ? { ok: true, detail: `720° of gear A → B ${r6((turnB * 180) / Math.PI)}°, rack ${r6(rackX)} mm; Distance mate 10 → ${r6(bx)} mm` }
+    return ok ? { ok: true, detail: `720° of gear A → B ${r6((turnB * 180) / Math.PI)}°, rack ${r6(rackX)} mm; Distance mate 10 → ${r6(bx)} mm; clearances 15 and ${r6(c2)} mm` }
       : { ok: false, detail: `error ${r.error}, done ${r.done}, B ${(turnB * 180) / Math.PI}°, rack ${rackX}; mate: ${r2.error} b ${bx}` };
   },
 

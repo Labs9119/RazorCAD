@@ -262,6 +262,59 @@ export function findCollisions(items, opts = {}) {
   return out;
 }
 
+// The closest point of a triangle (a, b, c) to p (Ericson's regions).
+function closestOnTri(p, a, b, c) {
+  const ab = sub3(b, a), ac = sub3(c, a), ap = sub3(p, a), d1 = dot3(ab, ap), d2 = dot3(ac, ap);
+  if (d1 <= 0 && d2 <= 0) return a;
+  const bp = sub3(p, b), d3 = dot3(ab, bp), d4 = dot3(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return b;
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return [a[0] + ab[0] * v, a[1] + ab[1] * v, a[2] + ab[2] * v]; }
+  const cp = sub3(p, c), d5 = dot3(ab, cp), d6 = dot3(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return c;
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return [a[0] + ac[0] * w, a[1] + ac[1] * w, a[2] + ac[2] * w]; }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const w = (d4 - d3) / (d4 - d3 + (d5 - d6)); return [b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w]; }
+  const den = 1 / (va + vb + vc), v = vb * den, w = vc * den;
+  return [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w];
+}
+// (each point of A against B's triangles: the nearest, by B's tree, branches further than the best so far left out)
+function nearestOneWay(A, MA, B, MB, best) {
+  const t = treeOf(B), V = B.vertices, T = B.triangles, P = A.vertices;
+  const toB = new THREE.Matrix4().copy(MB).invert().multiply(MA), v = new THREE.Vector3();
+  const stack = new Int32Array(256);
+  for (let i = 0; i < P.length; i += 3) {
+    v.set(P[i], P[i + 1], P[i + 2]).applyMatrix4(toB);
+    const p = [v.x, v.y, v.z];
+    let sp = 0;
+    stack[sp++] = 0;
+    while (sp) {
+      const nd = stack[--sp], b3 = nd * 3;
+      let dd = 0;
+      for (let k = 0; k < 3; k++) { const x = p[k], lo = t.lo[b3 + k], hi = t.hi[b3 + k], e = x < lo ? lo - x : x > hi ? x - hi : 0; dd += e * e; }
+      if (dd >= best.d * best.d) continue;
+      if (t.left[nd] < 0) {
+        for (let s = t.start[nd]; s < t.start[nd] + t.count[nd]; s++) {
+          const tri = t.order[s], q = [0, 1, 2].map((j) => { const w = T[tri * 3 + j] * 3; return [V[w], V[w + 1], V[w + 2]]; });
+          const c = closestOnTri(p, q[0], q[1], q[2]), d = Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+          if (d < best.d) { best.d = d; best.pb = new THREE.Vector3(...c).applyMatrix4(MB).toArray(); best.pa = new THREE.Vector3(...p).applyMatrix4(MB).toArray(); }
+        }
+      } else if (sp < 254) { stack[sp++] = t.left[nd]; stack[sp++] = t.right[nd]; }
+    }
+  }
+}
+// The clearance between two placed meshes: the least distance between them (from each one's points to the other's
+// triangles, so as fine as the meshes), up to max (beyond it: { d: max }). { d, pa, pb } (world points).
+export function meshesDistance(A, MA, B, MB, max = Infinity) {
+  const best = { d: max, pa: null, pb: null };
+  if (!A?.triangles?.length || !B?.triangles?.length) return best;
+  nearestOneWay(A, MA, B, MB, best);
+  const r = { d: best.d }; nearestOneWay(B, MB, A, MA, r);
+  if (r.d < best.d) return { d: r.d, pa: r.pb, pb: r.pa };
+  return best;
+}
+
 // Where a ray (o, d in the world) passes through a placed mesh's triangles: the distances along it, in order.
 export function rayHits(mesh, M, o, d) {
   if (!mesh?.triangles?.length) return [];
