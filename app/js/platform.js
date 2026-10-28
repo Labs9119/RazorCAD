@@ -294,6 +294,12 @@ export const platform = {
     });
   },
 
+  // The assemblies and drawings near a file that use it (desktop: its folder and those under it): [{ name, path }].
+  async whereUsed(path) {
+    if (desktop && path) return (await api().where_used(path)) || [];
+    return [];
+  },
+
   // A picture: { name, url (a data URL) } or null.
   async openImage() {
     if (desktop) { const r = await api().open_image(); return r ? { name: r.name, url: `data:${r.mime};base64,${r.data}` } : null; }

@@ -2448,6 +2448,49 @@ const UI = {
     return { ok: true, detail: `revision letters A, B … AA; a part's revisions keep it as it was; Collect Files wrote ${files.length} files (${names}), the copy using them, the open assembly left as it was` };
   },
 
+  async 'number-parts-and-where-used'() {
+    const a = window.app, S = await import('/js/sketchmodel.js');
+    const box = (name, pn) => { const d = M.newDoc(); d.name = name; if (pn) d.customProps = [{ name: 'Part Number', value: pn }]; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); S.addCircle(sk, 'O', 5); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 4 })); return d; };
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, p1 = asm.addPart(box('Base'), null, null), p2 = asm.addPart(box('Pin', 'KEEP-1'), null, null), p3 = asm.addPart(box('Cap'), null, null);
+    await asm.addComponent(p1); await asm.addComponent(p2); await asm.addComponent(p3);
+    const n = asm.numberParts({ prefix: 'RC-', start: 10, step: 10, digits: 3 });
+    const pn = (id) => asm.part(id).doc.customProps.find((x) => x.name === 'Part Number')?.value;
+    if (n !== 2 || pn(p1) !== 'RC-010' || pn(p2) !== 'KEEP-1' || pn(p3) !== 'RC-020') return { ok: false, detail: `numbered ${n}: ${pn(p1)} ${pn(p2)} ${pn(p3)}` };
+    const n2 = asm.numberParts({ prefix: 'X', start: 1, digits: 2, all: true });
+    if (n2 !== 3 || pn(p2) !== 'X02') return { ok: false, detail: 'Numbering again' };
+    // (Where Used from the part, opened from the assembly: the assembly)
+    const c = asm.doc.components[0]; await asm.openPart(c.id); await wait(300);
+    const keep = a.ui.modal; let w; a.ui.modal = () => ({ close() {}, body: document.createElement('div') });
+    try { w = await a.whereUsed(); } finally { a.ui.modal = keep; }
+    if (!w?.open?.length) return { ok: false, detail: 'Where Used did not find the open assembly', w };
+    return { ok: true, detail: `2 parts numbered RC-010, RC-020 (one with a number kept), all 3 again X01…; Where Used: ${w.open.join(', ')}` };
+  },
+
+  async 'assembly-flexible-subassembly'() {
+    const a = window.app, S = await import('/js/sketchmodel.js');
+    const box = (name) => { const d = M.newDoc(); d.name = name; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); S.addCircle(sk, 'O', 5); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 4 })); return d; };
+    // (a sub-assembly: a fixed disc a, and a disc b on a's axis free to slide and turn; the top assembly holds b's face
+    // on a plane 30 up)
+    const ax = { kind: 'axis', p: [0, 0, 0], d: [0, 0, 1], r: 5 };
+    const sub = { kind: 'assembly', name: 'Hinge', parts: [{ id: 'p1', name: 'Disc', doc: box('Disc') }], components: [
+      { id: 'a', part: 'p1', name: 'A', pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true }, { id: 'b', part: 'p1', name: 'B', pos: [0, 0, 10], rot: [0, 0, 0, 1], fixed: false }],
+      mates: [{ id: 'm1', type: 'concentric', a: { comp: 'a', ...ax }, b: { comp: 'b', ...ax } }] };
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, ps = asm.addPart(sub, null, null), pw = asm.addPart(box('Wall'), null, null);
+    await asm.addComponent(ps); await asm.addComponent(pw);
+    const [cs, cw] = asm.doc.components;
+    Object.assign(cs, { pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true }); Object.assign(cw, { pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true });
+    asm.doc.mates.push({ id: 'top', name: 'Coincident1', type: 'coincident', align: 1, a: { comp: cw.id, kind: 'plane', p: [0, 0, 30], n: [0, 0, 1] }, b: { comp: cs.id, sub: ['b'], kind: 'plane', p: [0, 0, 10], n: [0, 0, 1] } });
+    const rigid = asm.solve();
+    asm.setFlexible(cs.id, true);
+    const flex = asm.solveOk, z = cs.flex?.b?.pos?.[2];
+    const leafB = asm.leaves().find((l) => l.comp === cs && l.chain[0] === 'b'), zl = leafB?.M.elements[14];
+    const ok = !rigid.ok && flex && Math.abs(z - 30) < 1e-6 && Math.abs(zl - 30) < 1e-6 && sub.components[1].pos[2] === 10;
+    asm.setFlexible(cs.id, false);
+    return ok ? { ok: true, detail: 'rigid: the mate on a part inside the sub-assembly cannot be met; flexible: that part moves 20 to meet it (kept in this assembly, the sub-assembly unchanged); rigid again' } : { ok: false, detail: { rigid: rigid.ok, flex, z, zl } };
+  },
+
   async 'assembly-fasten-all-holes'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), SP = await import('/js/stdparts.js');
     const plate = M.newDoc(); plate.name = 'Plate';

@@ -987,6 +987,48 @@ class Api:
         with open(path, encoding='utf-8-sig') as f:
             return {'name': os.path.basename(path), 'content': f.read()}
 
+    def where_used(self, path):
+        """The assemblies and drawings (.rasm, .rdrw) in the file's folder and the folders under it (up to 3 deep,
+        4000 files) that use the file: [{ name, path }]."""
+        if not path or not os.path.isfile(path):
+            return []
+        target = os.path.normcase(os.path.abspath(path))
+        root = os.path.dirname(target)
+        out, seen = [], 0
+        for folder, dirs, files in os.walk(root):
+            if folder[len(root):].count(os.sep) >= 3:
+                dirs[:] = []
+            for name in files:
+                if not name.lower().endswith(('.rasm', '.rdrw')):
+                    continue
+                seen += 1
+                if seen > 4000:
+                    return out
+                full = os.path.join(folder, name)
+                try:
+                    if os.path.getsize(full) > 200 << 20:
+                        continue
+                    with open(full, encoding='utf-8-sig') as f:
+                        doc = json.load(f)
+                except Exception:
+                    continue
+                paths = []
+                def walk(d, depth=0):
+                    if depth > 16 or not isinstance(d, dict):
+                        return
+                    for p in d.get('parts') or []:
+                        if isinstance(p, dict):
+                            if p.get('path'):
+                                paths.append(p['path'])
+                            walk(p.get('doc'), depth + 1)
+                    for m in d.get('models') or []:
+                        if isinstance(m, dict) and m.get('path'):
+                            paths.append(m['path'])
+                walk(doc)
+                if any(os.path.normcase(os.path.abspath(x)) == target for x in paths if isinstance(x, str)):
+                    out.append({'name': name, 'path': full})
+        return out
+
     def read_text(self, path):
         """The text of a part file (a drawing keeping its parts up to date); None if it can't be read."""
         try:

@@ -4391,6 +4391,25 @@ class App {
     return found;
   }
 
+  // Where Used: the open assemblies and drawings using this part (or assembly), and those in its folder (desktop).
+  async whereUsed() {
+    const t = this.tabs[this.tabIndex], path = this.mode === 'drawing' ? this.drawing?.filePath : this.filePath, doc = this.mode === 'drawing' ? this.drawing?.doc : this.doc;
+    const same = (a, b) => a && b && String(a).toLowerCase().replace(/\\/g, '/') === String(b).toLowerCase().replace(/\\/g, '/');
+    const usesDoc = (d, depth = 0) => depth < 16 && ((d?.parts || []).some((p) => p.doc === doc || same(p.path, path) || usesDoc(p.doc, depth + 1)) || (d?.models || []).some((m) => m.doc === doc || same(m.path, path)));
+    const open = this.tabs.filter((x) => x !== t && x.kind === 'drawing' && x.drawing && (usesDoc(x.drawing.doc) || [...(x.drawing.live?.values?.() || [])].includes(t))) // (live: parts opened from that assembly).map((x) => ({ name: x.drawing.name || x.drawing.doc?.name || x.drawing.fileName || (x.drawing.doc?.kind === 'assembly' ? 'Assembly' : 'Drawing'), tab: x }));
+    let files = [];
+    if (path) { try { files = await this.withProgress('Looking for where it is used…', () => platform.whereUsed(path)); } catch (e) { this.toast('Where Used: ' + e.message, true); } }
+    files = files.filter((f) => !open.some((o) => same(o.tab.drawing.filePath, f.path)));
+    const box = document.createElement('div');
+    const row = (label, act) => { const r = document.createElement('div'); r.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0'; const s = document.createElement('span'); s.style.flex = '1'; s.textContent = label; const b = document.createElement('button'); b.textContent = 'Open'; b.onclick = act; r.append(s, b); box.appendChild(r); };
+    for (const o of open) row(`${o.name} (open)`, () => this.activateTab(this.tabs.indexOf(o.tab)));
+    for (const f of files) row(f.name, async () => { try { const x = await platform.openPath(f.path); if (x) await this.openFromFile(x); } catch (e) { this.toast(e.message, true); } });
+    if (!open.length && !files.length) box.innerHTML = `<div class="pm-hint">Not used by an open assembly or drawing${path ? ', nor by one in its folder' : ' (save it to look in its folder too)'}.</div>`;
+    else if (!path) box.insertAdjacentHTML('beforeend', '<div class="pm-hint">Save it to look in its folder too.</div>');
+    this.ui.modal(`Where Used — ${doc?.name || 'this'}`, 'open', box, [{ label: 'Close', primary: true }]);
+    return { open: open.map((o) => o.name), files };
+  }
+
   // ------------------------------------------------------------ rendering and decals (render.js)
   // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
   renderSetup() {

@@ -1660,6 +1660,7 @@ export class UI {
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
         { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, a.doc, () => a.commit()) },
+        { label: 'Where Used…', icon: 'open', action: () => a.whereUsed() },
         'sep',
         { label: 'Import STEP / STL…', icon: 'import', key: 'Ctrl+I', action: () => a.importFile() },
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
