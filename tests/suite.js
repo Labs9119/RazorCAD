@@ -1380,6 +1380,47 @@ const UI = {
     return { ok: source.visible === false && target.constraints.some(k => k.src?.fid === source.id && !k.src.intersection), detail: 'Hidden source selection, linked circle-plane points, repeat click, radius update, independent projection and saved visibility' };
   },
 
+  async 'sketch-intersection-spline'() {
+    // a fit spline on Front crossing the Top plane: linked points at its crossings, checked against a dense sampling of
+    // the spline (60,000 steps), on the plane, and following an edit of the spline
+    const a = window.app, S = await import('/js/sketchmodel.js'), doc = M.newDoc();
+    const source = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } });
+    const fit = [[0, 5], [20, 30], [40, -10], [60, 20]].map((q) => S.addPoint(source, ...q)), spline = S.addFitSpline(source, fit);
+    const target = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } });
+    doc.features.push(source, target); await a.setDoc(doc); closeModals(); await a.rebuild();
+    const arr = (fr) => ({ o: fr.o.toArray(), u: fr.u.toArray(), v: fr.v.toArray(), n: fr.n.toArray() });
+    const check = async (stage) => {
+      const sf = arr(a.result.sketches.get(source.id).frame), tf = arr(a.result.sketches.get(target.id).frame);
+      const dist = (p) => (p[0] - tf.o[0]) * tf.n[0] + (p[1] - tf.o[1]) * tf.n[1] + (p[2] - tf.o[2]) * tf.n[2];
+      const want = [];
+      for (const g of S.splinePieces(a.result.sketches.get(source.id).sketch, S.getCurve(source, spline))) {
+        let p0 = S.fromFrame2D(sf, ...S.bezierAt(g, 0)), d0 = dist(p0);
+        for (let i = 1; i <= 15000; i++) {
+          const p1 = S.fromFrame2D(sf, ...S.bezierAt(g, i / 15000)), d1 = dist(p1);
+          if (d0 === 0) want.push(p0); else if (d0 * d1 < 0) want.push(p0.map((x, k) => x + (p1[k] - x) * d0 / (d0 - d1)));
+          p0 = p1; d0 = d1;
+        }
+      }
+      const linked = target.constraints.filter((k) => k.type === 'projected' && k.src?.intersection);
+      const pts = a.result.sketches.get(target.id).sketch.points.filter((p) => linked.some((k) => k.refs.includes(p.id))).map((p) => S.fromFrame2D(tf, p.x, p.y));
+      const off = (p) => Math.min(...want.map((q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2])));
+      if (a.result.errors.size) return `${stage}: ${[...a.result.errors.values()].join('; ')}`;
+      if (want.length < 2 || pts.length !== want.length) return `${stage}: ${pts.length} linked points for ${want.length} crossings`;
+      const worst = Math.max(...pts.map(off)), plane = Math.max(...pts.map((p) => Math.abs(dist(p))));
+      if (worst > 1e-5 || plane > 1e-9) return `${stage}: off the spline by ${worst} or the plane by ${plane}`;
+      return { n: pts.length, worst };
+    };
+    const prims = S.intersectCurve(arr(a.result.sketches.get(target.id).frame), S.curve3D(a.result.sketches.get(source.id).sketch, S.getCurve(source, spline), arr(a.result.sketches.get(source.id).frame)));
+    S.addProjected(target, prims, { kind: 'sketch', fid: source.id, cid: spline, intersection: true });
+    target.rev = M.newRev(); await a.rebuild();
+    const first = await check('linked');
+    if (typeof first === 'string') return { ok: false, detail: first };
+    S.getPoint(source, fit[1]).y = 12; source.rev = M.newRev(); await a.rebuild();
+    const second = await check('after the spline was edited');
+    if (typeof second === 'string') return { ok: false, detail: second };
+    return { ok: true, detail: `${first.n} crossings linked (within ${first.worst.toExponential(1)} mm of a 60,000-step sampling, on the plane), ${second.n} after the spline was edited` };
+  },
+
   async 'sketch-auto-line-relations'() {
     const a=window.app,S=await import('/js/sketchmodel.js'),V=await import('/js/solver.js'),{Vector3}=await import('three'),d=M.newDoc(),f=M.createFeature(d,'sketch',{plane:{ref:'front'}}),p=S.addPoint(f,0,0),q=S.addPoint(f,40,20),reference=S.addLine(f,p,q);d.features.push(f);
     for(const id of [p,q]){const t=S.getPoint(f,id);S.addRel(f,'fix',[id],{x:t.x,y:t.y});}
