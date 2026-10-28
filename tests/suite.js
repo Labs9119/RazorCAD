@@ -1983,6 +1983,70 @@ const UI = {
     return ok ? { ok: true, detail: `A +30° → B ${r6(b1)}°, rack ${r6(x1)} mm; +200° more → B ${r6(b2)}°, rack ${r6(x2)} mm` } : { ok: false, detail: `ok ${r0.ok}/${r1.ok}/${r2.ok}; B ${b1}, rack ${x1}; then B ${b2}, rack ${x2}` };
   },
 
+  // width, symmetric, limit and screw mates, through the assembly solver
+  async 'assembly-width-symmetric-limit-screw'() {
+    const A = await import('/js/assembly.js');
+    const THREE = await import('three');
+    const ax = (p, d, r) => ({ kind: 'axis', p, d, r });
+    const pl = (p, n) => ({ kind: 'plane', p, n });
+    const pt = (p) => ({ kind: 'point', p });
+    const comp = (id, fixed = false, pos = [0, 0, 0]) => ({ id, part: 'p', name: id, pos, rot: [0, 0, 0, 1], fixed });
+    const out = [];
+    // (width: a 6 mm block between the faces of a 20 mm slot, x ±10: centred)
+    {
+      const doc = { components: [comp('base', true), comp('w', false, [5, 0, 0])], mates: [
+        { id: 'm', type: 'width', align: -1, a: { comp: 'base', ...pl([-10, 0, 0], [-1, 0, 0]) }, a2: { comp: 'base', ...pl([10, 0, 0], [1, 0, 0]) }, b: { comp: 'w', ...pl([-3, 0, 0], [-1, 0, 0]) }, b2: { comp: 'w', ...pl([3, 0, 0], [1, 0, 0]) } }] };
+      const r = A.solveAssembly(doc), x = doc.components[1].pos[0];
+      out.push({ name: 'width', ok: r.ok && Math.abs(x) < 1e-6, x });
+    }
+    // (symmetric: a point mirrored about the plane x = 0)
+    {
+      const doc = { components: [comp('base', true), comp('s1', true, [7, 1, 2]), comp('s2', false, [0, 0, 0])], mates: [
+        { id: 'm', type: 'symmetric', align: 1, a: { comp: 's1', ...pt([0, 0, 0]) }, b: { comp: 's2', ...pt([0, 0, 0]) }, s: { comp: 'base', ...pl([0, 0, 0], [1, 0, 0]) } }] };
+      const r = A.solveAssembly(doc), p = doc.components[2].pos;
+      out.push({ name: 'symmetric points', ok: r.ok && Math.hypot(p[0] + 7, p[1] - 1, p[2] - 2) < 1e-6, p });
+      // (planes: a face mirrored, facing the other way)
+      const d2 = { components: [comp('base', true), comp('f1', true, [0, 0, 0]), comp('f2', false, [1, 2, 3])], mates: [
+        { id: 'm', type: 'symmetric', align: 1, a: { comp: 'f1', ...pl([4, 0, 0], [1, 0, 0]) }, b: { comp: 'f2', ...pl([0, 0, 0], [-1, 0, 0]) }, s: { comp: 'base', ...pl([0, 0, 0], [1, 0, 0]) } }] };
+      const r2 = A.solveAssembly(d2), x2 = d2.components[2].pos[0];
+      out.push({ name: 'symmetric faces', ok: r2.ok && Math.abs(x2 + 4) < 1e-6, x: x2 });
+    }
+    // (a distance limited to 2 to 8: left alone inside, brought back to the nearer limit outside)
+    for (const [z0, want] of [[5, 5], [12, 8], [-3, 2]]) {
+      const doc = { components: [comp('base', true), comp('L', false, [0, 0, z0])], mates: [
+        { id: 'm', type: 'distance', align: 1, side: 1, value: 5, limit: true, min: 2, max: 8, a: { comp: 'base', ...pl([0, 0, 0], [0, 0, 1]) }, b: { comp: 'L', ...pl([0, 0, 0], [0, 0, 1]) } }] };
+      const r = A.solveAssembly(doc), z = doc.components[1].pos[2];
+      out.push({ name: `limit from ${z0}`, ok: r.ok && Math.abs(z - want) < 1e-9, z });
+    }
+    // (an angle limited to 0 to 30°: a face turned 50° comes back to 30)
+    {
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), (50 * Math.PI) / 180);
+      const doc = { components: [comp('base', true), { ...comp('T'), rot: [q.x, q.y, q.z, q.w] }], mates: [
+        { id: 'm', type: 'angle', value: 10, limit: true, min: 0, max: 30, a: { comp: 'base', ...pl([0, 0, 0], [0, 0, 1]) }, b: { comp: 'T', ...pl([0, 0, 0], [0, 0, 1]) } }] };
+      const r = A.solveAssembly(doc), qq = new THREE.Quaternion(...doc.components[1].rot), n = new THREE.Vector3(0, 0, 1).applyQuaternion(qq), ang = (Math.acos(Math.min(1, n.z)) * 180) / Math.PI;
+      out.push({ name: 'angle limit', ok: r.ok && Math.abs(ang - 30) < 1e-4, ang });
+    }
+    // (a screw: the rod turned a quarter, the nut kept from turning, advances a quarter of the 2 mm pitch)
+    {
+      const doc = { components: [comp('base', true), comp('rod'), comp('nut', false, [0, 0, 5])], mates: [
+        { id: 'm1', type: 'concentric', a: { comp: 'base', ...ax([0, 0, 0], [0, 0, 1]) }, b: { comp: 'rod', ...ax([0, 0, 0], [0, 0, 1], 5) } },
+        { id: 'm2', type: 'coincident', align: 1, a: { comp: 'base', ...pl([0, 0, 0], [0, 0, 1]) }, b: { comp: 'rod', ...pl([0, 0, 0], [0, 0, 1]) } },
+        { id: 'm3', type: 'parallel', align: 1, a: { comp: 'base', ...pl([0, 0, 0], [1, 0, 0]) }, b: { comp: 'nut', ...pl([0, 0, 0], [1, 0, 0]) } },
+      ] };
+      const byId = (id) => doc.components.find((c) => c.id === id);
+      const poseOf = (id) => { const c = byId(id); return { p: c.pos.slice(), q: new THREE.Quaternion(...c.rot) }; };
+      const worldRef = (r) => { const ps = poseOf(r.comp); const v = (x) => new THREE.Vector3(...x).applyQuaternion(ps.q).toArray(); return { kind: r.kind, p: v(r.p).map((x, i) => x + ps.p[i]), n: r.n && v(r.n), d: r.d && v(r.d), r: r.r }; };
+      const screw = { id: 's', type: 'screw', side: 1, value: 2, a: { comp: 'rod', ...ax([0, 0, 0], [0, 0, 1], 5) }, b: { comp: 'nut', ...ax([0, 0, 0], [0, 0, 1], 5) } };
+      screw.ref = A.mechRef(screw, poseOf, worldRef);doc.mates.push(screw);
+      const r0 = A.solveAssembly(doc), z0 = byId('nut').pos[2];
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2).multiply(new THREE.Quaternion(...byId('rod').rot)); byId('rod').rot = [q.x, q.y, q.z, q.w];
+      const r1 = A.solveAssembly(doc, { pinned: new Set(['rod']) }), dz = byId('nut').pos[2] - z0;
+      out.push({ name: 'screw', ok: r0.ok && r1.ok && Math.abs(Math.abs(dz) - 0.5) < 1e-6, dz });
+    }
+    const ok = out.every((x) => x.ok);
+    return ok ? { ok: true, detail: out.map((x) => `${x.name} ✓`).join(', ') } : { ok: false, detail: out };
+  },
+
   // the Getting Started Tour: steps with → and ←, each pointing at its part of the window; done at the end
   async 'getting-started-tour'() {
     const ui = window.app.ui;

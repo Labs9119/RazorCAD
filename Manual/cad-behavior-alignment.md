@@ -45,7 +45,8 @@ instead of changing the resulting geometry.
 | Hole | Clearance, counterbore, countersink, tapped and slot types; blind (drill point angle), through, up to next / vertex / surface, offset from surface; far-side countersinks; flat and curved faces, sketch points | Tapered pipe threads; counterdrilled holes |
 | Patterns and Mirror | Linear (one or two directions, spacing or total length, symmetric, the second direction for the feature only), circular (equal or set angle, symmetric, rings), sketch, curve and fill patterns, mirror; instances to skip; features, faces' features and bodies | Patterns whose spacing varies along them |
 | Sheet metal | Base, extruded, lofted and transition sheets; edge, profile and hem flanges (along the whole edge or part of it); jogs, sketched bends, forms, gussets, tabs and slots, corners and reliefs, unfold / fold, convert; K-factor, bend allowance or bend deduction | Bend tables by angle (one value for a 90° bend, other angles in proportion) |
-| Assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
+| Assemblies | Coincident, concentric, parallel, perpendicular, tangent, distance and angle (with limits), lock, width, symmetric, gear, rack pinion and screw mates; interference, explode, motion, BOM, assembly holes and cuts | Cam, slot and path mates |
+| Drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
 
 ## Validation
 

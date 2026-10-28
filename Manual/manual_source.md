@@ -1537,9 +1537,13 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 | **Lock** | One component fixed to another |
 | **Gear** | Two gears turning together: pick their cylinders (pitch circles) |
 | **Rack Pinion** | A pinion turning as a rack slides: pick the pinion's cylinder and a straight edge or the flat face of the rack |
+| **Screw** | On one axis, the second component advancing the **pitch** along it per turn it makes relative to the first (a nut on a lead screw) |
+| **Width** {idx:Width mate} | The second component centred between two faces of the first: pick a face of each, then the first component's other face, then the second's (two parallel faces each: a tongue in a slot) |
+| **Symmetric** {idx:Symmetric mate} | Two faces, edges or vertices kept mirror images of each other about a plane: pick them, then the plane (or a flat face) between them |
 
 - Flat faces count as planes; cylinders, cones and circular edges as axes; spheres and vertices as points.
 - Each mate is shown applied while you choose. **Flip** swaps Aligned / Anti-Aligned (or the side for Distance and Tangent). When the alignment chosen from how the faces sit can't be reached, the other one is used.
+- **Limit** (Distance and Angle) {idx:Limit mate}: free between a **Minimum** and a **Maximum** instead of one value (a slide with end stops, a door that opens 0 to 110°). Inside the limits the component moves freely; dragged past one, it stays there exactly.
 - A mate that conflicts with the others is refused with a message.
 - A mate keeps its faces and edges by their geometry, not only by their number in the part. When a part gets a new feature or a dimension moves a face, the mate stays on the same face. A mate whose face or edge is gone gets a red **!** in the tree ("1 mate lost a face"). **Tools ▸ Fix Mates…** lists them with Edit, Suppress and Delete. {idx:Fix Mates}
 
