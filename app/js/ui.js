@@ -1888,6 +1888,7 @@ export class UI {
         tool('offset', 'offset', 'Offset'),
         only2d({ icon: 'sketchMirror', label: 'Mirror', action: () => (sk ? a.sketcher.mirrorSelected() : a.startSketch()) }),
         only2d({ icon: 'dxfImport', label: 'Import DXF', action: () => (sk ? a.sketcher.importDXF() : a.startSketch()) }),
+        only2d({ icon: 'sketchPicture', label: 'Sketch Picture', action: () => (sk ? a.sketcher.sketchPicture() : a.startSketch()) }),
         only2d({ icon: 'skLinPattern', label: 'Linear Sketch Pattern', action: () => (sk ? a.sketcher.linearPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skCirPattern', label: 'Circular Sketch Pattern', action: () => (sk ? a.sketcher.circularPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skBlock', label: 'Make Block', action: () => (sk ? a.sketcher.makeBlock() : a.startSketch()) }),

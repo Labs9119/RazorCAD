@@ -459,6 +459,7 @@ In the sketch Property panel, **Rotate 90°** turns the sketch axes about the sk
 | **Offset** | [[O]] | See below |
 | **Mirror** | | Select the entities plus a centerline, then click Mirror |
 | **Import DXF** | | See below |
+| **Sketch Picture** | | A picture (PNG, JPEG, BMP, GIF or WebP) on the sketch plane, to trace over. See below |
 | **Linear Sketch Pattern** | | Opens a side panel with an orange preview. Select source entities before or after opening it, then choose an angle, line or curve as direction/path. Copies stay linked to their sources, path, quantity and spacing. Along a curve, spacing is measured along it and copies can rotate with it; open paths stop at their end. A straight direction also supports a second direction. |
 | **Circular Sketch Pattern** | | Copies the selected entities with the relations and dimensions among them. A selected point is the pattern's centre. |
 | **Make Block / Insert Block / Explode Block** | | Make Block saves the selection (with its relations) under a name in your settings. Insert Block places copies with a click, in any sketch, turned by an angle, and can delete blocks from the library. A **linked** copy (the default) moves and turns as one (a rigid Block relation holds it) and follows the block: Make Block again under the same name updates every copy in the sketch where it is, keeping relations from other geometry to it. Explode Block makes the selected copies plain geometry with the block's own relations and dimensions. Untick **Linked** for plain copies. |
@@ -550,6 +551,8 @@ Select a control point for its own settings. **Weight** (1 is plain) pulls the c
 ## Import DXF
 
 **Import DXF** brings a DXF file into the open sketch: lines, arcs, circles, polylines with arcs, ellipses and elliptical arcs, splines, points and blocks. The file's units are converted to millimetres. You can scale it and place it as in the file, centred, or by its corner. {idx:DXF, import}
+
+**Sketch Picture** {idx:sketch picture}{idx:picture, tracing} puts a picture on the sketch plane behind the sketch, to trace over (a photo, a scan of a drawing). Set its width (the height follows), centre, angle, opacity, or hide it. To scale it by something of known size in it, draw a line along that, select the line, open Sketch Picture again, pick the picture and give the line's **true length**: the picture is scaled about the line's start. Pictures are shown while you edit the sketch, are saved in the part (shrunk to 2000 pixels across at most) and are not geometry: they make no faces and are not exported.
 
 ## Text
 

@@ -5361,6 +5361,30 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (rounds, chamfers, a concave round, ring rounds at a boss deleted or resized; defeaturing holes and rounds by size); the two panels`};
   },
 
+  async 'sketch-pictures'() {
+    const M=await import('/js/model.js'),S=await import('/js/sketchmodel.js'),{packFeature}=await import('/js/kernelclient.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const cv=document.createElement('canvas');cv.width=40;cv.height=20;const g=cv.getContext('2d');g.fillStyle='#c00';g.fillRect(0,0,40,20);
+    const doc=M.newDoc(),sk=M.createFeature(doc,'sketch',{plane:{ref:'front'}});S.addCircle(sk,'O',5);
+    sk.pictures=[{id:'pic1',name:'red.png',src:cv.toDataURL('image/png'),x:10,y:5,w:80,h:40,angle:30,opacity:0.5}];
+    doc.features.push(sk,M.createFeature(doc,'extrude',{sketch:sk.id,depth:5}));
+    if(packFeature(sk).pictures)return {ok:false,detail:'The picture would go to the kernel'};
+    await a.setDoc(doc);await settle();
+    if(a.result.errors.size||!a.result.bodies?.length)return {ok:false,detail:'A sketch with a picture did not build',errors:[...a.result.errors]};
+    a.editSketch(sk.id);await settle();
+    const m=a.sketcher.picGroup?.children?.[0];
+    if(!m||m.geometry.parameters.width!==80||m.geometry.parameters.height!==40||Math.abs(m.position.x-10)>1e-9||Math.abs(m.rotation.z-Math.PI/6)>1e-9||m.material.opacity!==0.5)return {ok:false,detail:'The picture is not shown on the sketch as set',m:!!m};
+    // (scaled by a line 20 long on it that is really 50: ×2.5 about the line's start)
+    const s2=S.scalePicture(a.sketcher.f.pictures[0],{x:0,y:0},{x:20,y:0},50);
+    if(Math.abs(s2.w-200)>1e-9||Math.abs(s2.h-100)>1e-9||Math.abs(s2.x-25)>1e-9||Math.abs(s2.y-12.5)>1e-9)return {ok:false,detail:'Scaling by a line',s2};
+    // (sketch undo keeps the picture whole)
+    const f=a.sketcher.f;f.pictures[0]={...s2};a.sketcher.changed();await settle();a.sketcher.undo();await settle();
+    const back=a.sketcher.f.pictures?.[0];
+    if(!back||back.w!==80||!back.src?.startsWith('data:image/png'))return {ok:false,detail:'Undo lost the picture',back};
+    a.exitSketch?.(true);await settle();
+    return {ok:true,detail:'a picture on a sketch: kept out of the kernel, shown at its place, size, angle and opacity; scaled by a line of known length; undo keeps it'};
+  },
+
   async 'linked-sketch-blocks'() {
     const {run}=await import('/tests/sketch-block-cases.js'),native=await run();
     if(!native.ok)return {ok:false,detail:native};

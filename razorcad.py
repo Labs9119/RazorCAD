@@ -75,6 +75,8 @@ IMPORT_EXTS = ('.step', '.stp', '.igs', '.iges', '.stl', '.obj', '.3mf')
 OBJ_TYPES = ('OBJ Mesh (*.obj)', 'All files (*.*)')
 THREEMF_TYPES = ('3MF Model (*.3mf)', 'All files (*.*)')
 DXF_OPEN_TYPES = ('DXF Drawing (*.dxf)', 'All files (*.*)')
+IMAGE_TYPES = ('Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)', 'All files (*.*)')
+IMAGE_MIME = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'bmp': 'image/bmp', 'gif': 'image/gif', 'webp': 'image/webp'}
 # (pywebview only accepts letters, digits and spaces in a filter's description: no commas or dashes)
 OPEN_TYPES = ('All supported files (*.rcad;*.rasm;*.rdrw;*.rdrt;*.step;*.stp;*.igs;*.iges;*.stl;*.obj;*.3mf)',
               'RazorCAD Part (*.rcad)', 'RazorCAD Assembly (*.rasm)',
@@ -952,6 +954,19 @@ class Api:
             return None
         with open(path, encoding='utf-8', errors='replace') as f:
             return {'name': os.path.basename(path), 'text': f.read()}
+
+    def open_image(self):
+        """A picture (for a sketch picture or a decal): { name, mime, data (base64) }, or None. Up to 40 MB."""
+        path = first(self._file_dialog(webview.FileDialog.OPEN, file_types=IMAGE_TYPES))
+        if not path:
+            return None
+        ext = os.path.basename(path).lower().rsplit('.', 1)[-1]
+        if ext not in IMAGE_MIME:
+            raise ValueError('That is not a PNG, JPEG, BMP, GIF or WebP picture')
+        if os.path.getsize(path) > 40 << 20:
+            raise ValueError('That picture is too big (over 40 MB)')
+        with open(path, 'rb') as f:
+            return {'name': os.path.basename(path), 'mime': IMAGE_MIME[ext], 'data': base64.b64encode(f.read()).decode('ascii')}
 
     def open_file(self):
         """Open a part, or a STEP/STL file (the interface then offers a new part or inserting it)."""

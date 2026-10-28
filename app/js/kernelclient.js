@@ -92,12 +92,13 @@ function blobId(text) {
 }
 // a feature as the kernel is sent it (blobs: id → text, filled with the texts it names)
 export function packFeature(f, blobs = null) {
+  if (f?.pictures?.length) { const { pictures: _p, ...g } = f; f = g; } // (a sketch's pictures are for tracing over: not geometry)
   if (typeof f?.data !== 'string' || f.data.length < BLOB_MIN) return f;
   const id = blobId(f.data);
   blobs?.set(id, f.data);
   return { ...f, data: { blob: id } };
 }
-const packDoc = (doc, blobs) => (doc.features?.some((f) => typeof f?.data === 'string' && f.data.length >= BLOB_MIN) ? { ...doc, features: doc.features.map((f) => packFeature(f, blobs)) } : doc);
+const packDoc = (doc, blobs) => (doc.features?.some((f) => (typeof f?.data === 'string' && f.data.length >= BLOB_MIN) || f?.pictures?.length) ? { ...doc, features: doc.features.map((f) => packFeature(f, blobs)) } : doc);
 
 export class KernelClient {
   // threads: how many threads the kernel may use (more than 1: the multi-threaded kernel, where the page allows it)

@@ -138,7 +138,9 @@ export class Sketcher {
     grid.material.depthWrite = false;
     grid.renderOrder = 1;
     this.drawGroup = new THREE.Group();
-    this.group.add(grid, this.drawGroup);
+    this.picGroup = new THREE.Group();
+    this.group.add(grid, this.picGroup, this.drawGroup);
+    this.refreshPictures();
 
     this.snapEl = document.createElement('div');
     this.snapEl.className = 'snapmark';
@@ -582,8 +584,11 @@ export class Sketcher {
   }
 
   snapshotData() {
-    const { points, curves, constraints, nextSid, plane, texts, gearTrains, airfoils, patterns } = this.f;
-    return JSON.stringify({ points, curves, constraints, nextSid, plane, texts: texts || [], gearTrains: gearTrains || [], airfoils: airfoils || [], patterns: patterns || [] });
+    const { points, curves, constraints, nextSid, plane, texts, gearTrains, airfoils, patterns, blocks, pictures } = this.f;
+    // (pictures by their ids: their data is kept once, in _picSrc)
+    this._picSrc ||= new Map();
+    for (const p of pictures || []) this._picSrc.set(p.id, p.src);
+    return JSON.stringify({ points, curves, constraints, nextSid, plane, texts: texts || [], gearTrains: gearTrains || [], airfoils: airfoils || [], patterns: patterns || [], blocks: blocks || [], pictures: (pictures || []).map(({ src: _s, ...p }) => p) });
   }
 
   undo() {
@@ -608,6 +613,9 @@ export class Sketcher {
     this.closeModify();
     const oldRot = this.f.plane?.rot, oldFlip = !!this.f.plane?.viewFlip;
     Object.assign(this.f, JSON.parse(s));
+    for (const k of ['blocks', 'pictures']) if (!this.f[k]?.length) delete this.f[k];
+    if (this.f.pictures) this.f.pictures = this.f.pictures.map((p) => ({ ...p, src: this._picSrc?.get(p.id) || '' }));
+    this.refreshPictures();
     this.syncFrameRotation(oldRot);
     if (!!this.f.plane?.viewFlip !== oldFlip) this.normalTo();
     this.refreshTexts();
@@ -1935,6 +1943,74 @@ export class Sketcher {
     if (v.del) { ui.prefs.blocks = list.filter((x) => x !== b); ui.savePrefs(); this.app.status(`Block "${b.name}" deleted.`); return; }
     this.blockIns = { ...b, angle: +this.app.result.ev(v.angle) || 0, linked: !!v.linked };
     this.setTool('block');
+  }
+
+  // ------------------------------------------------------------ sketch pictures (sk.pictures), to trace over
+  refreshPictures() {
+    const g = this.picGroup;
+    if (!g) return;
+    for (const c of [...g.children]) { g.remove(c); c.geometry?.dispose(); c.material?.map?.dispose(); c.material?.dispose(); }
+    for (const pic of this.f.pictures || []) {
+      if (pic.show === false) continue;
+      const img = new Image(), tex = new THREE.Texture(img);
+      img.onload = () => { tex.needsUpdate = true; this.vp.requestRender?.(); };
+      img.src = pic.src;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(pic.w, pic.h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: pic.opacity ?? 0.6, depthWrite: false, side: THREE.DoubleSide }));
+      m.position.set(pic.x, pic.y, -0.01);
+      m.rotation.z = ((pic.angle || 0) * Math.PI) / 180;
+      m.renderOrder = 0;
+      m.userData.picture = pic.id;
+      g.add(m);
+    }
+    this.vp.requestRender?.();
+  }
+
+  // Sketch Picture: a new picture (opened, shrunk to 2000 pixels at most), or one already there set again
+  async sketchPicture() {
+    const ui = this.app.ui, sk = this.f, list = sk.pictures || [];
+    let pic = null;
+    if (list.length) {
+      const v = await ui.promptFields('Sketch Picture', 'sketchPicture', [{ key: 'which', label: 'Picture', type: 'select', options: [['new', 'A new picture…'], ...list.map((p) => [p.id, p.name])], value: list.at(-1).id }]);
+      if (!v || !this.active) return;
+      pic = list.find((p) => p.id === v.which) || null;
+    }
+    if (!pic) {
+      let file;
+      try { file = await platform.openImage(); } catch (e) { this.app.toast('Could not open the picture: ' + e.message, true); return; }
+      if (!file || !this.active) return;
+      const img = await new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = file.url; });
+      if (!img?.naturalWidth) { this.app.toast('That picture could not be read', true); return; }
+      const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      const png = /^data:image\/(png|gif|webp)/.test(file.url);
+      const w = 100;
+      pic = { id: 'pic' + (sk.nextSid++), name: file.name, src: cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.9), x: 0, y: 0, w, h: (w * cv.height) / cv.width, angle: 0, opacity: 0.6 };
+      (sk.pictures ||= []).push(pic);
+    }
+    const line = this.sel.size === 1 ? S.getCurve(sk, [...this.sel][0]) : null, isLine = line?.type === 'line';
+    const v = await ui.promptFields(`Sketch Picture — ${pic.name}`, 'sketchPicture', [
+      { key: 'w', label: 'Width (the height follows)', type: 'expr', value: +pic.w.toFixed(4) },
+      ...(isLine ? [{ key: 'trueLen', label: 'Or: the selected line’s true length', type: 'expr', value: '' }] : []),
+      { key: 'x', label: 'Centre X', type: 'expr', value: +pic.x.toFixed(4) },
+      { key: 'y', label: 'Centre Y', type: 'expr', value: +pic.y.toFixed(4) },
+      { key: 'angle', label: 'Turned (°)', type: 'expr', value: pic.angle || 0 },
+      { key: 'opacity', label: 'Opacity (%)', type: 'expr', value: Math.round((pic.opacity ?? 0.6) * 100) },
+      { key: 'show', label: 'Shown', type: 'check', value: pic.show !== false },
+      { key: 'del', label: 'Delete the picture', type: 'check', value: false },
+    ], isLine ? 'A line drawn along something of known size in the picture scales it: give its true length.' : 'To scale it by something of known size in it, draw a line along that, select the line and open this again.');
+    if (!v || !this.active) { this.refreshPictures(); return; }
+    if (v.del) { sk.pictures = sk.pictures.filter((p) => p !== pic); if (!sk.pictures.length) delete sk.pictures; this.refreshPictures(); this.changed(); return; }
+    const num = (x, d) => { const n = this.ev(String(x)); return Number.isFinite(n) ? n : d; };
+    let next = { ...pic, x: num(v.x, pic.x), y: num(v.y, pic.y), angle: num(v.angle, 0), opacity: Math.min(1, Math.max(0.05, num(v.opacity, 60) / 100)), show: !!v.show };
+    const w = num(v.w, pic.w);
+    if (w > 0 && Math.abs(w - pic.w) > 1e-12) next = { ...next, w, h: (pic.h * w) / pic.w };
+    if (isLine && String(v.trueLen).trim()) next = S.scalePicture(next, S.getPoint(sk, line.p1), S.getPoint(sk, line.p2), num(v.trueLen, 0));
+    sk.pictures[sk.pictures.indexOf(pic)] = next;
+    this.refreshPictures();
+    this.changed();
+    this.app.status(`${pic.name}: ${fmt(next.w, 3)} × ${fmt(next.h, 3)} mm.`);
   }
 
   // Explode Block: the selected block copies made plain geometry (their own relations and dimensions back)

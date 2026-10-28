@@ -214,6 +214,20 @@ export function pasteItems(sk, data, x, y, map = new Map()) {
   }
   return out;
 }
+// Sketch pictures (sk.pictures: [{ id, name, src (data URL), x, y (its centre), w, h, angle (°), opacity }]), to trace
+// over. Scaled about point a so the line a–b on it is trueLen long.
+export function scalePicture(pic, a, b, trueLen) {
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(L > 1e-9) || !(trueLen > 0)) return pic;
+  const k = trueLen / L;
+  return { ...pic, x: a.x + (pic.x - a.x) * k, y: a.y + (pic.y - a.y) * k, w: pic.w * k, h: pic.h * k };
+}
+// A picture's corners in the sketch (for its outline, and for checking where it is).
+export function pictureCorners(pic) {
+  const a = ((pic.angle || 0) * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => { const x = (i * pic.w) / 2, y = (j * pic.h) / 2; return [pic.x + x * c - y * s, pic.y + x * s + y * c]; });
+}
+
 // Linked block instances. sk.blocks: [{ id, name, def (the block's data as inserted), map: { block id: sketch id },
 // at: [x, y], angle }]: the block's geometry put at x, y turned angle°, held rigid by one 'block' relation (its first
 // point A, the point farthest from it B, every other point at its place along and across AB; circle radii and ellipse
