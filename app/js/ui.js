@@ -309,6 +309,11 @@ const SM_GAUGE = { key: 'gauge', type: 'gauge' };
 const SM_BODY = { title: 'Sheet Metal Body', fields: [{ key: 'body', type: 'bodySel', label: 'Body', kinds: ['sheet'] }] };
 // What a pattern copies: its feature and more features; model: 'pick' (faces or bodies clicked on the model, or
 // ticked), 'list' (bodies ticked in the list or clicked), 'none' (features only)
+// Instances to leave out of a pattern, by number (1 is the feature)
+const PATTERN_SKIP_GROUP = (two) => ({ title: 'Instances to Skip', fields: [
+  { key: 'skip', type: 'text', label: 'Skip', placeholder: '3, 5', optional: true },
+  { key: 'skHint', type: 'hint', text: (f) => (two(f) ? 'Instance numbers to leave out, as row.column: 3.2 is the 3rd along the first direction (or round), 2nd along the second (or ring); 1 is the feature, -2 the first the other way.' : 'Instance numbers to leave out, separated by commas: 1 is the feature, 2 the first copy, -2 the first the other way.') },
+] });
 const patternSources = (title, model = 'pick') => ({ title, fields: [
   { key: 'feature', type: 'feature', label: 'Feature' },
   { key: 'features', type: 'featureList', label: 'More features' },
@@ -907,18 +912,24 @@ const PM_SCHEMAS = {
       title: 'Direction 1', fields: [
         { key: 'dir1', type: 'direction', label: 'Direction' },
         { key: 'rev1', type: 'check', label: 'Reverse direction' },
-        { key: 'dist1', type: 'expr', label: 'Spacing', unit: 'mm' },
+        { key: 'spacing1', type: 'select', label: 'Distance', default: 'spacing', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
+        { key: 'dist1', type: 'expr', label: (f) => (f.spacing1 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm' },
         { key: 'count1', type: 'expr', label: 'Instances', unit: '#' },
+        { key: 'sym1', type: 'check', label: 'Symmetric (as many again the other way)' },
       ],
     },
     {
       title: 'Direction 2', fields: [
         { key: 'dir2', type: 'direction', label: 'Direction', none: true },
         { key: 'rev2', type: 'check', label: 'Reverse direction', show: (f) => f.dir2 !== 'none' },
-        { key: 'dist2', type: 'expr', label: 'Spacing', unit: 'mm', show: (f) => f.dir2 !== 'none' },
+        { key: 'spacing2', type: 'select', label: 'Distance', default: 'spacing', show: (f) => f.dir2 !== 'none', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
+        { key: 'dist2', type: 'expr', label: (f) => (f.spacing2 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm', show: (f) => f.dir2 !== 'none' },
         { key: 'count2', type: 'expr', label: 'Instances', unit: '#', show: (f) => f.dir2 !== 'none' },
+        { key: 'sym2', type: 'check', label: 'Symmetric (as many again the other way)', show: (f) => f.dir2 !== 'none' },
+        { key: 'seedOnly2', type: 'check', label: 'Pattern the feature only (not the first row)', show: (f) => f.dir2 !== 'none' },
       ],
     },
+    PATTERN_SKIP_GROUP((f) => f.dir2 && f.dir2 !== 'none'),
   ],
   cpattern: [
     patternSources('Features to Pattern'),
@@ -928,8 +939,12 @@ const PM_SCHEMAS = {
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
         { key: 'count', type: 'expr', label: 'Instances', unit: '#' },
         { key: 'equal', type: 'check', label: 'Equal spacing (angle is total)' },
+        { key: 'sym', type: 'check', label: 'Symmetric (as many again the other way round)' },
+        { key: 'rings', type: 'expr', label: 'Rings (out from the axis)', unit: '#', default: 1 },
+        { key: 'ringStep', type: 'expr', label: 'Ring spacing', unit: 'mm', default: 10, show: (f) => Number(f.rings) > 1 || (typeof f.rings === 'string' && f.rings.trim() !== '1') },
       ],
     },
+    PATTERN_SKIP_GROUP((f) => Number(f.rings) > 1),
   ],
   mirror: [
     { title: 'Mirror Face/Plane', fields: [{ key: 'plane', type: 'plane', label: 'Plane' }] },
@@ -3628,6 +3643,12 @@ export class UI {
           this.renderLoftSelection(body, f, before, fd);
         } else if (fd.type === 'sketchList') {
           this.renderSketchList(body, f, before, fd);
+        } else if (fd.type === 'text') {
+          // (a line of text: a list such as a pattern's instances to skip)
+          const input = el('input', { type: 'text', value: f[fd.key] ?? '', placeholder: fd.placeholder || '', 'data-feature-text': fd.key, spellcheck: 'false' });
+          input.onchange = () => { f[fd.key] = input.value; a.preview(true); };
+          const w = el('div', { class: 'pm-input' }); w.appendChild(input);
+          body.appendChild(this.row(fd.label, w));
         } else if (fd.type === 'vertexList') {
           if (!Array.isArray(f[fd.key])) f[fd.key] = [];
           const L = f[fd.key], ul = el('div', { class: 'pm-list', 'data-vertex-list': fd.key });

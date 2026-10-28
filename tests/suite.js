@@ -5085,6 +5085,21 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (up to next, a surface, an offset, a vertex; drill point angle; far-side countersinks; a curved face; slots; rejections); the panel's ends and their pick`};
   },
 
+  async 'pattern-options'() {
+    const {run,fixture}=await import('/tests/pattern-options-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture('lpattern',{dir1:'x',dist1:20,count1:3});await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    const skip=document.querySelector('[data-feature-text="skip"]');if(!skip)return {ok:false,detail:'No instances to skip in the Linear Pattern panel'};
+    skip.value='2';skip.dispatchEvent(new Event('change'));await settle();
+    if(a.pm.feature.skip!=='2')return {ok:false,detail:`Skip not stored: ${a.pm.feature.skip}`};
+    const text=document.querySelector('#pm')?.textContent||'';
+    for(const t of ['Symmetric','From the first to the last'])if(!text.includes(t))return {ok:false,detail:`No ${t} in the Linear Pattern panel`};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0],want=200*200*5-2*Math.PI*20;
+    if(a.result.errors.size||!m||Math.abs(m.volume-want)>1e-6)return {ok:false,detail:`Pattern skipping 2: volume ${m?.volume} (expected ${want})`};
+    return {ok:true,detail:`${native.results.length} kernel cases (total length, symmetric, second direction for the feature only, skips, circular rings; rejections); the panel's skip and spacing`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

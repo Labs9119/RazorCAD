@@ -917,6 +917,12 @@ Patterns and mirrors copy features or bodies. Any feature that changes the bodie
 
 {idx:Sketch Driven Pattern}{idx:Curve Driven Pattern}{idx:Fill Pattern}
 
+**Linear Pattern options** {idx:Linear Pattern, options}: **Distance → From the first to the last** spreads the instances over a total length instead of setting the spacing between each two. **Symmetric** adds as many again the other way from the feature. With a second direction, **Pattern the feature only** copies just the feature along it, not the whole first row (an L of copies).
+
+**Circular Pattern options** {idx:Circular Pattern, options}: **Symmetric** adds as many again the other way round (less than a whole turn). **Rings** makes rings of copies further out from the axis, **Ring spacing** apart, out through the feature's middle.
+
+**Instances to Skip** (Linear and Circular) {idx:pattern, skip instances}: instance numbers to leave out, separated by commas: 1 is the feature, 2 the first copy, -2 the first copy the other way (symmetric). With a second direction or rings, row.column: 3.2 is the third along the first direction (or round) in the second row (or ring).
+
 **What to copy.** Choose the **Feature**, and add any number of **More features**: each is copied the same way. In a Linear, Circular, Sketch Driven or Curve Driven Pattern, **Clicking the model picks** either **Faces**, where each face brings the feature that made it (click a hole's wall to copy the hole), or **Bodies**, which are copied whole to every place as new bodies. Mirror takes bodies too (tick them, or click them on the model). Fill Pattern copies features only. {idx:pattern, of bodies}{idx:pattern, of faces}
 
 **Feature folders.** Right-click a feature ▸ **Add to New Folder…** (or **Move to** a folder already there, or **Remove from Folder**) to group features in the tree; a folder sits where its first feature is, with its features under it. Right-click a folder to rename it, delete it (its features stay), or make a **Linear** or **Circular Pattern of the Folder**. A pattern's **More features** list takes folders too: it copies whatever is in the folder each time it rebuilds, so a feature added to the folder later is copied as well. {idx:folder, features}{idx:pattern, of a folder}

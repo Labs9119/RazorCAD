@@ -3858,6 +3858,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
         const b = bbox(bodyRecs[0].shape);
         return mul(add(b.min, b.max), 0.5);
       };
+      // A pattern's instances left out (f.skip: '3, 5' or, with a second direction or rings, '3.2'; numbered from 1 at the
+      // feature, -2 the first the other way): as index keys ('i' or 'i.j', the feature 0)
+      const patternSkips = (pf, two) => {
+        const out = new Set();
+        for (const raw of String(pf.skip || '').split(/[,;\s]+/).filter(Boolean)) {
+          const parts = raw.split('.').map(Number);
+          if (parts.length !== (two ? 2 : 1) || parts.some((x) => !Number.isInteger(x) || x === 0)) throw new Error(`“${raw}” is not an instance number to skip (${two ? 'such as 3.2' : 'such as 3'})`);
+          out.add(parts.map((x) => (x > 0 ? x - 1 : x + 1)).join('.'));
+        }
+        return out;
+      };
       const patternAll = async (pf, xs) => {
         const { ids, bodyRecs } = patternSources(pf);
         for (const id of ids) await instances(pf, id, xs);
@@ -4197,25 +4208,52 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'lpattern': {
-          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * ev(f.dist1));
+          // (spacing1 / spacing2 'total': the distance is from the first instance to the last; sym1 / sym2: as many again
+          // the other way; seedOnly2: the second direction copies only the feature, not the first direction's row;
+          // skip: instances left out, by number: 3, or 3.2 with two directions, -2 the other way)
           const c1 = Math.max(1, Math.round(ev(f.count1)));
           const two = f.dir2 && f.dir2 !== 'none';
-          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * ev(f.dist2)) : [0, 0, 0];
           const c2 = two ? Math.max(1, Math.round(ev(f.count2))) : 1;
-          if (c1 * c2 > 400) throw new Error('Too many instances (max 400)');
+          const step = (k, c) => { const d = ev(f['dist' + k]); return f['spacing' + k] === 'total' ? (c > 1 ? d / (c - 1) : 0) : d; };
+          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * step(1, c1));
+          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * step(2, c2)) : [0, 0, 0];
+          const range = (c, sym) => Array.from({ length: sym ? 2 * c - 1 : c }, (_, k) => (sym ? k - (c - 1) : k));
+          const skip = patternSkips(f, two);
           const xs = [];
-          for (let i = 0; i < c1; i++) for (let j = 0; j < c2; j++) if (i || j) xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+          for (const i of range(c1, f.sym1)) for (const j of range(c2, two && f.sym2)) {
+            if (!i && !j) continue;
+            if (two && f.seedOnly2 && i && j) continue;
+            if (skip.has(two ? `${i}.${j}` : `${i}`)) continue;
+            xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+          }
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
           break;
         }
         case 'cpattern': {
+          // (sym: as many again the other way round; rings / ringStep: rings of copies further out from the axis, each
+          // ringStep further, out through the feature's middle; skip: instances left out, by number, 3.2 with rings)
           const n = Math.max(1, Math.round(ev(f.count)));
-          if (n > 400) throw new Error('Too many instances (max 400)');
           const total = ev(f.angle);
           const step = f.equal ? (Math.abs(total) >= 360 ? total / n : total / Math.max(1, n - 1)) : total;
           const ax = resolveAxis(f.axis);
-          const xs = [];
-          for (let i = 1; i < n; i++) xs.push(xTurn(step * i, ax.o, ax.d));
+          const rings = Math.max(1, Math.round(ev(f.rings ?? 1)));
+          let out = [0, 0, 0];
+          if (rings > 1) {
+            const c = sub(patternCentre(f), ax.o), r = sub(c, mul(ax.d, dot(c, ax.d)));
+            if (len(r) < 1e-9) throw new Error('Rings go out from the axis through the feature: the feature is on the axis');
+            out = mul(unit(r), ev(f.ringStep));
+          }
+          const skip = patternSkips(f, rings > 1), xs = [];
+          // (a whole turn has no other way round: symmetric only with less)
+          const sym = f.sym && Math.abs(step * (n - 1) * 2) < 360 + 1e-9;
+          for (let k = 0; k < rings; k++) for (let i = sym ? -(n - 1) : 0; i < n; i++) {
+            if (!i && !k) continue;
+            if (skip.has(rings > 1 ? `${i}.${k}` : `${i}`)) continue;
+            const turn = xTurn(step * i, ax.o, ax.d);
+            xs.push(k ? (i ? xChain(xMove(mul(out, k)), turn) : xMove(mul(out, k))) : turn);
+          }
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
           break;
         }

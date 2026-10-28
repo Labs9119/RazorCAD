@@ -43,7 +43,8 @@ instead of changing the resulting geometry.
 | Fillet / Chamfer | Constant, variable (ends, vertices, points along edges), face fillets, full round, chord width, an edge's own size, setback corners, a face's edges at once; chamfers by distance, distance and angle, two distances, an edge's own distance, vertex chamfers | Conic and curvature-continuous fillet profiles (not offered by the geometry kernel) |
 | Shell | Faces removed, inward or outward, small blends kept outside, walls of their own thickness, hollow bodies (no faces removed) | Walls of their own thickness on curved faces or outward |
 | Hole | Clearance, counterbore, countersink, tapped and slot types; blind (drill point angle), through, up to next / vertex / surface, offset from surface; far-side countersinks; flat and curved faces, sketch points | Tapered pipe threads; counterdrilled holes |
-| Patterns, sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
+| Patterns and Mirror | Linear (one or two directions, spacing or total length, symmetric, the second direction for the feature only), circular (equal or set angle, symmetric, rings), sketch, curve and fill patterns, mirror; instances to skip; features, faces' features and bodies | Patterns whose spacing varies along them |
+| Sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
 
 ## Validation
 

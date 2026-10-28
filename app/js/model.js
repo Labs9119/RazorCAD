@@ -222,8 +222,8 @@ export function createFeature(doc, type, props = {}) {
     point: { pointType: 'coords', x: 0, y: 0, z: 0, vertex: null, edge: null },
     // (patterns: feature, plus features, faces (each brings the feature that made it) and bodies (copied whole);
     // pick: what a click on the model picks, 'faces' | 'bodies')
-    lpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', dir1: 'x', rev1: false, dist1: 20, count1: 3, dir2: 'none', rev2: false, dist2: 20, count2: 2 },
-    cpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', axis: 'y', angle: 360, count: 6, equal: true },
+    lpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', dir1: 'x', rev1: false, spacing1: 'spacing', dist1: 20, count1: 3, sym1: false, dir2: 'none', rev2: false, spacing2: 'spacing', dist2: 20, count2: 2, sym2: false, seedOnly2: false, skip: '' },
+    cpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', axis: 'y', angle: 360, count: 6, equal: true, sym: false, rings: 1, ringStep: 10, skip: '' },
     mirror: { feature: null, features: [], bodies: [], plane: 'right' },
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
