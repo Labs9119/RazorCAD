@@ -6,6 +6,9 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 06:12 — Version 0.19.0-beta
+- Installer, user manual (107 pages) and website for 0.19.0-beta.
+
 ## 2026-10-29 05:46 — The k14 geometry kernel: exact defeaturing and STEP files with semantic PMI
 
 - RazorCAD now ships the Kernel Lab's k14 kernel (k12, which it had, plus defeaturing and PMI; OpenCascade 8.0.1, both
