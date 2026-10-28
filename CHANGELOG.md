@@ -6,6 +6,26 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 00:19 — The manual inside RazorCAD, freeform faces, G2 fillets, true-shape nesting, piping, ducts, moulds and more
+
+- **The user manual inside RazorCAD**: Help ▸ User Manual, [F1] (at the feature being edited), the title bar's **?**
+  or a Property panel's **?** open it in a panel at the right: search it, read a section with your words marked,
+  drag its edge wider or narrower, close it (your files stay open). **⧉** puts it in a window of its own that can go
+  onto another monitor; **⇤** docks it back. The command search (Ctrl+K) lists manual sections too.
+- **Freeform**: a face pushed in or out by a grid of handles (dragged on the model), keeping contact, tangency (G1)
+  or curvature (G2) at its edges. **Fillet ▸ Curvature continuous (G2)** on straight edges between flat faces.
+  **Boundary Surface** tangent or curvature continuous to faces along its edges.
+- **Nest Flat Patterns** by true outlines (parts into each other's gaps and holes, 90°, 45° or 15° turns).
+- **Pipe Route** with tees and reducers and a **Spool Drawing**; **Duct Fitting** (elbows, cones, transitions,
+  offsets, laterals) with flat patterns to DXF; **Harness Formboard** for cables.
+- **Edit in Context** follows the assembly as it changes. **Render** with several passes (smoother edges).
+- **Sheet metal forms**: beads, lances, embosses. **Moulds**: parting by a surface, side cores, sprue and runners.
+- **Assemblies**: cam mate; clearance along a motion study; flexible sub-assemblies; Number Parts; Where Used.
+- **Drawings**: broken-out sections; Compare With another drawing.
+- **glTF (.glb) export**; **point clouds** (PLY, XYZ) with surfaces fitted to them.
+- With the Kernel Lab's k14 geometry kernel (not shipped yet): exact defeaturing, and STEP files with semantic PMI
+  written and read.
+
 ## 2026-10-29 00:08 — Edit in Context follows its own assembly when several are open
 
 - A part edited in context brought its context bodies up to date from the first open assembly with a component of the

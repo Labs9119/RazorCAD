@@ -67,11 +67,11 @@ export class HelpView {
     this.root = root; this.onShow = onShow; this.history = []; this.at = -1; this.query = ''; this.current = null;
     root.classList.add('help-view');
     const head = h('div', { class: 'hv-head' });
-    this.back = h('button', { class: 'hv-nav', title: 'Back', onclick: () => this.step(-1) }, '‹');
-    this.fwd = h('button', { class: 'hv-nav', title: 'Forward', onclick: () => this.step(1) }, '›');
+    this.back = h('button', { class: 'hv-nav', title: 'Back', 'aria-label': 'Back', onclick: () => this.step(-1) }, '‹');
+    this.fwd = h('button', { class: 'hv-nav', title: 'Forward', 'aria-label': 'Forward', onclick: () => this.step(1) }, '›');
     this.input = h('input', { type: 'search', class: 'hv-q', placeholder: 'Search the manual…', spellcheck: 'false', 'aria-label': 'Search the manual' });
     head.append(this.back, this.fwd, this.input);
-    for (const t of tools) head.appendChild(h('button', { class: 'hv-tool', title: t.title, onclick: t.onclick, ...(t.attrs || {}) }, t.label));
+    for (const t of tools) head.appendChild(h('button', { class: 'hv-tool', title: t.title, 'aria-label': t.title, onclick: t.onclick, ...(t.attrs || {}) }, t.label));
     this.body = h('div', { class: 'hv-body' });
     root.append(head, this.body);
     let timer = 0;

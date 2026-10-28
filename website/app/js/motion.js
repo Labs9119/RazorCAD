@@ -16,7 +16,7 @@
 import * as THREE from 'three';
 import { icon } from './icons.js';
 import { fmt } from './expr.js';
-import { findCollisions } from './collide.js';
+import { findCollisions, meshesDistance } from './collide.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const el = (tag, attrs = {}, html = '') => {
@@ -120,7 +120,7 @@ export class MotionTool {
   }
   restore() {
     const b = JSON.parse(this.before);
-    this.host.doc.components.forEach((c, i) => { const o = b.comps[i]; if (o && o.id === c.id) { c.pos = o.pos; c.rot = o.rot; } });
+    this.host.doc.components.forEach((c, i) => { const o = b.comps[i]; if (o && o.id === c.id) { c.pos = o.pos; c.rot = o.rot; if (o.flex) c.flex = o.flex; else delete c.flex; } });
     this.host.doc.mates.forEach((m, i) => { const o = b.mates[i]; if (o && o.id === m.id) { if ('ref' in o) m.ref = o.ref; m.value = o.value; } });
   }
   close(keep) {
@@ -148,6 +148,7 @@ export class MotionTool {
     this.error = r.error;
     this.frame = 0;
     this.clashes = this.study.collide ? this.findClashes() : null;
+    this.clearance = this.study.clearA && this.study.clearB ? this.findClearance() : null;
     return r;
   }
   // The steps at which parts run into others (not those that overlap at the start): Map step → leaf indices, and
@@ -159,9 +160,9 @@ export class MotionTool {
     if (!this.frames || this.frames.length < 2) return out;
     const f0 = new Map(this.frames[0].map((f) => [f.id, f]));
     const moving = new Set();
-    for (const fr of this.frames) for (const f of fr) { const o = f0.get(f.id); if (o && (f.pos.some((x, k) => Math.abs(x - o.pos[k]) > 1e-9) || f.rot.some((x, k) => Math.abs(x - o.rot[k]) > 1e-12))) moving.add(f.id); }
+    for (const fr of this.frames) for (const f of fr) { const o = f0.get(f.id); if (o && (f.pos.some((x, k) => Math.abs(x - o.pos[k]) > 1e-9) || f.rot.some((x, k) => Math.abs(x - o.rot[k]) > 1e-12))) moving.add(String(f.id).split('/')[0]); }
     if (!moving.size) return out;
-    const at = (i) => { for (const f of this.frames[i]) { const c = byId.get(f.id); if (c) { c.pos = f.pos; c.rot = f.rot; } } return findCollisions(host.collideItems(leaves), { moving, skip: start }); };
+    const at = (i) => { for (const f of this.frames[i]) { const c = byId.get(f.id); if (c) { c.pos = f.pos; c.rot = f.rot; } else host.setFlexPose?.(f.id, f.pos, f.rot); } return findCollisions(host.collideItems(host.leaves()), { moving, skip: start }); };
     const start = new Set();
     for (const [i, j] of at(0)) start.add(i + '|' + j);
     for (let k = 1; k < this.frames.length; k++) {
@@ -177,11 +178,32 @@ export class MotionTool {
     this.restore();
     return out;
   }
+  // Clearance along the motion: at each step the least distance between the two components chosen (study.clearA,
+  // clearB), from their display meshes; the least of all and where. { min, step, at: [pa, pb], series }
+  findClearance() {
+    const host = this.host, comps = host.doc.components, byId = new Map(comps.map((c) => [c.id, c]));
+    const a = this.study.clearA, b = this.study.clearB;
+    if (!a || !b || a === b || !this.frames?.length) return null;
+    const leaves = host.leaves(), top = (l) => (l.chain?.length ? l.chain[0] : l.comp).id; // (a sub-assembly's parts count as it)
+    const series = [];
+    let min = Infinity, step = -1, at = null;
+    for (let k = 0; k < this.frames.length; k++) {
+      for (const f of this.frames[k]) { const c = byId.get(f.id); if (c) { c.pos = f.pos; c.rot = f.rot; } else host.setFlexPose?.(f.id, f.pos, f.rot); }
+      const now = host.collideItems(host.leaves()), A = now.filter((it, i) => it?.mesh && top(leaves[i]) === a), B = now.filter((it, i) => it?.mesh && top(leaves[i]) === b);
+      let d = Infinity, pts = null;
+      for (const x of A) for (const y of B) { const r = meshesDistance(x.mesh, x.matrix, y.mesh, y.matrix, d); if (r.d < d) { d = r.d; pts = [r.pa, r.pb]; } }
+      series.push(d);
+      if (d < min) { min = d; step = k; at = pts; }
+    }
+    this.restore();
+    this.clearance = { min, step, at, series };
+    return this.clearance;
+  }
   show(i) {
     if (!this.frames?.length) return;
     this.frame = Math.max(0, Math.min(this.frames.length - 1, i));
     const byId = new Map(this.host.doc.components.map((c) => [c.id, c]));
-    for (const f of this.frames[this.frame]) { const c = byId.get(f.id); if (c) { c.pos = f.pos; c.rot = f.rot; } }
+    for (const f of this.frames[this.frame]) { const c = byId.get(f.id); if (c) { c.pos = f.pos; c.rot = f.rot; } else this.host.setFlexPose?.(f.id, f.pos, f.rot); }
     this.host.buildMesh();
     const clash = this.clashes?.get(this.frame) || null;
     if (clash || this.host.clash) { this.host.clash = clash; this.host.highlight(); }
@@ -270,6 +292,10 @@ export class MotionTool {
       stp.querySelector('input').onchange = (e) => { st.stopAtCollision = e.target.checked; this.changed(); };
       g2.appendChild(stp);
     }
+    // (clearance between two components, worked out at each step)
+    const names = this.host.doc.components.filter((c) => !c.patternOf).map((c) => [c.id, c.name || c.id]);
+    g2.appendChild(ui.row('Clearance', sel([['', '— none —'], ...names], st.clearA || '', (v) => { st.clearA = v || undefined; this.changed(); })));
+    if (st.clearA) g2.appendChild(ui.row('to', sel([['', '— choose —'], ...names.filter(([id]) => id !== st.clearA)], st.clearB || '', (v) => { st.clearB = v || undefined; this.changed(); })));
     const bar = el('div', { class: 'mo-bar' });
     const pb = el('button', { class: 'pm-btn primary' }, this.playing ? '■ Stop' : '▶ Play');
     pb.onclick = () => { if (this.playing) { this.stop(); this.renderPM(); } else this.play(); };
@@ -285,6 +311,7 @@ export class MotionTool {
     } else this.slider = null;
     if (this.firstClash) g2.appendChild(el('div', { class: 'pm-msg err' }, esc(`Collision at step ${this.firstClash.step}: ${this.firstClash.names}${st.stopAtCollision ? ' (the motion stops just before it)' : ' (shown in red)'}.`)));
     else if (this.clashes && this.frames?.length > 1) g2.appendChild(el('div', { class: 'pm-hint' }, 'No collisions.'));
+    if (this.clearance && Number.isFinite(this.clearance.min)) g2.appendChild(el('div', { class: this.clearance.min < 1e-6 ? 'pm-msg err' : 'pm-hint' }, esc(`Least clearance ${fmt(this.clearance.min, 3)} mm, at step ${this.clearance.step} (from the display meshes).`)));
     if (this.error) g2.appendChild(el('div', { class: 'pm-msg err' }, esc(this.error)));
     else if (this.frames) g2.appendChild(el('div', { class: 'pm-hint' }, `${this.frames.length - 1} steps worked out. Drag the slider to go through them; Space plays and stops.`));
     root.appendChild(el('div', { class: 'pm-hint', style: 'padding:6px 10px' }, 'The motion is worked out step by step: the mates (gear and rack-pinion mates too) carry the other components along. The assembly goes back as it was when the panel closes.'));

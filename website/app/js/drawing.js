@@ -128,7 +128,7 @@ export function viewRequest(dwg, v) {
   if (v.type === 'detail') return null;
   if (v.type === 'flat') return { id: v.id, flat: true, body: v.body || null, dir: [0, 0, 1], up: [0, 1, 0] };
   const cam = viewCamera(dwg, v);
-  return { id: v.id, dir: cam.dir, up: cam.y, section: v.type === 'section' ? sectionPlane(dwg, v) : null };
+  return { id: v.id, dir: cam.dir, up: cam.y, section: v.type === 'section' ? sectionPlane(dwg, v) : null, ...(v.breakout ? { breakout: v.breakout } : {}) };
 }
 
 export const sheetScale = (dwg, sheetId) => { const s = sheetOf(dwg, sheetId).scale || [1, 1]; return s[0] / s[1]; };
@@ -405,8 +405,10 @@ function viewPrims(dwg, v, ctx) {
         geomPrims.push({ t: 'text', p: add2(P0, mul2(off, 1)), text: n.text, h, anchor: 'middle', base: turned ? 'top' : 'bottom', rot });
       }
     }
-    // section hatching
-    if (v.type === 'section' && g.cut?.length) {
+    // a broken-out section's outline: a thin freehand line
+    if (v.breakout?.poly?.length >= 3) geomPrims.push({ t: 'poly', pts: [...v.breakout.poly, v.breakout.poly[0]].map(X.toSheet), w: LW.thin });
+    // section hatching (and a broken-out section's)
+    if ((v.type === 'section' || v.breakout) && g.cut?.length) {
       // (each body its own angle and spacing)
       g.cut.forEach((loops, i) => {
         const hs = hatchStyle(g.cutBody?.[i] ?? 0);

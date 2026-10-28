@@ -20,6 +20,8 @@ import { holeSpec, holeProfile } from './holes.js';
 import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
 import { pipeOf, bundleDiameter } from './routing.js';
+import { ductSpec, ductPatterns, lateral as ductLateral } from './ducts.js';
+import { decodePoints, fitPlane, fitSphere, fitCylinder, heightGrid } from './points.js';
 import { normalize3d, solve3d, splineGeom } from './sketch3dmodel.js';
 import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
@@ -2500,6 +2502,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // (import features holding other parts of an assembly, for reference: Edit in Context; from the list, as features
   // restored from the rebuild cache are not run again)
   const contextFeats = new Set((doc.features || []).filter((f) => f.type === 'import' && f.context).map((f) => f.id));
+  let moldInfo = null; // (the last Core and Cavity: its pull, block, part and bodies, for side cores and runners)
   let applied = []; // tools applied by the current feature (for previews)
   let blendPair = null; // a fillet/chamfer on one body: that body before and after (for its preview)
   let body = null;    // all bodies together (one solid, or a compound of several)
@@ -3517,7 +3520,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // preview or an edit only recomputes the feature being changed and what comes after it.
   const copyMap = (to, from) => { to.clear(); for (const [a, b] of from) to.set(a, b); };
   const takeSnap = () => ({
-    body, solids: [...solids], surfaces: [...surfaces], dense, blendChain, steps: [...steps], pending: [...pending],
+    body, solids: [...solids], surfaces: [...surfaces], dense, blendChain, steps: [...steps], pending: [...pending], moldInfo,
     planes: new Map(planes), sketches: new Map(sketches), axes: new Map(axes), points: new Map(points), tools: new Map(tools), curves: new Map(curves),
     usedIds: new Set(usedIds), featureDiffs: new Map(featureDiffs), sketchBodies: new Map(sketchBodies),
     res: { info:{...res.info}, errors: [...res.errors], sketches: { ...res.sketches }, planes: { ...res.planes }, axes: { ...res.axes }, points: { ...res.points }, curves: { ...res.curves }, notes: { ...res.notes }, detected: { ...res.detected }, features: { ...res.features }, threads: { ...res.threads }, missing: { ...res.missing } },
@@ -3525,6 +3528,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   });
   const restoreSnap = (s) => {
     ({ body, dense, blendChain } = s);
+    moldInfo = s.moldInfo || null;
     solids = [...s.solids]; surfaces = [...s.surfaces];
     pending = [...(s.pending || [])];
     steps.length = 0; steps.push(...s.steps);
@@ -4630,6 +4634,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
             result = setbackCorners(result, cs, ev(f.setback));
             res.notes[f.id] = `${cs.length} corner${cs.length === 1 ? '' : 's'} blended from ${+ev(f.setback).toFixed(3)} mm`;
           }
+          if (f.type === 'fillet' && f.continuity === 'G2') {
+            const g = g2Blends(input, result, edgeShapes, v);
+            result = g.shape;
+            res.notes[f.id] = `${g.n} round${g.n === 1 ? '' : 's'} made curvature continuous (G2): within ${+g.angle.toFixed(4)}° and ${g.curvature.toExponential(2)} /mm of the faces beside (${g.checked} points checked)`;
+          }
           applyBlend(result, whole);
           blendChain = chain || { type: f.type, base: input, items: [item] };
           blendChain.type = f.type;
@@ -4640,6 +4649,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'import': {
           const rec = await importShape(f, timing);
+          // (Kernel Lab k14: a STEP file's PMI (dimensions, geometric tolerances, datums) read once, for 3D annotations)
+          if (f.format === 'step' && !f.pmiRead && R.getOC().LabPMI) {
+            const text = featureData(f);
+            if (typeof text === 'string' && /DIMENSIONAL_|GEOMETRIC_TOLERANCE|DATUM_FEATURE|DATUM\(/.test(text)) {
+              try { const lines = R.getOC().LabPMI.ReadStep(text); res.features[f.id] = { pmiRead: true, pmi: String(lines || '').split('\n').filter(Boolean) }; } catch (e) { if (isFatal(e)) throw e; }
+            }
+          }
           let shape = rec.shape.clone();
           // (an IGES file's faces, each on its own: sewn together, a solid where they close)
           if (f.sew && !shape.solids.length) shape = sewFaces(shape, f.sewTolerance ?? 0.01);
@@ -5299,6 +5315,16 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (hits.some((h) => h.body !== rec)) throw new Error('The faces must be on the same body');
           const keep = rec.shape.faces.filter((fc) => !hits.some((h) => h.face.isSame(fc)));
           if (!keep.length) throw new Error('That would delete every face of the body (use Delete Body instead)');
+          if (f.mode === 'heal') {
+            // (Kernel Lab k14: the faces round them grown or shrunk to close the gap)
+            if (!R.getOC().LabDefeature) throw new Error('Delete and heal needs the geometry kernel with defeaturing');
+            if (!solids.includes(rec)) throw new Error('Delete and heal works on solids');
+            const out = labDefeature(rec.shape, hits.map((h) => h.face));
+            if (!out) throw new Error(`The faces could not be taken out: ${labDefeatureError() || 'the faces round them cannot close the gap'}`);
+            replaceSolid(rec, unify(out), f.id);
+            res.notes[f.id] = `${hits.length} face${hits.length === 1 ? '' : 's'} deleted, the faces round them carried on to close the gap`;
+            break;
+          }
           let sewn = sewShapes(keep, 1e-6);
           let note = `${hits.length} face${hits.length === 1 ? '' : 's'} deleted`;
           if (f.mode === 'patch') {
@@ -5327,6 +5353,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = note;
           break;
         }
+        case 'freeform': {
+          // A face reshaped by a grid of handles across it (freeformFace): the face passes through each handle at its
+          // height off the face as it was; its edges stay where they are, and with them the tangent plane (G1) or the
+          // curvature too (G2) the face had along them, so it meets the faces round it as before
+          const ref = (f.faces || [])[0];
+          if (!ref) throw new Error('Click the face to reshape');
+          const hit = findFaceAny([...solids, ...surfaces], ref);
+          if (!hit) throw new Error('The face could not be found in the model');
+          const rec = hit.body, nu = Math.max(1, Math.min(6, Math.round(ev(f.nu ?? 3)))), nv = Math.max(1, Math.min(6, Math.round(ev(f.nv ?? 3))));
+          const heights = Array.from({ length: nu * nv }, (_, i) => ev(f['h' + i] ?? 0));
+          const ff = freeformFace(hit.face, nu, nv, heights, f.keep || 'G1');
+          const keep = rec.shape.faces.filter((fc) => !fc.isSame(hit.face));
+          const sewn = keep.length ? sewShapes([...keep, ff.face], 1e-5) : ff.face;
+          if (solids.includes(rec)) {
+            const sol = solidFromSewn(sewn);
+            if (!sol || !solidsOf(sol).length) throw new Error('The reshaped face could not be closed into the solid (does it run through another face?)');
+            replaceSolid(rec, sol, f.id);
+          } else surfaces = surfaces.map((r) => (r === rec ? bodyRec(rec.id, sewn, f.id) : r));
+          res.detected[f.id] = { handles: ff.handles };
+          const kept = { G0: 'its edges kept', G1: `tangent (G1) kept at its edges: within ${+ff.angle.toFixed(6)}°`, G2: `tangent and curvature (G2) kept at its edges: within ${+ff.angle.toFixed(6)}° and ${ff.curvature.toExponential(2)} /mm` }[f.keep || 'G1'];
+          res.notes[f.id] = `Face reshaped by ${nu} × ${nv} handles (met to ${ff.miss.toExponential(1)} mm), ${kept}`;
+          break;
+        }
         case 'editFillet': {
           // Delete Fillet / Resize Fillet (direct editing, e.g. of an imported part): each picked fillet or chamfer face
           // taken back to the sharp edge its neighbours meet at (mode 'delete'), or then rounded or chamfered again at
@@ -5336,6 +5385,28 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (resize && !(r > 0)) throw new Error('The new size must be more than zero');
           let rec = null;
           const sharp = [];
+          // (Kernel Lab k14: all the faces at once by the kernel's defeaturing, exact for any blend; else one by one)
+          if (R.getOC().LabDefeature) {
+            const hits = f.faces.map((r0) => findFaceAny(solids, r0));
+            if (hits.every(Boolean) && hits.every((h) => h.body === hits[0].body)) {
+              const kinds = hits.map((h) => surfOf(h.face)), cham = kinds.every((x) => x.t === 'PLANE');
+              const r0 = hits[0].body, out = labDefeature(r0.shape, hits.map((h) => h.face));
+              if (out) {
+                const before = r0.shape;
+                rec = replaceSolid(r0, unify(out), f.id)[0];
+                if (resize) {
+                  const edges = newEdgesNear(before, rec.shape, hits.map((h) => h.face));
+                  if (!edges.length) throw new Error('The sharp edge could not be found to round again');
+                  let o2;
+                  try { o2 = rec.shape[cham ? 'chamfer' : 'fillet']((x) => (edges.some((y) => y.isSame(x)) ? r : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error(`The edge${edges.length > 1 ? 's' : ''} could not be ${cham ? 'chamfered' : 'rounded'} at ${r} (too big for the faces beside ${edges.length > 1 ? 'them' : 'it'}?)`); }
+                  replaceSolid(rec, unify(o2), f.id);
+                }
+                const was = [...new Set(kinds.map((x) => (x.t === 'PLANE' ? 'chamfered' : x.t === 'TORUS' ? `R${+x.r2.toFixed(4)}` : x.r ? `R${+x.r.toFixed(4)}` : 'blended')))].join(', ');
+                res.notes[f.id] = `${f.faces.length} face${f.faces.length === 1 ? '' : 's'} ${resize ? `resized to ${r}` : 'deleted'} exactly (was ${was})`;
+                break;
+              }
+            }
+          }
           for (const ref of f.faces) {
             const hit = findFaceAny(rec ? [rec] : solids, ref);
             if (!hit) throw new Error(rec ? 'The faces must be on the same body' : 'A selected face could not be found on a solid body');
@@ -5362,13 +5433,25 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(maxR > 0) && !(maxD > 0)) throw new Error('Give a fillet radius or a hole size to take out');
           const recs = f.body ? solids.filter((x) => x.id === f.body) : [...solids];
           if (!recs.length) throw new Error(f.body ? 'The body is missing' : 'There is no solid to defeature');
-          let nf = 0, nh = 0;
+          let nf = 0, nh = 0, exact = false;
           for (const rec of recs) {
+            // (Kernel Lab k14: every such face at once by the kernel's defeaturing; else one by one with booleans)
+            if (R.getOC().LabDefeature) {
+              const faces = defeatureFaces(rec.shape, maxR, maxD), kinds = faces.map((x) => ({ ...surfOf(x), seam: faceHasSeam(x) }));
+              const done = faces.length ? labDefeature(rec.shape, faces) : null;
+              if (done) {
+                nf += kinds.filter((x) => (x.t === 'CYLINDER' && !x.seam) || x.t === 'TORUS' || x.t === 'SPHERE').length;
+                nh += kinds.filter((x) => x.t === 'CYLINDER' && x.seam).length;
+                replaceSolid(rec, unify(done), f.id);
+                exact = true;
+                continue;
+              }
+            }
             const out = defeatureShape(rec.shape, maxR, maxD);
             nf += out.fillets; nh += out.holes;
             if (out.fillets || out.holes) replaceSolid(rec, out.shape, f.id);
           }
-          res.notes[f.id] = `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
+          res.notes[f.id] = exact ? `${nf} fillet face${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out exactly` : `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
           break;
         }
         case 'replaceFace': {
@@ -5556,6 +5639,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const ends = bound.flatMap((w) => [vec(w.startPoint), vec(w.endPoint)]);
           const tol = Math.max(1e-3, bboxOfAll(bound).diag * 1e-5);
           for (const q of ends) if (ends.filter((x) => len(sub(x, q)) < tol).length < 2) throw new Error('The first and last curves of the two directions must meet at their ends (they bound the surface)');
+          const cont = f.continuity || 'G0';
+          if (cont !== 'G0') {
+            // (tangent / curvature continuous to faces: a bounding curve along an edge of a support face meets that
+            // face G1 / G2, as the edge itself; the others just touch; the curves between are passed through. Checked
+            // on the CAD faces by the patch builder)
+            const sup = (f.supportFaces || []).map((r) => findFaceAny([...solids, ...surfaces], r)?.face).filter(Boolean);
+            if (!sup.length) throw new Error('Click the faces the surface is to meet tangent (or with matching curvature)');
+            const along = (e, x) => [0.13, 0.5, 0.87].every((t) => new R.DistanceQuery(R.makeVertex(vec(e.pointAt(t)))).distanceTo(x) < 1e-4);
+            const entries = [];
+            for (const w of bound) for (const e of w.edges) {
+              let hitE = null, hitF = null;
+              for (const sf of sup) { const x = sf.edges.find((y) => along(e, y) && along(y, e)); if (x) { hitE = x; hitF = sf; break; } }
+              entries.push(hitE ? { edge: hitE, support: hitF, continuity: cont } : { edge: e, support: null, continuity: 'G0' });
+            }
+            const n = entries.filter((x) => x.support).length;
+            if (!n) throw new Error('None of the bounding curves runs along an edge of the support faces');
+            const inner = [...d1.slice(1, -1), ...d2.slice(1, -1)].flatMap((w) => w.edges);
+            const got = buildSurfacePatch(R, entries, { fatal: isFatal, message: (e) => (e instanceof WebAssembly.Exception ? R.getOC().getExceptionMessage(e).join(': ') : e.message || String(e)), stack, interior: inner.length ? { edges: inner, points: [] } : null });
+            surfaces.push(bodyRec(newId(f.id), got.shape, f.id));
+            applied.push({ op: 'add', tool: got.shape });
+            res.notes[f.id] = `${cont === 'G2' ? 'Curvature continuous (G2)' : 'Tangent (G1)'} to the faces along ${n} edge${n === 1 ? '' : 's'}: within ${+(got.angle || 0).toFixed(4)}°${cont === 'G2' ? ` and ${(got.curvature || 0).toExponential(2)} /mm` : ''}, touching to ${(got.contact || 0).toExponential(1)} mm`;
+            break;
+          }
           const oc = R.getOC(), mk = new oc.BRepOffsetAPI_MakeFilling(3, 15, 2, false, 1e-5, 1e-4, 0.01, 0.1, 8, 9);
           let shape;
           try {
@@ -5893,67 +5999,187 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'pipeRoute': {
-          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the corners, the
-          // corners long radius elbows (fittings, each a body of its own) or bends (one bent tube); flanges at the open
-          // ends if asked. The straight pipes are weldment members, so they are on the cut list with their lengths
+          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the fittings, the
+          // corners long radius elbows (fittings, each a body of its own) or bends (bent tube); a tee where a line branches
+          // square off a straight run; a concentric reducer at an open end if asked; flanges at the other open ends if
+          // asked. The straight pipes are weldment members, so they are on the cut list with their lengths
           const segs = memberPath(f.path);
           if (!segs.length) throw new Error('Select the sketch or 3D sketch of the route (straight lines)');
           if (segs.some((g) => g.type !== 'line')) throw new Error('Draw the route with straight lines: its corners get the elbows or bends');
-          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7);
-          // (the route's points in order, from an end)
-          const near = (x, y) => len(sub(x, y)) < tol, ends = segs.flatMap((g) => [g.a, g.b]);
-          const deg = (q) => ends.filter((x) => near(x, q)).length;
-          if (ends.some((q) => deg(q) > 2)) throw new Error('The route must be one run without branches (tees are not made)');
-          let P = [ends.find((q) => deg(q) === 1) || segs[0].a];
-          const left = [...segs];
-          while (left.length) {
-            const last = P.at(-1), i = left.findIndex((g) => near(g.a, last) || near(g.b, last));
-            if (i < 0) throw new Error('The route’s lines must join end to end');
-            const g = left.splice(i, 1)[0];
-            P.push(near(g.a, last) ? g.b : g.a);
+          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7), short = pipe.label.replace(/^Pipe |^Tube /, '');
+          // (the route as a graph: its points, and for each line the points at its ends)
+          const nodes = [], nodeOf = (q) => { let k = nodes.findIndex((x) => len(sub(x.p, q)) < tol); if (k < 0) { nodes.push({ p: q, lines: [] }); k = nodes.length - 1; } return k; };
+          const lines = segs.map((g, li) => { const a = nodeOf(g.a), b = nodeOf(g.b); nodes[a].lines.push(li); nodes[b].lines.push(li); return { a, b, d: unit(sub(g.b, g.a)), L: len(sub(g.b, g.a)), cut: [0, 0] }; });
+          const away = (li, k) => (lines[li].a === k ? lines[li].d : mul(lines[li].d, -1)); // (the line's direction leaving node k)
+          const setCut = (li, k, c) => { lines[li].cut[lines[li].a === k ? 0 : 1] = c; };
+          const corners = [], tees = [], ends = [];
+          for (const [k, nd] of nodes.entries()) {
+            const m = nd.lines.length;
+            if (m === 1) ends.push({ k, out: mul(away(nd.lines[0], k), -1), li: nd.lines[0] });
+            else if (m === 2) {
+              const [l1, l2] = nd.lines, d1 = mul(away(l1, k), -1), d2 = away(l2, k), th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2))));
+              if (th < 1e-9) continue;
+              if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
+              const c = pipe.R * Math.tan(th / 2);
+              setCut(l1, k, c); setCut(l2, k, c);
+              corners.push({ k, d1, d2, th, c });
+            } else if (m === 3) {
+              const ds = nd.lines.map((li) => away(li, k));
+              const run = [[0, 1], [0, 2], [1, 2]].find(([x, y]) => dot(ds[x], ds[y]) < -1 + 1e-9);
+              const bi = run ? 3 - run[0] - run[1] : -1;
+              if (!run || Math.abs(dot(ds[bi], ds[run[0]])) > 1e-6) throw new Error('A branch must leave a straight run square to it (a tee): other branches are not made');
+              nd.lines.forEach((li) => setCut(li, k, pipe.tee));
+              tees.push({ k, r: ds[run[0]], b: ds[bi] });
+            } else throw new Error('Four or more lines meet at a point: crosses are not made (use two tees)');
           }
-          const closed = P.length > 3 && near(P[0], P.at(-1));
-          if (closed) throw new Error('The route must have two ends (not a closed loop)');
-          // (each corner: its turn and how far the elbow / bend reaches along the lines either side)
-          const n = P.length, dirs = [], cut = new Array(n).fill(0);
-          for (let i = 0; i + 1 < n; i++) dirs.push(unit(sub(P[i + 1], P[i])));
-          const corners = [];
-          for (let i = 1; i + 1 < n; i++) {
-            const c = Math.max(-1, Math.min(1, dot(dirs[i - 1], dirs[i]))), th = Math.acos(c);
-            if (th < 1e-9) continue;
-            if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
-            cut[i] = pipe.R * Math.tan(th / 2);
-            corners.push({ i, th });
-          }
-          for (let i = 0; i + 1 < n; i++) if (len(sub(P[i + 1], P[i])) < cut[i] + cut[i + 1] - 1e-9) throw new Error(`Line ${i + 1} of the route is too short for the ${f.corner === 'bend' ? 'bends' : 'elbows'} at its ends (the bend radius ${+pipe.R.toFixed(3)} needs ${+(cut[i] + cut[i + 1]).toFixed(3)})`);
-          const tube = (A, B) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(ro, L, A, d).cut(R.makeCylinder(ri, L + 2, sub(A, d), d)); };
+          if (!ends.length) throw new Error('The route must have open ends (not a closed loop)');
+          // (a reducer at the first or last open end, in the order the lines were drawn)
+          const rd = f.reduceAt && f.reduceAt !== 'none' ? pipeOf({ ...f, size: f.reduceSize, corner: 'elbow', radius: 'auto' }, ev) : null;
+          if (rd && !(rd.D < pipe.D)) throw new Error('The reducer must go down to a smaller size');
+          const endOrder = [...ends].sort((x, y) => x.li - y.li || (lines[x.li].a === x.k ? -1 : 1));
+          const reduced = rd ? (f.reduceAt === 'start' ? [endOrder[0]] : f.reduceAt === 'end' ? [endOrder.at(-1)] : [endOrder[0], endOrder.at(-1)]).filter((x, q, a) => a.indexOf(x) === q) : [];
+          for (const e of reduced) setCut(e.li, e.k, pipe.reducer);
+          for (const [li, l] of lines.entries()) if (l.L < l.cut[0] + l.cut[1] - 1e-9) throw new Error(`Line ${li + 1} of the route is too short for the fittings at its ends (it needs ${+(l.cut[0] + l.cut[1]).toFixed(3)})`);
+          const tube = (A, B, r1 = ro, r0 = ri) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(r1, L, A, d).cut(R.makeCylinder(r0, L + 2, sub(A, d), d)); };
           const disc = (r, p, d) => { const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawCircle(r).sketchOnPlane(new R.Plane(p, u, d)).face(); };
-          const elbow = ({ i, th }) => {
-            const d1 = dirs[i - 1], d2 = dirs[i], T1 = sub(P[i], mul(d1, cut[i])), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
+          const elbow = ({ k, d1, d2, th, c }) => {
+            const T1 = sub(nodes[k].p, mul(d1, c)), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
             return R.revolution(disc(ro, T1, d1), C, ax, a).cut(R.revolution(disc(ri, T1, d1), C, ax, a));
+          };
+          const tee = ({ k, r, b }) => {
+            const O = nodes[k].p, C = pipe.tee;
+            const outer = R.makeCylinder(ro, 2 * C, sub(O, mul(r, C)), r).fuse(R.makeCylinder(ro, C, O, b));
+            return unify(outer.cut(R.makeCylinder(ri, 2 * C + 2, sub(O, mul(r, C + 1)), r).fuse(R.makeCylinder(ri, C + 1, O, b))));
+          };
+          // (a reducer: its big end on the pipe, its small end at the route's end)
+          const reducer = ({ k, out }) => {
+            const E = nodes[k].p, H = pipe.reducer, A = sub(E, mul(out, H)), u = unit(cross(out, Math.abs(out[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+            const P2 = (rho, z) => add(add(A, mul(u, rho)), mul(out, z)), r2o = rd.D / 2, r2i = r2o - rd.t;
+            return R.revolution(R.makePolygon([P2(ri, 0), P2(ro, 0), P2(r2o, H), P2(r2i, H)]), A, out, 360);
           };
           const add1 = (shape, name, member) => { const rec = bodyRec(newId(f.id), shape, f.id); rec.name = name; if (member) rec.member = member; solids.push(rec); applied.push({ op: 'add', tool: shape }); };
           const straights = [];
-          for (let i = 0; i + 1 < n; i++) { const A = add(P[i], mul(dirs[i], cut[i])), B = sub(P[i + 1], mul(dirs[i], cut[i + 1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
+          for (const l of lines) { const A = add(nodes[l.a].p, mul(l.d, l.cut[0])), B = sub(nodes[l.b].p, mul(l.d, l.cut[1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
           const fits = corners.map(elbow);
           if (f.corner === 'bend') {
             let all = null;
-            for (const s of [...straights.map((s) => tube(s.A, s.B)), ...fits]) all = all ? all.fuse(s) : s;
-            const L = straights.reduce((t, s) => t + s.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
-            add1(unify(all), `${pipe.label} bent`, { label: `${pipe.label}, ${corners.length} bend${corners.length === 1 ? '' : 's'} R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
+            for (const sh of [...straights.map((x) => tube(x.A, x.B)), ...fits]) all = all ? all.fuse(sh) : sh;
+            const L = straights.reduce((t, x) => t + x.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
+            for (const piece of solidsOf(unify(all))) add1(piece, `${pipe.label} bent`, { label: `${pipe.label}, bent R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
           } else {
-            for (const s of straights) add1(tube(s.A, s.B), `${pipe.label} ${+s.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +s.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: s.A, b: s.B } });
-            corners.forEach((c, k) => add1(fits[k], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${pipe.label.replace(/^Pipe |^Tube /, '')}`));
+            for (const x of straights) add1(tube(x.A, x.B), `${pipe.label} ${+x.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +x.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: x.A, b: x.B } });
+            corners.forEach((c, q) => add1(fits[q], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${short}`));
           }
-          // (flanges at the two ends: rings on the pipe, flush with its end)
+          for (const t of tees) add1(tee(t), `Tee ${short}`);
+          for (const e of reduced) add1(reducer(e), `Reducer ${short} × ${rd.label.replace(/^Pipe |^Tube /, '')}`);
+          // (flanges at the open ends without a reducer: rings on the pipe, flush with its end)
           if (f.flanges) {
             const FD = ev(f.flangeD), FT = ev(f.flangeT);
             if (!(FD > pipe.D) || !(FT > 0)) throw new Error('The flanges need an outside diameter bigger than the pipe’s and a thickness');
-            for (const [E, d] of [[P[0], dirs[0]], [P[n - 1], mul(dirs[n - 2], -1)]]) add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${pipe.label.replace(/^Pipe |^Tube /, '')}`);
+            for (const e of ends.filter((x) => !reduced.includes(x))) { const E = nodes[e.k].p, d = mul(e.out, -1); add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${short}`); }
           }
           body = compoundOf(solids);
-          const total = straights.reduce((t, s) => t + s.L, 0);
-          res.notes[f.id] = `${pipe.label}: ${f.corner === 'bend' ? `one tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`}${f.flanges ? ', 2 flanges' : ''}`;
+          const total = straights.reduce((t, x) => t + x.L, 0), nf = f.flanges ? ends.length - reduced.length : 0;
+          const parts = [f.corner === 'bend' ? `bent tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`];
+          if (tees.length) parts.push(`${tees.length} tee${tees.length === 1 ? '' : 's'}`);
+          if (reduced.length) parts.push(`${reduced.length} reducer${reduced.length === 1 ? '' : 's'}`);
+          if (nf) parts.push(`${nf} flange${nf === 1 ? '' : 's'}`);
+          res.notes[f.id] = `${pipe.label}: ${parts.join(', ')}`;
+          break;
+        }
+        case 'pointCloud': {
+          // a scan's points (for reference and fitting): shown by the page, no geometry here
+          res.notes[f.id] = `${f.count || 0} points${f.fileName ? ` from ${f.fileName}` : ''}`;
+          break;
+        }
+        case 'fitSurface': {
+          // A surface fitted to a point cloud (or to the points inside a box of it): a plane, a sphere, a cylinder (least
+          // squares), or a freeform surface through a grid of heights over its best plane. The note gives how far the
+          // points are from it (RMS and the largest)
+          const cf = doc.features.find((x) => x.id === f.cloud && x.type === 'pointCloud');
+          if (!cf) throw new Error('Choose the point cloud to fit to');
+          let P = decodePoints(featureData(cf));
+          if (f.box) {
+            const keep = [];
+            for (let i = 0; i < P.length; i += 3) if ([0, 1, 2].every((k) => P[i + k] >= f.box.min[k] && P[i + k] <= f.box.max[k])) keep.push(P[i], P[i + 1], P[i + 2]);
+            P = Float32Array.from(keep);
+          }
+          const n = P.length / 3;
+          if (n < 10) throw new Error('Too few points to fit to (at least 10)');
+          let shape, what;
+          if (f.kind === 'plane') {
+            const pl = fitPlane(P);
+            let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+            for (let i = 0; i < P.length; i += 3) { const q = sub([P[i], P[i + 1], P[i + 2]], pl.o), u = dot(q, pl.u), v = dot(q, pl.v); u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
+            const C = (u, v) => add(pl.o, add(mul(pl.u, u), mul(pl.v, v)));
+            shape = R.makePolygon([C(u0, v0), C(u1, v0), C(u1, v1), C(u0, v1)]);
+            what = 'Plane';
+          } else if (f.kind === 'sphere') {
+            const sp = fitSphere(P);
+            shape = R.makeSphere(sp.r).translate(sp.c).faces[0];
+            what = `Sphere R${+sp.r.toFixed(4)}`;
+          } else if (f.kind === 'cylinder') {
+            const cy = fitCylinder(P);
+            const base = add(cy.p, mul(cy.d, cy.t0));
+            shape = R.makeCylinder(cy.r, cy.t1 - cy.t0, base, cy.d).faces.find((x) => x.geomType === 'CYLINDRE');
+            what = `Cylinder R${+cy.r.toFixed(4)}`;
+          } else {
+            const N = Math.max(4, Math.min(60, Math.round(ev(f.grid ?? 20))));
+            const g = heightGrid(P, N);
+            const wires = g.rows.map((row) => R.assembleWire([R.makeBSplineApproximation(row.map((q) => new R.Vector(q)))]));
+            shape = R.loft(wires, { ruled: false }, true);
+            what = `Freeform ${N} × ${N}`;
+          }
+          if (!shape) throw new Error('The surface could not be made');
+          // (how far the points are from it: some of them, evenly through the cloud)
+          let e2 = 0, emax = 0, m = 0;
+          const step = Math.max(1, Math.floor(n / (f.kind === 'freeform' || !f.kind ? 120 : 300)));
+          for (let i = 0; i < n; i += step) { const d = new R.DistanceQuery(R.makeVertex([P[3 * i], P[3 * i + 1], P[3 * i + 2]])).distanceTo(shape); e2 += d * d; emax = Math.max(emax, d); m++; }
+          surfaces.push(bodyRec(newId(f.id), shape, f.id));
+          applied.push({ op: 'add', tool: shape });
+          res.notes[f.id] = `${what} fitted to ${n} points: ${+Math.sqrt(e2 / m).toFixed(4)} mm RMS, ${+emax.toFixed(4)} mm at most`;
+          break;
+        }
+        case 'ductFitting': {
+          // Duct fitting (thin sheet, outside sizes; ducts.js): a segmented elbow in the XY plane about the Z axis, a cone,
+          // a round-to-rectangle transition or an offset along Z, or a lateral (the main along Z, the branch towards +X)
+          const s = ductSpec(f, ev), ro = s.D / 2, ri = ro - s.t, big = 4 * (s.D + s.L + s.R + s.W + s.H + s.branchL);
+          const block = (p, n) => { const u = unit(cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(p, u, n)).extrude(big); };
+          const tube = (r1, r0, A, d, L) => R.makeCylinder(r1, L, A, d).cut(R.makeCylinder(r0, L + 2, sub(A, d), d));
+          const loftTube = (wireAt) => { const o = R.loft([wireAt(0, 0), wireAt(1, 0)], { ruled: true }), i = R.loft([wireAt(0, s.t), wireAt(1, s.t)], { ruled: true }); return o.cut(i); };
+          let shape;
+          if (s.kind === 'elbow') {
+            const A = (s.angle * Math.PI) / 180, a = A / (s.gores - 1), cuts = [0, ...Array.from({ length: s.gores - 1 }, (_, k) => a / 2 + k * a).slice(0, s.gores - 1), A].filter((x, k, l) => k === 0 || x > l[k - 1] + 1e-12);
+            const dirAt = (th) => [-Math.sin(th), Math.cos(th), 0], at = (th, r) => [r * Math.cos(th), r * Math.sin(th), 0];
+            for (let g = 0; g + 1 < cuts.length; g++) {
+              const c0 = cuts[g], c1 = cuts[g + 1], end0 = g === 0, end1 = g + 2 === cuts.length, m = end0 ? 0 : end1 ? A : (c0 + c1) / 2;
+              const d = dirAt(m), Lg = (s.R + ro) * Math.tan(a) * 2 + 2, A0 = sub(at(m, s.R), mul(d, Lg / 2));
+              let gore = tube(ro, ri, A0, d, Lg);
+              // (between the cut planes through the Z axis at c0 and c1: kept on their inner sides)
+              gore = gore.intersect(block([0, 0, 0], dirAt(c0))).intersect(block([0, 0, 0], mul(dirAt(c1), -1)));
+              shape = shape ? shape.fuse(gore) : gore;
+            }
+            shape = unify(shape);
+          } else if (s.kind === 'cone') {
+            const r2o = s.D2 / 2, r2i = r2o - s.t, P = (rho, z) => [rho, 0, z];
+            shape = R.revolution(R.makePolygon([P(ri, 0), P(ro, 0), P(r2o, s.L), P(r2i, s.L)]), [0, 0, 0], [0, 0, 1], 360);
+          } else if (s.kind === 'transition') {
+            shape = loftTube((top, inset) => top ? R.assembleWire([R.makeCircle(ro - inset, [0, 0, s.L + (inset ? 1e-3 : 0)], [0, 0, 1])]) : R.makePolygon([[s.W / 2 - inset, -(s.H / 2 - inset), inset ? -1e-3 : 0], [s.W / 2 - inset, s.H / 2 - inset, inset ? -1e-3 : 0], [-(s.W / 2 - inset), s.H / 2 - inset, inset ? -1e-3 : 0], [-(s.W / 2 - inset), -(s.H / 2 - inset), inset ? -1e-3 : 0]]).outerWire());
+          } else if (s.kind === 'offset') {
+            shape = loftTube((top, inset) => R.assembleWire([R.makeCircle(ro - inset, [top ? s.offset : 0, 0, top ? s.L + (inset ? 1e-3 : 0) : inset ? -1e-3 : 0], [0, 0, 1])]));
+          } else if (s.kind === 'lateral') {
+            const L = ductLateral(s), b = (s.branchAngle * Math.PI) / 180, d = [Math.sin(b), 0, Math.cos(b)], O = [0, 0, s.L / 2], rbo = s.branchD / 2, rbi = rbo - s.t;
+            const outer = R.makeCylinder(ro, s.L, [0, 0, 0], [0, 0, 1]).fuse(R.makeCylinder(rbo, L.len, O, d));
+            const inner = R.makeCylinder(ri, s.L + 2, [0, 0, -1], [0, 0, 1]).fuse(R.makeCylinder(rbi, L.len + 1, O, d));
+            shape = unify(outer.cut(inner));
+          }
+          if (!shape || !solidsOf(shape).length) throw new Error('The fitting could not be made');
+          const rec = bodyRec(newId(f.id), shape, f.id);
+          rec.name = { elbow: `Elbow ${s.angle}° Ø${s.D}`, cone: `Cone Ø${s.D} × Ø${s.D2}`, transition: `Transition ${s.W}×${s.H} to Ø${s.D}`, offset: `Offset Ø${s.D}`, lateral: `Lateral Ø${s.D} × Ø${s.branchD}` }[s.kind];
+          solids.push(rec); applied.push({ op: 'add', tool: shape });
+          body = compoundOf(solids);
+          const pats = ductPatterns(s);
+          res.notes[f.id] = `${rec.name}: ${pats.map((p) => `${p.qty} × ${p.name} ${+p.size[0].toFixed(1)} × ${+p.size[1].toFixed(1)}`).join(', ')} (flat, File ▸ Export ▸ Duct Patterns)`;
           break;
         }
         case 'cable': {
@@ -5962,7 +6188,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           let w = null;
           const c3 = curves.get(f.path), s2 = sketches.get(f.path);
           if (c3?.wire) w = c3.wire;
-          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed?.()) || sketchWires(s2.sk, s2.frame)[0];
+          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed) || sketchWires(s2.sk, s2.frame)[0];
           if (!w) throw new Error('Select the sketch or 3D sketch of the cable’s route');
           const D = f.sizeBy === 'wires' ? bundleDiameter(Math.round(ev(f.wires)), ev(f.wireD)) : ev(f.diameter);
           if (!(D > 0)) throw new Error('The cable needs a diameter (or wires of a diameter)');
@@ -5971,6 +6197,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (const tm of ['round', 'right', 'transformed']) { try { sh = R.genericSweep(prof, w, { frenet: false, transitionMode: tm }); break; } catch (e) { if (isFatal(e)) throw e; } }
           if (!sh || !solidsOf(sh).length) throw new Error('The cable could not follow the route (a corner tighter than its radius?)');
           const L = R.measureLength(w), slack = ev(f.slack ?? 0) / 100;
+          res.detected[f.id] = { cable: { L, cut: L * (1 + slack), D, ends: [vec(w.startPoint), vec(w.endPoint)] } }; // (for the formboard)
           const rec = bodyRec(newId(f.id), sh, f.id); rec.name = `Cable Ø${+D.toFixed(2)}`;
           solids.push(rec); applied.push({ op: 'add', tool: sh });
           body = compoundOf(solids);
@@ -7251,7 +7478,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) corners.push([x, y, z]);
           const lo = Math.min(...corners.map((q) => dot(q, d))), hi = Math.max(...corners.map((q) => dot(q, d)));
           let h;
-          if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
+          const partingBody = f.parting === 'surface' ? surfaces.find((x) => x.id === f.partingSurface) : null;
+          if (f.parting === 'surface' && !partingBody) throw new Error('Choose the parting surface (a surface body reaching past the block all round)');
+          if (partingBody) h = (lo + hi) / 2;
+          else if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
           else {
             // (the largest section: the part's area in slabs across the pull direction, the middle of the largest run)
             const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), big = b.diag + 10, N = 40, areas = [];
@@ -7269,14 +7499,94 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const spans = (v) => [Math.min(...corners.map((q) => dot(q, v))) - margin, Math.max(...corners.map((q) => dot(q, v))) + margin];
           const [u0, u1] = spans(ub), [v0, v1] = spans(vb), base = (t) => add(add(mul(ub, (u0 + u1) / 2), mul(vb, (v0 + v1) / 2)), mul(d, t));
           const half = (t0, t1) => R.drawRectangle(u1 - u0, v1 - v0).sketchOnPlane(new R.Plane(base(t0), ub, d)).extrude(t1 - t0);
-          const cavity = half(h, hi + margin).cut(part), core = half(lo - margin, h).cut(part);
+          let cavity, core;
+          if (partingBody) {
+            // (a parting surface of its own: the block less the part split by it, each piece by which side of it it is on
+            // along the pull)
+            const pieces = splitBy(half(lo - margin, hi + margin).cut(part), partingBody.shape);
+            if (pieces.length < 2) throw new Error('The parting surface does not cut the block in two (it must reach past the block all round)');
+            const along = (sh) => dot(bbox(sh).center, d);
+            const mid = pieces.map(along).reduce((a, b) => a + b, 0) / pieces.length;
+            const up = pieces.filter((x) => along(x) >= mid), down = pieces.filter((x) => along(x) < mid);
+            const join = (l) => l.reduce((a, b) => (a ? a.fuse(b) : b), null);
+            cavity = join(up); core = join(down);
+            applied.push({ op: 'add', tool: partingBody.shape });
+          } else { cavity = half(h, hi + margin).cut(part); core = half(lo - margin, h).cut(part); }
           const recs = [bodyRec(newId(f.id + 'cav'), cavity, f.id), bodyRec(newId(f.id + 'core'), core, f.id)];
           recs[0].name = 'Cavity'; recs[1].name = 'Core';
           if (f.keepPart === false) solids = solids.filter((s) => s !== rec);
           solids.push(...recs);
           body = compoundOf(solids);
           applied.push({ op: 'add', tool: cavity }, { op: 'add', tool: core });
-          res.notes[f.id] = `Core and cavity, parting ${+(h - lo).toFixed(3)} mm up the part along the pull${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          res.notes[f.id] = `Core and cavity, ${partingBody ? `parted by ${partingBody.id}` : `parting ${+(h - lo).toFixed(3)} mm up the part along the pull`}${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          moldInfo = { d, h, block: { lo: lo - margin, hi: hi + margin }, part, recs };
+          break;
+        }
+        case 'moldSide': {
+          // Side core for an undercut: the picked faces of the part (a side hole, a snap's catch) and a pull direction
+          // across the main one (the faces' normal by default): a block round them, grown by the margin, from the part out
+          // past the mould block, less the part: taken out of the cavity and the core and made a body of its own
+          if (!moldInfo) throw new Error('Make the core and cavity first (Core and Cavity, above this)');
+          // (the faces of the mould's part nearest the points picked: the part as moulded, grown by its shrinkage)
+          const pfaces = moldInfo.part.faces, ptol = Math.max(1e-3, bbox(moldInfo.part).diag * 0.02);
+          const hits = (f.faces || []).map((r) => {
+            let best = null, bd = ptol;
+            for (const fc of pfaces) { const dd = new R.DistanceQuery(R.makeVertex(r.p)).distanceTo(fc); if (dd < bd) { bd = dd; best = fc; } }
+            return best && { face: best };
+          });
+          if (!hits.length || hits.some((x) => !x)) throw new Error('Click the faces of the undercut on the part');
+          const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, key = f.dir || 'normal';
+          let sd = key === 'normal' ? unit(f.faces[0].n || vec(hits[0].face.normalAt())) : key.startsWith('-') ? mul(AX[key[1]], -1) : AX[key];
+          if (f.reverse) sd = mul(sd, -1);
+          const m2 = ev(f.margin ?? 2), bb = bboxOfAll(hits.map((x) => x.face)), big = bbox(moldInfo.part).diag * 3 + 50;
+          const u = unit(cross(sd, Math.abs(sd[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), w = cross(sd, u);
+          const corners = [];
+          for (const x of [bb.min[0], bb.max[0]]) for (const y of [bb.min[1], bb.max[1]]) for (const z of [bb.min[2], bb.max[2]]) corners.push([x, y, z]);
+          const span = (v) => [Math.min(...corners.map((q) => dot(q, v))) - m2, Math.max(...corners.map((q) => dot(q, v))) + m2];
+          const [u0, u1] = span(u), [w0, w1] = span(w), [s0] = span(sd);
+          const base = add(add(mul(u, (u0 + u1) / 2), mul(w, (w0 + w1) / 2)), mul(sd, s0));
+          const tool = R.drawRectangle(u1 - u0, w1 - w0).sketchOnPlane(new R.Plane(base, u, sd)).extrude(big).cut(moldInfo.part);
+          const [cav, cor] = moldInfo.recs.map((r) => solids.find((x) => x.id === r.id)).filter(Boolean);
+          let side = null;
+          for (const r of [cav, cor]) {
+            if (!r) continue;
+            const piece = r.shape.intersect(tool);
+            if (piece && solidsOf(piece).length) side = side ? side.fuse(piece) : piece;
+            replaceSolid(r, unify(r.shape.cut(tool)), f.id);
+          }
+          if (!side) throw new Error('The side core does not reach the mould block (check the faces and the direction)');
+          const rec = bodyRec(newId(f.id + 'side'), unify(side), f.id);
+          rec.name = 'Side core';
+          solids.push(rec);
+          applied.push({ op: 'add', tool: side });
+          body = compoundOf(solids);
+          moldInfo.recs = moldInfo.recs.map((r) => solids.find((x) => x.id === r.id) || r);
+          res.notes[f.id] = `Side core pulled along (${sd.map((x) => +x.toFixed(3)).join(', ')})`;
+          break;
+        }
+        case 'moldRunner': {
+          // Sprue and runners: round runners along the lines of a sketch on the parting plane (half in the cavity, half in
+          // the core), a gate where each meets the part, and a tapered sprue from the cavity's back down to the sketch's
+          // first point: cut from the mould's bodies
+          if (!moldInfo) throw new Error('Make the core and cavity first (Core and Cavity, above this)');
+          const s = sketches.get(f.sketch);
+          if (!s) throw new Error('Select the sketch of the runners (lines on the parting plane)');
+          const D = ev(f.runnerD ?? 6), sd = ev(f.sprueD ?? 4), dd = moldInfo.d;
+          if (!(D > 0 && sd > 0)) throw new Error('The runner and sprue need diameters');
+          const lines = s.sk.curves.filter((c) => c.type === 'line' && !c.construction).map((c) => [c.p1, c.p2].map((id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); }));
+          if (!lines.length) throw new Error('The runner sketch needs lines');
+          let tool = null;
+          const addT = (x) => { tool = tool ? tool.fuse(x) : x; };
+          for (const [a, b] of lines) { const L = len(sub(b, a)); if (L < 1e-6) continue; addT(R.makeCylinder(D / 2, L, a, unit(sub(b, a)))); for (const q of [a, b]) addT(R.makeSphere(D / 2).translate(q)); }
+          // (the sprue: from the sketch's first point to the back of the cavity, wider there by its taper)
+          const p0 = lines[0][0], top = moldInfo.block.hi - dot(p0, dd), r1 = sd / 2 + top * Math.tan(((ev(f.taper ?? 1)) * Math.PI) / 180);
+          const P = (rho, z) => add(add(p0, mul(unit(cross(dd, Math.abs(dd[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), rho)), mul(dd, z));
+          addT(R.revolution(R.makePolygon([P(0, 0), P(sd / 2, 0), P(r1, top + 1), P(0, top + 1)]), p0, dd, 360));
+          let cut = 0;
+          for (const r0 of moldInfo.recs) { const r = solids.find((x) => x.id === r0.id); if (!r) continue; replaceSolid(r, unify(r.shape.cut(tool)), f.id); cut++; }
+          applied.push({ op: 'cut', tool });
+          body = compoundOf(solids);
+          res.notes[f.id] = `${lines.length} runner${lines.length === 1 ? '' : 's'} Ø${D}, a sprue Ø${sd} (${ev(f.taper ?? 1)}° taper), cut in ${cut} mould bod${cut === 1 ? 'y' : 'ies'}`;
           break;
         }
         case 'lipGroove': {
@@ -7486,16 +7796,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
         case 'smForm': {
           // dimples / extruded holes at sketch points or clicked points, louvers on sketch lines
           const kind = f.formType || 'dimple', flip = !!f.flip;
+          const lined = kind === 'louver' || kind === 'bead' || kind === 'lance';
           const par = kind === 'dimple' ? { D: ev(f.diameter), h: ev(f.depth) }
-            : kind === 'louver' ? { W: ev(f.width), H: ev(f.height), side: !!f.side }
-              : { D: ev(f.holeDiameter), h: ev(f.collarHeight), R: f.useDefaultRadius !== false ? 0 : ev(f.radius) };
+            : kind === 'louver' || kind === 'lance' ? { W: ev(f.width), H: ev(f.height), side: !!f.side }
+              : kind === 'bead' ? { W: ev(f.width), H: ev(f.height) }
+                : kind === 'emboss' ? { H: ev(f.height) }
+                  : { D: ev(f.holeDiameter), h: ev(f.collarHeight), R: f.useDefaultRadius !== false ? 0 : ev(f.radius) };
           const items = [];
           if (f.sketch) {
             const s = sketches.get(f.sketch);
             if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
             const P3 = (id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); };
-            if (kind === 'louver') {
+            if (lined) {
               for (const c of s.sk.curves) if (c.type === 'line' && !c.construction) items.push({ kind, line: { a: P3(c.p1), b: P3(c.p2) }, ...par, flip });
+            } else if (kind === 'emboss') {
+              // (each closed outline of the sketch: its corners, curves by points along them)
+              for (const w of sketchWires(s.sk, s.frame)) {
+                if (!w.isClosed) continue;
+                const poly = [];
+                for (const e of w.edges) { const n = e.geomType === 'LINE' ? 1 : 24; for (let k = 0; k < n; k++) { const q = vec(e.pointAt(k / n)); if (!poly.length || len(sub(q, poly.at(-1))) > 1e-6) poly.push(q); } }
+                if (poly.length >= 3) items.push({ kind, poly, ...par, flip });
+              }
             } else {
               // circle centres, and points of their own (not the ends of lines or arcs)
               const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
@@ -7503,14 +7824,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
               for (const pt of s.sk.points) if (pt.id !== 'O' && (at.has(pt.id) || !used.has(pt.id))) items.push({ kind, p: P3(pt.id), ...par, flip });
             }
           }
-          if (kind !== 'louver') for (const fc of f.faces || []) items.push({ kind, p: fc.p, ...par, flip });
-          if (!items.length) throw new Error(kind === 'louver' ? 'Select a sketch with lines on a face of the sheet: each line is a louver\'s slit' : 'Click points on a flat face of the sheet, or select a sketch with points (or circles) on it');
+          if (!lined && kind !== 'emboss') for (const fc of f.faces || []) items.push({ kind, p: fc.p, ...par, flip });
+          if (!items.length) throw new Error(lined ? 'Select a sketch with lines on a face of the sheet: each line is a slit or a bead\'s path' : kind === 'emboss' ? 'Select a sketch on a face of the sheet with closed outlines to emboss' : 'Click points on a flat face of the sheet, or select a sketch with points (or circles) on it');
           const first = items[0];
-          const rec = sheetRecs().find((r) => !r.sheet.stale && (first.line ? SM.lineOnSheet(r.sheet, first.line.a, first.line.b) : SM.pointOnSheet(r.sheet, first.p)));
+          const rec = sheetRecs().find((r) => !r.sheet.stale && (first.line ? SM.lineOnSheet(r.sheet, first.line.a, first.line.b) : SM.pointOnSheet(r.sheet, first.p || first.poly[0])));
           if (!rec) throw new Error('The form is not on a flat face of a sheet metal body');
           setSheet(rec, SM.addForms(sheetChecked(rec), items));
           res.features[f.id] = { faces: f.faces || [] };
-          res.notes[f.id] = `${items.length} ${{ dimple: 'dimple', louver: 'louver', exthole: 'extruded hole' }[kind]}${items.length === 1 ? '' : 's'}`;
+          res.notes[f.id] = `${items.length} ${{ dimple: 'dimple', louver: 'louver', exthole: 'extruded hole', bead: 'bead', lance: 'lance', emboss: 'emboss' }[kind]}${items.length === 1 ? '' : kind === 'emboss' ? 'es' : 's'}`;
           break;
         }
         case 'smGusset': {
@@ -8051,7 +8372,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const m = meshes[i];
       // (color / transparency: the look an import gave the body)
       // (meshKey: the same for a body meshed the same as before: the page keeps what it works out from the triangles)
-      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, meshKey: `${KERNEL_SESSION}|${tol}|${ang}|${diagQ}|${shapeId(s.shape)}`, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
+      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, meshKey: `${KERNEL_SESSION}|${tol}|${ang}|${diagQ}|${shapeId(s.shape)}`, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.name ? { kname: s.name } : {}), ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
       for (const pts of m.facePts) lastFacePts.push(pts);
       nv += m.m.vertices.length; nt += m.m.triangles.length; nf += m.m.faceGroups.length; ne += m.edges.length;
     });
@@ -8648,6 +8969,24 @@ function projectView(shape, box, v, solids = null) {
       try { solids.forEach((sol, k) => cutFaces((sol.shape || sol).cut(makeTool()), k)); done = true; } catch (e) { if (isFatal(e)) throw e; cut = []; cutBody.length = 0; }
     }
     if (!done) cutFaces(s, 0);
+  }
+  // (a broken-out section: the material inside an outline drawn on the view (view coordinates) taken away from the
+  // front of the model to a depth; the faces left at that depth hatched)
+  if (v.breakout?.poly?.length >= 3 && v.breakout.depth > 0) {
+    const corners = [];
+    for (const cx of [box.min[0], box.max[0]]) for (const cy of [box.min[1], box.max[1]]) for (const cz of [box.min[2], box.max[2]]) corners.push([cx, cy, cz]);
+    const front = Math.max(...corners.map((q) => dot(q, dir))), margin = box.diag * 0.05 + 1, bottom = front - v.breakout.depth, poly = v.breakout.poly;
+    const P3 = ([a, b], t) => add(add(mul(x, a), mul(y, b)), mul(dir, t));
+    const tool = R.basicFaceExtrusion(R.makePolygon(poly.map((q) => P3(q, front + margin))), new R.Vector(mul(dir, -(front + margin - bottom))));
+    s = s.cut(tool);
+    const inPoly = (q) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > q[1]) !== (yj > q[1]) && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) c = !c; } return c; };
+    for (const f of s.faces) {
+      if (f.geomType !== 'PLANE') continue;
+      const c = vec(f.center), nf = vec(f.normalAt());
+      if (Math.abs(dot(c, dir) - bottom) > 1e-4 * Math.max(1, box.diag) || Math.abs(dot(nf, dir)) < 0.9999 || !inPoly(to2(c))) continue;
+      cut.push([f.clone().outerWire(), ...f.clone().innerWires()].map((wire) => loopPts2(wire, to2, box.diag)));
+      cutBody.push(0);
+    }
   }
   const hlr = new oc.HLRBRep_Algo();
   hlr.Add(s.wrapped, 0);
@@ -9773,7 +10112,8 @@ function blendCorner(shape, face) {
     if (dot(k, e) > 0) lo = true; else hi = true;
   }
   if (!lo || !hi) throw new Error('The ends of the fillet or chamfer must meet flat faces');
-  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r };
+  // (sec: its section, the tangent lines a and b and the corner c, at 0 along e; the tool from `from` for `length`)
+  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r, sec: { a: A.T, c: C, b: B.T, e, from: t0 - big, length: t1 - t0 + 2 * big } };
 }
 // The edges of `shape` along a sharp edge left by blendCorner.
 function edgesAlong(shape, g) {
@@ -9818,6 +10158,229 @@ function holeFill(shape, face, maxD) {
   }
   return tool && { tool, count: group.length };
 }
+// Curvature continuous (G2) rounds: each round the fillet made (`after` from `before`, at the picked edges, radius r)
+// on a straight edge between flat faces swapped for a blend with the same set-back whose section is a quintic curve,
+// its first and last three control points in line with the faces beside it: so it leaves them with the same tangent
+// plane and no curvature (as they have), and is exact (an extruded curve, not a fitted patch).
+// { shape, n, angle (°), curvature (/mm) }: the worst seen on its edges with the faces beside it.
+function g2Blends(before, after, edges, r) {
+  const skin = R.makeCompound(before.faces.map((x) => x.clone()));
+  const near = (fc) => edges.some((e) => new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(e) <= r * 1.01 + 1e-6) && new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(skin) > 1e-6;
+  const lerp = (p, q, k) => add(p, mul(sub(q, p), k));
+  let shape = after, n = 0, angle = 0, curvature = 0, checked = 0;
+  const made = [];
+  // (a point on the face, not its centre: off a curved face)
+  const isMade = (fc) => { const q = vec(fc.pointOnSurface(0.5, 0.5)); return made.some((g) => new R.DistanceQuery(R.makeVertex(q)).distanceTo(g) < 1e-6); };
+  for (let pass = 0; pass < 200; pass++) {
+    const F = shape.faces.find((fc) => fc.geomType === 'CYLINDRE' || fc.geomType === 'CYLINDER' ? near(fc) : false);
+    if (!F) break;
+    let bc;
+    const one = solidsOf(shape);
+    if (one.length === 1) shape = one[0]; // (a solid, not a compound round it: inside it is inside)
+    try { bc = blendCorner(shape, F); } catch (e) { throw new Error(`A curvature continuous (G2) round needs a straight edge between two flat faces, ending at flat faces: ${e.message}`); }
+    const { a, c, b, e, from, length } = bc.sec;
+    const P = [a, lerp(a, c, 0.4), lerp(a, c, 0.8), lerp(b, c, 0.8), lerp(b, c, 0.4), b].map((q) => add(q, mul(e, from)));
+    const wire = R.assembleWire([R.makeBezierCurve(P), R.makeLine(P[5], add(c, mul(e, from))), R.makeLine(add(c, mul(e, from)), P[0])]);
+    const g = R.basicFaceExtrusion(R.makeFace(wire), new R.Vector(mul(e, length))).intersect(bc.tool);
+    shape = unify(bc.convex ? shape.fuse(bc.tool).cut(g) : shape.cut(bc.tool).fuse(g));
+    made.push(g);
+    n++;
+  }
+  // (any other round left: a corner, a curved edge)
+  if (shape.faces.some((fc) => fc.geomType !== 'PLANE' && near(fc) && !isMade(fc)))
+    throw new Error('Curvature continuous (G2) rounds are made on straight edges between flat faces: round the corners and curved edges in a fillet of their own');
+  // (checked on the CAD faces: each blend against the flat faces along it)
+  const oc = R.getOC(), all = shape.faces;
+  for (const G of all) {
+    if (G.geomType === 'PLANE' || !isMade(G)) continue;
+    for (const ed of G.edges) {
+      if (ed.geomType !== 'LINE') continue;
+      const nb = all.find((x) => !x.isSame(G) && x.geomType === 'PLANE' && x.edges.some((y) => y.isSame(ed)));
+      if (!nb) continue;
+      const nbEdge = nb.edges.find((y) => y.isSame(ed));
+      const uv = (edge, face, t) => { const q = oc.RazorCADSurfacePatch.UV(edge.wrapped, face.wrapped, t); try { return [q.X(), q.Y()]; } finally { q.delete(); } };
+      for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const q = compareSurfaceContinuity(R, G, nb, vec(ed.pointAt(t)), vec(ed.tangentAt(t)), { leftUV: uv(ed, G, t), rightUV: uv(nbEdge, nb, t) });
+        angle = Math.max(angle, q.angle); curvature = Math.max(curvature, q.curvatureError); checked++;
+      }
+    }
+  }
+  if (n && !checked) throw new Error('The curvature continuous (G2) round could not be checked against the faces beside it');
+  return { shape, n, angle, curvature, checked };
+}
+
+// A face reshaped by an nu × nv grid of handles, evenly across it, each at its height (mm) along the face's normal there
+// (outward): the face as an exact B-spline (a flat face with four straight edges: a bilinear patch through its corners;
+// an untrimmed B-spline face: itself), refined, its control points moved, the outer 1 (G0), 2 (G1) or 3 (G2) rows of
+// them held so its edges and the tangent plane / curvature along them stay as they were. The moves are solved so the
+// face passes through each handle. { face, handles: [{ p, n, h }], miss (mm), angle (°), curvature (/mm) }
+function freeformFace(F, nu, nv, heights, keep) {
+  const oc = R.getOC(), k = { G0: 1, G1: 2, G2: 3 }[keep] || 2, owned = [];
+  const own = (x) => (owned.push(x), x);
+  const P = (q) => { try { return [q.X(), q.Y(), q.Z()]; } finally { q.delete(); } };
+  const N = Math.max(10, 2 * k + 2 * Math.max(nu, nv) + 2);
+  let srf, u0 = 0, u1 = 1, v0 = 0, v1 = 1, outward;
+  try {
+    if (F.clone().innerWires().length) throw new Error('The face to reshape has holes in it: reshape a face without holes');
+    const gf = new oc.BRepGProp_Face(F.wrapped, false);
+    const normalAt = (u, v) => { const p = new oc.gp_Pnt(), n = new oc.gp_Vec(); try { gf.Normal(u, v, p, n); return unit([n.X(), n.Y(), n.Z()]); } finally { p.delete(); n.delete(); } };
+    owned.push(gf);
+    if (F.geomType === 'PLANE') {
+      // (its corners in order round its outer wire)
+      const es = F.edges;
+      if (es.length !== 4 || es.some((e) => e.geomType !== 'LINE')) throw new Error('A flat face to reshape has four straight edges (or reshape a freeform face)');
+      const segs = es.map((e) => [vec(e.startPoint), vec(e.endPoint)]), C = [segs[0][0], segs[0][1]], used = [0];
+      while (C.length < 4) {
+        const last = C[C.length - 1], j = segs.findIndex((s, i) => !used.includes(i) && (len(sub(s[0], last)) < 1e-7 || len(sub(s[1], last)) < 1e-7));
+        if (j < 0) throw new Error('The face\'s edges do not close');
+        used.push(j); C.push(len(sub(segs[j][0], last)) < 1e-7 ? segs[j][1] : segs[j][0]);
+      }
+      const b = F.UVBounds, n0 = normalAt((b.uMin + b.uMax) / 2, (b.vMin + b.vMax) / 2);
+      outward = () => n0;
+      const m = N - 3, pts = own(new oc.NCollection_Array2_gp_Pnt(1, N, 1, N));
+      const kn = () => { const kk = own(new oc.NCollection_Array1_double(1, m + 1)), mm = own(new oc.NCollection_Array1_int(1, m + 1)); for (let i = 0; i <= m; i++) { kk.SetValue(i + 1, i / m); mm.SetValue(i + 1, i === 0 || i === m ? 4 : 1); } return [kk, mm]; };
+      const flat = [0, 0, 0, ...Array.from({ length: m + 1 }, (_, i) => i / m), 1, 1, 1];
+      const grev = (i) => (flat[i + 1] + flat[i + 2] + flat[i + 3]) / 3;
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const s = grev(i), t = grev(j), q = add(add(mul(C[0], (1 - s) * (1 - t)), mul(C[1], s * (1 - t))), add(mul(C[2], s * t), mul(C[3], (1 - s) * t)));
+        const g = new oc.gp_Pnt(...q); try { pts.SetValue(i + 1, j + 1, g); } finally { g.delete(); }
+      }
+      const [uk, um] = kn(), [vk, vm] = kn();
+      srf = new oc.Geom_BSplineSurface(pts, uk, vk, um, vm, 3, 3, false, false);
+    } else if (F.geomType === 'BSPLINE_SURFACE') {
+      const ad = new oc.BRepAdaptor_Surface(F.wrapped, false);
+      try { srf = new oc.Geom_BSplineSurface(ad.BSpline()); } finally { ad.delete(); }
+      const bb = srf.Bounds(0, 0, 0, 0), b = F.UVBounds;
+      ({ U1: u0, U2: u1, V1: v0, V2: v1 } = bb);
+      const tol = 1e-7 * Math.max(1, Math.abs(u1 - u0), Math.abs(v1 - v0));
+      if (srf.IsUPeriodic() || srf.IsVPeriodic() || [b.uMin - u0, b.uMax - u1, b.vMin - v0, b.vMax - v1].some((x) => Math.abs(x) > tol))
+        throw new Error('The freeform face is trimmed (it does not cover its whole surface): untrim it first, or reshape a face that is not');
+      // (refined: enough control points for the held rows and the handles)
+      for (const [U, ins, nb, a0, a1] of [[true, (x) => srf.InsertUKnot(x, 1, 1e-9, false), () => srf.NbUPoles(), u0, u1], [false, (x) => srf.InsertVKnot(x, 1, 1e-9, false), () => srf.NbVPoles(), v0, v1]]) {
+        for (let M = 4; nb() < N && M < 256; M *= 2) for (let i = 1; i < M; i++) ins(a0 + ((a1 - a0) * i) / M);
+        void U;
+      }
+      outward = (u, v) => normalAt(u, v);
+    } else throw new Error('Freeform reshapes flat faces with four straight edges and untrimmed freeform (B-spline) faces');
+    // (the parameters of the control points: Greville abscissae)
+    const greville = (U) => {
+      const deg = U ? srf.UDegree() : srf.VDegree(), nk = U ? srf.NbUKnots() : srf.NbVKnots(), flat = [];
+      for (let i = 1; i <= nk; i++) { const x = U ? srf.UKnot(i) : srf.VKnot(i), m = U ? srf.UMultiplicity(i) : srf.VMultiplicity(i); for (let j = 0; j < m; j++) flat.push(x); }
+      const np = U ? srf.NbUPoles() : srf.NbVPoles();
+      return Array.from({ length: np }, (_, i) => { let s = 0; for (let j = 1; j <= deg; j++) s += flat[i + j]; return s / deg; });
+    };
+    const gu = greville(true), gv = greville(false), NU = gu.length, NV = gv.length;
+    const S = (x, a, b) => (x - a) / (b - a);
+    // (each handle's influence on the control points: a tent over the grid of handles, 0 on the held rows)
+    const tent = (x, H, a) => { const nodes = [0, ...Array.from({ length: H }, (_, i) => (i + 1) / (H + 1)), 1], c = nodes[a + 1], l = nodes[a], r = nodes[a + 2]; return x <= l || x >= r ? 0 : x < c ? (x - l) / (c - l) : (r - x) / (r - c); };
+    const base = [], nrm = [];
+    for (let i = 0; i < NU; i++) { base.push([]); nrm.push([]); for (let j = 0; j < NV; j++) { base[i].push(P(srf.Pole(i + 1, j + 1))); nrm[i].push(outward(gu[i], gv[j])); } }
+    const free = (i, j) => i >= k && i < NU - k && j >= k && j < NV - k;
+    const setPoles = (c) => {
+      for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) {
+        if (!free(i, j)) continue;
+        let d = 0;
+        for (let a = 0; a < nu; a++) { const wa = tent(S(gu[i], u0, u1), nu, a); if (!wa) continue; for (let b = 0; b < nv; b++) d += c[a + nu * b] * wa * tent(S(gv[j], v0, v1), nv, b); }
+        const g = new oc.gp_Pnt(...add(base[i][j], mul(nrm[i][j], d))); try { srf.SetPole(i + 1, j + 1, g); } finally { g.delete(); }
+      }
+    };
+    const hUV = [];
+    for (let b = 0; b < nv; b++) for (let a = 0; a < nu; a++) hUV.push([u0 + ((u1 - u0) * (a + 1)) / (nu + 1), v0 + ((v1 - v0) * (b + 1)) / (nv + 1)]);
+    const H = hUV.length, at = hUV.map(([u, v]) => P(srf.Value(u, v))), hn = hUV.map(([u, v]) => outward(u, v));
+    const rise = () => hUV.map(([u, v], i) => dot(sub(P(srf.Value(u, v)), at[i]), hn[i]));
+    // (the moves are linear in the coefficients: solved, A c = heights)
+    const A = [];
+    for (let q = 0; q < H; q++) { const c = Array(H).fill(0); c[q] = 1; setPoles(c); const r = rise(); r.forEach((x, i) => { (A[i] ||= [])[q] = x; }); }
+    const c = solveLinear(A, heights);
+    if (!c) throw new Error('The handles are too close to the held edges to move the face: use fewer handles or keep less at the edges');
+    setPoles(c);
+    const miss = Math.max(0, ...rise().map((x, i) => Math.abs(x - heights[i])));
+    const mk = new oc.BRepBuilderAPI_MakeFace(srf, 1e-7);
+    let face;
+    try { if (!mk.IsDone()) throw new Error('The reshaped face could not be made'); face = R.cast(mk.Face()); } finally { mk.delete(); }
+    // (checked against the face as it was, along its edges: the tangent plane, and the curvature)
+    let angle = 0, curvature = 0;
+    if (k > 1) {
+      const nf = new oc.BRepGProp_Face(face.wrapped, false);
+      owned.push(nf);
+      for (const x of [0.13, 0.31, 0.5, 0.69, 0.87]) for (const [u, v, tg] of [[u0 + (u1 - u0) * x, v0, 0], [u0 + (u1 - u0) * x, v1, 0], [u0, v0 + (v1 - v0) * x, 1], [u1, v0 + (v1 - v0) * x, 1]]) {
+        const p = P(srf.Value(u, v)), uvOld = F.geomType === 'PLANE' ? F.uvCoordinates(p) : [u, v];
+        const d1u = new oc.gp_Pnt(), du = new oc.gp_Vec(), dv = new oc.gp_Vec();
+        let dir;
+        try { srf.D1(u, v, d1u, du, dv); dir = tg ? [dv.X(), dv.Y(), dv.Z()] : [du.X(), du.Y(), du.Z()]; } finally { d1u.delete(); du.delete(); dv.delete(); }
+        const q = compareSurfaceContinuity(R, F, face, p, dir, { leftUV: uvOld, rightUV: [u, v] });
+        angle = Math.max(angle, q.angle);
+        if (k > 2) curvature = Math.max(curvature, q.curvatureError);
+      }
+    }
+    const handles = hUV.map(([u, v], i) => ({ p: P(srf.Value(u, v)), n: hn[i], h: heights[i] }));
+    return { face, handles, miss, angle, curvature };
+  } finally { srf?.delete(); owned.reverse().forEach((x) => x.delete()); }
+}
+// x for A x = b (Gaussian elimination, partial pivoting); null: singular
+function solveLinear(A, b) {
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (!(Math.abs(M[p][c]) > 1e-12)) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < n; r++) { if (r === c) continue; const f = M[r][c] / M[c][c]; if (f) for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j]; }
+  }
+  return M.map((r, i) => r[n] / r[i]);
+}
+
+// (Kernel Lab k14) faces taken out of a solid by OpenCascade's defeaturing: their neighbours grown or shrunk to close the
+// gap, any faces (fillet chains with their corner blends, holes, bosses, faces of imported parts). null: this kernel
+// has no defeaturing, or it could not be done.
+function labDefeature(shape, faces) {
+  const oc = R.getOC();
+  if (!oc.LabDefeature || !faces.length) return null;
+  const comp = R.makeCompound(faces.map((x) => x.clone())); // (copies: the compound takes what it is given)
+  let out = null;
+  try {
+    out = oc.LabDefeature.Remove(shape.wrapped, comp.wrapped, kernelThreads > 1);
+    if (!out || out.IsNull()) { out?.delete?.(); return null; }
+    const sh = R.cast(out);
+    return solidsOf(sh).length ? sh : null;
+  } catch (e) { if (isFatal(e)) throw e; return null; }
+}
+const labDefeatureError = () => { try { return R.getOC().LabDefeature?.LastError() || ''; } catch { return ''; } };
+// The edges of `after` made where faces were taken out of `before`: not on before's faces, near the faces removed.
+function newEdgesNear(before, after, removed) {
+  const skin = R.makeCompound(before.faces), boxes = removed.map((fc) => { const b = bbox(fc), g = b.diag * 0.5 + 1e-6; return { min: b.min.map((x) => x - g), max: b.max.map((x) => x + g) }; });
+  return after.edges.filter((e) => {
+    const m = vec(e.pointAt(0.5));
+    if (!boxes.some((b) => m.every((x, i) => x >= b.min[i] && x <= b.max[i]))) return false;
+    return new R.DistanceQuery(R.makeVertex(m)).distanceTo(skin) > 1e-6;
+  });
+}
+// The faces a defeature takes out: fillets up to maxR (round strips: open cylinders, tori, spheres at corners) and holes
+// up to maxD (closed concave cylinders with their counterbores, countersinks and drill points).
+function defeatureFaces(shape, maxR, maxD) {
+  const out = [], have = (fc) => out.some((x) => x.isSame(fc));
+  for (const fc of shape.faces) {
+    if (have(fc)) continue;
+    const s = surfOf(fc);
+    if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9) || (s.t === 'SPHERE' && s.r <= maxR + 1e-9))) { out.push(fc); continue; }
+    if (maxD > 0 && s.t === 'CYLINDER' && 2 * s.r <= maxD + 1e-9 && faceHasSeam(fc)) {
+      const mid = holeFill(shape, fc, maxD);
+      if (!mid) continue;
+      // (the hole's faces: the cylinder and its coaxial neighbours)
+      const { p: o, d } = s, onAxis = (x) => { const a = faceAxis(x); return a && len(cross(a.d, d)) < 1e-6 && len(cross(sub(a.o, o), d)) < 1e-6; };
+      const group = [fc], todo = [fc];
+      while (todo.length) for (const nb of faceNeighbours(shape, todo.pop())) {
+        if (group.some((g) => g.isSame(nb.face))) continue;
+        const t = nb.face.geomType;
+        if ((t === 'CYLINDRE' || t === 'CONE') && onAxis(nb.face)) { group.push(nb.face); todo.push(nb.face); }
+        else if (t === 'PLANE' && len(cross(surfOf(nb.face).n, d)) < 1e-6 && nb.face.edges.every((x) => x.geomType === 'CIRCLE' && len(cross(sub(circleOf(x)?.c ?? [NaN, NaN, NaN], o), d)) < 1e-6)) { group.push(nb.face); todo.push(nb.face); }
+      }
+      for (const g of group) if (!have(g)) out.push(g);
+    }
+  }
+  return out;
+}
+
 // Fillets (radius up to maxR) and holes (up to maxD across) taken out of a solid, one at a time, as many as can be.
 function defeatureShape(shape, maxR, maxD) {
   const bad = new Set(), key = (fc) => vec(fc.center).map((x) => x.toFixed(5)).join();
@@ -10998,6 +11561,18 @@ async function handleMessage(e) {
       // (Kernel Lab: the solids' volume, for the BOM's mass, instead of the display mesh's)
       if (data.withVolume && r.body && lastSolids.length) { const ex = exactProps(lastSolids.map((x) => x.shape), 1e-6); r.body.volume = ex.reduce((t, x, i) => t + finite(x.volume, () => preciseVolume(lastSolids[i].shape)), 0); }
       transfer = out.transfer;
+    } else if (type === 'stepPMI') {
+      // (Kernel Lab k14) the part's solids (not its context bodies) as AP242 STEP with semantic PMI from spec
+      const oc = R.getOC();
+      if (!oc.LabPMI) throw new Error('This geometry kernel cannot write PMI');
+      const list = lastSolids.filter((s) => !lastContext.has(s.id));
+      if (!list.length) throw new Error('There is no solid to export');
+      const shape = list.length === 1 ? list[0].shape : compoundOf(list);
+      // (a writer made once first: the first one made sets OpenCascade's STEP parameters up, the schema too)
+      if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+      const text = oc.LabPMI.WriteStep(shape.wrapped, data.name || lastName, data.spec || '');
+      if (!text) throw new Error('The STEP file could not be written');
+      result = { text };
     } else if (type === 'partSTEP') {
       // a part's solids as a STEP file, placed by pose { p, q: [x, y, z, w] } (Edit in Context: another part, where it is
       // from the part being edited)

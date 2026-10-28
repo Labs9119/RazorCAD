@@ -76,6 +76,8 @@ export const MATE_TYPES = {
   // (slot: a pin or point the set distance from a straight edge, between its ends; path: a point on a curved edge)
   slot: { label: 'Slot', icon: 'mateDistance', value: 'mm' },
   path: { label: 'Path', icon: 'mateTangent' },
+  // (cam: a follower (a point, or a roller: an axis) kept its radius from a cam's curved edge, in the plane square to it)
+  cam: { label: 'Cam', icon: 'mateTangent', value: 'mm' },
   symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
 };
 
@@ -179,6 +181,22 @@ function mateEquations(m, A, B, C = null, D = null) {
     for (const k of [0, 1, 2]) eqs.push(() => nearest()[k]);
     return eqs;
   }
+  if (t === 'cam') {
+    // (the cam: the one with the polyline; the follower's distance to it, seen along the follower's axis (a roller) or
+    // straight (a point), held at the value: the roller's radius)
+    const [F, Cm] = B().pts && !A().pts ? [A, B] : A().pts && !B().pts ? [B, A] : [A, B];
+    eqs.push(() => {
+      const f = F(), pts = Cm().pts, d = f.kind === 'axis' ? unit(f.d) : null;
+      const flat = (q) => (d ? sub(q, mul(d, dot(sub(q, f.p), d))) : q);
+      let bd = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const a = flat(pts[i - 1]), e = sub(flat(pts[i]), a), ee = dot(e, e), s = ee > 0 ? Math.max(0, Math.min(1, dot(sub(f.p, a), e) / ee)) : 0;
+        bd = Math.min(bd, len(sub(f.p, add(a, mul(e, s)))));
+      }
+      return bd - v;
+    });
+    return eqs;
+  }
   if (t === 'width') {
     // (B's two faces parallel to A's, their middle plane on A's)
     if (!C || !D) return eqs;
@@ -265,9 +283,9 @@ export function mateChoices(A, B) {
     case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
     case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
     case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
-    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path'] : []), 'lock'];
+    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
-    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path'] : []), 'lock'];
+    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
     default: return ['lock'];
   }
 }
@@ -565,7 +583,7 @@ export class AssemblyEditor {
     this.renderCommandManager();
     if (play) this.motionTool.play();
   }
-  solveView(v, opts) { return solveAssembly(v, opts); }
+  solveView(v, opts) { const r = solveAssembly(v, opts); if (v.flexible) this.writeFlex(v); return r; }
   onMotionClosed() { this.motionTool = null; this.updateGeometry(); this.renderAll(); }
   deleteMotion(id) { this.begin(); this.doc.motions = this.doc.motions.filter((x) => x.id !== id); this.change(); }
   deleteExplode(id) { this.begin(); this.doc.explodes = this.doc.explodes.filter((x) => x.id !== id); if (this.doc.exploded === id) this.doc.exploded = null; this.change(); }
@@ -594,7 +612,53 @@ export class AssemblyEditor {
   // the assembly as the configuration shows it (suppressed components and their mates left out)
   view() {
     const comps = this.doc.components.filter((c) => !this.eff(c).suppressed), on = new Set([ORIGIN, ...comps.map((c) => c.id)]);
-    return { components: comps, mates: this.doc.mates.map((m) => this.effMate(m)).filter((m) => on.has(m.a.comp) && on.has(m.b.comp)) };
+    const mates = this.doc.mates.map((m) => this.effMate(m)).filter((m) => on.has(m.a.comp) && on.has(m.b.comp));
+    const flex = comps.filter((c) => c.flexible && this.isSub(this.part(c.part)));
+    return flex.length ? this.flexView(comps, mates, flex) : { components: comps, mates };
+  }
+  // Flexible sub-assemblies: their components solved here as components of this assembly (ids "sub/inner", placed
+  // through the sub-assembly), with the sub-assembly's own mates, and this assembly's mates on their parts moved onto
+  // them. Where they end up is kept with the sub-assembly component (c.flex: { inner id: { pos, rot } }, in its frame):
+  // the sub-assembly itself is not changed. A fixed component inside stays fixed only when the sub-assembly is.
+  flexView(comps, mates, flex) {
+    const out = comps.filter((c) => !flex.includes(c)), outMates = [], inner = new Map();
+    for (const S of flex) {
+      const sd = this.subView(this.part(S.part).doc, this.eff(S).config), PS = poseOf(S), rel = new Map();
+      for (const c of sd.components || []) {
+        if (c.suppressed) continue;
+        const o = S.flex?.[c.id], pr = { p: (o?.pos || c.pos).slice(), q: new THREE.Quaternion(...(o?.rot || c.rot)).normalize() };
+        rel.set(c.id, pr);
+        const q = PS.q.clone().multiply(pr.q);
+        out.push({ ...c, id: `${S.id}/${c.id}`, name: `${S.name} ▸ ${c.name}`, pos: toWorld(PS, pr.p), rot: [q.x, q.y, q.z, q.w], fixed: !!(S.fixed && c.fixed), _flexOf: S.id, _inner: c.id });
+      }
+      for (const m of sd.mates || []) if (!m.suppressed && rel.has(m.a.comp) && rel.has(m.b.comp)) outMates.push({ ...m, id: `${S.id}/${m.id}`, a: { ...m.a, comp: `${S.id}/${m.a.comp}` }, b: { ...m.b, comp: `${S.id}/${m.b.comp}` } });
+      inner.set(S.id, rel);
+    }
+    // (a reference on a part inside a flexible sub-assembly: given in the sub-assembly's frame, moved into its part's)
+    const remap = (r) => {
+      const rel = inner.get(r.comp), pr = rel && r.sub?.length && rel.get(r.sub[0]);
+      if (!pr) return r;
+      const inv = pr.q.clone().invert(), loc = (x) => applyQ(inv, sub(x, pr.p)), dir = (d) => applyQ(inv, d);
+      return { ...r, comp: `${r.comp}/${r.sub[0]}`, sub: r.sub.length > 1 ? r.sub.slice(1) : undefined, p: loc(r.p), n: r.n && dir(r.n), d: r.d && dir(r.d), pts: r.pts && r.pts.map(loc) };
+    };
+    for (const m of mates) outMates.push({ ...m, a: remap(m.a), b: remap(m.b) });
+    return { components: out, mates: outMates, flexible: true };
+  }
+  // A flexible sub-assembly's component placed (world pose), kept in its frame: id "sub/inner".
+  setFlexPose(id, pos, rot) {
+    const [sid, iid] = String(id).split('/'), S = this.comp(sid);
+    if (!S || !iid) return false;
+    const PS = poseOf(S), inv = PS.q.clone().invert(), q = inv.clone().multiply(new THREE.Quaternion(...rot));
+    (S.flex ||= {})[iid] = { pos: applyQ(inv, sub(pos, PS.p)), rot: [q.x, q.y, q.z, q.w] };
+    return true;
+  }
+  writeFlex(v) { for (const c of v.components) if (c._flexOf) this.setFlexPose(c.id, c.pos, c.rot); }
+  setFlexible(id, on) {
+    const c = this.comp(id);
+    if (!c) return;
+    if (on) c.flexible = true; else { delete c.flexible; delete c.flex; }
+    this.solve(); this.updateGeometry?.(); this.renderAll?.();
+    this.commit(on ? 'Make flexible' : 'Make rigid');
   }
   // ---------------------------------------------------------------- sub-assemblies
   // A component can use an assembly instead of a part: a sub-assembly, kept whole (its own parts, components,
@@ -611,14 +675,15 @@ export class AssemblyEditor {
       return { config: 'config' in o ? o.config : (c.config ?? null), hidden: 'hidden' in o ? o.hidden : !!c.hidden, suppressed: 'suppressed' in o ? o.suppressed : !!c.suppressed };
     };
     const q = new THREE.Quaternion(), v = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
-    const walk = (doc, M, ci, top, chain, prefix, hidden, names, depth) => {
+    const walk = (doc, M, ci, top, chain, prefix, hidden, names, depth, over = null) => {
       if (depth > 16) return; // (an assembly inside itself)
       for (const c of doc.components) {
         const e = effIn(doc, doc.activeConfig, c);
         if (e.suppressed) continue;
         const p = (doc.parts || []).find((x) => x.id === c.part);
         if (!p) continue;
-        const Mc = M.clone().multiply(new THREE.Matrix4().compose(v.set(...c.pos), q.set(...c.rot).normalize(), one));
+        const o = over?.[c.id]; // (a flexible sub-assembly: where its component is in this assembly)
+        const Mc = M.clone().multiply(new THREE.Matrix4().compose(v.set(...(o?.pos || c.pos)), q.set(...(o?.rot || c.rot)).normalize(), one));
         if (this.isSub(p)) walk(this.subView(p.doc, e.config), Mc, ci, top, [...chain, c.id], `${prefix}${p.id}>`, hidden || e.hidden, [...names, c.name], depth + 1);
         else out.push({ ci, comp: top, chain: [...chain, c.id], p, cfg: e.config, gk: `${prefix}${p.id}|${e.config || ''}`, M: Mc, hidden: hidden || e.hidden, names: [...names, c.name] });
       }
@@ -626,7 +691,7 @@ export class AssemblyEditor {
     this.doc.components.forEach((c, ci) => {
       const e = this.eff(c), p = this.part(c.part);
       if (e.suppressed || !p) return;
-      if (this.isSub(p)) walk(this.subView(p.doc, e.config), new THREE.Matrix4(), ci, c, [], `${p.id}>`, e.hidden, [], 1);
+      if (this.isSub(p)) walk(this.subView(p.doc, e.config), new THREE.Matrix4(), ci, c, [], `${p.id}>`, e.hidden, [], 1, c.flexible ? c.flex : null);
       else out.push({ ci, comp: c, chain: [], p, cfg: e.config, gk: this.geoKey(c.part, e.config) + this.cutSuffix(c.id), cut: this._cuts?.get(c.id)?.feats || null, M: new THREE.Matrix4(), hidden: e.hidden, names: [] });
     });
     return out;
@@ -1250,7 +1315,8 @@ export class AssemblyEditor {
 
   // ---------------------------------------------------------------- solving
   solve(opts) {
-    const r = solveAssembly(this.view(), opts);
+    const v = this.view(), r = solveAssembly(v, opts);
+    if (v.flexible) this.writeFlex(v);
     // (pattern copies placed from their seeds, where these are now)
     if (this.doc.compPatterns?.length && applyCompPatterns(this.doc, (b) => this.uid(b))) this.loadParts?.();
     this.solveOk = r.ok;
@@ -2019,6 +2085,44 @@ export class AssemblyEditor {
     await a.openFromFile({ name: p.name + (sub ? ASM_EXT : '.rcad'), content: JSON.stringify(p.doc), path: null });
     return a.tabs[a.tabIndex];
   }
+  // Number Parts: a Part Number property for each part and sub-assembly (in the order of the bill of materials, through
+  // the sub-assemblies): prefix + a number of `digits` from start in steps of step; those with one already kept unless
+  // asked. Returns how many were numbered.
+  numberParts({ prefix = 'P-', start = 1, step = 1, digits = 4, all = false } = {}) {
+    let n = start, done = 0;
+    const seen = new Set();
+    const walk = (doc, depth) => {
+      if (depth > 16) return;
+      for (const p of doc.parts || []) {
+        if (!p.doc || seen.has(p.doc) || p.libKey || !(doc.components || []).some((c) => c.part === p.id)) continue;
+        seen.add(p.doc);
+        const props = (p.doc.customProps ||= []), have = props.find((x) => x.name === 'Part Number');
+        if (all || !have?.value) {
+          const v = `${prefix}${String(n).padStart(digits, '0')}`;
+          if (have) have.value = v; else props.push({ name: 'Part Number', value: v });
+          n += step; done++;
+        }
+        if (this.isSub(p)) walk(p.doc, depth + 1);
+      }
+    };
+    walk(this.doc, 0);
+    if (done) this.commit('Number parts');
+    return done;
+  }
+  async numberPartsDialog() {
+    const v = await this.app.ui.promptFields('Number Parts', 'bom', [
+      { key: 'prefix', label: 'Before the number', type: 'text', value: this.doc.numbering?.prefix ?? 'P-' },
+      { key: 'start', label: 'First number', type: 'expr', value: this.doc.numbering?.next ?? 1 },
+      { key: 'step', label: 'Step', type: 'expr', value: 1 },
+      { key: 'digits', label: 'Digits', type: 'expr', value: 4 },
+      { key: 'all', label: 'Number again those with a part number', type: 'check', value: false },
+    ], 'Each part and sub-assembly gets a Part Number property (shown in the bill of materials and title blocks), in the order of the bill of materials. Save the parts kept in files of their own to keep it there.');
+    if (!v) return;
+    const o = { prefix: v.prefix, start: Math.round(+v.start) || 1, step: Math.round(+v.step) || 1, digits: Math.max(1, Math.min(9, Math.round(+v.digits) || 4)), all: !!v.all };
+    const n = this.numberParts(o);
+    this.doc.numbering = { prefix: o.prefix, next: o.start + n * o.step };
+    this.app.status(n ? `${n} part${n === 1 ? '' : 's'} numbered.` : 'Every part has a part number already.');
+  }
   // Positions (doc.positions: [{ id, name, comps: { component id: { pos, rot } } }]): where the components are now, kept
   // under a name: shown in a drawing view as an alternate position (phantom lines), or the assembly put back there.
   savePosition(name) {
@@ -2065,27 +2169,27 @@ export class AssemblyEditor {
       chosen = others.slice(0, 40).filter((_, i) => v['c' + i]);
       if (!chosen.length) return null;
     }
-    const P0 = poseOf(c), inv = P0.q.clone().invert();
-    const pool = a.kernelPool || a.kernel, ctx = [];
+    const ctx = [];
     await a.withProgress?.('Bringing in the context…', async () => {
       for (const x of chosen) {
-        const px = this.part(x.part), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p)), cfg = this.eff(x).config;
-        const doc = { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
-        try { const r = await pool.request('partSTEP', { doc: JSON.stringify(doc), pose: { p: t, q: [q.x, q.y, q.z, q.w] }, name: x.name || px.name }, 'asm-parts'); ctx.push({ comp: x, text: r.text }); }
-        catch (e) { a.toast(`${x.name || px.name} could not come into context: ${e.message}`, true); }
+        try { ctx.push({ comp: x, text: await this.contextStep(c, x), sig: this.contextSig(c, x) }); }
+        catch (e) { a.toast(`${x.name || this.part(x.part).name} could not come into context: ${e.message}`, true); }
       }
     }) ?? null;
     if (!ctx.length) return null;
     const asmTab = a.tabs[a.tabIndex];
+    // (the assembly's own id, kept with the context: component ids repeat from one assembly to another)
+    this.doc.uid ||= newRev() + newRev();
+    const asmUid = this.doc.uid;
     await this.openPart(c.id);
     const doc = a.doc;
     if (!doc || doc === this.doc) return null;
     const made = [];
-    for (const { comp, text } of ctx) {
+    for (const { comp, text, sig } of ctx) {
       let f = doc.features.find((g) => g.type === 'import' && g.context?.comp === comp.id);
-      if (f) { f.data = text; f.rev = newRev(); }
+      if (f) { f.data = text; f.rev = newRev(); f.context = { ...f.context, host: c.id, asm: asmUid, sig }; }
       else {
-        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name } });
+        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name, host: c.id, asm: asmUid, sig } });
         f.name = `Context: ${comp.name || this.part(comp.part).name}`;
         insertFeature(doc, f);
       }
@@ -2099,10 +2203,49 @@ export class AssemblyEditor {
     this.contextOf = { asmTab, comp: c.id };
     return { ids: made };
   }
+  // Context: another component's part as a STEP file where it is from the host component (the part edited), and a
+  // signature of that (its part as built, its configuration, where it is from the host) to tell when it changed.
+  contextPose(host, x) {
+    const P0 = poseOf(host), inv = P0.q.clone().invert(), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p));
+    return { p: t, q: [q.x, q.y, q.z, q.w] };
+  }
+  contextDoc(x) {
+    const px = this.part(x.part), cfg = this.eff(x).config;
+    return { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
+  }
+  contextSig(host, x) {
+    const P = this.contextPose(host, x);
+    return hash(JSON.stringify(this.contextDoc(x))) + ':' + [...P.p, ...P.q].map((v) => (Math.abs(v) < 5e-10 ? 0 : v).toFixed(9)).join(',');
+  }
+  async contextStep(host, x) {
+    const pool = this.app.kernelPool || this.app.kernel;
+    const r = await pool.request('partSTEP', { doc: JSON.stringify(this.contextDoc(x)), pose: this.contextPose(host, x), name: x.name || this.part(x.part).name }, 'asm-parts');
+    return r.text;
+  }
+  // The context features of a part (doc) edited in context in this assembly brought up to date: those whose
+  // component's part, configuration or place from the host changed (force: all), and those whose component is gone
+  // suppressed. Returns { updated, gone }.
+  async refreshContext(doc, force = false) {
+    let updated = 0, gone = 0;
+    // (not context from another assembly: its id kept with the context, when both have one)
+    for (const f of doc.features.filter((g) => g.type === 'import' && g.context?.host && !(g.context.asm && this.doc.uid && g.context.asm !== this.doc.uid))) {
+      const host = this.comp(f.context.host), x = this.comp(f.context.comp);
+      if (!host) continue;
+      if (!x || !this.part(x.part)) { if (!f.suppressed) { f.suppressed = true; f.context = { ...f.context, gone: true }; gone++; } continue; }
+      const sig = this.contextSig(host, x);
+      if (!force && sig === f.context.sig) continue;
+      f.data = await this.contextStep(host, x);
+      f.rev = newRev();
+      f.context = { ...f.context, sig, gone: undefined };
+      updated++;
+    }
+    return { updated, gone };
+  }
   compMenu(c) {
     const sub = this.isSub(this.part(c.part));
     return [
       { label: sub ? 'Open Sub-assembly' : 'Open Part', icon: sub ? 'assembly' : 'part', action: () => this.openPart(c.id) },
+      ...(sub ? [c.flexible ? { label: 'Make Rigid', icon: 'fix', action: () => this.setFlexible(c.id, false) } : { label: 'Make Flexible', icon: 'float', action: () => this.setFlexible(c.id, true) }] : []),
       ...(sub ? [] : [{ label: 'Edit in Context…', icon: 'part', action: () => this.editInContext(c.id) }]),
       { label: 'Mate…', icon: 'mate', action: () => this.startMate() },
       'sep',
@@ -2309,6 +2452,7 @@ export class AssemblyEditor {
     // aligned or not: as they face now (the least turning; Flip for the other way)
     const dA = A.n || A.d, dB = B.n || B.d;
     pm.align = dA && dB ? (dot(dA, dB) >= 0 ? 1 : -1) : -1;
+    if (pm.type === 'cam') { const fol = A.pts && !B.pts ? B : A; pm.value ??= r6(fol.kind === 'axis' && fol.r > 0 ? fol.r : 0); }
     if (pm.type === 'distance') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
       if (plane) { const d = dot(plane.n, sub(other.p, plane.p)); pm.side = d >= 0 ? 1 : -1; pm.value ??= r6(Math.abs(d)); }
@@ -2758,6 +2902,7 @@ export class AssemblyEditor {
         { icon: 'motion', label: 'Motion Study', action: () => this.startMotion(), active: !!this.motionTool },
         'sep',
         { icon: 'bom', label: 'Bill of Materials', action: () => this.showBOM() },
+        { icon: 'bom', label: 'Number Parts', action: () => this.numberPartsDialog() },
         { icon: 'interference', label: 'Interference Check', action: () => this.checkInterference() },
         { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.app.ui.showStackUp(this.doc, () => this.commit('Tolerance stack-up')) },
         { icon: 'section', label: 'Section View', action: () => this.toggleSection(), active: !!this.vp.section },
@@ -2798,6 +2943,7 @@ export class AssemblyEditor {
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
         { label: 'Collect Files…', icon: 'save', action: () => this.collectFiles(), disabled: !this.doc.components.length },
         { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, this.doc, () => this.commit('Revision'), ASM_EXT) },
+        { label: 'Where Used…', icon: 'open', action: () => a.whereUsed() },
         'sep',
         { label: 'Export ▸ STEP…', icon: 'step', action: () => this.exportSTEP(), disabled: !this.doc.components.length },
         'sep',

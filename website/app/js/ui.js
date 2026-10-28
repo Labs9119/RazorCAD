@@ -20,6 +20,7 @@ import { SHEET_SIZES as DW_SIZES } from './drawingformats.js';
 import { inferPlaneType, planeRefs, legacyDatumRefs, useReferenceRelations } from './refgeom.js';
 import * as G from './geometry.js';
 import { platform } from './platform.js';
+import { HelpPanel, loadManual, searchManual } from './help.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
@@ -456,12 +457,12 @@ const PM_SCHEMAS = {
   ],
   smForm: [
     { title: 'Form', fields: [
-      { key: 'formType', type: 'select', label: 'Type', options: [['dimple', 'Dimple'], ['louver', 'Louver'], ['exthole', 'Extruded (flanged) hole']] },
+      { key: 'formType', type: 'select', label: 'Type', options: [['dimple', 'Dimple'], ['louver', 'Louver'], ['exthole', 'Extruded (flanged) hole'], ['bead', 'Bead (stiffening rib)'], ['lance', 'Lance (bridge)'], ['emboss', 'Emboss (raised outline)']] },
       { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.formType === 'dimple' },
       { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.formType === 'dimple' },
-      { key: 'width', type: 'expr', label: 'Width (back from the slit)', unit: 'mm', show: (f) => f.formType === 'louver' },
-      { key: 'height', type: 'expr', label: 'Height (opening)', unit: 'mm', show: (f) => f.formType === 'louver' },
-      { key: 'side', type: 'check', label: 'Hood on the other side of the line', show: (f) => f.formType === 'louver' },
+      { key: 'width', type: 'expr', label: (f) => (f.formType === 'bead' ? 'Width' : 'Width (back from the slit)'), unit: 'mm', show: (f) => ['louver', 'lance', 'bead'].includes(f.formType) },
+      { key: 'height', type: 'expr', label: (f) => (f.formType === 'louver' ? 'Height (opening)' : 'Height'), unit: 'mm', show: (f) => ['louver', 'lance', 'bead', 'emboss'].includes(f.formType) },
+      { key: 'side', type: 'check', label: (f) => (f.formType === 'lance' ? 'On the other side of the line' : 'Hood on the other side of the line'), show: (f) => f.formType === 'louver' || f.formType === 'lance' },
       { key: 'holeDiameter', type: 'expr', label: 'Hole diameter (inside the collar)', unit: 'mm', show: (f) => f.formType === 'exthole' },
       { key: 'collarHeight', type: 'expr', label: 'Collar height (overall)', unit: 'mm', show: (f) => f.formType === 'exthole' },
       { key: 'useDefaultRadius', type: 'check', default: true, label: 'Use the part\'s bend radius', show: (f) => f.formType === 'exthole' },
@@ -469,8 +470,8 @@ const PM_SCHEMAS = {
       { key: 'flip', type: 'check', label: 'Pressed the other way' },
     ] },
     { title: 'Placement', fields: [
-      { key: 'sketch', type: 'sketch', label: (f) => (f.formType === 'louver' ? 'Sketch (lines: the slits)' : 'Sketch (points / circle centres)') },
-      { key: 'faces', type: 'faceList', show: (f) => f.formType !== 'louver', hint: 'Click points on a flat face of the sheet (or use a sketch on the face for exact places).', itemLabel: 'Point' },
+      { key: 'sketch', type: 'sketch', label: (f) => (f.formType === 'louver' || f.formType === 'lance' ? 'Sketch (lines: the slits)' : f.formType === 'bead' ? 'Sketch (lines: the beads)' : f.formType === 'emboss' ? 'Sketch (closed outlines)' : 'Sketch (points / circle centres)') },
+      { key: 'faces', type: 'faceList', show: (f) => !['louver', 'lance', 'bead', 'emboss'].includes(f.formType), hint: 'Click points on a flat face of the sheet (or use a sketch on the face for exact places).', itemLabel: 'Point' },
       { key: 'plHint', type: 'hint', text: (f) => (f.formType === 'louver' ? 'Draw a line on a flat face for each louver: the line is the slit (its length is the louver\'s), the hood rises behind it.' : 'Each point on a flat face gets one. The flat pattern gets a centre mark and a note' + (f.formType === 'exthole' ? ', and the pre-hole (the collar laid flat).' : '.')) },
     ] },
   ],
@@ -826,12 +827,31 @@ const PM_SCHEMAS = {
   mold: [
     { title: 'Mould', fields: [
       { key: 'dir', type: 'select', label: 'Pull direction (the cavity side)', options: [['y', '+Y'], ['-y', '−Y'], ['x', '+X'], ['-x', '−X'], ['z', '+Z'], ['-z', '−Z']] },
-      { key: 'parting', type: 'select', label: 'Parting plane', options: [['auto', 'At the largest section'], ['at', 'At a height up the part']] },
+      { key: 'parting', type: 'select', label: 'Parting', options: [['auto', 'A plane at the largest section'], ['at', 'A plane at a height up the part'], ['surface', 'A parting surface (a surface body)']] },
+      { key: 'partingSurface', type: 'bodySel', label: 'Parting surface', kinds: ['surface'], show: (f) => f.parting === 'surface' },
       { key: 'partingAt', type: 'expr', label: 'Height (from the part’s lowest point)', unit: 'mm', show: (f) => f.parting === 'at' },
       { key: 'margin', type: 'expr', label: 'Block margin (round the part)', unit: 'mm' },
       { key: 'shrink', type: 'expr', label: 'Shrinkage', unit: '%' },
       { key: 'keepPart', type: 'check', default: true, label: 'Keep the part as a body too' },
       { key: 'mHint', type: 'hint', text: 'A block round the part is split into a core and a cavity at a parting plane square to the pull direction, the part (grown by the shrinkage) taken out of both. Check the part first with Draft Analysis and Undercut Check: undercuts need side actions this does not make.' },
+    ] },
+  ],
+  moldSide: [
+    { title: 'Undercut', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces of the undercut on the part (a side hole, a catch).' }] },
+    { title: 'Side Core', fields: [
+      { key: 'dir', type: 'select', label: 'Pulled', options: [['normal', 'Along the first face’s normal'], ['x', '+X'], ['-x', '−X'], ['y', '+Y'], ['-y', '−Y'], ['z', '+Z'], ['-z', '−Z']] },
+      { key: 'reverse', type: 'check', label: 'The other way' },
+      { key: 'margin', type: 'expr', label: 'Margin round the faces', unit: 'mm' },
+      { key: 'scHint', type: 'hint', text: 'A block round the faces, from the part out past the mould block, taken out of the core and cavity as a side core (a slide) of its own.' },
+    ] },
+  ],
+  moldRunner: [
+    { title: 'Runners', fields: [
+      { key: 'sketch', type: 'sketch', label: 'Sketch on the parting plane (lines)' },
+      { key: 'runnerD', type: 'expr', label: 'Runner diameter', unit: 'mm' },
+      { key: 'sprueD', type: 'expr', label: 'Sprue diameter (at the runner)', unit: 'mm' },
+      { key: 'taper', type: 'expr', label: 'Sprue taper (each side)', unit: '°' },
+      { key: 'rnHint', type: 'hint', text: 'Round runners along the lines (half in the core, half in the cavity, a gate where they meet the part) and a tapered sprue from the cavity’s back down to the first line’s start.' },
     ] },
   ],
   vent: [
@@ -1074,10 +1094,40 @@ const PM_SCHEMAS = {
       { key: 'wall', type: 'expr', label: 'Wall', unit: 'mm', show: (f) => f.size === 'custom' },
       { key: 'corner', type: 'select', label: 'Corners', options: [['elbow', 'Elbows (fittings)'], ['bend', 'Bends (one bent tube)']] },
       { key: 'radius', type: 'expr', label: 'Bend radius (auto: 1.5 × the size for elbows, 3 × OD for bends)', unit: 'mm' },
-      { key: 'flanges', type: 'check', label: 'Flanges at the ends' },
+      { key: 'reduceAt', type: 'select', label: 'Reducer', options: [['none', 'None'], ['start', 'At the first end'], ['end', 'At the last end'], ['both', 'At both ends']] },
+      { key: 'reduceSize', type: 'select', label: 'Reduced to', options: PIPE_SIZES.map((s) => [String(s.dn), pipeLabel(s)]), show: (f) => f.reduceAt && f.reduceAt !== 'none' && f.size !== 'custom' },
+      { key: 'flanges', type: 'check', label: 'Flanges at the (other) ends' },
       { key: 'flangeD', type: 'expr', label: 'Flange outside diameter', unit: 'mm', show: (f) => !!f.flanges },
       { key: 'flangeT', type: 'expr', label: 'Flange thickness', unit: 'mm', show: (f) => !!f.flanges },
-      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the corners of the route, each corner an elbow (or a bend of one tube). The pipes are on the weldment Cut List with their lengths; the elbows and flanges are bodies of their own.' },
+      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the fittings: an elbow (or a bend) at each corner, a tee where a line branches square off a straight run. The pipes are on the weldment Cut List with their lengths; the fittings are bodies of their own. Spool Drawing makes an isometric drawing with the cut list and the fittings.' },
+    ] },
+  ],
+  fitSurface: [
+    { title: 'Fit To', fields: [
+      { key: 'cloud', type: 'select', label: 'Point cloud', options: (f, doc) => (doc?.features || []).filter((x) => x.type === 'pointCloud').map((x) => [x.id, x.name]) },
+      { key: 'kind', type: 'select', label: 'Surface', options: [['freeform', 'Freeform (a grid of heights)'], ['plane', 'Plane'], ['cylinder', 'Cylinder'], ['sphere', 'Sphere']] },
+      { key: 'grid', type: 'expr', label: 'Grid (points each way)', unit: '#', show: (f) => (f.kind || 'freeform') === 'freeform' },
+      { key: 'fHint', type: 'hint', text: 'A surface body fitted to the scan by least squares (freeform: through a grid of heights over its best plane, more grid points following it more closely). The message gives how far the points are from it.' },
+    ] },
+  ],
+  ductFitting: [
+    { title: 'Fitting', fields: [
+      { key: 'kind', type: 'select', label: 'Kind', options: [['elbow', 'Segmented elbow'], ['cone', 'Cone (reducer)'], ['transition', 'Round to rectangle'], ['offset', 'Offset'], ['lateral', 'Lateral (branch)']] },
+      { key: 'D', type: 'expr', label: 'Diameter (outside)', unit: 'mm' },
+      { key: 't', type: 'expr', label: 'Sheet thickness', unit: 'mm' },
+      { key: 'seam', type: 'expr', label: 'Seam allowance (flat patterns)', unit: 'mm' },
+      { key: 'angle', type: 'expr', label: 'Angle', unit: '°', show: (f) => f.kind === 'elbow' },
+      { key: 'R', type: 'expr', label: 'Centre line radius', unit: 'mm', show: (f) => f.kind === 'elbow' },
+      { key: 'gores', type: 'expr', label: 'Gores (pieces)', unit: '#', show: (f) => f.kind === 'elbow' },
+      { key: 'D2', type: 'expr', label: 'Other diameter', unit: 'mm', show: (f) => f.kind === 'cone' },
+      { key: 'W', type: 'expr', label: 'Rectangle width', unit: 'mm', show: (f) => f.kind === 'transition' },
+      { key: 'H', type: 'expr', label: 'Rectangle height', unit: 'mm', show: (f) => f.kind === 'transition' },
+      { key: 'offset', type: 'expr', label: 'Offset (across)', unit: 'mm', show: (f) => f.kind === 'offset' },
+      { key: 'L', type: 'expr', label: (f) => (f.kind === 'lateral' ? 'Main length' : 'Length'), unit: 'mm', show: (f) => ['cone', 'transition', 'offset', 'lateral'].includes(f.kind) },
+      { key: 'branchD', type: 'expr', label: 'Branch diameter', unit: 'mm', show: (f) => f.kind === 'lateral' },
+      { key: 'branchAngle', type: 'expr', label: 'Branch angle', unit: '°', show: (f) => f.kind === 'lateral' },
+      { key: 'branchL', type: 'expr', label: 'Branch length (past the main)', unit: 'mm', show: (f) => f.kind === 'lateral' },
+      { key: 'dHint', type: 'hint', text: 'A sheet metal duct fitting, with its flat patterns developed on the sheet’s middle and a seam allowance along the long seam (File ▸ Export ▸ Duct Patterns writes them all to one DXF). Move it into place with Move Body.' },
     ] },
   ],
   cable: [
@@ -1114,6 +1164,7 @@ const PM_SCHEMAS = {
     { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet'], ['fullRound', 'Full round']] }] },
     { title: 'Fillet Parameters', show: (f) => f.filletType !== 'fullRound', fields: [
       { key: 'sizeBy', type: 'select', label: 'Size by', default: 'radius', show: (f) => (f.filletType || 'constant') === 'constant', options: [['radius', 'Radius'], ['chord', 'Chord width']] },
+      { key: 'continuity', type: 'select', label: 'Shape', default: 'G1', show: (f) => (f.filletType || 'constant') === 'constant', options: [['G1', 'Round (tangent, G1)'], ['G2', 'Curvature continuous (G2)']] },
       { key: 'radiusMode', type: 'select', label: 'Radius', show: (f) => f.filletType === 'variable', options: [['ends', 'From the start to the end of each edge'], ['vertices', 'At vertices and points along edges']] },
       { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : f.sizeBy === 'chord' && (f.filletType || 'constant') === 'constant' ? 'Chord width' : 'Radius'), unit: 'mm' },
       { key: 'chHint', type: 'hint', show: (f) => (f.filletType || 'constant') === 'constant' && f.sizeBy === 'chord', text: 'The width across each fillet, edge to edge: each edge’s radius follows from how far its faces turn (at its middle).' },
@@ -1320,9 +1371,22 @@ const PM_SCHEMAS = {
   deleteFace: [
     { title: 'Faces to Delete', fields: [{ key: 'faces', type: 'faceList', hint: 'Click faces of a solid or a surface body.' }] },
     { title: 'Options', fields: [
-      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Leave the hole (a solid becomes a surface body)'], ['patch', 'Patch each hole (the solid stays a solid)']] },
+      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Leave the hole (a solid becomes a surface body)'], ['patch', 'Patch each hole (the solid stays a solid)'], ['heal', 'Heal: the faces round them grow to close the gap (exact)']] },
       { key: 'tangent', type: 'check', label: 'Patch tangent to the faces round the hole', show: (f) => f.mode === 'patch' },
       { key: 'dHint', type: 'hint', text: (f) => (f.mode === 'patch' ? 'Each hole left by the deleted faces gets a smooth patch: good for taking out fillets, small features and bad faces of imported parts.' : 'The faces are taken out; the rest stays as a surface body (e.g. to rebuild them with other surface tools).') },
+    ] },
+  ],
+  freeform: [
+    { title: 'Face to Reshape', fields: [{ key: 'faces', type: 'faceList', hint: 'Click a flat face with four straight edges, or a freeform (B-spline) face that is not trimmed.' }] },
+    { title: 'Handles', fields: [
+      { key: 'nu', type: 'expr', label: 'Across (U)' },
+      { key: 'nv', type: 'expr', label: 'Along (V)' },
+      ...Array.from({ length: 36 }, (_, i) => ({ key: 'h' + i, type: 'expr', unit: 'mm', label: `Handle ${i + 1}`, show: (f) => i < Math.max(1, Math.min(6, Math.round(Number(f.nu) || 1))) * Math.max(1, Math.min(6, Math.round(Number(f.nv) || 1))) })),
+      { key: 'hHint', type: 'hint', text: 'Handles sit evenly across the face, row by row; each is how far the face is pushed out (or in, below 0) there, and the face passes through it. Drag a handle on the model to move it.' },
+    ] },
+    { title: 'Edges', fields: [
+      { key: 'keep', type: 'select', label: 'Keep at the edges', options: [['G0', 'Contact (G0): the edges stay'], ['G1', 'Tangent (G1): and the tangent plane'], ['G2', 'Curvature (G2): and the curvature']] },
+      { key: 'kHint', type: 'hint', text: 'What the face keeps along its edges, so it meets the faces round it as before. The more is kept, the closer to the middle the shape changes.' },
     ] },
   ],
   editFillet: [
@@ -1447,6 +1511,10 @@ const PM_SCHEMAS = {
   boundarySurf: [
     { title: 'Direction 1', fields: [{ key: 'dir1', type: 'curveList' }] },
     { title: 'Direction 2', fields: [{ key: 'dir2', type: 'curveList' }, { key: 'bHint', type: 'hint', text: 'The first and last curves of each direction bound the surface and must meet at their ends; the curves between shape it. With curves in one direction only, use Lofted Surface.' }] },
+    { title: 'Meeting Other Faces', fields: [
+      { key: 'continuity', type: 'select', label: 'Along their edges', options: [['G0', 'Touching (G0)'], ['G1', 'Tangent (G1)'], ['G2', 'Curvature continuous (G2)']] },
+      { key: 'supportFaces', type: 'faceList', patchSupport: true, show: (f) => (f.continuity || 'G0') !== 'G0', hint: 'Click the faces to meet: a bounding curve running along one of their edges meets that face tangent (or with the same curvature too).' },
+    ] },
   ],
   surfOffset: [
     { title: 'Parameters', fields: [{ key: 'distance', type: 'expr', label: 'Distance', unit: 'mm' }, { key: 'flip', type: 'check', label: 'Flip direction' }] },
@@ -1510,6 +1578,7 @@ export class UI {
     this.buildLeftTabs();
     this.buildHUD();
     this.buildSplitter();
+    this.help = new HelpPanel(app);
     this.prefs = {};
     this.renderCommandManager();
     // the user's own toolbar layout (and other preferences), once the desktop app answers
@@ -1538,7 +1607,8 @@ export class UI {
       if (!e.target.closest('#ctxmenu')) this.closeContext();
     });
     window.addEventListener('blur', () => { this.closeDropdown(); this.closeContext(); });
-    $('#help-btn').onclick = () => this.showShortcuts();
+    $('#help-btn').onclick = () => this.help.open();
+    loadManual().then((m) => { this.manual = m; }).catch(() => {}); // (for the command search's manual results)
   }
 
   // ------------------------------------------------------------ menus
@@ -1638,10 +1708,14 @@ export class UI {
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
         { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, a.doc, () => a.commit()) },
+        { label: 'Where Used…', icon: 'open', action: () => a.whereUsed() },
         'sep',
         { label: 'Import STEP / STL…', icon: 'import', key: 'Ctrl+I', action: () => a.importFile() },
+        { label: 'Import Point Cloud (PLY, XYZ)…', icon: 'import', action: () => a.importPointCloud() },
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
         { label: 'Export ▸ STL…', icon: 'stl', action: () => a.exportFile('stl') },
+        { label: 'Export ▸ glTF (.glb) for web and AR…', icon: 'obj', action: () => a.exportFile('glb') },
+        { label: 'Export ▸ Duct Patterns (DXF)…', icon: 'dxf', action: () => a.exportDuctPatterns(), disabled: !a.doc?.features?.some((f) => f.type === 'ductFitting' && !f.suppressed) },
         { label: 'Export ▸ Flat Pattern as DXF…', icon: 'dxf', action: () => a.exportSheetDXF(), disabled: !a.flatView && !(a.result?.bodies || []).some((b) => b.sheet) },
         { label: 'Export ▸ Face as DXF…', icon: 'dxf', action: () => a.exportFaceDXF(), disabled: !a.flatView && !(a.selection?.kind === 'face' && a.selection.face.planar) },
         'sep',
@@ -1743,6 +1817,7 @@ export class UI {
         { label: 'Claude Settings…', icon: 'gear', action: () => this.showClaudeSettings() },
       ],
       Help: [
+        { label: 'User Manual', icon: 'help', key: 'F1', action: () => this.help.open() },
         { label: 'Getting Started Tour', icon: 'help', action: () => this.startTour() },
         { label: 'Search Commands…', icon: 'search', key: 'Ctrl+K', action: () => this.commandSearch() },
         { label: 'Customize Shortcuts…', icon: 'select', action: () => this.showShortcutEditor() },
@@ -1879,6 +1954,8 @@ export class UI {
         { icon: 'shell', label: 'Lip / Groove', action: () => a.startFeature('lipGroove') },
         { icon: 'fillPattern', label: 'Vent', action: () => a.startFeature('vent') },
         { icon: 'split', label: 'Core and Cavity', action: () => a.startFeature('mold') },
+        { icon: 'split', label: 'Side Core', action: () => a.startFeature('moldSide') },
+        { icon: 'sweep', label: 'Sprue and Runners', action: () => a.startFeature('moldRunner') },
         { icon: 'moveFace', label: 'Move Face', action: () => a.startFeature('moveFace') },
         { icon: 'scale', label: 'Scale', action: () => a.startFeature('scale') },
         'sep',
@@ -1974,6 +2051,8 @@ export class UI {
         { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
         { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
         { icon: 'replaceFace', label: 'Replace Face', action: () => a.startFeature('replaceFace') },
+        { icon: 'surfFill', label: 'Freeform', action: () => a.startFeature('freeform') },
+        { icon: 'surfPlanar', label: 'Fit Surface to Points', action: () => a.startFeature('fitSurface') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
         { icon: 'flattenSurf', label: 'Flatten Surface', action: () => a.startFeature('flattenSurf') },
@@ -1987,6 +2066,9 @@ export class UI {
         { icon: 'structMember', label: 'Structural Member', action: () => a.startFeature('structMember') },
         { icon: 'sweep', label: 'Pipe Route', action: () => a.startFeature('pipeRoute') },
         { icon: 'sweep', label: 'Cable', action: () => a.startFeature('cable') },
+        { icon: 'sweep', label: 'Duct Fitting', action: () => a.startFeature('ductFitting') },
+        { icon: 'cutList', label: 'Spool Drawing', action: () => a.spoolDrawing() },
+        { icon: 'cutList', label: 'Harness Formboard', action: () => a.harnessFormboard() },
         { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },
@@ -2054,6 +2136,7 @@ export class UI {
         { icon: 'step', label: 'Export STEP', action: () => a.exportFile('step') },
         { icon: 'stl', label: 'Export STL', action: () => a.exportFile('stl') },
         { icon: 'obj', label: 'Export OBJ', action: () => a.exportFile('obj') },
+        { icon: 'obj', label: 'Export glTF', action: () => a.exportFile('glb') },
         { icon: 'threemf', label: 'Export 3MF', action: () => a.exportFile('3mf') },
         { icon: 'dxf', label: a.flatView ? 'Export DXF (flat pattern)' : 'Export Face as DXF', action: () => a.exportFaceDXF(), disabled: !a.flatView && !(a.selection?.kind === 'face' && a.selection.face.planar) },
         { icon: 'import', label: 'Import STEP / STL / OBJ / 3MF', action: () => a.importFile() },
@@ -3536,6 +3619,7 @@ export class UI {
     items.push({ label: 'Rename', icon: 'rename', action: () => this.renameFeature(f.id) });
     // (feature folders)
     const inFolder = folderOfFeature(a.doc, f.id);
+    if (f.type === 'import' && f.context?.host) items.push({ label: 'Update Context', icon: 'part', action: () => a.updateContext(true) });
     if (f.type !== 'sketch3d') items.push({ label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature([f.id], f.name) });
     items.push({ label: 'Add to New Folder…', icon: 'folder', action: () => this.promptText('New Folder', 'folder', 'Name', 'Folder').then((v) => { if (v?.trim()) { newFeatureFolder(a.doc, v.trim(), [f.id]); a.commit(); this.renderTree(); } }) });
     for (const g of (a.doc.featureFolders || []).filter((x) => x !== inFolder)) items.push({ label: `Move to ${g.name}`, icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, g.id); a.commit(); this.renderTree(); } });
@@ -3629,6 +3713,7 @@ export class UI {
     const act = el('div', { class: 'pm-actions' });
     if (ok) act.appendChild(el('button', { title: 'OK (Enter)', onclick: () => this.app.okPM() }, icon('ok')));
     if (cancel) act.appendChild(el('button', { title: 'Cancel (Esc)', onclick: () => this.app.cancelPM() }, icon('cancel')));
+    act.appendChild(el('button', { class: 'pm-help', title: `${tr(title)} in the manual (F1)`, 'aria-label': `${tr(title)} in the manual`, 'data-pm-help': '', onclick: () => this.helpForPM() }, '?'));
     root.appendChild(act);
   }
 
@@ -3974,7 +4059,7 @@ export class UI {
           lab.append(cb, document.createTextNode(tr(fd.label)));
           body.appendChild(this.row(null, lab, 'check'));
         } else {
-          let options = fd.options;
+          let options = typeof fd.options === 'function' ? fd.options(f, doc) : fd.options;
           if (fd.type === 'sketch') options = [['', '— select a sketch —'], ...before.filter((x) => x.type === 'sketch').map((x) => [x.id, x.name])];
           if (fd.type === 'feature') options = [['', '— select a feature —'], ...before.filter((x) => !PATTERN_SKIP.has(x.type) && !x.suppressed).map((x) => [x.id, x.name])];
           if (fd.type === 'axis') {
@@ -6068,6 +6153,16 @@ export class UI {
     const dlg = this.modal('Part Material', 'material', wrap, [{ label: 'Apply', primary: true, action: apply }, { label: 'Cancel' }]);
   }
 
+  // ---- The manual (help.js): F1 opens it at what is being done (the Property panel open: its feature), else the
+  // search box
+  helpTopic() {
+    const a = this.app, pm = a.pm;
+    if (pm?.kind === 'feature' && pm.feature) return TYPE_INFO[pm.feature.type]?.base?.replace(/-/g, ' ') || pm.feature.type;
+    if (a.mode === 'sketch') return 'Sketching';
+    return pm?.title || null;
+  }
+  helpForPM() { const t = this.helpTopic(); return t ? this.help.forTopic(t) : this.help.open(); }
+
   // ---- Command search (Ctrl+K or /): type part of a command's name, Enter runs it. Every command of the menus
   // and toolbars of the document in front (part, sketch, assembly or drawing); the ones used lately first.
   commandList() {
@@ -6098,7 +6193,7 @@ export class UI {
     try { recent = JSON.parse(localStorage.getItem('razorcad.recentCommands') || '[]'); } catch { recent = []; }
     const back = el('div', { id: 'cmd-search' });
     const box = el('div', { class: 'cs-box' });
-    const input = el('input', { type: 'text', spellcheck: 'false', placeholder: `Search ${all.length} commands…` });
+    const input = el('input', { type: 'text', spellcheck: 'false', placeholder: `Search ${all.length} commands and the manual…` });
     const list = el('div', { class: 'cs-list' });
     box.append(input, list);
     back.appendChild(box);
@@ -6107,6 +6202,7 @@ export class UI {
     const close = () => back.remove();
     const run = (c) => {
       close();
+      if (c.manual) { setTimeout(() => c.action(), 0); return; }
       try { localStorage.setItem('razorcad.recentCommands', JSON.stringify([c.k, ...recent.filter((x) => x !== c.k)].slice(0, 8))); } catch { /* no storage */ }
       this.app.macros?.note(c.label);
       setTimeout(() => c.action(), 0);
@@ -6125,13 +6221,19 @@ export class UI {
       }
       return scored.sort((x, y) => x[0] - y[0]).slice(0, 12).map((x) => x[1]);
     };
+    // (and the manual's sections about it, after the commands: opened in the manual panel)
+    const manualHits = (q) => {
+      if (!this.manual || !q.trim()) return [];
+      return searchManual(this.manual, q, 4).map(({ s }) => ({ label: s.title, where: 'Manual · ' + s.chapter, icon: 'help', key: '', k: 'manual:' + s.id, manual: s.id, action: () => this.help.open(s.id, { q }) }));
+    };
     const render = () => {
       shown = find(input.value);
+      shown = [...shown.slice(0, Math.max(6, 12 - 4)), ...manualHits(input.value)];
       at = Math.min(at, Math.max(0, shown.length - 1));
       list.innerHTML = '';
       if (!shown.length) list.appendChild(el('div', { class: 'cs-none' }, 'No command found'));
       shown.forEach((c, i) => {
-        const row = el('div', { class: 'cs-row' + (i === at ? ' on' : '') }, `<span class="cs-ic">${icon(c.icon)}</span><span class="cs-l">${esc(tr(c.label))}</span><span class="cs-w">${esc(c.where)}${c.key ? ` · ${esc(c.key)}` : ''}</span>`);
+        const row = el('div', { class: 'cs-row' + (i === at ? ' on' : '') + (c.manual ? ' cs-manual' : '') }, `<span class="cs-ic">${icon(c.icon)}</span><span class="cs-l">${esc(c.manual ? c.label : tr(c.label))}</span><span class="cs-w">${esc(c.where)}${c.key ? ` · ${esc(c.key)}` : ''}</span>`);
         row.onpointerdown = (e) => { e.preventDefault(); run(c); };
         row.onpointerenter = () => { at = i; list.querySelectorAll('.cs-row').forEach((r, j) => r.classList.toggle('on', j === at)); };
         list.appendChild(row);

@@ -3713,7 +3713,7 @@ export class UI {
     const act = el('div', { class: 'pm-actions' });
     if (ok) act.appendChild(el('button', { title: 'OK (Enter)', onclick: () => this.app.okPM() }, icon('ok')));
     if (cancel) act.appendChild(el('button', { title: 'Cancel (Esc)', onclick: () => this.app.cancelPM() }, icon('cancel')));
-    act.appendChild(el('button', { class: 'pm-help', title: `${tr(title)} in the manual (F1)`, 'data-pm-help': '', onclick: () => this.helpForPM() }, '?'));
+    act.appendChild(el('button', { class: 'pm-help', title: `${tr(title)} in the manual (F1)`, 'aria-label': `${tr(title)} in the manual`, 'data-pm-help': '', onclick: () => this.helpForPM() }, '?'));
     root.appendChild(act);
   }
 

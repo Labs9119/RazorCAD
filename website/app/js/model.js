@@ -108,12 +108,17 @@ export const TYPE_INFO = {
   lipGroove: { base: 'Lip-Groove', icon: 'shell' },
   vent: { base: 'Vent', icon: 'fillPattern' },
   mold: { base: 'Core-Cavity', icon: 'split' },
+  moldSide: { base: 'Side-Core', icon: 'split' },
+  moldRunner: { base: 'Runner', icon: 'sweep' },
   draft: { base: 'Draft', icon: 'draft' },
   spattern: { base: 'Sketch Driven Pattern', icon: 'spattern' },
   curvePattern: { base: 'Curve Driven Pattern', icon: 'curvePattern' },
   tablePattern: { base: 'Table Driven Pattern', icon: 'spattern' },
   pipeRoute: { base: 'Pipe Route', icon: 'sweep' },
   cable: { base: 'Cable', icon: 'sweep' },
+  ductFitting: { base: 'Duct Fitting', icon: 'sweep' },
+  pointCloud: { base: 'Point Cloud', icon: 'import' },
+  fitSurface: { base: 'Fitted Surface', icon: 'surfPlanar' },
   fillPattern: { base: 'Fill Pattern', icon: 'fillPattern' },
   rib: { base: 'Rib', icon: 'rib' },
   dome: { base: 'Dome', icon: 'dome' },
@@ -136,6 +141,7 @@ export const TYPE_INFO = {
   deleteFace: { base: 'Delete-Face', icon: 'deleteFace' },
   editFillet: { base: 'Edit-Fillet', icon: 'fillet' },
   defeature: { base: 'Defeature', icon: 'deleteFace' },
+  freeform: { base: 'Freeform', icon: 'surfFill' },
   replaceFace: { base: 'Replace-Face', icon: 'replaceFace' },
   ruledSurface: { base: 'Ruled-Surface', icon: 'ruledSurface' },
   untrim: { base: 'Untrim-Surface', icon: 'untrim' },
@@ -238,8 +244,11 @@ export function createFeature(doc, type, props = {}) {
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
-    pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18 },
+    pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18, reduceAt: 'none', reduceSize: '25' },
     cable: { path: null, sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
+    pointCloud: { fileName: '', count: 0, data: '' },
+    fitSurface: { cloud: null, kind: 'freeform', grid: 20 },
+    ductFitting: { kind: 'elbow', D: 300, t: 1, seam: 10, angle: 90, R: 450, gores: 5, D2: 200, L: 300, W: 400, H: 300, offset: 150, branchD: 200, branchAngle: 45, branchL: 300 },
     tablePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', plane: null, table: '20, 0; 0, 20; 20, 20, 45' },
     curvePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', path: null, count: 4, spacing: 'equal', distance: 20, reverse: false, align: 'translate' },
     // Fill: copies on a 'square' | 'staggered' grid over a flat face, margin from its edges
@@ -249,7 +258,7 @@ export function createFeature(doc, type, props = {}) {
     // radiusMode (variable): 'ends' (start → end of each edge) | 'vertices' (vertexRadii: [{ p, r }], the others: radius);
     // setback: corners where three or more fillets meet blended from this distance (0: the kernel's own corner)
     // edgePoints (radiusMode 'vertices'): [{ edge (its place in edges), t (% of its length from its start), r }]
-    fillet: { radius: 2, edges: [], filletType: 'constant', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
+    fillet: { radius: 2, edges: [], filletType: 'constant', continuity: 'G1', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
     // Draft: face (neutral plane, flat) + faces to tilt by angle; reverse: pull the other way
     draft: { face: null, faces: [], angle: 3, reverse: false },
     // Rib: an open sketch, thickness, ribDir 'parallel' (in the sketch plane) | 'normal'; flip: the other side
@@ -291,6 +300,8 @@ export function createFeature(doc, type, props = {}) {
     // mode 'delete' (leave the hole) | 'patch' (fill each hole; tangent: G1 to the faces round it)
     deleteFace: { faces: [], mode: 'delete', tangent: false },
     editFillet: { faces: [], mode: 'delete', radius: 1 },
+    // a face reshaped by nu × nv handles, h0.. their heights (mm, out of the face), row by row; keep: what its edges keep
+    freeform: { faces: [], nu: 3, nv: 3, keep: 'G1', ...Object.fromEntries(Array.from({ length: 36 }, (_, i) => ['h' + i, 0])) },
     defeature: { body: null, fillets: true, filletR: 2, holes: true, holeD: 6 },
     // flat faces of a solid moved onto surface body `tool`
     replaceFace: { faces: [], tool: null },
@@ -304,7 +315,8 @@ export function createFeature(doc, type, props = {}) {
     splitLine: { tool: '', faces: [] },
     compCurve: { edges: [] },
     // curves in two directions (sketches, 3D sketches, composite / projected curves)
-    boundarySurf: { dir1: [], dir2: [] },
+    // continuity: 'G0' | 'G1' | 'G2' to supportFaces, along the bounding curves that run on their edges
+    boundarySurf: { dir1: [], dir2: [], continuity: 'G0', supportFaces: [] },
     // faces unrolled flat (relaxation iterations for doubly curved ones)
     flattenSurf: { faces: [], iterations: 1000 },
     // weldment members: profile standard / ptype / size (or dims for 'custom') along every segment of path
@@ -341,7 +353,9 @@ export function createFeature(doc, type, props = {}) {
     boss: { faces: [], sketch: null, outerD: 8, height: 10, holeD: 3, holeDepth: '', draft: 0.5, ribs: 0, ribWidth: 1.2, ribLength: 4, ribHeight: 7, reverse: false },
     snapHook: { faces: [], sketch: null, length: 12, thickness: 1.5, width: 6, overhang: 1, insertAngle: 30, retainAngle: 90, angle: 0, reverse: false },
     lipGroove: { face: null, kind: 'lip', side: 'inner', width: 1, height: 1 },
-    mold: { body: null, dir: 'y', parting: 'auto', partingAt: 5, margin: 10, shrink: 0, keepPart: true },
+    mold: { body: null, dir: 'y', parting: 'auto', partingAt: 5, partingSurface: null, margin: 10, shrink: 0, keepPart: true },
+    moldSide: { faces: [], dir: 'normal', reverse: false, margin: 2 },
+    moldRunner: { sketch: null, runnerD: 6, sprueD: 4, taper: 1 },
     vent: { sketch: null, slotWidth: 2, barWidth: 2, angle: 0, margin: 1, end: 'through', depth: 2, reverse: false },
     hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'

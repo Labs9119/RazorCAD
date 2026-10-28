@@ -19,7 +19,10 @@ import { platform } from './platform.js';
 import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
-import { nest, nestEnts } from './nest.js';
+import { nest, nestShapes, nestEnts, placeEnts, outlineLoops } from './nest.js';
+import { ductSpec, ductPatterns, patternEnts } from './ducts.js';
+import { formboard } from './routing.js';
+import { parsePoints, thinPoints, encodePoints, decodePoints } from './points.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -38,6 +41,7 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
+import { glb, viewportBodies } from './gltf.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -647,6 +651,7 @@ class App {
     const doc = this.doc;
     this.annot3d?.refresh();
     showDecals(this.viewport, this.doc.decals);
+    this.showPointClouds();
     if (this.flatView) this.exitFlatten(); // the model changed: back to the model view
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -659,6 +664,7 @@ class App {
       const f = M.findFeature(doc, fid);
       if (f && this.pm?.feature !== f) Object.assign(f, u);
     }
+    this.takeImportedPMI(r);
     if (r.body?.same) {
       // the kernel says the view already shows this mesh
       if (this.result?.body?.key !== r.body.key) { this._forceMesh = true; this.rebuild(); return; }
@@ -723,7 +729,7 @@ class App {
         ...b, index, own, ownMaterial: !!own?.material,
         material: M.materialById(M.bodyMaterialId(this.doc, b.id)),
         // (weldment members are called after their profile)
-        defaultName: b.member ? b.member.label : M.findFeature(this.doc, b.last)?.name || 'Body',
+        defaultName: b.kname || (b.member ? b.member.label : M.findFeature(this.doc, b.last)?.name || 'Body'), // (kname: the feature's own name for it: Cavity, Elbow 90°…)
       };
     });
     // shape signature of each solid (identical bodies are listed once with a count)
@@ -1181,19 +1187,45 @@ class App {
 
   // Export flat patterns as DXF: one body (save dialog) or all sheet metal bodies (into a chosen
   // folder). Each one is previewed first; the layer colours / line types can be changed there.
+  // Spool Drawing: a drawing of the part's pipe routes: one isometric view, the weldment cut list (the straight pipes and
+  // their lengths) and a table of the fittings (elbows, tees, reducers, flanges) and how many.
+  async spoolDrawing() {
+    const bodies = this.result?.bodies || [];
+    const fitRe = /^(Elbow|Tee|Reducer|Flange) /, counts = new Map();
+    for (const b of bodies) if (fitRe.test(b.name || '')) counts.set(b.name, (counts.get(b.name) || 0) + 1);
+    if (!this.doc.features.some((f) => f.type === 'pipeRoute' && !f.suppressed)) { this.toast('Make a pipe route first (Weldments ▸ Pipe Route)', true); return null; }
+    await this.newDrawing(true);
+    const ed = this.drawing;
+    if (!ed?.doc?.models?.length) return null;
+    const sheet = ed.sheet, mid = ed.doc.models[0].id, f = D.frameRect(sheet, ed.doc.format);
+    ed.doc.views = ed.doc.views.filter((v) => v.sheet !== sheet.id);
+    const v = { id: D.newId(ed.doc, 'v'), name: 'Isometric', type: 'model', orient: 'iso', model: mid, sheet: sheet.id, style: 'hlr', tangent: true, scale: null, x: f.x0 + (f.x1 - f.x0) * 0.42, y: f.y0 + (f.y1 - f.y0) * 0.45 };
+    ed.doc.views.push(v);
+    ed.selected = new Set([v.id]);
+    ed.addCutList();
+    const rows = [['FITTING', 'QTY'], ...[...counts].sort((a, b) => a[0].localeCompare(b[0])).map(([n, q]) => [n, String(q)])];
+    if (rows.length > 1) ed.doc.anns.push({ id: D.newId(ed.doc, 'a'), type: 'table', sheet: sheet.id, title: 'FITTINGS', header: true, rows, pos: [f.x1 - 95, f.y0 + 8] });
+    ed.changed();
+    await ed.updateGeometry();
+    this.status('Spool drawing: the isometric view, the cut list of the straight pipes and the fittings. Add dimensions and balloons as you need.');
+    return ed;
+  }
+
   // Nest Flat Patterns: every sheet metal body's flat pattern (identical bodies counted, times their quantity and
   // the sets asked for) laid out on stock sheets, shown, and written as one DXF (the sheets side by side).
   async nestFlatPatterns(opts = null) {
     const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
     if (!sheets.length) { this.toast('There are no sheet metal bodies to nest', true); return null; }
-    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1 };
+    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1, method: 'shape', turns: '90' };
     const v = opts || (await this.ui.promptFields('Nest Flat Patterns', 'dxfAll', [
       { key: 'W', label: 'Sheet width', type: 'expr', value: prev.W }, { key: 'H', label: 'Sheet height', type: 'expr', value: prev.H },
       { key: 'margin', label: 'Margin (round the sheet)', type: 'expr', value: prev.margin }, { key: 'gap', label: 'Gap between parts', type: 'expr', value: prev.gap },
-      { key: 'rotate', label: 'Parts may be turned 90°', type: 'check', value: prev.rotate }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
-    ], 'Each part is placed as the rectangle round its flat pattern.'));
+      { key: 'method', label: 'Parts placed by', type: 'select', options: [['shape', 'Their true outlines (into each other’s gaps and holes)'], ['rect', 'The rectangles round them (fast)']], value: prev.method },
+      { key: 'turns', label: 'Turned', type: 'select', options: [['none', 'Not at all'], ['90', 'By 90° steps'], ['45', 'By 45° steps (outlines)'], ['15', 'By 15° steps (outlines)']], value: prev.turns }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
+    ], 'True outlines take longer and use the sheet better on parts that are not rectangles.'));
     if (!v) return null;
-    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: !!v.rotate, sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))) };
+    const turns = v.turns ?? (v.rotate === false ? 'none' : '90'), step = turns === 'none' ? 360 : +turns;
+    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: turns !== 'none', sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))), method: v.method || 'rect', turns, rotations: Array.from({ length: Math.round(360 / step) }, (_, i) => i * step) };
     this._nestOpts = o;
     const parts = [];
     for (const g of groupBodies(sheets)) {
@@ -1203,7 +1235,7 @@ class App {
       parts.push({ name: g.rep.name, qty: g.members.length * each * o.sets, size: data.size, area: data.area, ents: data.ents });
     }
     let laid;
-    try { laid = nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
+    try { laid = o.method === 'shape' ? await this.withProgress('Nesting…', async () => nestShapes(parts, o)) : nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
     const n = parts.reduce((t, p) => t + p.qty, 0), useAll = laid.reduce((t, s) => t + s.used, 0) / laid.length;
     const result = { parts, sheets: laid, opts: o };
     if (opts?.quiet) return result;
@@ -1213,7 +1245,13 @@ class App {
     laid.forEach((s, j) => {
       const oy = j * (o.H * k + 14);
       svg += `<rect x="1" y="${oy + 1}" width="${o.W * k}" height="${o.H * k}" fill="#f4f6f8" stroke="#555"/>`;
-      for (const q of s.placed) svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8"><title>${parts[q.i].name.replace(/[&<>]/g, '')}</title></rect>`;
+      for (const q of s.placed) {
+        const title = `<title>${parts[q.i].name.replace(/[&<>]/g, '')}</title>`;
+        if (q.dx == null) { svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8">${title}</rect>`; continue; }
+        // (the true outline, its holes cut out)
+        const loops = outlineLoops(placeEnts(parts[q.i].ents.filter((e) => e.layer === 'OUTLINE' || e.layer === 'HOLES'), parts[q.i].size, q));
+        svg += `<path fill-rule="evenodd" fill="#cfe0f5" stroke="#1f5fa8" stroke-width="0.6" d="${loops.map((l) => 'M' + l.map(([x, y]) => `${(1 + x * k).toFixed(1)},${(oy + 1 + (o.H - y) * k).toFixed(1)}`).join('L') + 'Z').join('')}">${title}</path>`;
+      }
     });
     svg += '</svg>';
     const box = document.createElement('div');
@@ -1223,6 +1261,83 @@ class App {
       { label: 'Close' },
     ]);
     return result;
+  }
+  // Point clouds: imported into the part as a feature (its points kept, at most 200 000), shown as dots.
+  async importPointCloud() {
+    let file;
+    try { file = await platform.openPointCloud(); } catch (e) { this.toast('Could not open the file: ' + e.message, true); return null; }
+    if (!file) return null;
+    let P;
+    try { P = parsePoints(file.name, file.bytes); } catch (e) { this.toast(e.message, true); return null; }
+    const all = P.length / 3;
+    P = thinPoints(P);
+    const f = M.createFeature(this.doc, 'pointCloud', { fileName: file.name, count: P.length / 3, data: encodePoints(P) });
+    M.insertFeature(this.doc, f);
+    this.commit();
+    await this.rebuild();
+    this.status(`${file.name}: ${all} points${all > P.length / 3 ? ` (${P.length / 3} kept)` : ''}. Surfaces ▸ Fit Surface to Points fits a surface to them.`);
+    return f;
+  }
+  showPointClouds() {
+    const vp = this.viewport, list = (this.doc?.features || []).filter((f) => f.type === 'pointCloud' && !f.suppressed && f.data && !M.isRolledBack?.(this.doc, f));
+    this._clouds ||= new Map();
+    if (vp._cloudGroup) vp.scene.remove(vp._cloudGroup);
+    if (!list.length) { vp._cloudGroup = null; return; }
+    const g = new THREE.Group();
+    for (const f of list) {
+      let pts = this._clouds.get(f.id);
+      if (!pts || pts.rev !== f.rev) {
+        const geo = new THREE.BufferGeometry();
+        try { geo.setAttribute('position', new THREE.BufferAttribute(typeof f.data === 'string' ? decodePoints(f.data) : new Float32Array(0), 3)); } catch { continue; }
+        pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xd9822b, size: 2.5, sizeAttenuation: false }));
+        pts.rev = f.rev;
+        this._clouds.set(f.id, pts);
+      }
+      g.add(pts);
+    }
+    vp._cloudGroup = g;
+    vp.scene.add(g);
+  }
+
+  // Harness Formboard: the part's cables laid flat at their cut lengths, shown and written as a DXF (each cable a line
+  // with its name and length, the points where cables meet marked).
+  harnessFormboard(quiet = false) {
+    const cables = this.doc.features.filter((f) => f.type === 'cable' && !f.suppressed).map((f) => ({ name: f.name, ...(this.result.detected?.get(f.id)?.cable || {}) })).filter((c) => c.ends);
+    if (!cables.length) { this.toast('There are no cables (Weldments ▸ Cable)', true); return null; }
+    const fb = formboard(cables);
+    if (quiet) return fb;
+    const xs = fb.lines.flatMap((l) => [l.a[0], l.b[0]]), ys = fb.lines.flatMap((l) => [l.a[1], l.b[1]]);
+    const x0 = Math.min(...xs) - 40, x1 = Math.max(...xs) + 40, y0 = Math.min(...ys) - 40, y1 = Math.max(...ys) + 40, k = 640 / Math.max(x1 - x0, y1 - y0, 1);
+    const X = (p) => [((p[0] - x0) * k).toFixed(1), ((y1 - p[1]) * k).toFixed(1)];
+    let svg = `<svg width="${((x1 - x0) * k).toFixed(0)}" height="${((y1 - y0) * k).toFixed(0)}" style="background:#fff;border:1px solid #ccc">`;
+    for (const l of fb.lines) { const [ax, ay] = X(l.a), [bx, by] = X(l.b), m = X([(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]); svg += `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="#1f5fa8" stroke-width="${Math.max(1.5, l.D * k)}" stroke-linecap="round"/><text x="${m[0]}" y="${m[1] - 6}" font-size="11" text-anchor="middle">${String(l.name).replace(/[&<>]/g, "")} ${l.cut.toFixed(0)}</text>`; }
+    for (const n of fb.nodes) if (n.p && n.n > 1) { const [cx, cy] = X(n.p); svg += `<circle cx="${cx}" cy="${cy}" r="4" fill="#d97706"/>`; }
+    svg += '</svg>';
+    const ents = [...fb.lines.flatMap((l) => [{ type: 'LINE', layer: 'OUTLINE', a: l.a, b: l.b }, { type: 'TEXT', layer: 'NOTES', p: [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2 + 6], h: 5, rot: 0, text: `${l.name} ${l.cut.toFixed(1)}`, align: 'center' }]), ...fb.nodes.filter((n) => n.p && n.n > 1).map((n) => ({ type: 'CIRCLE', layer: 'NOTES', c: n.p, r: 4 }))];
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="pm-hint" style="margin-bottom:6px">${fb.lines.length} cable${fb.lines.length === 1 ? '' : 's'} at their cut lengths (slack included), ${fb.lines.reduce((t, l) => t + l.cut, 0).toFixed(0)} mm in all; where cables meet is marked.</div>${svg}`;
+    this.ui.modal('Harness Formboard', 'cutList', box, [
+      { label: 'Export DXF…', primary: true, action: () => { const s0 = loadDxfSettings(); platform.saveBinary(dxfFileName(`${this.safeName()} formboard`), new TextEncoder().encode(buildDXF(ents, { ...s0.mapping, NOTES: s0.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } })), 'dxf'); return false; } },
+      { label: 'Close' },
+    ]);
+    return fb;
+  }
+
+  // Duct Patterns: the flat patterns of every duct fitting of the part, side by side in one DXF.
+  ductPatternList() {
+    const out = [];
+    for (const f of this.doc.features.filter((g) => g.type === 'ductFitting' && !g.suppressed)) {
+      try { for (const p of ductPatterns(ductSpec(f, (x) => this.result.ev(String(x))))) out.push({ ...p, name: `${f.name}: ${p.name}` }); } catch (e) { this.toast(`${f.name}: ${e.message}`, true); }
+    }
+    return out;
+  }
+  async exportDuctPatterns() {
+    const list = this.ductPatternList();
+    if (!list.length) { this.toast('There are no duct fittings', true); return null; }
+    const settings = loadDxfSettings(), mapping = { ...settings.mapping, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
+    const bytes = new TextEncoder().encode(buildDXF(patternEnts(list), mapping));
+    try { const path = await platform.saveBinary(dxfFileName(`${this.safeName()} duct patterns`), bytes, 'dxf'); if (path) this.status(`${list.length} flat pattern${list.length === 1 ? '' : 's'} exported: ${String(path).split(/[\\/]/).pop()}`); } catch (err) { this.toast('DXF export failed: ' + err.message, true); }
+    return bytes;
   }
   async exportNestDXF({ parts, sheets, opts }) {
     const settings = loadDxfSettings(), mapping = { ...settings.mapping, SHEET: settings.mapping?.SHEET || { color: 8, ltype: 'CONTINUOUS' }, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
@@ -1627,10 +1742,32 @@ class App {
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.updateTitle();
-    if (this.showTabModel(t)) { this.restoreSection(t.section); return; }
+    if (this.showTabModel(t)) { this.restoreSection(t.section); this.updateContext(); return; }
     await this.rebuild();
     if (t.view) this.viewport.restoreView(t.view);
     this.restoreSection(t.section);
+    this.updateContext();
+  }
+
+  // A part edited in context: its context bodies brought up to date from the open assembly they came from (the other
+  // parts changed or moved) when the part comes to the front, or when asked (force: all of them again).
+  async updateContext(force = false) {
+    const doc = this.doc, ctx = doc?.features?.filter((f) => f.type === 'import' && f.context?.host) || [];
+    if (!ctx.length || this.mode === 'drawing') return null;
+    // (the assembly the context came from: by its id (component ids repeat from one assembly to another); else, for
+    // context made before assemblies had one or an assembly not saved since, one with the host component)
+    const asms = this.tabs.map((t) => (t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' ? t.drawing : null)).filter(Boolean);
+    const asm = asms.find((x) => x.doc.uid && ctx.some((f) => f.context.asm === x.doc.uid)) || asms.find((x) => ctx.some((f) => x.comp(f.context.host)));
+    if (!asm) { if (force) this.toast('Open the assembly the context came from, then update it', true); return null; }
+    let r;
+    try { r = await this.withProgress('Updating the context…', () => asm.refreshContext(doc, force)); } catch (e) { this.toast('The context could not be updated: ' + e.message, true); return null; }
+    if (this.doc !== doc) return r;
+    if (r.updated || r.gone) {
+      this.commit();
+      await this.rebuild();
+      this.status(`Context from ${asm.doc.name || 'the assembly'}: ${r.updated ? `${r.updated} part${r.updated === 1 ? '' : 's'} brought up to date` : ''}${r.updated && r.gone ? ', ' : ''}${r.gone ? `${r.gone} no longer in it (suppressed)` : ''}.`);
+    } else if (force) this.status('The context is up to date.');
+    return r;
   }
 
   // A tab's model as last built: shown now; the kernel (which holds one part at a time) catches up behind.
@@ -2346,7 +2483,8 @@ class App {
     if (f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange') return 'edge';
     if (f.type === 'surfFill') return this.pm.patchSupportPick ? 'faces' : 'edge';
     if (f.type === 'surfExtend') return 'edge';
-    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet') return 'faces';
+    if (f.type === 'boundarySurf' && (f.continuity || 'G0') !== 'G0' && this.pm.patchSupportPick) return 'faces';
+    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet' || f.type === 'moldSide' || f.type === 'freeform') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
@@ -2518,6 +2656,10 @@ class App {
     if (mode !== 'edge') vp.setEdgeHighlights(null);
     if (mode !== 'vertex') vp.setVertexMarkers(null);
     const f = this.pm.feature;
+    if (f.type === 'freeform') {
+      const hs = this.freeformHandles(f);
+      vp.setVertexMarkers(hs?.length ? { selected: hs.map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
+    }
     if (mode === 'edge') {
       const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
       const selected = refs.map((e) => vp.edgeIndexForPoint(e.p)).filter((i) => i >= 0);
@@ -3183,9 +3325,9 @@ class App {
     const vp = this.viewport;
     const asm = () => (this.mode === 'drawing' && this.drawing?.vpEvent ? this.drawing : null);
     const exT = () => (this.pm?.kind === 'explode' ? this.explodeTool : null);
-    vp.onPointerDown = (e) => { if (this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
-    vp.onPointerMoveImmediate = (e) => { if (this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
-    vp.onPointerUp = (e) => { if (this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
+    vp.onPointerDown = (e) => { if (this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e) || this.freeformDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
+    vp.onPointerMoveImmediate = (e) => { if (this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e) || this.freeformMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
+    vp.onPointerUp = (e) => { if (this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e) || this.freeformUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
     vp.onDoubleClick = (e) => { if (asm()) asm().vpEvent('dbl', e); else if (this.mode === 'sketch') this.sketcher.doubleClick(); else if (this.mode === 'sketch3d') this.sketch3d.doubleClick(); };
     vp.onLeave = () => {
       if (asm()) { asm().vpEvent('leave'); return; }
@@ -3358,12 +3500,13 @@ class App {
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
       if (['fillet', 'chamfer'].includes(f.type) && this.pm.faceEdgesPick) { this.addFaceEdges(fh); return; }
-      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
+      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep', 'boundarySurf'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
       else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
+      if (f.type === 'freeform' && f.faces.length > 1) f.faces.splice(0, f.faces.length - 1); // (one face: the last clicked)
       this.ui.renderPM();
       this.updateEdgeHighlights();
       this.preview();
@@ -4081,6 +4224,11 @@ class App {
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
       if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
     }
+    if (type === 'fitSurface') {
+      const c = selF?.type === 'pointCloud' ? selF : [...doc.features].reverse().find((x) => x.type === 'pointCloud' && !x.suppressed);
+      if (!c) { this.toast('Import a point cloud first (File ▸ Import Point Cloud)', true); return; }
+      props.cloud = c.id;
+    }
     if (type === 'pipeRoute' || type === 'cable') {
       const isPath = (x) => x && (x.type === 'sketch' || x.type === 'sketch3d') && !x.suppressed;
       const src = isPath(selF) ? selF : [...doc.features].reverse().find(isPath);
@@ -4321,6 +4469,25 @@ class App {
     return found;
   }
 
+  // Where Used: the open assemblies and drawings using this part (or assembly), and those in its folder (desktop).
+  async whereUsed() {
+    const t = this.tabs[this.tabIndex], path = this.mode === 'drawing' ? this.drawing?.filePath : this.filePath, doc = this.mode === 'drawing' ? this.drawing?.doc : this.doc;
+    const same = (a, b) => a && b && String(a).toLowerCase().replace(/\\/g, '/') === String(b).toLowerCase().replace(/\\/g, '/');
+    const usesDoc = (d, depth = 0) => depth < 16 && ((d?.parts || []).some((p) => p.doc === doc || same(p.path, path) || usesDoc(p.doc, depth + 1)) || (d?.models || []).some((m) => m.doc === doc || same(m.path, path)));
+    const open = this.tabs.filter((x) => x !== t && x.kind === 'drawing' && x.drawing && (usesDoc(x.drawing.doc) || [...(x.drawing.live?.values?.() || [])].includes(t))) // (live: parts opened from that assembly).map((x) => ({ name: x.drawing.name || x.drawing.doc?.name || x.drawing.fileName || (x.drawing.doc?.kind === 'assembly' ? 'Assembly' : 'Drawing'), tab: x }));
+    let files = [];
+    if (path) { try { files = await this.withProgress('Looking for where it is used…', () => platform.whereUsed(path)); } catch (e) { this.toast('Where Used: ' + e.message, true); } }
+    files = files.filter((f) => !open.some((o) => same(o.tab.drawing.filePath, f.path)));
+    const box = document.createElement('div');
+    const row = (label, act) => { const r = document.createElement('div'); r.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0'; const s = document.createElement('span'); s.style.flex = '1'; s.textContent = label; const b = document.createElement('button'); b.textContent = 'Open'; b.onclick = act; r.append(s, b); box.appendChild(r); };
+    for (const o of open) row(`${o.name} (open)`, () => this.activateTab(this.tabs.indexOf(o.tab)));
+    for (const f of files) row(f.name, async () => { try { const x = await platform.openPath(f.path); if (x) await this.openFromFile(x); } catch (e) { this.toast(e.message, true); } });
+    if (!open.length && !files.length) box.innerHTML = `<div class="pm-hint">Not used by an open assembly or drawing${path ? ', nor by one in its folder' : ' (save it to look in its folder too)'}.</div>`;
+    else if (!path) box.insertAdjacentHTML('beforeend', '<div class="pm-hint">Save it to look in its folder too.</div>');
+    this.ui.modal(`Where Used — ${doc?.name || 'this'}`, 'open', box, [{ label: 'Close', primary: true }]);
+    return { open: open.map((o) => o.name), files };
+  }
+
   // ------------------------------------------------------------ rendering and decals (render.js)
   // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
   renderSetup() {
@@ -4342,18 +4509,19 @@ class App {
         { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
         { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
         { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
+        { key: 'quality', label: 'Quality', type: 'select', options: [['1', 'Draft (one pass)'], ['16', 'Good (16 passes: smooth edges, soft shadows)'], ['64', 'Best (64 passes)']], value: String(prev.quality ?? 16) },
         ...bodies.slice(0, 24).map((b, i) => ({ key: 'look' + i, label: `${b.name}`, type: 'select', options: Object.entries(LOOKS).map(([k, l]) => [k, l.name]), value: this.doc.bodies?.[b.id]?.look || 'auto' })),
       ], 'One frame of the view as it is now. Each body’s look is kept with it.');
       if (!v) return null;
       let changed = false;
       bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
       if (changed) this.commit();
-      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1 };
+      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1, quality: +v.quality || 1 };
       this._renderOpts = o;
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
-    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, decals: this.doc.decals || [] })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
     if (o.quiet) return img;
     const box = document.createElement('div');
     box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
@@ -4481,9 +4649,54 @@ class App {
     ui.modal('3D Annotations', 'measure', box, [{ label: 'Close', primary: true }]);
   }
 
+  // Whether this part's geometry kernel has a class (e.g. a Lab kernel's LabPMI), asked once per kernel.
+  async kernelHas(name) {
+    const k = this.kernel;
+    k._has ||= new Map();
+    if (!k._has.has(name)) k._has.set(name, k.request('ocHas', { names: [name] }).then((r) => r.includes(name)).catch(() => false));
+    return k._has.get(name);
+  }
+  // A STEP import's PMI (read by the kernel) made 3D annotations, once.
+  takeImportedPMI(r) {
+    const doc = this.doc;
+    let n = 0;
+    for (const f of doc.features) {
+      if (f.type !== 'import' || !f.pmi?.length || f.pmiTaken) continue;
+      const list = (doc.annotations ||= []), nextId = () => 'an' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1);
+      const pt = (s) => String(s).trim().split(/\s+/).map(Number);
+      for (const line of f.pmi) {
+        const c = line.split('|');
+        let a = null;
+        if (c[0] === 'D') { if (list.some((x) => x.from === f.id && x.kind === 'datum' && x.letter === c[1])) continue; a = { kind: 'datum', letter: c[1], p: pt(c[2]) }; } // (a datum read once for each tolerance using it)
+        else if (c[0] === 'T') a = { kind: 'gdt', symbol: c[1], tol: +c[2], dia: c[3] === '1', p: pt(c[4]), datums: (c[5] || '').split(',').filter(Boolean).join(' ') };
+        else if (c[0] === 'L') a = { kind: 'dim', value: +c[1], plus: Math.abs(+c[2]), minus: Math.abs(+c[3]), p: pt(c[4]), q: pt(c[5]) };
+        if (!a || !a.p.every(Number.isFinite)) continue;
+        a.id = nextId(); a.from = f.id; a.at = this.annot3d.labelAt(a.p, a.q);
+        list.push(a); n++;
+      }
+      f.pmiTaken = true;
+    }
+    if (n) { this.commit(); this.status(`${n} annotation${n === 1 ? '' : 's'} (PMI) read from the STEP file: Tools ▸ 3D Annotations… lists them.`); }
+  }
+
+  // (a glTF binary of the bodies as shown: colours and render looks, in metres)
+  glbBytes() {
+    const st = this.renderSetup();
+    return glb(viewportBodies(this.viewport, { names: (this.result?.bodies || []).map((b) => b.name), colors: st.colors, looks: st.looks }), this.doc.name || 'Part');
+  }
+
   // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
   async stepBytes(bodyId = null) {
     const ann = this.doc.annotations || [];
+    // (Kernel Lab k14: datums, geometric tolerances and dimensions written as semantic PMI, on the faces they point at)
+    if (ann.length && !bodyId && (await this.kernelHas('LabPMI'))) {
+      const P = (q) => q.map((x) => +(+x).toFixed(6)).join(' ');
+      const spec = ann.map((a) => (a.kind === 'datum' ? `D|${a.letter}|${P(a.p)}` : a.kind === 'gdt' ? `T|${a.symbol}|${+a.tol}|${a.dia ? 1 : 0}|${P(a.p)}|${String(a.datums || '').split(/[\s,|]+/).filter(Boolean).join(',')}` : a.kind === 'dim' && a.q ? `L|${+a.value}|${+a.plus || 0}|${+a.minus || 0}|${P(a.p)}|${P(a.q)}|${P(a.at || a.p)}` : null)).filter(Boolean).join('\n');
+      try {
+        const r = await this.kernel.request('stepPMI', { spec, name: this.doc.name || 'Part' });
+        return new TextEncoder().encode(stepWithAnnotations(r.text, ann));
+      } catch (e) { this.toast('STEP with PMI failed (written without it): ' + e.message, true); }
+    }
     const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo());
     if (!ann.length) return bytes;
     return new TextEncoder().encode(stepWithAnnotations(new TextDecoder().decode(bytes), ann));
@@ -4787,6 +5000,52 @@ class App {
   filletPointUp() {
     if (!this._fpDrag) return false;
     this._fpDrag = null;
+    this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
+    return true;
+  }
+
+  // ------------------------------------------------------------ a freeform face's handles, dragged along the face's normal
+  // Each handle of the open Freeform feature: { p (world, at its height in the panel), n, at (where the last build put
+  // it), h (its height then) }, from the last build; null before one.
+  freeformHandles(f) {
+    const hs = this.result?.detected?.get(f?.id)?.handles;
+    if (f?.type !== 'freeform' || !hs?.length) return null;
+    return hs.map((x, i) => {
+      const h = Number(this.result.ev(f['h' + i] ?? 0));
+      const d = Number.isFinite(h) ? h - x.h : 0;
+      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h };
+    });
+  }
+  freeformDown(e) {
+    if (this.mode !== 'part' || this.pm?.kind !== 'feature' || e.button !== 0) return false;
+    const f = this.pm.feature, hs = this.freeformHandles(f);
+    if (!hs) return false;
+    const vp = this.viewport, m = vp.screenPos(e);
+    let best = -1, bd = 9;
+    hs.forEach((x, i) => { const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
+    if (best < 0) return false;
+    vp.controls.drag = null; // (the press moves the handle: no view rotation)
+    try { vp.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    const x = hs[best], h0 = Number(this.result.ev(f['h' + best] ?? 0)) || 0;
+    this._ffDrag = { i: best, n: new THREE.Vector3(...x.n).normalize(), o: new THREE.Vector3(...x.p), from: { clientX: e.clientX, clientY: e.clientY }, h0 };
+    this.status('Drag the handle in or out of the face; let go to rebuild.');
+    return true;
+  }
+  freeformMove(e) {
+    const d = this._ffDrag;
+    if (!d) return false;
+    const f = this.pm?.feature;
+    if (f?.type !== 'freeform') return true;
+    const vp = this.viewport, step = 10 ** Math.ceil(Math.log10(Math.max(1e-6, vp.worldPerPixel())));
+    const h = Math.round(Math.round((d.h0 + vp.dragAlong(d.n, d.o, d.from, e)) / step) * step * 1e6) / 1e6;
+    f['h' + d.i] = h;
+    this.updateEdgeHighlights();
+    this.status(`Handle ${d.i + 1}: ${h} mm`);
+    return true;
+  }
+  freeformUp() {
+    if (!this._ffDrag) return false;
+    this._ffDrag = null;
     this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
     return true;
   }
@@ -5099,7 +5358,7 @@ class App {
     if (!this.result?.body) { this.toast('There is no solid body to export', true); return; }
     try {
       this.status(`Exporting ${format.toUpperCase()}…`);
-      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
+      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : format === 'glb' ? this.glbBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
       const ext = format === 'step' ? 'step' : format;
       const path = await platform.saveBinary(`${this.safeName()}.${ext}`, bytes, format);
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');
@@ -5145,6 +5404,8 @@ class App {
         && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(e.key) && this.ui.treeKey(e)) { e.preventDefault(); return; }
       // the user's own shortcuts (Help ▸ Customize Shortcuts) come first
       if (!typing && !document.querySelector('.modal-back') && !document.querySelector('#cmd-search') && this.ui.runShortcut(e)) { e.preventDefault(); return; }
+      // the manual (F1): at what is being done
+      if (e.key === 'F1' && !ctrl && !e.altKey) { e.preventDefault(); this.ui.helpForPM(); return; }
       if (((ctrl && k === 'k' && !e.shiftKey && !e.altKey) || (e.key === '/' && !ctrl && !typing)) && !document.querySelector('.modal-back') && !document.querySelector('#cmd-search')) {
         e.preventDefault();
         this.ui.commandSearch();
