@@ -1749,7 +1749,7 @@ export class AssemblyEditor {
     const sp = makeStdPart(type, size, length, material);
     const p = this.stdPartOf(sp);
     if (!hole) { await this.addComponent(p.id); return this.doc.components[this.doc.components.length - 1]; }
-    this.begin();
+    if (!opts.batch) this.begin();
     const set = setParts(type, size);
     const wsp = (opts.washer || opts.nut) ? makeStdPart(...set.washer, null, material) : null;
     const nsp = opts.nut ? makeStdPart(...set.nut, null, material) : null;
@@ -1782,6 +1782,7 @@ export class AssemblyEditor {
         }
       } else place(sp, h, h.end, h.face, sp.align);
     }
+    if (opts.batch) return made.find((c) => c.part === p.id) || made[0];
     await this.loadParts();
     this.solve();
     this.sel = { kind: 'comp', id: made.find((c) => c.part === p.id)?.id || made[0].id };
@@ -2032,6 +2033,92 @@ export class AssemblyEditor {
       { label: 'Rename', icon: 'rename', action: () => this.renameComponent(c.id) },
       { label: 'Delete', icon: 'trash', key: 'Del', action: () => this.deleteComponent(c.id) },
     ];
+  }
+
+  // ---------------------------------------------------------------- fasteners everywhere
+  // The lined-up holes of the assembly: every round hole of each component (a cylinder whose faces look in towards
+  // its axis), in stacks of holes on one axis through different components. [{ holes: [{ comp, li, gi, ref, p, d, r }] }]
+  holeStacks() {
+    const leaves = this._leaves || this.leaves(), holes = [];
+    leaves.forEach((l, li) => {
+      const c = l.comp;
+      if (l.chain.length || this.eff(c).suppressed || this.part(c.part)?.libKey) return;
+      const m = this.parts.get(l.gk)?.mesh;
+      if (!m) return;
+      const ps = poseOf(c), V = m.vertices, T = m.triangles;
+      m.faceGroups.forEach((g, gi) => {
+        const s = g.surf;
+        if (s?.t !== 'CYLINDER' || !g.count) return;
+        const [a, b, cc] = [0, 1, 2].map((k) => { const v = T[g.start + k]; return [V[3 * v], V[3 * v + 1], V[3 * v + 2]]; });
+        const N = cross(sub(b, a), sub(cc, a)), mid = mul(add(add(a, b), cc), 1 / 3), d = unit(s.d), rad = sub(mid, add(s.p, mul(d, dot(sub(mid, s.p), d))));
+        if (!(dot(N, rad) < 0)) return; // (a shaft, not a hole)
+        const ref = { comp: c.id, kind: 'axis', p: s.p.map(r6), d: s.d.map(r6), r: r6(s.r), face: gi, gi: `${li}:f${gi}`, what: 'Cylindrical face' };
+        holes.push({ comp: c, li, gi, ref, p: toWorld(ps, s.p), d: unit(dirWorld(ps, s.d)), r: s.r });
+      });
+    });
+    const root = holes.map((_, i) => i), find = (i) => (root[i] === i ? i : (root[i] = find(root[i])));
+    for (let i = 0; i < holes.length; i++) for (let j = i + 1; j < holes.length; j++) {
+      const A = holes[i], B = holes[j];
+      if (len(cross(A.d, B.d)) < 1e-4 && len(cross(sub(B.p, A.p), A.d)) < 1e-3) root[find(i)] = find(j);
+    }
+    const groups = new Map();
+    holes.forEach((h, i) => { const k = find(i); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(h); });
+    // (one hole per component: the widest of a stepped one is its counterbore)
+    return [...groups.values()].map((hs) => ({ holes: [...new Map(hs.sort((x, y) => x.r - y.r).map((h) => [h.comp.id, h])).values()] }));
+  }
+  // A fastener in each stack of lined-up holes through two or more components (singles: in every hole), sized to the
+  // holes, as long as the stack (with a washer under its head, and a washer and nut on the far side), mated in it;
+  // stacks with a fastener already left alone. The number put in.
+  async autoFasten({ kind = 'hexBolt', washer = true, nut = true, singles = false } = {}) {
+    const stacks = this.holeStacks().filter((s) => s.holes.length >= (singles ? 1 : 2));
+    // (a fastener already on the axis: a standard part's component whose own axis lies on it)
+    const filled = (st) => this.doc.components.some((c) => {
+      if (!this.part(c.part)?.libKey) return false;
+      const ps = poseOf(c), up = dirWorld(ps, [0, 1, 0]), h = st.holes[0];
+      return len(cross(up, h.d)) < 1e-4 && len(cross(sub(ps.p, h.p), h.d)) < 1e-3;
+    });
+    let n = 0;
+    this.begin();
+    for (const st of stacks) {
+      if (filled(st)) continue;
+      // (the stack's two outer ends: of all its holes' ends, the furthest towards the camera (where the fastener goes in,
+      // as for a single hole) and the furthest away)
+      const hs = st.holes.map((x) => ({ x, h: this.holeOf(x.ref) })).filter((o) => o.h);
+      if (!hs.length) continue;
+      const u = unit(dirWorld(this.poseOfId(hs[0].x.comp.id), hs[0].h.end.n));
+      let top = null, bot = null;
+      for (const o of hs) {
+        const X = this.poseOfId(o.x.comp.id);
+        for (const [e, fc, far] of [[o.h.end, o.h.face, false], [o.h.far, o.h.farFace, true]]) {
+          const t = dot(toWorld(X, e.p), u);
+          if (!top || t > top.t) top = { o, e, fc, far, t };
+          if (!bot || t < bot.t) bot = { o, e, fc, t, X };
+        }
+      }
+      const h = top.o.h;
+      if (top.far) [h.end, h.face, h.far, h.farFace] = [h.far, h.farFace, h.end, h.face];
+      const P = this.poseOfId(top.o.x.comp.id), qi = P.q.clone().invert(), local = (w) => applyQ(qi, sub(w, P.p));
+      if (bot.o !== top.o) { h.far = { p: local(toWorld(bot.X, bot.e.p)).map(r6), n: unit(applyQ(qi, dirWorld(bot.X, bot.e.n))).map(r6), sign: -1 }; h.farFace = bot.fc; }
+      const depth = top.t - bot.t;
+      const fit = fitToHole(kind, 2 * Math.max(...st.holes.map((x) => x.r)));
+      const L = fastenerLength(kind, fit.size, depth, { washer, nut });
+      await this.insertStdPart(kind, fit.size, L, 'steel', h, { washer, nut, batch: true });
+      n++;
+    }
+    await this.loadParts();
+    this.solve();
+    this.change(n ? `${n} fastener${n === 1 ? '' : 's'} put in (${stacks.length - n} stack${stacks.length - n === 1 ? '' : 's'} had one already or no fit).` : 'No stacks of holes to fasten (or each has a fastener already).');
+    return n;
+  }
+  async autoFastenDialog() {
+    const kinds = STD_TYPES.filter((t) => t.fastener).map((t) => [t.id, t.label]);
+    const v = await this.app.ui.promptFields('Fasten All Holes', 'stdParts', [
+      { key: 'kind', label: 'Fastener', type: 'select', options: kinds, value: 'hexBolt' },
+      { key: 'washer', label: 'Washer under the head', type: 'check', value: true },
+      { key: 'nut', label: 'Washer and nut on the far side', type: 'check', value: true },
+      { key: 'singles', label: 'Also holes through one component only', type: 'check', value: false },
+    ], 'Every stack of lined-up holes through two or more components gets a fastener sized to the holes and as long as the stack, mated in it. Stacks with a fastener already are left alone.');
+    if (v) await this.autoFasten(v);
   }
 
   // ---------------------------------------------------------------- component patterns
@@ -2516,6 +2603,7 @@ export class AssemblyEditor {
       assembly: [
         { icon: 'insertComponent', label: 'Insert Components', action: () => this.insertComponents() },
         { icon: 'stdParts', label: 'Standard Parts', action: () => this.standardParts() },
+        { icon: 'stdParts', label: 'Fasten All Holes', action: () => this.autoFastenDialog() },
         { icon: 'equations', label: 'Equations', action: () => this.showEquations() },
         { icon: 'asmHole', label: 'Assembly Hole', action: () => this.startAsmFeature('hole'), active: this.holeTool?.f?.type === 'hole' },
         { icon: 'asmCut', label: 'Assembly Cut', action: () => this.startAsmFeature('cut'), active: this.holeTool?.f?.type === 'cut' },

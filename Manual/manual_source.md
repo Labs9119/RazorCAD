@@ -1564,6 +1564,10 @@ Left-drag a component to move it, [[Alt]]+drag to turn it. It moves only as its 
 
 Selecting works as in a part and follows the **selection filter**: with no filter a click picks the vertex, edge, face or plane under the cursor; with the Bodies filter it picks whole components. [[Ctrl]]+click adds or takes away. Right-click a face, edge or vertex for **Mate…** and the component's commands; whatever is selected goes into the mate. Dragging a component moves it, whatever is selected. {idx:assembly, selecting}
 
+## Fasten All Holes
+
+**Fasten All Holes** (Assembly tab) finds every stack of lined-up round holes through two or more components (tick **Also holes through one component only** for single ones too) and puts a fastener in each: the type you choose (hex bolt, socket head cap screw, inch sizes…), its size fitted to the holes, its length to the whole stack, with a washer under the head and a washer and nut on the far side if ticked, each mated in place (concentric, seated on the stack's outer faces). Stacks that have a fastener already are left alone, so it can be run again after adding parts. {idx:Fasten All Holes}{idx:smart fasteners}
+
 ## Component patterns and mirrors
 
 **Component Pattern**, **Circular Component Pattern** and **Mirror Components** (Assembly tab) copy the selected component (or the components of the selected faces and edges) {idx:component pattern}{idx:mirror components}:

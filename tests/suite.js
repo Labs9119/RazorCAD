@@ -2158,6 +2158,33 @@ const UI = {
     return { ok: true, detail: `3 copies 40, 80, 120 mm along X, in the tree; deleted with the pattern` };
   },
 
+  // Fasten All Holes: two plates stacked, four lined-up Ø9 holes: four M8 bolts, each with two washers and a nut, as
+  // long as the stack; done again, nothing more
+  async 'assembly-fasten-all-holes'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), SP = await import('/js/stdparts.js');
+    const plate = M.newDoc(); plate.name = 'Plate';
+    const sk = M.createFeature(plate, 'sketch', { plane: { ref: 'top' } });
+    const P = [[-30, -20], [30, -20], [30, 20], [-30, 20]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4]));
+    for (const [x, y] of [[-20, -10], [20, -10], [20, 10], [-20, 10]]) S.addCircle(sk, S.addPoint(sk, x, y), 4.5);
+    plate.features.push(sk, M.createFeature(plate, 'extrude', { sketch: sk.id, depth: 10 }));
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, pid = asm.addPart(plate, null, null);
+    await asm.addComponent(pid); await asm.addComponent(pid);
+    const [c1, c2] = asm.doc.components;
+    c2.pos = [c1.pos[0], c1.pos[1] + 10, c1.pos[2]]; c2.rot = [...c1.rot]; c2.fixed = true;
+    await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000);
+    asm.vp.setStandardView('iso', false);
+    const stacks = asm.holeStacks().filter((s) => s.holes.length >= 2).length;
+    const n = await asm.autoFasten({ kind: 'hexBolt', washer: true, nut: true });
+    await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000);
+    const count = (re) => asm.doc.components.filter((c) => re.test(c.name)).length;
+    const set = SP.setParts('hexBolt', 'M8'), L = SP.fitLength('hexBolt', 'M8', 20, 2 * SP.heightOf(...set.washer) + SP.heightOf(...set.nut));
+    const lengthOk = asm.doc.parts.some((p) => p.libKey && p.name.includes('M8') && p.name.includes(String(L)));
+    const again = await asm.autoFasten({ kind: 'hexBolt', washer: true, nut: true });
+    const ok = stacks === 4 && n === 4 && count(/^Hex Bolt/) === 4 && count(/^Washer/) === 8 && count(/^Hex Nut/) === 4 && again === 0 && asm.solveOk && lengthOk;
+    return ok ? { ok: true, detail: `4 stacks: 4 M8 × ${L} bolts, 8 washers, 4 nuts, mated; done again, none more` } : { ok: false, detail: `stacks ${stacks}, put in ${n} then ${again}; bolts ${count(/^Hex Bolt/)}, washers ${count(/^Washer/)}, nuts ${count(/^Hex Nut/)}, solved ${asm.solveOk}, M8×${L} part ${lengthOk} (${asm.doc.parts.map((p) => p.name).join(', ')})` };
+  },
+
   // the Getting Started Tour: steps with → and ←, each pointing at its part of the window; done at the end
   async 'getting-started-tour'() {
     const ui = window.app.ui;
