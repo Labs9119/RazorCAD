@@ -46,7 +46,7 @@ instead of changing the resulting geometry.
 | Patterns and Mirror | Linear (one or two directions, spacing or total length, symmetric, the second direction for the feature only), circular (equal or set angle, symmetric, rings), sketch, curve and fill patterns, mirror; instances to skip; features, faces' features and bodies | Patterns whose spacing varies along them |
 | Sheet metal | Base, extruded, lofted and transition sheets; edge, profile and hem flanges (along the whole edge or part of it); jogs, sketched bends, forms, gussets, tabs and slots, corners and reliefs, unfold / fold, convert; K-factor, bend allowance or bend deduction | Bend tables by angle (one value for a 90° bend, other angles in proportion) |
 | Assemblies | Coincident, concentric, parallel, perpendicular, tangent, distance and angle (with limits), lock, width, symmetric, gear, rack pinion and screw mates; interference, explode, motion, BOM, assembly holes and cuts | Cam, slot and path mates |
-| Drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
+| Drawings | Model, standard, projected, section (horizontal, vertical or at an angle), detail, auxiliary, broken, cropped and flat pattern views; dimensions (linear, baseline, ordinate, chamfer, auto), hole callouts, GD&T, surface finish, weld symbols, centre marks and lines, balloons; BOM, cut list, revision and hole tables; PDF and DXF | Stepped (offset) and broken-out sections; DWG |
 
 ## Validation
 

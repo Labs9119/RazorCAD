@@ -324,6 +324,48 @@ const UI = {
     return ok ? { ok: true, detail: ed.doc.views.map((v) => ed.geos.get(v.id).edges.length).join(' / ') + ' lines' } : { ok: false, detail: 'views without lines' };
   },
 
+  // a drawing's hole table (tags, positions from the view's lower-left corner, sizes) and a section at an angle
+  async 'drawing-hole-table-angled-section'() {
+    const a = window.app, D = await import('/js/drawing.js'), S = await import('/js/sketchmodel.js');
+    if (a.mode === 'drawing') { await a.newDocument?.(); closeModals(); }
+    const doc = M.newDoc(); doc.name = 'Plate with holes';
+    const s = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } });
+    const P = [[0, 0], [60, 0], [60, 40], [0, 40]].map((q) => S.addPoint(s, ...q)); P.forEach((id, i) => S.addLine(s, id, P[(i + 1) % 4]));
+    const h = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } });
+    S.addCircle(h, S.addPoint(h, 10, 10), 3); S.addCircle(h, S.addPoint(h, 50, 10), 3); S.addCircle(h, S.addPoint(h, 30, 30), 5);
+    doc.features.push(s, M.createFeature(doc, 'extrude', { sketch: s.id, depth: 5 }), h, M.createFeature(doc, 'extrude', { sketch: h.id, op: 'cut', end: 'through' }));
+    await a.setDoc(doc); await until(() => !a.kernel.pending && a.result?.bodies?.length, 60000, 100);
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Hole table', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing;
+    if (!ed) return { ok: false, detail: 'no drawing' };
+    await until(() => ed.doc.views.length && ed.doc.views.every((v) => (ed.geos.get(v.id)?.edges?.length || 0) > 0), 60000, 250);
+    // (the view the holes are round in: looking along Z)
+    const front = ed.doc.views.find((v) => { const c = D.viewCamera(ed.doc, v); return Math.abs(Math.abs(c.dir[2]) - 1) < 1e-9; });
+    if (!front) return { ok: false, detail: 'no view looking along Z' };
+    ed.selected = new Set([front.id]);
+    const ann = ed.addHoleTable();
+    const rows = D.holeTableRows(ed.doc, ann, ed.geos) || [];
+    const got = rows.map((r) => `${r.tag} ${+r.x.toFixed(6)},${+r.y.toFixed(6)} Ø${+r.d.toFixed(6)}`).sort().join(' | ');
+    const want = ['A1 30,30 Ø10', 'B1 10,10 Ø6', 'B2 50,10 Ø6'];
+    const sx = D.viewCamera(ed.doc, front).x[0] < 0;
+    // (a view looking from behind shows x the other way round: then only the count is checked)
+    if (!(got === want.join(' | ') || sx && rows.length === 3)) return { ok: false, detail: `hole table: ${got} (expected ${want.join(' | ')})` };
+    // (a section at 45° from the front view: looking square to the line, along the view's plane)
+    const pc = D.viewCamera(ed.doc, front), r = Math.SQRT1_2;
+    const sec = { id: D.newId(ed.doc, 'v'), name: 'Section View A-A', type: 'section', parent: front.id, model: front.model, sheet: front.sheet, style: 'hlr', tangent: true, x: front.x + 150, y: front.y, scale: null,
+      section: { a: [0, 0], b: [40, 40], arrow: [-r, r], horizontal: true, angle: 45, letter: 'A' } };
+    ed.doc.views.push(sec); ed.changed();
+    const cam = D.viewCamera(ed.doc, sec), along = pc.x.map((x, k) => (x + pc.y[k]) * r), arrow3 = pc.x.map((x, k) => -x * r + pc.y[k] * r);
+    const dotv = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    if (Math.abs(dotv(cam.dir, arrow3) + 1) > 1e-9 || Math.abs(dotv(cam.dir, along)) > 1e-9) return { ok: false, detail: `section camera ${JSON.stringify(cam)}` };
+    if (D.alignAxis(sec) !== null) return { ok: false, detail: 'an angled section is held in line with its parent' };
+    const drawn = await until(() => (ed.geos.get(sec.id)?.edges?.length || 0) > 0, 60000, 250);
+    if (!drawn) return { ok: false, detail: 'the angled section has no lines' };
+    return { ok: true, detail: `hole table ${got}; a 45° section drawn (${ed.geos.get(sec.id).edges.length} lines)` };
+  },
+
   // an assembly with two copies of a part
   async 'assembly-two-components'() {
     const a = window.app;

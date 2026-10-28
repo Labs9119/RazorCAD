@@ -1707,7 +1707,7 @@ Changing the projection (Change Template or Sheet Properties) lays the views out
 | **Standard Views** | Three views laid out for first- or third-angle projection |
 | **Projected View** | A view aligned with its parent |
 | **Flat Pattern** | A sheet metal body unfolded (see below) |
-| **Section View** | Horizontal or vertical cutting line, hatched cut faces, A-A labels and arrows, flip |
+| **Section View** | Horizontal, vertical or **At an angle** (degrees from horizontal, counter-clockwise) cutting line, hatched cut faces, A-A labels and arrows, flip; an angled section looks square to its line and can be placed anywhere |
 | **Detail View** | A circle with a letter, 2:1 by default |
 | **Auxiliary View** | Looks square at an inclined edge, so it shows its true shape |
 | **Break** | Leaves out the middle of a long part; dimensions across the break keep the true length |
@@ -1756,6 +1756,7 @@ A flat pattern view shows a sheet metal body unfolded with its outline and holes
 | **Centerline** | Click two lines (or two points); the centerline runs between them |
 | **Revision Table** | Rows edited in one dialog; the latest revision goes into the title block |
 | **Cut List Table** | The cut list of the part in the selected view (see the Fast Structure chapter); it updates when the part changes |
+| **Hole Table** {idx:Hole Table} | The holes of the selected view (circles seen end on) tagged in it, a letter for each size, largest first, numbered from the bottom left (A1, A2… B1), with their X and Y from the view's lower-left corner and their size; it updates when the part changes |
 | **Balloon** | Click a part in a view, then where the balloon goes. The number is that part's item in the bill of materials, found from the part under the click (in a sub-assembly, the sub-assembly's item). Keep clicking for more; [[Esc]] ends. Where the part can't be told, it asks for the number. Right-click a balloon ▸ **Item Number…** to change it. |
 | **BOM Table** | The bill of materials of the drawing's assembly: ITEM, QTY, PART and MATERIAL, at the top right of the sheet. Drag it anywhere; right-click it to show the sub-assemblies' parts (indented). It follows the assembly. Right-click a column to change what it shows (any field, custom property, mass, cost or typed values), insert, move, rename or remove it; double-click a typed value to edit it. **Columns…** (right-click the table, or double-click it) has everything in one dialog. With mass or cost columns a TOTAL row is added. |
 
