@@ -6,6 +6,14 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-28 16:11 — PCs with 2 or 3 processor threads: the open part's kernel on two threads
+- A PC with fewer than 4 threads kept every kernel on one thread. The first part's kernel now gets two there (the
+  others one; `machine.js` threadsPerKernel). Measured on this PC held to its cores, the 16 check-set parts:
+  2 cores 18.2 → 12.8 s (edits 4.39 → 4.15 s), one core with hyper-threading 23.2 → 19.7 s (edits 5.52 → 4.89 s);
+  the same geometry and meshes. Three threads on 2 cores were slower than two. The whole test suite passed with the
+  browser held to one core and told it has 2 threads (426 s).
+- Tried and left out: another memory allocator in the single-thread kernel (the same results, no quicker).
+
 ## 2026-10-28 13:08 — GitHub workflows on Node.js 24
 - GitHub's build steps moved to the actions' Node.js 24 versions (checkout v5, setup-python v6, upload-artifact v6,
   cache v5): GitHub warned that the Node.js 20 ones are being retired. Only the runtime changes.
