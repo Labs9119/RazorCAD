@@ -981,6 +981,10 @@ Four features for moulded parts (Features tab). {idx:plastic features}
 - **Lip / Groove** {idx:Lip / Groove}: click the flat rim face along the open edge of a shelled part: a **lip** (raised) or **groove** (sunk), along its **inner** or **outer** edge, of a width and height (depth). For two halves that fit: a lip on one, on the other a groove a little wider and deeper.
 - **Vent** {idx:Vent}: slots across a sketch's closed outline on a face, of a **slot width** with **bars** between them, at an angle, kept a **margin** in from the outline, cut through or to a depth.
 
+## Core and Cavity
+
+**Core and Cavity** (Features tab) makes the two halves of a simple mould for the part {idx:Core and Cavity}{idx:mould}: a block round it (**Block margin** beyond it every way), the part taken out of it grown by the **Shrinkage** (the plastic shrinks as it cools), split at a parting plane square to the **Pull direction**. The plane goes at the part's largest section along the pull (or **At a height up the part**). The half the pull direction points into is the **Cavity**, the other the **Core**; holes along the pull become shut-offs where the plane crosses them. Check the part with Draft Analysis and Undercut Check first: undercuts need side actions, which this does not make.
+
 ## Move Face
 
 Push or pull flat faces along their normal, or turn a face about one of its edges. The neighbouring faces follow. {idx:Move Face}

@@ -820,6 +820,17 @@ const PM_SCHEMAS = {
       { key: 'lg2Hint', type: 'hint', text: 'For a matching pair: a lip on one half, and on the other a groove a little wider and deeper (the clearance).' },
     ] },
   ],
+  mold: [
+    { title: 'Mould', fields: [
+      { key: 'dir', type: 'select', label: 'Pull direction (the cavity side)', options: [['y', '+Y'], ['-y', '−Y'], ['x', '+X'], ['-x', '−X'], ['z', '+Z'], ['-z', '−Z']] },
+      { key: 'parting', type: 'select', label: 'Parting plane', options: [['auto', 'At the largest section'], ['at', 'At a height up the part']] },
+      { key: 'partingAt', type: 'expr', label: 'Height (from the part’s lowest point)', unit: 'mm', show: (f) => f.parting === 'at' },
+      { key: 'margin', type: 'expr', label: 'Block margin (round the part)', unit: 'mm' },
+      { key: 'shrink', type: 'expr', label: 'Shrinkage', unit: '%' },
+      { key: 'keepPart', type: 'check', default: true, label: 'Keep the part as a body too' },
+      { key: 'mHint', type: 'hint', text: 'A block round the part is split into a core and a cavity at a parting plane square to the pull direction, the part (grown by the shrinkage) taken out of both. Check the part first with Draft Analysis and Undercut Check: undercuts need side actions this does not make.' },
+    ] },
+  ],
   vent: [
     { title: 'Boundary', fields: [{ key: 'sketch', type: 'sketch', label: 'Sketch (a closed outline on the face)' }] },
     { title: 'Slots', fields: [
@@ -1806,6 +1817,7 @@ export class UI {
         { icon: 'rib', label: 'Snap Hook', action: () => a.startFeature('snapHook') },
         { icon: 'shell', label: 'Lip / Groove', action: () => a.startFeature('lipGroove') },
         { icon: 'fillPattern', label: 'Vent', action: () => a.startFeature('vent') },
+        { icon: 'split', label: 'Core and Cavity', action: () => a.startFeature('mold') },
         { icon: 'moveFace', label: 'Move Face', action: () => a.startFeature('moveFace') },
         { icon: 'scale', label: 'Scale', action: () => a.startFeature('scale') },
         'sep',

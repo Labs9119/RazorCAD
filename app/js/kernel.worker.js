@@ -7072,6 +7072,53 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = `${locs.length} ${f.type === 'boss' ? 'boss' : 'snap hook'}${locs.length === 1 ? '' : f.type === 'boss' ? 'es' : 's'}`;
           break;
         }
+        case 'mold': {
+          // Core and cavity: a block round the part (margin beyond it every way), the part grown by shrink % (the plastic
+          // shrinks as it cools) taken out of it, split by a parting plane square to the pull direction: at the part's
+          // largest section along it (parting 'auto'), or at partingAt from the part's lowest point. The half the pull
+          // direction points into is the cavity, the other the core; holes along the pull become shut-offs where the
+          // plane crosses them. keepPart: the part stays as a body too
+          const rec = solids.length === 1 ? solids[0] : solids.find((s) => s.id === f.body);
+          if (!rec) throw new Error(solids.length ? 'Choose the body to make the mould for' : 'There is no part to make a mould for');
+          const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, key = f.dir || 'y', d = key.startsWith('-') ? mul(AX[key[1]], -1) : AX[key];
+          const margin = ev(f.margin ?? 10), shrink = ev(f.shrink ?? 0) / 100;
+          if (!(margin > 0)) throw new Error('The block margin must be more than zero');
+          if (!(shrink > -0.5 && shrink < 0.5)) throw new Error('The shrinkage must be a few per cent');
+          const b0 = bbox(rec.shape), c0 = b0.center;
+          let part = rec.shape.clone();
+          if (Math.abs(shrink) > 1e-12) part = part.scale(1 + shrink, c0);
+          const b = bbox(part), corners = [];
+          for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) corners.push([x, y, z]);
+          const lo = Math.min(...corners.map((q) => dot(q, d))), hi = Math.max(...corners.map((q) => dot(q, d)));
+          let h;
+          if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
+          else {
+            // (the largest section: the part's area in slabs across the pull direction, the middle of the largest run)
+            const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), big = b.diag + 10, N = 40, areas = [];
+            for (let i = 0; i < N; i++) {
+              const t = lo + ((i + 0.5) * (hi - lo)) / N, slab = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(add(mul(d, t - 1e-3), sub(c0, mul(d, dot(c0, d)))), u, d)).extrude(2e-3);
+              let a = 0; try { a = Math.abs(R.measureVolume(part.intersect(slab))) / 2e-3; } catch (e) { if (isFatal(e)) throw e; } finally { slab.delete(); }
+              areas.push(a);
+            }
+            const top = Math.max(...areas), runs = areas.map((a) => a >= top * (1 - 1e-6));
+            const first = runs.indexOf(true), last = runs.lastIndexOf(true);
+            h = lo + ((first + last + 1) / 2 / N) * (hi - lo);
+          }
+          if (!(h > lo + 1e-6 && h < hi - 1e-6)) throw new Error('The parting plane must cross the part');
+          const ub = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), vb = cross(d, ub);
+          const spans = (v) => [Math.min(...corners.map((q) => dot(q, v))) - margin, Math.max(...corners.map((q) => dot(q, v))) + margin];
+          const [u0, u1] = spans(ub), [v0, v1] = spans(vb), base = (t) => add(add(mul(ub, (u0 + u1) / 2), mul(vb, (v0 + v1) / 2)), mul(d, t));
+          const half = (t0, t1) => R.drawRectangle(u1 - u0, v1 - v0).sketchOnPlane(new R.Plane(base(t0), ub, d)).extrude(t1 - t0);
+          const cavity = half(h, hi + margin).cut(part), core = half(lo - margin, h).cut(part);
+          const recs = [bodyRec(newId(f.id + 'cav'), cavity, f.id), bodyRec(newId(f.id + 'core'), core, f.id)];
+          recs[0].name = 'Cavity'; recs[1].name = 'Core';
+          if (f.keepPart === false) solids = solids.filter((s) => s !== rec);
+          solids.push(...recs);
+          body = compoundOf(solids);
+          applied.push({ op: 'add', tool: cavity }, { op: 'add', tool: core });
+          res.notes[f.id] = `Core and cavity, parting ${+(h - lo).toFixed(3)} mm up the part along the pull${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          break;
+        }
         case 'lipGroove': {
           // A lip (raised) or a groove (sunk) along a flat rim face (a shelled part's open edge): the band of the face
           // width wide along its inner edge (side 'inner') or its outer one, raised height or sunk that deep
