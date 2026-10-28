@@ -1787,9 +1787,11 @@ Changing the projection (Change Template or Sheet Properties) lays the views out
 | **Auxiliary View** | Looks square at an inclined edge, so it shows its true shape |
 | **Break** | Leaves out the middle of a long part; dimensions across the break keep the true length |
 | **Crop View** | Shows only the area you draw round |
+| **Broken-out Section** | Click a view, then the corners of an outline round what to show inside; click the first corner again to close it and give the **depth** from the front of the model. The material inside the outline is taken away to that depth, the faces cut there hatched, the outline drawn thin. Right-click the view ▸ Remove Broken-out Section takes it away |
+| **Compare With** | This drawing's sheets against another drawing open in RazorCAD (an earlier version, say), sheet by sheet: lines only in this one in red, only in the other in green, in both in grey {idx:drawing compare} |
 | **Update Views** | Re-reads the parts and redraws the views |
 
-{idx:Model View}{idx:Standard Views}{idx:Projected View}{idx:Section View, drawing}{idx:Detail View}{idx:Auxiliary View}{idx:broken view}{idx:Crop View}
+{idx:Model View}{idx:Standard Views}{idx:Projected View}{idx:Section View, drawing}{idx:Detail View}{idx:Auxiliary View}{idx:broken view}{idx:Crop View}{idx:broken-out section}
 
 A broken or cropped view can be put back to whole from its right-click menu. Section views hatch each body or component with its own angle and spacing.
 

@@ -8768,6 +8768,24 @@ function projectView(shape, box, v, solids = null) {
     }
     if (!done) cutFaces(s, 0);
   }
+  // (a broken-out section: the material inside an outline drawn on the view (view coordinates) taken away from the
+  // front of the model to a depth; the faces left at that depth hatched)
+  if (v.breakout?.poly?.length >= 3 && v.breakout.depth > 0) {
+    const corners = [];
+    for (const cx of [box.min[0], box.max[0]]) for (const cy of [box.min[1], box.max[1]]) for (const cz of [box.min[2], box.max[2]]) corners.push([cx, cy, cz]);
+    const front = Math.max(...corners.map((q) => dot(q, dir))), margin = box.diag * 0.05 + 1, bottom = front - v.breakout.depth, poly = v.breakout.poly;
+    const P3 = ([a, b], t) => add(add(mul(x, a), mul(y, b)), mul(dir, t));
+    const tool = R.basicFaceExtrusion(R.makePolygon(poly.map((q) => P3(q, front + margin))), new R.Vector(mul(dir, -(front + margin - bottom))));
+    s = s.cut(tool);
+    const inPoly = (q) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > q[1]) !== (yj > q[1]) && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) c = !c; } return c; };
+    for (const f of s.faces) {
+      if (f.geomType !== 'PLANE') continue;
+      const c = vec(f.center), nf = vec(f.normalAt());
+      if (Math.abs(dot(c, dir) - bottom) > 1e-4 * Math.max(1, box.diag) || Math.abs(dot(nf, dir)) < 0.9999 || !inPoly(to2(c))) continue;
+      cut.push([f.clone().outerWire(), ...f.clone().innerWires()].map((wire) => loopPts2(wire, to2, box.diag)));
+      cutBody.push(0);
+    }
+  }
   const hlr = new oc.HLRBRep_Algo();
   hlr.Add(s.wrapped, 0);
   const ax = new oc.gp_Ax2(new oc.gp_Pnt(0, 0, 0), new oc.gp_Dir(dir[0], dir[1], dir[2]), new oc.gp_Dir(x[0], x[1], x[2]));

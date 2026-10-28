@@ -694,6 +694,7 @@ export class DrawingEditor {
       if (v.type !== 'detail') {
         items.push({ label: v.brk ? 'Remove Break' : 'Break View', icon: 'breakView', action: () => { if (v.brk) { const keep = this.viewCentre(v); delete v.brk; this.recentre(v, keep); this.changed(); } else this.startTool('break', { view: v.id }); } });
         items.push({ label: v.crop ? 'Remove Crop' : 'Crop View', icon: 'cropView', action: () => { if (v.crop) { const keep = this.viewCentre(v); delete v.crop; this.recentre(v, keep); this.changed(); } else this.startTool('crop', { view: v.id }); } });
+        items.push(v.breakout ? { label: 'Remove Broken-out Section', icon: 'section', action: () => { delete v.breakout; this.changed(); this.updateGeometry(); } } : { label: 'Broken-out Section', icon: 'section', action: () => this.startTool('breakout', { view: v.id }) });
       }
       items.push('sep', { label: 'Delete View', icon: 'trash', action: () => this.deleteSelection() });
     } else {
@@ -1303,6 +1304,23 @@ export class DrawingEditor {
       this.pendingCentre.set(v.id, P);
       this.changed();
       this.cancelTool();
+      return;
+    }
+    if (t.kind === 'breakout') {
+      // (click the view, then the outline's corners; back at the first corner it closes and asks for the depth)
+      if (!t.view) { const v = this.viewAt(P, 1); if (v && v.type !== 'detail' && v.type !== 'flat') { t.view = v.id; t.pts = []; this.app.status('Click the corners of the outline round the part to break out; click the first corner again to close it.'); } return; }
+      const v = D.findView(this.doc, t.view), X = D.viewXform(this.doc, v), q = X.toView(P);
+      t.pts ||= [];
+      const first = t.pts[0] && X.toSheet(t.pts[0]);
+      if (first && t.pts.length >= 3 && Math.hypot(P[0] - first[0], P[1] - first[1]) < 2) {
+        const val = await this.app.ui.promptFields('Broken-out Section', 'section', [{ key: 'depth', label: 'Depth (from the front of the model)', type: 'expr', value: 10 }]);
+        const depth = val ? +val.depth : NaN;
+        if (depth > 0) { v.breakout = { poly: t.pts.map((p) => [+p[0].toFixed(4), +p[1].toFixed(4)]), depth }; this.changed(); this.updateGeometry(); }
+        this.cancelTool();
+        return;
+      }
+      t.pts.push(q);
+      this.render();
       return;
     }
     if (t.kind === 'break' || t.kind === 'crop') {
@@ -2112,6 +2130,61 @@ export class DrawingEditor {
     }
   }
 
+  // A sheet (by default the one shown) as a canvas at most max px across.
+  async sheetCanvas(sheet = this.sheet, max = 1400) {
+    if (!sheet) return null;
+    await this.updateGeometry();
+    await this.loadFonts();
+    const [W, H] = D.paperSize(sheet), k = max / Math.max(W, H), w = Math.max(1, Math.round(W * k)), h = Math.max(1, Math.round(H * k));
+    const prims = D.sheetPrims(this.doc, sheet, { geos: this.geos, selected: new Set(), hover: null, errors: this.errors, cutLists: this.cutLists });
+    const img = new Image();
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${W} ${H}"><rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>${svgOf(prims, k, { n: 0 })}</svg>`);
+    await img.decode();
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
+    return cv;
+  }
+  // Compare With: this drawing's sheets against another open drawing's, one by one: lines only in this one red, only in
+  // the other green, in both grey. { sheets: [{ name, url, onlyHere, onlyThere, same }] } (pixel counts)
+  async compareWith(other, max = 1400) {
+    const out = [];
+    const n = Math.max(this.doc.sheets.length, other.doc.sheets.length);
+    for (let i = 0; i < n; i++) {
+      const sa = this.doc.sheets[i], sb = other.doc.sheets[i];
+      const A = sa ? await this.sheetCanvas(sa, max) : null, B = sb ? await other.sheetCanvas(sb, max) : null;
+      const w = Math.max(A?.width || 0, B?.width || 0), h = Math.max(A?.height || 0, B?.height || 0);
+      const read = (c) => { if (!c) return null; const t = document.createElement('canvas'); t.width = w; t.height = h; const x = t.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(c, 0, 0); return x.getImageData(0, 0, w, h).data; };
+      const da = read(A), db = read(B), cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d'), im = ctx.createImageData(w, h);
+      let onlyHere = 0, onlyThere = 0, same = 0;
+      for (let p = 0; p < w * h * 4; p += 4) {
+        const ink = (d) => d && d[p] + d[p + 1] + d[p + 2] < 600;
+        const ia = ink(da), ib = ink(db);
+        const [r, g, b] = ia && ib ? [150, 150, 150] : ia ? [220, 30, 30] : ib ? [20, 160, 40] : [255, 255, 255];
+        if (ia && ib) same++; else if (ia) onlyHere++; else if (ib) onlyThere++;
+        im.data[p] = r; im.data[p + 1] = g; im.data[p + 2] = b; im.data[p + 3] = 255;
+      }
+      ctx.putImageData(im, 0, 0);
+      out.push({ name: sa?.name || sb?.name || `Sheet ${i + 1}`, url: cv.toDataURL('image/png'), onlyHere, onlyThere, same });
+    }
+    return { sheets: out };
+  }
+  async compareDialog() {
+    const others = this.app.tabs.filter((t) => t.kind === 'drawing' && t.drawing && t.drawing !== this && t.drawing.doc?.sheets);
+    if (!others.length) { this.app.toast('Open the other drawing too (an earlier version, say), then Compare With', true); return null; }
+    const v = await this.app.ui.promptFields('Compare With', 'drawing', [{ key: 'i', label: 'Other drawing', type: 'select', options: others.map((t, i) => [String(i), t.drawing.name || t.drawing.doc.name || `Drawing ${i + 1}`]), value: '0' }]);
+    if (!v) return null;
+    const r = await this.app.withProgress('Comparing…', () => this.compareWith(others[+v.i].drawing));
+    const box = el('div', { style: 'max-height:70vh;overflow:auto' });
+    box.appendChild(el('div', { class: 'pm-hint' }, '<span style="color:#dc1e1e">Red</span>: only in this drawing; <span style="color:#14a028">green</span>: only in the other; grey: in both.'));
+    for (const s of r.sheets) {
+      box.appendChild(el('div', { style: 'margin:8px 0 2px;font-weight:600' }, esc(`${s.name}: ${s.onlyHere || s.onlyThere ? `${s.onlyHere} px only here, ${s.onlyThere} px only there` : 'the same'}`)));
+      box.appendChild(el('img', { src: s.url, style: 'max-width:min(80vw,1100px);border:1px solid #ccc;display:block' }));
+    }
+    this.app.ui.modal('Compare Drawings', 'drawing', box, [{ label: 'Close', primary: true }]);
+    return r;
+  }
+
   // The sheet shown, as a picture (the file's preview): a PNG data: URL at most max px across.
   async thumbnail(max = 400) {
     const sheet = this.sheet;
@@ -2465,6 +2538,8 @@ export class DrawingEditor {
         { icon: 'auxView', label: 'Auxiliary View', action: () => this.startTool('aux'), active: this.tool?.kind === 'aux' },
         { icon: 'breakView', label: 'Break', action: () => this.startTool('break', this.selViewOpt()), active: this.tool?.kind === 'break' },
         { icon: 'cropView', label: 'Crop View', action: () => this.startTool('crop', this.selViewOpt()), active: this.tool?.kind === 'crop' },
+        { icon: 'section', label: 'Broken-out Section', action: () => this.startTool('breakout', this.selViewOpt()), active: this.tool?.kind === 'breakout' },
+        { icon: 'drawing', label: 'Compare With', action: () => this.compareDialog() },
         'sep',
         { icon: 'rebuild', label: 'Update Views', action: async () => { await this.refreshModels(); this.geoKeys.clear(); this.updateGeometry(); } },
       ],

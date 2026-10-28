@@ -2032,6 +2032,54 @@ const UI = {
     return { ok: true, detail: `11 parts of 3 sizes on ${sheets.length} sheets (inside the margin, 5 apart, some turned); a part too big refused; a bent part's flat pattern nested twice and written to DXF` };
   },
 
+  async 'drawing-compare'() {
+    const a = window.app, S = await import('/js/sketchmodel.js');
+    await a.newDocument?.(); closeModals();
+    const doc = M.newDoc(), sk = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); S.addCircle(sk, 'O', 15); doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 10 }));
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    const partTab = a.tabIndex, keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Cmp', props: {}, sheet: null });
+    let A, B;
+    try { await a.newDrawing(true); A = a.drawing; await a.activateTab(partTab); await a.newDrawing(true); B = a.drawing; } finally { a.ui.newDrawingSetup = keep; }
+    for (const ed of [A, B]) await until(() => ed.doc.views.every((v) => ed.geos.get(v.id)?.edges?.length), 60000, 250);
+    const f = (await import('/js/drawing.js')).frameRect(B.sheet, B.doc.format);
+    B.doc.anns.push({ id: 'tx', type: 'table', sheet: B.sheet.id, title: 'ADDED', header: true, rows: [['A', 'B'], ['1', '2']], pos: [f.x0 + 20, f.y0 + 20] });
+    const same = await A.compareWith(A, 700), diff = await A.compareWith(B, 700), s0 = same.sheets[0], s1 = diff.sheets[0];
+    const ok = s0.onlyHere === 0 && s0.onlyThere === 0 && s0.same > 0 && s1.onlyThere > 50 && s1.onlyHere < s1.onlyThere / 5;
+    await a.newDocument?.(); closeModals();
+    return ok ? { ok: true, detail: `a drawing against itself: the same; against a copy with a table added: ${s1.onlyThere} px only in the other, ${s1.onlyHere} only here` } : { ok: false, detail: { s0: { ...s0, url: undefined }, s1: { ...s1, url: undefined } } };
+  },
+
+  async 'drawing-broken-out-section'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
+    await a.newDocument?.(); closeModals();
+    // (a block 40 × 30 × 20 on Front (z 0 to 20) with a Ø10 hole 10 deep from its back: hidden from the front)
+    const doc = M.newDoc(), sk = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); const P = [[-20, -15], [20, -15], [20, 15], [-20, 15]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4]));
+    const hs = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); S.addCircle(hs, 'O', 5);
+    doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 20 }), hs, M.createFeature(doc, 'extrude', { sketch: hs.id, op: 'cut', depth: 10 }));
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Breakout', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing, v = ed.doc.views.find((x) => x.orient === 'front');
+    await until(() => ed.geos.get(v.id)?.edges?.length, 60000, 250);
+    const before = ed.geos.get(v.id).edges.filter((e) => e.k === 'v').length;
+    // (the outline round the hole, 15 deep: down to z = 5, into the hole)
+    const kf = a.ui.promptFields; a.ui.promptFields = async () => ({ depth: '15' });
+    try {
+      ed.startTool('breakout', { view: v.id });
+      const X = Dm.viewXform(ed.doc, v);
+      for (const q of [[-8, -8], [8, -8], [8, 8], [-8, 8], [-8, -8]]) await ed.toolClick(X.toSheet(q), {});
+    } finally { a.ui.promptFields = kf; }
+    if (!v.breakout || v.breakout.depth !== 15) return { ok: false, detail: 'The broken-out section was not made', b: v.breakout };
+    await until(() => (ed.geos.get(v.id)?.cut || []).length, 60000, 250);
+    const g = ed.geos.get(v.id), after = g.edges.filter((e) => e.k === 'v').length;
+    const hatched = Dm.sheetPrims(ed.doc, ed.doc.sheets.find((s) => s.id === v.sheet), { geos: ed.geos }).some((p) => p.t === 'hatch');
+    if (!(g.cut.length && g.cut[0].length === 2 && after > before && hatched)) return { ok: false, detail: `cut ${g.cut.length} (${g.cut[0]?.length} loops), visible edges ${before} → ${after}, hatched ${hatched}` };
+    await a.newDocument?.(); closeModals();
+    return { ok: true, detail: `outline clicked round the hidden hole, 15 deep: the cut face hatched (with the hole in it), visible edges ${before} → ${after}` };
+  },
+
   async 'drawing-general-table'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
     await a.newDocument?.(); closeModals();
