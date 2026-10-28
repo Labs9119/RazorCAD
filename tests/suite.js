@@ -4902,6 +4902,29 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (inward, outward, reversed, offset start, circle, hole, cuts, rejections); the panel's Draft fields`};
   },
 
+  async 'extrusion-sides-and-intersect'() {
+    const {run,fixture}=await import('/tests/extrusion-sides-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const d=fixture({end:'upToSurface',toPlane:'front'},'circle');await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();
+    const labels=()=>[...document.querySelectorAll('#pm label, #pm .pm-label, #pm span')].map((x)=>x.textContent.trim()),field=(key)=>document.querySelector(`[data-feature-field="${key}"]`);
+    if(!labels().some((t)=>t.startsWith('Second side')))return {ok:false,detail:'No Second side in the Extrude panel'};
+    a.pm.feature.side2=true;a.pm.feature.depth2=3;a.ui.renderPM();await settle();
+    const end2=field('end2');if(!end2)return {ok:false,detail:'No end condition for the second side'};
+    end2.value='upToSurface';end2.dispatchEvent(new Event('change'));await settle();
+    const pick=document.querySelector('[data-extrude-surface-pick="toPlane2"]');if(!pick)return {ok:false,detail:'No surface pick for the second side'};
+    pick.click();a.pmPick('plane','top');await settle();
+    if(a.pm.feature.toPlane2!=='top'||a.pm.feature.toPlane!=='front')return {ok:false,detail:`Second side pick: toPlane2 ${a.pm.feature.toPlane2}, toPlane ${a.pm.feature.toPlane}`};
+    a.pmPick('plane','front');await settle();
+    // (the second side's end on the first side's side of the profile: refused)
+    if(![...a.result.errors].some(([id])=>id===d.feature.id))return {ok:false,detail:'Both sides to the same side were not refused'};
+    end2.value='blind';end2.dispatchEvent(new Event('change'));await settle();
+    const op=document.querySelector('[data-solid-operation]');if(!op||![...op.options].some((o)=>o.value==='intersect'))return {ok:false,detail:'No Intersect operation'};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+    if(a.result.errors.size||!m||Math.abs(m.volume-4*Math.PI*13)>1e-4)return {ok:false,detail:`Two-sided extrusion's volume ${m?.volume} (expected ${4*Math.PI*13}), errors ${JSON.stringify([...a.result.errors])}`};
+    const angled=native.results.filter((r)=>r.slope!=null).map((r)=>`${r.name} ${(r.volume/r.expected-1).toExponential(1)}`).join(', ');
+    return {ok:true,detail:`${native.results.length} kernel cases (second side ends, drafts to and from angled planes, Intersect; angled, against the integrated volumes: ${angled}); the panel's Second Side and Intersect`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

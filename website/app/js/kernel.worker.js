@@ -1365,7 +1365,7 @@ function makePreview(f, before, after, applied, pair = null) {
   const diag = ref ? bbox(ref).diag : 100;
   const tryOp = (fn) => { try { return fn(); } catch (e) { if (isFatal(e)) throw e; return null; } };
   if (pair) { before = pair.before; after = pair.after; } // only the body that changed
-  if (['fillet', 'chamfer', 'shell', 'combine'].includes(f.type)) {
+  if (['fillet', 'chamfer', 'shell', 'combine'].includes(f.type) || f.op === 'intersect') {
     if (!before || !after || before === after) return null;
     return {
       add: meshData([tryOp(() => after.cut(before))], diag),
@@ -2566,6 +2566,25 @@ async function rebuild(doc, previewId = null, opts = {}) {
           solids = next;
         } else solids.push(bodyRec(newId(fid), t, fid));
       }
+    } else if (op === 'intersect') {
+      // (Intersect: each body the tool overlaps keeps only what lies inside it, bodies it misses stay as they are;
+      // with a scope, the chosen bodies are intersected and one the tool misses is removed)
+      if (!solids.length) throw new Error('There is no body to intersect');
+      const tb = bbox(tool), tol = Math.max(1e-6, tb.diag * 1e-7);
+      const next = [];
+      let kept = 0;
+      for (const s of solids) {
+        const chosen = scope ? inScope(s, scope) : boxesTouch(cullBox(s), tb, tol);
+        if (!chosen) { next.push(s); continue; }
+        if (s.sheet) throw new Error('Intersect does not work on sheet metal bodies');
+        const pieces = solidsOf(s.shape.intersect(tool)).map((shape) => ({ shape, vol: null }));
+        if (!pieces.length) { if (!scope) next.push(s); continue; }
+        if (pieces.length > 1) pieces.sort((x, y) => volumeOf(y) - volumeOf(x));
+        kept++;
+        pieces.forEach((pc, k) => next.push(bodyRec(k ? newId(`${s.id}~${k + 1}`) : s.id, pc.shape, fid)));
+      }
+      if (!kept) throw new Error('The feature does not overlap any body to intersect');
+      solids = next;
     } else {
       if (!solids.length) throw new Error('There is no body to cut');
       const tb = bbox(tool), tol = Math.max(1e-6, tb.diag * 1e-7);
@@ -2703,15 +2722,32 @@ async function rebuild(doc, previewId = null, opts = {}) {
     return out;
   };
   // An extrusion's side walls drafted: every face but its two flat ends tilted by `ang` degrees about where it meets
-  // the plane through `o` square to `up` (the profile's plane), narrowing along `up` (a negative angle: widening)
-  const draftPrism = (tool, o, up, ang) => {
+  // the plane through `o` square to `up` (the profile's plane), narrowing along `up` (a negative angle: widening).
+  // ends: the planes { p, n } of its ends when they are not square to `up` (an end on an angled surface), and
+  // neutral: the plane { p, n } the walls tilt about when it is not the one square to `up` (an angled start)
+  const draftPrism = (tool, o, up, ang, ends = null, neutral = null) => {
     const oc = R.getOC();
-    const D = new oc.gp_Dir(up[0], up[1], up[2]), N = new oc.gp_Dir(up[0], up[1], up[2]), P = new oc.gp_Pnt(o[0], o[1], o[2]);
+    const nn = neutral ? unit(neutral.n) : up, np = neutral ? neutral.p : o;
+    const D = new oc.gp_Dir(up[0], up[1], up[2]), N = new oc.gp_Dir(nn[0], nn[1], nn[2]), P = new oc.gp_Pnt(np[0], np[1], np[2]);
     const pln = new oc.gp_Pln(P, N);
     const mk = new oc.BRepOffsetAPI_DraftAngle(tool.wrapped);
+    const onPlane = (face, e) => face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), unit(e.n))) > 1 - 1e-9 && Math.abs(dot(sub(flatCentre(face), e.p), unit(e.n))) < 1e-6;
+    const isEnd = (face) => (ends ? ends.some((e) => onPlane(face, e)) : face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9);
+    // (an end's faces: their area, and whether they lie wholly on the far side of the neutral plane, along `up`)
+    const endAreas = (shape) => ends.map((e) => {
+      let area = 0, far = true;
+      for (const face of shape.faces) {
+        if (!onPlane(face, e)) continue;
+        area += R.measureArea(face);
+        const b = bbox(face);
+        for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) if (dot(sub([x, y, z], np), nn) * Math.sign(dot(nn, up)) < 1e-7) far = false;
+      }
+      return { area, far };
+    });
     try {
+      const before = ends ? endAreas(tool) : null;
       for (const face of tool.faces) {
-        if (face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9) continue;
+        if (isEnd(face)) continue;
         mk.Add(face.wrapped, D, (ang * Math.PI) / 180, pln, true);
         if (!mk.AddDone()) throw new Error('A wall of this profile cannot be drafted');
       }
@@ -2722,15 +2758,33 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const check = new oc.BRepCheck_Analyzer(out.wrapped, true);
       try { if (!solidsOf(out).length || !check.IsValid()) throw new Error('The draft could not be made'); } finally { check.delete(); }
       if (oc.LabToolCheck && oc.LabToolCheck.Interferences(out.wrapped, 0) > 0) throw new Error('The draft could not be made');
+      if (ends) {
+        // (angled ends: each end wholly past the neutral plane smaller than before, or larger drafted outward; and no
+        // wall's cone may have its tip on the shape, where walls that meet and go on touch)
+        endAreas(out).forEach((a, k) => { if (before[k].far && before[k].area > 0 && !(ang > 0 ? a.area < before[k].area : a.area > before[k].area)) throw new Error('The draft could not be made'); });
+        for (const face of out.faces) {
+          if (face.geomType !== 'CONE') continue;
+          const ad = new oc.BRepAdaptor_Surface(face.wrapped, true);
+          let A = null;
+          try { const c = ad.Cone(); if (typeof c.Apex === 'function') { const q = c.Apex(); A = [q.X(), q.Y(), q.Z()]; q.delete?.(); } } finally { ad.delete(); }
+          if (!A) continue;
+          const g = new oc.gp_Pnt(A[0], A[1], A[2]), mv = new oc.BRepBuilderAPI_MakeVertex(g), t = new oc.BRepExtrema_DistShapeShape();
+          try {
+            t.LoadS1(mv.Vertex()); t.LoadS2(out.wrapped); t.Perform();
+            if (t.IsDone() && t.NbSolution() > 0 && t.Value() < 1e-6) throw new Error('The draft could not be made');
+          } finally { t.delete(); mv.delete(); g.delete(); }
+        }
+        return out;
+      }
       // (nor do walls that meet and go on: a cone through its tip, which leaves a valid double cone. So no wall's cone
       // may have its tip between the ends, and the far end must be smaller than the profile, or larger drafted outward)
       const height = (face) => dot(sub(flatCentre(face), o), up);
       let far = 0, near = 0, top = 0;
-      const ends = [];
+      const caps = [];
       for (const face of out.faces) {
-        if (face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9) { const h = height(face); ends.push([h, R.measureArea(face)]); top = Math.max(top, h); }
+        if (face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9) { const h = height(face); caps.push([h, R.measureArea(face)]); top = Math.max(top, h); }
       }
-      for (const [h, a] of ends) { if (h > top - 1e-7) far += a; else if (Math.abs(h) < 1e-7) near += a; }
+      for (const [h, a] of caps) { if (h > top - 1e-7) far += a; else if (Math.abs(h) < 1e-7) near += a; }
       if (!(ang > 0 ? far < near : far > near)) throw new Error('The draft could not be made');
       for (const face of out.faces) {
         if (face.geomType !== 'CONE') continue;
@@ -2744,6 +2798,24 @@ async function rebuild(doc, previewId = null, opts = {}) {
       if (isFatal(e)) throw e;
       throw new Error(e.message?.startsWith('A wall') ? e.message : 'The draft could not be made (the walls meet too soon at this angle and depth, or one of them cannot tilt)');
     } finally { mk.delete(); pln.delete(); P.delete(); N.delete(); D.delete(); }
+  };
+  // A solid between angled ends drafted away from its neutral plane { p, n } along `axis` on each side of it: one
+  // side as it is, a solid across the plane split there and each half drafted away from it (as a symmetric one)
+  const draftAway = (tool, neutral, axis, ang, ends) => {
+    const n = unit(mul(neutral.n, dot(neutral.n, axis) < 0 ? -1 : 1)), b = bbox(tool), big = b.diag + len(sub(b.center, neutral.p)) + 100;
+    const half = (s) => {
+      const nn = mul(n, s), u = unit(cross(nn, Math.abs(nn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+      return solidsOf(tool.intersect(R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(neutral.p, u, nn)).extrude(2 * big)));
+    };
+    const parts = [];
+    for (const s of [1, -1]) {
+      const pieces = half(s);
+      if (!pieces.length) continue;
+      const piece = pieces.length > 1 ? compoundOf(pieces.map((shape) => ({ shape }))) : pieces[0];
+      parts.push(draftPrism(piece, neutral.p, mul(axis, s * Math.sign(dot(n, axis))), ang, [...ends, neutral], neutral));
+    }
+    if (!parts.length) throw new Error('The draft could not be made');
+    return parts.slice(1).reduce((acc, x) => acc.fuse(x), parts[0]);
   };
 
   // world-space point from a reference: reference point feature or model vertex ref
@@ -3213,13 +3285,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // a hole ending on a face, anything that picks model geometry), and the end of the rebuild, makes them in one
   // boolean. The waiting cuts are part of each feature's saved state.
   const DEFER_ENDS = new Set(['blind', 'midplane', 'through', 'through2']);
+  // (an extrusion's ends: its second side's too)
+  const endsDefer = (f) => DEFER_ENDS.has(f.end || 'blind') && (!f.side2 || DEFER_ENDS.has(f.end2 || 'blind'));
   // (opts.batchCuts false: every cut made as its feature comes, as before; for comparisons in the tests)
   const canDefer = (f) => {
     if (opts.batchCuts === false || f.id === previewId || dense || !solids.length || solids.some((x) => x.sheet)) return false;
     if (f.type === 'sketch') return !(f.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((f.type === 'extrude' || f.type === 'revolve') && f.op === 'cut') {
       if (f.scopeAll === false) return false;
-      if (f.type === 'extrude' && !DEFER_ENDS.has(f.end || 'blind')) return false;
+      if (f.type === 'extrude' && !endsDefer(f)) return false;
       if (f.type === 'revolve' && (f.axis === 'edge' || f.axis === 'face')) return false;
       return true;
     }
@@ -3238,7 +3312,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (g.type === 'sketch') return !(g.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((g.type === 'extrude' || g.type === 'revolve') && g.op === 'cut') {
       if (g.scopeAll === false) return false;
-      if (g.type === 'extrude' && !DEFER_ENDS.has(g.end || 'blind')) return false;
+      if (g.type === 'extrude' && !endsDefer(g)) return false;
       if (g.type === 'revolve' && (g.axis === 'edge' || g.axis === 'face')) return false;
       return true;
     }
@@ -3473,6 +3547,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
         if (!src) throw new Error('Select the feature to pattern');
         if (src.suppressed) throw new Error('The feature to pattern is suppressed');
         const t = tools.get(srcId);
+        if (t?.op === 'intersect') throw new Error('An Intersect feature cannot be patterned or mirrored');
         // a feature that makes sheet metal bodies from a sketch has no tool to move (and running it again
         // would only make its body again in the same place): its bodies are copied as they are here (with
         // the flanges, cuts… done to them since), each with its flat pattern carried along
@@ -3718,10 +3793,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           const extrusions = [];
           // (draft: the side walls tilted about the profile's plane by the angle, narrowing away from it, or widening
-          // with draftOutward; the walls of holes tilt with them. An extrusion to one side of the profile only)
+          // with draftOutward; the walls of holes tilt with them. Each side of the profile drafted away from it)
           const draftAng = ev(f.draft ?? 0);
           if (!Number.isFinite(draftAng) || Math.abs(draftAng) >= 89) throw new Error('The draft angle must be between 0° and 89°');
-          const drafted = Math.abs(draftAng) > 1e-9;
+          const drafted = Math.abs(draftAng) > 1e-9, ang = f.draftOutward ? -draftAng : draftAng;
           const startMode=f.startFrom||'profile';
           if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
           const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null;
@@ -3729,6 +3804,26 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if(!Number.isFinite(startOffset))throw new Error('Start offset must be finite');
           if(startSurface&&Math.abs(dot(startSurface.n,firstFrame.n))<1e-7)throw new Error('The start surface is parallel to the extrusion direction');
           if(f.startFace&&startSurface)res.features[f.id]={...(res.features[f.id]||{}),startFace:f.startFace};
+          // (a second side, side2: its own end condition — end2, depth2, toPlane2 / toFace2, toPoint2 / toVertex2,
+          // toOffset2, toFlip2 — going the other way from the start; the same start, operation and draft)
+          const SIDE_ENDS=['blind','through','upToVertex','upToSurface','offsetSurface'];
+          const twoEnds=!!f.side2&&SIDE_ENDS.includes(f.end||'blind');
+          if(twoEnds&&!SIDE_ENDS.includes(f.end2||'blind'))throw new Error('Select a supported end for the second side');
+          const second=twoEnds?{...f,end:f.end2||'blind',depth:f.depth2,toPlane:f.toPlane2,toFace:f.toFace2,toPoint:f.toPoint2,toVertex:f.toVertex2,toOffset:f.toOffset2,toFlip:f.toFlip2,refKey:'2'}:null;
+          // which way along `axis` a side goes from o: +1 or -1
+          const sideDir=(g,axis,o)=>{
+            if(g.end==='upToVertex'){const d=dot(sub(resolvePoint(g.toPoint,g.toVertex),o),axis);if(Math.abs(d)<1e-6)throw new Error('The vertex lies in the sketch plane');return Math.sign(d);}
+            if(g.end==='upToSurface'||g.end==='offsetSurface'){const s=resolveSurface(g.toPlane,g.toFace),c=dot(axis,s.n);if(Math.abs(c)<1e-7)throw new Error('The end surface is parallel to the extrusion direction');return Math.sign(dot(sub(s.p,o),s.n)/c)||1;}
+            return g.reverse?-1:1;
+          };
+          const sidesOf=(axis,o)=>{
+            if(!second)return [f];
+            const d1=sideDir(f,axis,o);
+            if(['blind','through'].includes(second.end))return [f,{...second,reverse:d1>0}];
+            if(sideDir(second,axis,o)===d1)throw new Error('The second side’s end lies on the same side of the profile as the first');
+            return [f,second];
+          };
+          const note=(g,key,ref)=>{if(ref)res.features[f.id]={...(res.features[f.id]||{}),[key+(g.refKey||'')]:ref};};
           for (const sourceSection of sections) {
             let sk=sourceSection;
             const axis=mul(sk.frame.n,sk.extrudeSign);
@@ -3737,7 +3832,6 @@ async function rebuild(doc, previewId = null, opts = {}) {
               sk={...sk,frame:{...sk.frame,o:add(sk.frame.o,mul(axis,distance))}};
             }
             if(startSurface&&Math.abs(dot(startSurface.n,axis))<=1-1e-7){
-              if(drafted)throw new Error('Draft needs a start parallel to the profile');
               // Clip a prism with two independent planar boundaries. Keep the
               // sketch frame fixed; only the generated feature changes origin.
               const fr=sk.frame,probe=profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(fr)).extrude(1));let box;
@@ -3745,98 +3839,105 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const corners=[];for(const x of [box.min[0],box.max[0]])for(const y of [box.min[1],box.max[1]])for(const z of [box.min[2],box.max[2]]){const p=[x,y,z];corners.push(sub(p,mul(axis,dot(sub(p,fr.o),axis))));}
               const height=(surface,p)=>dot(sub(surface.p,p),surface.n)/dot(axis,surface.n);
               const atStart=height(startSurface,fr.o),startCenter=add(fr.o,mul(axis,atStart));
-              let lower,upper;
-              if(['blind','midplane','twoSides'].includes(f.end||'blind')){
-                const interval=extrusionInterval(f,ev);lower={p:add(startSurface.p,mul(axis,interval.start)),n:startSurface.n};upper={p:add(startSurface.p,mul(axis,interval.end)),n:startSurface.n};
-              }else if(['upToSurface','offsetSurface','upToVertex'].includes(f.end)){
-                let end;
-                if(f.end==='upToVertex'){const p=resolvePoint(f.toPoint,f.toVertex);end={p,n:axis};}
-                else{end=resolveSurface(f.toPlane,f.toFace);if(Math.abs(dot(end.n,axis))<1e-7)throw new Error('The end surface is parallel to the extrusion direction');if(f.end==='offsetSurface'){const offset=ev(f.toOffset)*(f.toFlip?-1:1),side=Math.sign(dot(sub(startCenter,end.p),end.n))||1;end={...end,p:add(end.p,mul(end.n,side*offset))};}}
-                const direction=height(end,fr.o)>atStart?1:-1;lower=direction>0?startSurface:end;upper=direction>0?end:startSurface;
-              }else if(['through','through2'].includes(f.end)){
+              for(const g of sidesOf(axis,startCenter)){
+                let lower,upper;
+                if(['blind','midplane','twoSides'].includes(g.end||'blind')){
+                  const interval=extrusionInterval(g,ev);lower={p:add(startSurface.p,mul(axis,interval.start)),n:startSurface.n};upper={p:add(startSurface.p,mul(axis,interval.end)),n:startSurface.n};
+                }else if(['upToSurface','offsetSurface','upToVertex'].includes(g.end)){
+                  let end;
+                  if(g.end==='upToVertex'){const p=resolvePoint(g.toPoint,g.toVertex);note(g,'toVertex',g.toVertex);end={p,n:axis};}
+                  else{end=resolveSurface(g.toPlane,g.toFace);note(g,'toFace',g.toFace);if(Math.abs(dot(end.n,axis))<1e-7)throw new Error('The end surface is parallel to the extrusion direction');if(g.end==='offsetSurface'){const offset=ev(g.toOffset)*(g.toFlip?-1:1),side=Math.sign(dot(sub(startCenter,end.p),end.n))||1;end={...end,p:add(end.p,mul(end.n,side*offset))};}}
+                  const direction=height(end,fr.o)>atStart?1:-1;lower=direction>0?startSurface:end;upper=direction>0?end:startSurface;
+                }else if(['through','through2'].includes(g.end)){
+                  if(f.op==='add'&&!body)throw new Error('Through All needs an existing body');
+                  const bounds=body?bbox(body):{center:fr.o,diag:1000},length=len(sub(bounds.center,startCenter))+bounds.diag+box.diag+10;
+                  const below={p:add(startCenter,mul(axis,-length)),n:axis},above={p:add(startCenter,mul(axis,length)),n:axis};
+                  lower=g.end==='through2'||g.reverse?below:startSurface;upper=g.end==='through2'||!g.reverse?above:startSurface;
+                }else throw new Error('Select a supported extrusion end');
+                for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end surfaces cross or leave no extrusion thickness over the profile');
+                const low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p))),big=box.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
+                let tool=profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(fr,add(fr.o,mul(axis,low-5)))).extrude((high-low+10)*sk.extrudeSign));
+                for(const [surface,sign] of [[lower,1],[upper,-1]]){
+                  const n=mul(surface.n,(dot(surface.n,axis)>0?1:-1)*sign),base=Math.abs(n[0])<.9?[1,0,0]:[0,1,0],u=unit(cross(n,base)),center=add(fr.o,mul(axis,height(surface,fr.o)));
+                  const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(center,u,n)).extrude(2*big);tool=tool.intersect(block);
+                }
+                if(!solidsOf(tool).length)throw new Error('The start and end references leave no solid extrusion');
+                // (drafted about the start surface: the profile's outline kept where the extrusion starts)
+                if(drafted)tool=draftAway(tool,startSurface,axis,ang,[lower,upper]);
+                extrusions.push(tool);
+              }
+              continue;
+            }
+            for (const g of sidesOf(axis, sk.frame.o)) {
+              let z0 = 0, z1 = 0;
+              if(['blind','midplane','twoSides'].includes(g.end||'blind'))({start:z0,end:z1}=extrusionInterval(g,ev));
+              else if(g.end==='through'||g.end==='through2'){
                 if(f.op==='add'&&!body)throw new Error('Through All needs an existing body');
-                const bounds=body?bbox(body):{center:fr.o,diag:1000},length=len(sub(bounds.center,startCenter))+bounds.diag+box.diag+10;
-                const below={p:add(startCenter,mul(axis,-length)),n:axis},above={p:add(startCenter,mul(axis,length)),n:axis};
-                lower=f.end==='through2'||f.reverse?below:startSurface;upper=f.end==='through2'||!f.reverse?above:startSurface;
-              }else throw new Error('Select a supported extrusion end');
-              for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end surfaces cross or leave no extrusion thickness over the profile');
-              const low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p))),big=box.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
-              let tool=profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(fr,add(fr.o,mul(axis,low-5)))).extrude((high-low+10)*sk.extrudeSign));
-              for(const [surface,sign] of [[lower,1],[upper,-1]]){
-                const n=mul(surface.n,(dot(surface.n,axis)>0?1:-1)*sign),base=Math.abs(n[0])<.9?[1,0,0]:[0,1,0],u=unit(cross(n,base)),center=add(fr.o,mul(axis,height(surface,fr.o)));
-                const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(center,u,n)).extrude(2*big);tool=tool.intersect(block);
+                const box=body?bbox(body):{center:[0,0,0],diag:1000},length=len(sub(box.center,sk.frame.o))+box.diag+5;
+                if(g.end==='through')z1=length;else{z0=-length;z1=length;}
+                if(g.reverse&&g.end==='through')[z0,z1]=[-z1,-z0];
               }
-              if(!solidsOf(tool).length)throw new Error('The start and end references leave no solid extrusion');
-              extrusions.push(tool);continue;
-            }
-            let z0 = 0, z1 = 0;
-            if(['blind','midplane','twoSides'].includes(f.end||'blind'))({start:z0,end:z1}=extrusionInterval(f,ev));
-            else if(f.end==='through'||f.end==='through2'){
-              if(f.op==='add'&&!body)throw new Error('Through All needs an existing body');
-              const box=body?bbox(body):{center:[0,0,0],diag:1000},length=len(sub(box.center,sk.frame.o))+box.diag+5;
-              if(f.end==='through')z1=length;else{z0=-length;z1=length;}
-              if(f.reverse&&f.end==='through')[z0,z1]=[-z1,-z0];
-            }
-            if (sk.extrudeSign < 0) [z0, z1] = [-z1, -z0];
-            const fr = sk.frame;
-            let tool = null;
-            if (f.end === 'upToVertex') {
-              const P = resolvePoint(f.toPoint, f.toVertex);
-              if (f.toVertex) res.features[f.id] = { ...(res.features[f.id] || {}), toVertex: f.toVertex };
-              const d = dot(sub(P, fr.o), fr.n);
-              if (Math.abs(d) < 1e-6) throw new Error('The vertex lies in the sketch plane');
-              z0 = Math.min(0, d); z1 = Math.max(0, d);
-            } else if (f.end === 'upToSurface' || f.end === 'offsetSurface') {
-              const tgt = resolveSurface(f.toPlane, f.toFace);
-              if (f.toFace) res.features[f.id] = { ...(res.features[f.id] || {}), toFace: f.toFace };
-              const off = f.end === 'offsetSurface' ? ev(f.toOffset) * (f.toFlip ? -1 : 1) : 0;
-              const cosA = dot(tgt.n, fr.n);
-              if (Math.abs(cosA) < 1e-6) throw new Error('The surface is parallel to the extrusion direction');
-              // signed distance along the sketch normal from the sketch origin to the surface
-              const t = dot(sub(tgt.p, fr.o), tgt.n) / cosA;
-              if (Math.abs(cosA) > 0.99999) {
-                // parallel: a plain blind extrusion, offset back toward the sketch
-                const d = t - Math.sign(t) * off;
-                if (Math.abs(d) < 1e-6) throw new Error('The surface lies in the sketch plane');
+              if (sk.extrudeSign < 0) [z0, z1] = [-z1, -z0];
+              const fr = sk.frame;
+              let tool = null;
+              if (g.end === 'upToVertex') {
+                const P = resolvePoint(g.toPoint, g.toVertex);
+                note(g, 'toVertex', g.toVertex);
+                const d = dot(sub(P, fr.o), fr.n);
+                if (Math.abs(d) < 1e-6) throw new Error('The vertex lies in the sketch plane');
                 z0 = Math.min(0, d); z1 = Math.max(0, d);
-              } else {
-                if (drafted) throw new Error('Draft needs an end parallel to the profile');
-                // angled surface: extrude past it, then keep the part on the sketch's side
-                const dir = Math.sign(t) || 1;
-                let rProf = 0;
-                for (const r of sk.regions) for (const q of r.outer.poly) rProf = Math.max(rProf, Math.hypot(q[0], q[1]));
-                const tan = Math.sqrt(1 - cosA * cosA) / Math.abs(cosA);
-                const L = Math.abs(t) + rProf * tan + 10;
-                const long = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(dir * L));
-                const side = Math.sign(dot(sub(fr.o, tgt.p), tgt.n)) || 1;
-                const nIn = mul(tgt.n, side); // points toward the sketch
-                const pOff = add(tgt.p, mul(nIn, off));
-                const big = L + rProf * (1 + tan) + 100;
-                const tmp = Math.abs(nIn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
-                const uT = (() => { const c = [nIn[1] * tmp[2] - nIn[2] * tmp[1], nIn[2] * tmp[0] - nIn[0] * tmp[2], nIn[0] * tmp[1] - nIn[1] * tmp[0]]; const l = len(c); return mul(c, 1 / l); })();
-                const block = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(pOff, uT, nIn)).extrude(2 * big);
-                tool = long.intersect(block);
+              } else if (g.end === 'upToSurface' || g.end === 'offsetSurface') {
+                const tgt = resolveSurface(g.toPlane, g.toFace);
+                note(g, 'toFace', g.toFace);
+                const off = g.end === 'offsetSurface' ? ev(g.toOffset) * (g.toFlip ? -1 : 1) : 0;
+                const cosA = dot(tgt.n, fr.n);
+                if (Math.abs(cosA) < 1e-6) throw new Error('The surface is parallel to the extrusion direction');
+                // signed distance along the sketch normal from the sketch origin to the surface
+                const t = dot(sub(tgt.p, fr.o), tgt.n) / cosA;
+                if (Math.abs(cosA) > 0.99999) {
+                  // parallel: a plain blind extrusion, offset back toward the sketch
+                  const d = t - Math.sign(t) * off;
+                  if (Math.abs(d) < 1e-6) throw new Error('The surface lies in the sketch plane');
+                  z0 = Math.min(0, d); z1 = Math.max(0, d);
+                } else {
+                  // angled surface: extrude past it, then keep the part on the sketch's side
+                  const dir = Math.sign(t) || 1;
+                  let rProf = 0;
+                  for (const r of sk.regions) for (const q of r.outer.poly) rProf = Math.max(rProf, Math.hypot(q[0], q[1]));
+                  const tan = Math.sqrt(1 - cosA * cosA) / Math.abs(cosA);
+                  const L = Math.abs(t) + rProf * tan + 10;
+                  const long = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(dir * L));
+                  const side = Math.sign(dot(sub(fr.o, tgt.p), tgt.n)) || 1;
+                  const nIn = mul(tgt.n, side); // points toward the sketch
+                  const pOff = add(tgt.p, mul(nIn, off));
+                  const big = L + rProf * (1 + tan) + 100;
+                  const tmp = Math.abs(nIn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+                  const uT = (() => { const c = [nIn[1] * tmp[2] - nIn[2] * tmp[1], nIn[2] * tmp[0] - nIn[0] * tmp[2], nIn[0] * tmp[1] - nIn[1] * tmp[0]]; const l = len(c); return mul(c, 1 / l); })();
+                  const block = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(pOff, uT, nIn)).extrude(2 * big);
+                  tool = long.intersect(block);
+                  // (drafted the same way as a blind one: about the profile's plane, the angled end trimmed with it)
+                  if (drafted) tool = draftPrism(tool, fr.o, mul(fr.n, dir), ang, [{ p: fr.o, n: fr.n }, { p: pOff, n: nIn }]);
+                }
               }
-            }
-            if (!tool) {
-              if (z1 - z0 <= 1e-9) throw new Error('Depth must be greater than zero');
-              const ang = f.draftOutward ? -draftAng : draftAng;
-              if (drafted && z0 < -1e-9 && z1 > 1e-9) {
-                // (both sides of the profile: each drafted away from it, then joined)
-                const up = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1)), fr.o, fr.n, ang);
-                const down = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0)), fr.o, mul(fr.n, -1), ang);
-                tool = up.fuse(down);
-              } else {
-                tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
-                if (drafted) tool = draftPrism(tool, fr.o, mul(fr.n, z1 > 1e-9 ? 1 : -1), ang);
+              if (!tool) {
+                if (z1 - z0 <= 1e-9) throw new Error('Depth must be greater than zero');
+                if (drafted && z0 < -1e-9 && z1 > 1e-9) {
+                  // (both sides of the profile: each drafted away from it, then joined)
+                  const up = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1)), fr.o, fr.n, ang);
+                  const down = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0)), fr.o, mul(fr.n, -1), ang);
+                  tool = up.fuse(down);
+                } else {
+                  tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
+                  if (drafted) tool = draftPrism(tool, fr.o, mul(fr.n, z1 > 1e-9 ? 1 : -1), ang);
+                }
               }
+              extrusions.push(tool);
             }
-            extrusions.push(tool);
           }
           let tool = extrusions[0];
           for (const next of extrusions.slice(1)) tool = tool.fuse(next);
           tool = unify(tool);
-          const scope = f.op === 'cut' && f.scopeAll === false ? f.scope || [] : null;
+          const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);
           break;
@@ -3853,7 +3954,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           let tool=revolutions[0];for(const next of revolutions.slice(1))tool=tool.fuse(next);
           if(start)tool=tool.rotate(start,origin,dir);
           tool = unify(tool);
-          const scope = f.op === 'cut' && f.scopeAll === false ? f.scope || [] : null;
+          const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);
           break;
@@ -5588,7 +5689,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           tool = unify(tool);
           if (guide) res.notes[f.id] = `Path and one guide · ${f.guideMode === 'contact' ? 'Section size; CAD guide contact ≤ 0.0001 mm' : 'Orientation; constant profile size'}`;
-          const scope = f.op === 'cut' && f.scopeAll === false ? f.scope || [] : null;
+          const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);
           }finally{owned.reverse().forEach(w=>w.delete());}
@@ -5646,7 +5747,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (hasLoftEnds(f)) {
             const endWires = outerM.map(sectionWire);
             const tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thin ? thin.t : 0 });
-            const scope = f.op === 'cut' && f.scopeAll === false ? f.scope || [] : null;
+            const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
             tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
             apply(f.op, tool, f.merge !== false, scope); break;
           }
@@ -5656,7 +5757,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (guides.length) res.notes[f.id] = `${profs.length} profiles, ${guides.length} guide curve${guides.length === 1 ? '' : 's'}` + guideConstraintNote(g);
           for (let i = 0; i < nh; i++) tool = tool.cut(g ? g.holes[i] : buildLoft(holesM[i].map(sectionWire)));
           tool = unify(tool);
-          const scope = f.op === 'cut' && f.scopeAll === false ? f.scope || [] : null;
+          const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);
           break;
@@ -6887,7 +6988,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (body !== bodyIn && f.type !== 'fillet' && f.type !== 'chamfer') blendChain = null;
     // a blend recomputed in a different order replays the features in between; only boolean
     // features (and blends) can be replayed that way
-    if (body !== bodyIn) steps.push({ before: bodyIn, applied: [...applied], blend: blendStep, opaque: !blendStep && !['extrude', 'revolve', 'lpattern', 'cpattern', 'mirror'].includes(f.type) });
+    if (body !== bodyIn) steps.push({ before: bodyIn, applied: [...applied], blend: blendStep, opaque: !blendStep && (!['extrude', 'revolve', 'lpattern', 'cpattern', 'mirror'].includes(f.type) || f.op === 'intersect') });
     if (body !== bodyIn) featureDiffs.set(f.id, { before: bodyIn, after: body });
     if (f.id === previewId) {
       // show the model as it was before this feature, with the feature's effect as a preview

@@ -9,8 +9,8 @@ matching a menu label alone is insufficient.
 
 | Family | Geometry selection | Options and behavior |
 | --- | --- | --- |
-| Solid Extrude / Cut | Canvas regions, connected contours and individual entities; legacy whole sketches remain supported | One side, symmetric depth and two independent depths; Join/New body/Cut; existing up-to/through options and cut scope retained |
-| Solid Revolve / Cut | Selected coplanar regions/contours; profile and axis picking are separate | Full or angle; one side, symmetric or two independent angles; reverse; optional axis projection; Thin for open contours; Join/New body/Cut and explicit target-body selection |
+| Solid Extrude / Cut | Canvas regions, connected contours and individual entities; legacy whole sketches remain supported | One side, symmetric depth and two independent depths; a second side with its own end condition (blind, through, up to vertex/surface, offset from surface); Join/New body/Cut/Intersect; draft, to and from angled planes; existing up-to/through options and cut/intersect scope retained |
+| Solid Revolve / Cut | Selected coplanar regions/contours; profile and axis picking are separate | Full or angle; one side, symmetric or two independent angles; reverse; optional axis projection; Thin for open contours; Join/New body/Cut/Intersect and explicit target-body selection |
 | Surface Extrude | Selected regions or open/closed contours; manual entity selection | One side, symmetric or two independent depths; reverse; produces surface geometry rather than a capped solid |
 | Surface Revolve | Selected regions or open/closed contours; profile and axis picking are separate | Same Full/Angle and directional controls as solid Revolve, optional axis projection; keeps a surface result |
 | Reference planes, axes and points | Three shared slots, canvas/tree picks and per-reference relations | Analytic constraints, definition states, alternative solutions, source dependencies, preserved legacy constructions, and arc-length plane/point locations on sketch and CAD curves |
@@ -32,8 +32,8 @@ instead of changing the resulting geometry.
 
 | Family | Existing behavior | Remaining alignment work |
 | --- | --- | --- |
-| Extrude | Region selection, Thin, through/up-to/offset and scoped cuts, start from an offset or a plane, draft (each side from the profile plane) | Draft to angled end surfaces, independent end conditions for each side, Intersect operation and direct face inputs |
-| Revolve | Features listed above | To Object extent; direct planar-face inputs; additional component-level operations |
+| Extrude | Region selection, Thin, through/up-to/offset and scoped cuts, start from an offset or a plane, draft (each side from the profile plane, to angled ends, from angled starts), a second side with its own end condition, Intersect | Direct face inputs (a model face as the profile); a draft of its own for the second side |
+| Revolve | Features listed above, Intersect | To Object extent; direct planar-face inputs |
 | Surface Extrude | Features listed above | Start offsets/objects, To Object termination, direct model-edge/face inputs and draft |
 | Surface Revolve | Features listed above | To Object extent and direct model-edge/face inputs |
 | Sweep / Surface Sweep | Contour slots and path/guide modes listed above | Guide surfaces, broader scale/twist controls and direct model-edge/face inputs; guided solid holes/Thin remain unsupported |

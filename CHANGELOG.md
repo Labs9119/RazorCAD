@@ -6,6 +6,21 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-28 16:43 — Extrude: a second side with its own end, drafts to and from angled planes, and Intersect
+- **Second Side**: an extrusion with a one-sided end can go the other way from its start as well, to an end of its
+  own (Blind, Through All, Up To Vertex, Up To Surface or Offset From Surface, with its own picker). It always goes
+  the opposite way to the first side; an end on the first side's side of the profile is refused. Both sides share
+  the start, the operation, Thin and the draft.
+- **Draft to and from angled planes**: Up To and Offset From an angled surface now take a draft (the walls tilt
+  about the profile and the angled end is trimmed with them), and so does a start on an angled surface (the walls
+  tilt about it, so the profile's outline stays where the extrusion starts). Checked against the volumes
+  integrated from the walls and planes (to 1e-6, the integration's own error; finer, 5e-7) and the corners where
+  they must be; walls that would meet before the end are refused.
+- **Intersect** (Extrude, Revolve, Sweep, Loft): keeps only the material inside the feature, in each body it
+  overlaps (others stay as they are); with Feature Scope, a chosen body it misses is removed. Refused when it
+  overlaps nothing, and in patterns and mirrors.
+- New test `extrusion-sides-and-intersect` (21 kernel cases and the panel).
+
 ## 2026-10-28 16:11 — PCs with 2 or 3 processor threads: the open part's kernel on two threads
 - A PC with fewer than 4 threads kept every kernel on one thread. The first part's kernel now gets two there (the
   others one; `machine.js` threadsPerKernel). Measured on this PC held to its cores, the 16 check-set parts:

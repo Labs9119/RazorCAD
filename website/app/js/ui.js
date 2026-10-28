@@ -206,12 +206,18 @@ const negExpr = (e) => {
 };
 const ENDS_REF = [...ENDS, ['upToVertex', 'Up To Vertex'], ['upToSurface', 'Up To Surface'], ['offsetSurface', 'Offset From Surface']];
 const isSurfEnd = (f) => f.end === 'upToSurface' || f.end === 'offsetSurface';
+// An extrusion's second side: offered with a one-sided end condition
+const hasSide2 = (f) => ['blind', 'through', 'upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end || 'blind');
+const side2On = (f) => !!f.side2 && hasSide2(f);
+// The picked model face or vertex a reference field stands for, and the pick slot it fills
+const REF_PICKED = { startPlane: 'startFace', toPlane: 'toFace', toPlane2: 'toFace2', toPoint: 'toVertex', toPoint2: 'toVertex2' };
+const REF_SLOT = { startPlane: 'start', toPlane: 'end', toPoint: 'end', toPlane2: 'end2', toPoint2: 'end2' };
 
 // Cuts act on every body they reach unless the scope is limited to chosen bodies.
 const SCOPE_GROUP = [{
   title: 'Feature Scope', fields: [
-    { key: 'scopeAll', type: 'check', default: true, label: 'All bodies', show: (f) => f.op === 'cut' },
-    { key: 'scope', type: 'bodyList', kinds: ['solid'], show: (f) => f.op === 'cut' && f.scopeAll === false, hint: 'The cut only affects these bodies. Click bodies on the model or tick them here.' },
+    { key: 'scopeAll', type: 'check', default: true, label: 'All bodies', show: (f) => f.op === 'cut' || f.op === 'intersect' },
+    { key: 'scope', type: 'bodyList', kinds: ['solid'], show: (f) => (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false, hint: 'The cut or intersect only affects these bodies (an intersect removes a chosen body it does not overlap). Click bodies on the model or tick them here.' },
   ],
 }];
 
@@ -220,7 +226,7 @@ function stdPlaneRefs(f) {
   const out = new Set();
   const add = (v) => { if (typeof v === 'string' && STD_PLANES[v]) out.add(v); };
   add(f.plane?.ref); if (typeof f.plane === 'string') add(f.plane);
-  for (const k of ['planeA', 'planeB', 'toPlane', 'tool']) add(f[k]);
+  for (const k of ['planeA', 'planeB', 'toPlane', 'toPlane2', 'startPlane', 'tool']) add(f[k]);
   for (const r of f.refs || []) if (r?.kind === 'plane') add(r.id);
   for (const m of f.mates || []) { if (m.a?.kind === 'plane') add(m.a.id); if (m.b?.kind === 'plane') add(m.b.id); }
   return [...out];
@@ -815,7 +821,19 @@ const PM_SCHEMAS = {
       ],
     },
     {
-      // (the walls tilted about the profile's plane: an extrusion to one side of it)
+      // (the other way from the start, to an end of its own: kernel.worker.js extrude, side2)
+      title: 'Second Side', fields: [
+        { key: 'side2', type: 'check', label: 'Second side (its own end condition)', show: hasSide2, onChange: (f) => { if (f.side2 && (f.depth2 === 0 || f.depth2 === '0' || f.depth2 == null)) f.depth2 = f.depth ?? 10; } },
+        { key: 'end2', type: 'select', label: 'End condition', default: 'blind', options: [['blind', 'Blind'], ['through', 'Through All'], ['upToVertex', 'Up To Vertex'], ['upToSurface', 'Up To Surface'], ['offsetSurface', 'Offset From Surface']], show: side2On },
+        { key: 'depth2', type: 'expr', label: 'Depth', unit: 'mm', default: 0, show: (f) => side2On(f) && (f.end2 || 'blind') === 'blind' },
+        { key: 'toPoint2', type: 'pointRef', label: 'Vertex', show: (f) => side2On(f) && f.end2 === 'upToVertex' },
+        { key: 'toPlane2', type: 'surfaceRef', label: 'Surface', show: (f) => side2On(f) && ['upToSurface', 'offsetSurface'].includes(f.end2) },
+        { key: 'toOffset2', type: 'expr', label: 'Offset', unit: 'mm', default: 5, show: (f) => side2On(f) && f.end2 === 'offsetSurface' },
+        { key: 'toFlip2', type: 'check', label: 'Reverse offset (past the surface)', show: (f) => side2On(f) && f.end2 === 'offsetSurface' },
+      ],
+    },
+    {
+      // (the walls tilted about the profile's plane, each side drafted away from it)
       title: 'Draft', fields: [
         { key: 'draft', type: 'expr', label: 'Draft angle', unit: '°', default: 0 },
         { key: 'draftOutward', type: 'check', label: 'Draft outward (wider away from the profile)', show: (f) => !!f.draft && String(f.draft).trim() !== '0' },
@@ -3553,9 +3571,9 @@ export class UI {
           this.renderEdgePoints(body, f);
         } else if(fd.type==='solidOperation'){
           const select=el('select',{'data-solid-operation':''});
-          for(const [value,label] of [['join','Join'],['new','New body'],['cut','Cut']])select.appendChild(el('option',{value},label));
-          select.value=f.op==='cut'?'cut':f.merge===false?'new':'join';
-          select.onchange=()=>{f.op=select.value==='cut'?'cut':'add';f.merge=select.value!=='new';pm.scopePick=false;a.preview(true);};
+          for(const [value,label] of [['join','Join'],['new','New body'],['cut','Cut'],['intersect','Intersect']])select.appendChild(el('option',{value},label));
+          select.value=f.op==='cut'||f.op==='intersect'?f.op:f.merge===false?'new':'join';
+          select.onchange=()=>{f.op=['cut','intersect'].includes(select.value)?select.value:'add';f.merge=select.value!=='new';pm.scopePick=false;this.renderPM();a.preview(true);};
           body.appendChild(this.row('Operation',select));
         } else if(fd.type==='axisPick'){
           body.appendChild(el('button',{class:'pm-btn'+(pm.profilePick===false&&!pm.scopePick?' on':''),'data-profile-axis':'',onclick:()=>{pm.profilePick=false;pm.scopePick=false;pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Select axis in canvas'));
@@ -3701,8 +3719,8 @@ export class UI {
           if (fd.type === 'axis') options = [...options, ...axisFeats];
           if (fd.type === 'direction') options = [...(fd.none ? [['none', 'None']] : []), ...axisChoices(f[fd.key]), ...axisFeats];
           if (fd.type === 'pointSel') options = [['', '— select a reference point —'], ...pointFeats];
-          if (fd.type === 'pointRef') options = [['', f.toVertex ? '✔ Vertex picked on the model' : '— click a vertex on the model —'], ...pointFeats];
-          if (fd.type === 'surfaceRef') options = [['', (fd.key==='startPlane'?f.startFace:f.toFace) ? '✔ Face picked on the model' : '— click a flat face on the model —'], ...Object.entries(STD_PLANES).map(([k, p]) => [k, p.name]), ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, x.name])];
+          if (fd.type === 'pointRef') options = [['', f[REF_PICKED[fd.key] || 'toVertex'] ? '✔ Vertex picked on the model' : '— click a vertex on the model —'], ...pointFeats];
+          if (fd.type === 'surfaceRef') options = [['', f[REF_PICKED[fd.key] || 'toFace'] ? '✔ Face picked on the model' : '— click a flat face on the model —'], ...Object.entries(STD_PLANES).map(([k, p]) => [k, p.name]), ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, x.name])];
           if (fd.type === 'pathSel') options = [['', fd.optional ? '— None —' : '— a sketch, 3D sketch, curve or helix —'], ...before.filter((x) => ['sketch', 'helix', 'sketch3d', 'compCurve', 'projCurve'].includes(x.type) && !x.suppressed && (['sweep','surfSweep'].includes(f.type) && f.profileType === 'circle' || x.id !== f.profile) && !(['sweep','surfSweep'].includes(f.type) && x.id === (fd.key === 'guide' ? f.path : f.guide))).map((x) => [x.id, x.name])];
           if (fd.type === 'threadSize') {
             options = [['auto', 'Automatic (the size that fits the face)'], ...threadList(f.system || 'metric').map((t) => [t.id, t.label]), ['custom', 'Custom…']];
@@ -3726,14 +3744,14 @@ export class UI {
           if(f.referenceDefinition)s.dataset.datumField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity') s.dataset.patchContinuity = '';
           if (['sweep','surfSweep'].includes(f.type) && ['profile','path','guide'].includes(fd.key)) s.onfocus = () => { pm.sweepSlot = fd.key; };
-          if(f.type==='extrude'&&fd.type==='surfaceRef')s.onfocus=()=>{pm.extrudeSurfaceSlot=fd.key==='startPlane'?'start':'end';pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
-          if(f.type==='extrude'&&fd.type==='pointRef')s.onfocus=()=>{pm.extrudeSurfaceSlot='end';pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(f.type==='extrude'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
           s.onchange = () => {
             f[fd.key] = s.value || null;
             if(f.type==='extrude'){
               if(fd.key==='startFrom'&&f.startFrom==='surface'){pm.extrudeSurfaceSlot='start';pm.extrudePick=false;pm.scopePick=false;}
-              if(fd.type==='surfaceRef'){pm.extrudeSurfaceSlot=fd.key==='startPlane'?'start':'end';f[fd.key==='startPlane'?'startFace':'toFace']=null;}
+              if(['surfaceRef','pointRef'].includes(fd.type)){pm.extrudeSurfaceSlot=REF_SLOT[fd.key];f[REF_PICKED[fd.key]]=null;}
               if(fd.key==='end')pm.extrudeSurfaceSlot='end';
+              if(fd.key==='end2')pm.extrudeSurfaceSlot='end2';
             }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
@@ -3741,7 +3759,7 @@ export class UI {
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity' && s.value === 'G0' && !f.edges.some(e => e.continuity && e.continuity !== 'G0')) pm.patchSupportPick = false;
             if (['loft', 'surfLoft'].includes(f.type) && /^(start|end)Condition$/.test(fd.key)) { pm.loftConnector=null; pm.loftEndSlot = ['tangent', 'curvature'].includes(s.value) ? fd.key.replace('Condition', 'Faces') : null; pm.loftDraft = null; a.updateSketchDisplay(); }
-            if (f.type === 'extrude' && (['pointRef', 'surfaceRef'].includes(fd.type) || (fd.key === 'end' && ['upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end)))) { pm.extrudePick = false; pm.loftHover = null; a.updateSketchDisplay(); }
+            if (f.type === 'extrude' && (['pointRef', 'surfaceRef'].includes(fd.type) || (fd.key === 'end' && ['upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end)) || (fd.key === 'end2' && ['upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end2)))) { pm.extrudePick = false; pm.loftHover = null; a.updateSketchDisplay(); }
             // an open sketch can only be extruded as a thin feature
             if (fd.type === 'sketch' && f.type === 'extrude' && SM.isOpenSketch(findFeature(doc, f.sketch))) f.thin = true;
             a.preview(true);
@@ -3749,7 +3767,7 @@ export class UI {
           const wrap = el('div', { class: 'pm-input' });
           wrap.appendChild(s);
           body.appendChild(this.row(fd.label, wrap));
-          if(f.type==='extrude'&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===(fd.key==='startPlane'?'start':'end')?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=fd.key==='startPlane'?'start':'end';pm.extrudePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status('Select a plane or planar face for the '+pm.extrudeSurfaceSlot+' of the extrusion.');}},fd.key==='startPlane'?'Pick start surface in canvas':'Pick end surface in canvas'));
+          if(f.type==='extrude'&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
         }
       }
     }

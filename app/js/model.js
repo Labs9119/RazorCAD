@@ -209,7 +209,7 @@ export function createFeature(doc, type, props = {}) {
     // thin: a wall of thickness thinT along the sketch curves (open sketches are always thin);
     // thinDir: 'one' (outside a closed profile / left of an open one), 'other' or 'mid'.
     // scopeAll: a cut acts on every body it reaches (off: only the bodies in scope)
-    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
+    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, side2: false, end2: 'blind', toPoint2: null, toVertex2: null, toPlane2: null, toFace2: null, toOffset2: 5, toFlip2: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
     revolve: { sketch: null, profiles: null, extent: 'angle', angle2: 0, projectAxis: false, axisSketch: null, thin: false, thinT: 2, thinDir: 'one', op: 'add', merge: true, axis: 'v', end: 'oneway', angle: 360, reverse: false, axisEdge: null, axisFace: null, scopeAll: true, scope: [] },
     // axis: 'v' (sketch vertical), 'u' (sketch horizontal), the id of a line in the sketch, an axis
     // feature, or 'edge' / 'face' (a straight model edge / cylindrical face picked on the model)
@@ -420,7 +420,7 @@ export function referencesOf(doc, f) {
   const out = new Set();
   const addId = (v) => { if (typeof v === 'string' && ids.has(v)) out.add(v); };
   const addBody = (v) => { if (typeof v === 'string' && v) addId(bodyOwner(v)); };
-  for (const k of ['sketch', 'feature', 'base', 'toPoint', 'toPlane', 'planeA', 'planeB', 'pointA', 'pointB', 'axis', 'dir1', 'dir2', 'rotAxis', 'parent', 'profile', 'path', 'guide', 'startDirection', 'endDirection']) addId(f[k]);
+  for (const k of ['sketch', 'feature', 'base', 'toPoint', 'toPlane', 'toPoint2', 'toPlane2', 'planeA', 'planeB', 'pointA', 'pointB', 'axis', 'dir1', 'dir2', 'rotAxis', 'parent', 'profile', 'path', 'guide', 'startDirection', 'endDirection']) addId(f[k]);
   if(f.type==='extrude'&&f.startFrom==='surface')addId(f.startPlane);
   for (const ref of [f.profile,f.path,f.guide,...(f.profiles || []), ...(f.guides || [])]) addId(typeof ref === 'string' ? ref : ref?.sketch);
   for (const id of expandFeatureRefs(doc, f.features)) addId(id);

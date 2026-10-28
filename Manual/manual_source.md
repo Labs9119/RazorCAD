@@ -768,12 +768,14 @@ End conditions:
 | Up To Surface | Click a flat model face or choose a plane; angled surfaces are supported and the extrusion is trimmed to the surface |
 | Offset From Surface | As Up To Surface, at a set distance from it |
 
+**Second Side**: with a one-sided end condition (Blind, Through All, Up To Vertex, Up To Surface or Offset From Surface), tick **Second side** to extrude the other way from the start as well, to an end of its own: Blind (its own Depth), Through All, Up To Vertex, Up To Surface or Offset From Surface, with its own vertex or surface picker (**Pick second side surface in canvas**). The second side always goes the opposite way to the first: an end of the second side that lies on the first side's side of the profile is refused. Both sides share the start, the operation, the Thin Feature and the draft (each drafted away from the profile). Mid Plane, Two sides and Through All – Both already reach both ways and do not offer it. {idx:second side (extrude)}
+
 Options:
 
-- **Operation**: **Join** merges with existing material where possible; **New body** keeps the result separate; **Cut** removes material. A Join that does not touch existing material makes a new body.
+- **Operation**: **Join** merges with existing material where possible; **New body** keeps the result separate; **Cut** removes material; **Intersect** keeps only the material inside the extrusion. A Join that does not touch existing material makes a new body. An Intersect changes each body the extrusion overlaps and leaves the others as they are; with **Feature Scope** limited to chosen bodies, a chosen body it does not overlap is removed. An Intersect that overlaps no body is refused, and an Intersect feature cannot be patterned or mirrored. {idx:Intersect}
 - **Thin Feature**: makes a wall of the given thickness from the profile; direction one side, other side or mid-plane. Open sketches switch it on automatically. {idx:thin feature}
-- **Draft**: tilts the walls by the **Draft angle**, about the plane the extrusion starts from: the solid narrows away from the profile, or widens with **Draft outward**. The walls of holes in the profile tilt the other way with them, so the material keeps one taper (a cut narrows as it goes in). Mid Plane, Two sides and Through All – Both draft each side away from the profile. Up To and Offset From a surface take a draft when the surface is parallel to the profile, and the start must be too. If the walls would meet before the end, the draft is refused. {idx:draft (extrude)}
-- **Feature Scope** (cuts): **All bodies** by default; untick it and click the bodies to cut. {idx:feature scope}
+- **Draft**: tilts the walls by the **Draft angle**, about the plane the extrusion starts from: the solid narrows away from the profile, or widens with **Draft outward**. The walls of holes in the profile tilt the other way with them, so the material keeps one taper (a cut narrows as it goes in). Mid Plane, Two sides, Through All – Both and a second side draft each side away from the profile. Up To and Offset From an angled surface take the draft too: the walls tilt about the profile and the angled end is trimmed with them. From an angled start surface the walls tilt about the start surface, so the profile's outline is kept where the extrusion starts. If the walls would meet before the end, the draft is refused. {idx:draft (extrude)}
+- **Feature Scope** (cuts and intersects): **All bodies** by default; untick it and click the bodies to cut or intersect. {idx:feature scope}
 
 ## Revolve and Revolve Cut
 
@@ -783,7 +785,7 @@ Choose **Select axis in canvas** separately from the profiles. The axis may be a
 
 **Extent** is **Full (360°)** or **Angle**. Angle supports **One side**, **Two sides** with independent angles, or **Symmetric** (the total angle split equally). Reverse exchanges the signed direction for one/two sides. The total angle must not exceed 360°. Profiles must not cross a coplanar rotation axis. Full ignores stored angle values. Older files whose angles were clamped to 360° keep that geometry and migrate to Full when edited.
 
-**Operation** offers Join, New body or Cut. **Thin Feature** revolves a wall along open or closed contours; open contours enable it automatically. Cuts have the same **Feature Scope** as Extrude; **Select target bodies in canvas** switches explicitly from profile/axis selection to target-body picking. {idx:revolve}
+**Operation** offers Join, New body, Cut or Intersect (as for Extrude; Sweep and Loft offer the same). **Thin Feature** revolves a wall along open or closed contours; open contours enable it automatically. Cuts have the same **Feature Scope** as Extrude; **Select target bodies in canvas** switches explicitly from profile/axis selection to target-body picking. {idx:revolve}
 
 ## Sweep and Sweep Cut
 
