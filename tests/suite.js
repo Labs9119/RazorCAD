@@ -4970,6 +4970,26 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (up to vertices either way, planes through the axis, a plane beside it trimming it, surface revolve; rejections); the panel's Up To Surface and its pick`};
   },
 
+  async 'surface-extrude-controls'() {
+    const {run,fixture}=await import('/tests/surface-extrude-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const labels=()=>[...document.querySelectorAll('#pm label, #pm .pm-label, #pm span, #pm .pm-section-title, #pm summary, #pm .title')].map((x)=>x.textContent.trim());
+    const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    for(const t of ['Start from','Along','Draft angle'])if(!labels().some((x)=>x.startsWith(t)))return {ok:false,detail:`No ${t} in the Surface Extrude panel`};
+    const field=(key)=>document.querySelector(`[data-feature-field="${key}"]`),end=field('end');
+    if(!end||![...end.options].some((o)=>o.value==='upToSurface'))return {ok:false,detail:'No Up To Surface for Surface Extrude'};
+    end.value='upToSurface';end.dispatchEvent(new Event('change'));await settle();
+    if(a.pickMode()!=='face')return {ok:false,detail:`Pick mode for the end surface: ${a.pickMode()}`};
+    a.pmPick('plane','front');await settle();
+    if(a.pm.feature.toPlane!=='front')return {ok:false,detail:`End surface after the tree pick: ${a.pm.feature.toPlane}`};
+    const edges=document.querySelector('[data-planar-edges]');if(!edges)return {ok:false,detail:'No Select model edges for Surface Extrude'};
+    edges.click();await settle();if(a.pickMode()!=='edge')return {ok:false,detail:`Pick mode for model edges: ${a.pickMode()}`};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.filter((b)=>b.kind==='surface').at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+    if(a.result.errors.size||!m||Math.abs(m.area-800)>1e-4)return {ok:false,detail:`Surface up to Front: area ${m?.area} (expected 800), errors ${JSON.stringify([...a.result.errors])}`};
+    return {ok:true,detail:`${native.results.length} kernel cases (starts, ends up to vertices and planes, angled trims, drafts, own direction, model edges and faces, surface revolve of an edge; rejections); the panel's Start, Along, Draft, Up To Surface and model edge picking`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

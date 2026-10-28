@@ -2735,6 +2735,82 @@ async function rebuild(doc, previewId = null, opts = {}) {
   };
   const isFaceProfile = (ref) => !!ref && typeof ref === 'object' && ref.kind === 'modelFace';
   const sectionOf = (ref, thin) => (isFaceProfile(ref) ? faceSection(ref, thin) : getSketch(ref, thin));
+  // A surface extrusion's or revolution's contours: { frame, planar, wires: [{ wire, closed }], pts? } for each sketch
+  // contour, flat model face (its outer and inner edges) and the chains of the picked model edges (f.edges)
+  const surfaceSections = (f, revolve = false) => {
+    const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [], out = [];
+    if (!refs.length && !f.edges?.length) throw new Error('Select one or more surface contours, or model edges');
+    for (const ref of refs) {
+      if (isFaceProfile(ref)) {
+        needEdges('Picking a model face');
+        const hit = findFaceAny([...solids, ...surfaces], ref);
+        if (!hit) throw new Error('A contour face could not be found in the model');
+        if (hit.face.geomType !== 'PLANE') throw new Error('A contour face must be flat');
+        const n = unit(vec(hit.face.normalAt())), frame = frameOnPlane(vec(hit.face.center), n);
+        ref.n = n; if (hit.body?.id) ref.body = hit.body.id;
+        const wires = [hit.face.clone().outerWire(), ...hit.face.clone().innerWires()];
+        const pts = hit.face.edges.flatMap((e) => Array.from({ length: 17 }, (_, i) => vec(e.pointAt(i / 16))));
+        out.push({ frame, planar: true, wires: wires.map((wire) => ({ wire, closed: true })), pts });
+        continue;
+      }
+      const source = sketches.get(LR.sourceId(ref));
+      if (!source) throw new Error('A surface profile sketch is missing');
+      const subset = typeof ref === 'string' ? source.sk : LR.resolveContour(source.sk, ref).sketch;
+      // (a revolve's axis line, when it is in the sketch, is not part of the surface)
+      const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
+      const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
+      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
+      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
+    }
+    if (f.edges?.length) out.push(edgeSection(f));
+    return out;
+  };
+  // The picked model edges (f.edges: { p, body }) joined end to end into chains, open or closed, without branches; their
+  // plane when they lie in one (facing out of the face it is, when it is one; else none: planar false)
+  const edgeSection = (f) => {
+    needEdges('Picking a model edge');
+    const all = [...solids, ...surfaces], edges = [];
+    for (const ref of f.edges) {
+      const owners = ref.body ? all.filter((b) => b.id === ref.body) : all;
+      const found = owners.map((b) => ({ body: b, hit: findEdgeInfo(b.shape, ref) })).filter((x) => x.hit);
+      if (found.length !== 1) throw new Error('A selected model edge is missing or ambiguous');
+      const { body, hit } = found[0];
+      if (edges.some((x) => x.edge.isSame(hit.e))) throw new Error('A model edge is selected more than once');
+      ref.body = body.id; updateEdgeRef(ref, hit.e, body.shape); edges.push({ edge: hit.e, body });
+    }
+    res.features[f.id] = { ...(res.features[f.id] || {}), edges: f.edges };
+    const near = (p, q) => len(sub(p, q)) < 1e-5, ends = (e) => [vec(e.startPoint), vec(e.endPoint)];
+    const left = [...edges], chains = [];
+    while (left.length) {
+      const chain = [left.shift()];
+      let [head, tail] = ends(chain[0].edge);
+      while (!near(head, tail)) {
+        const at = (q) => left.flatMap((x, i) => (ends(x.edge).some((p) => near(p, q)) ? [i] : []));
+        const t = at(tail), h = at(head);
+        if (t.length > 1 || h.length > 1) throw new Error('The selected model edges branch: pick chains without branches');
+        if (t.length) { const [x] = left.splice(t[0], 1), [s, e] = ends(x.edge); chain.push(x); tail = near(s, tail) ? e : s; }
+        else if (h.length) { const [x] = left.splice(h[0], 1), [s, e] = ends(x.edge); chain.unshift(x); head = near(s, head) ? e : s; }
+        else break;
+      }
+      chains.push({ edges: chain.map((x) => x.edge), closed: near(head, tail) });
+    }
+    const pts = edges.flatMap(({ edge }) => Array.from({ length: 17 }, (_, i) => vec(edge.pointAt(i / 16))));
+    const c = mul(pts.reduce((s, p) => add(s, p), [0, 0, 0]), 1 / pts.length), b = bbox(asShape(edges.map((x) => x.edge))), scale = b.diag || 1;
+    const p1 = pts.reduce((best, p) => (len(sub(p, c)) > len(sub(best, c)) ? p : best), pts[0]);
+    const p2 = pts.reduce((best, p) => (len(cross(sub(p1, c), sub(p, c))) > len(cross(sub(p1, c), sub(best, c))) ? p : best), pts[0]);
+    let n = cross(sub(p1, c), sub(p2, c));
+    const planar = len(n) > 1e-9 * scale * scale && pts.every((p) => Math.abs(dot(sub(p, c), unit(n))) < 1e-6 * (1 + scale));
+    let frame = null;
+    if (planar) {
+      n = unit(n);
+      // (facing out of a flat face of the body that the first edge borders, in the edges' plane; else up)
+      const face = adjacentFaces(edges[0].body.shape, edges[0].edge).find((fc) => fc.geomType === 'PLANE' && Math.abs(dot(unit(vec(fc.normalAt())), n)) > 1 - 1e-9);
+      if (face) n = unit(vec(face.normalAt()));
+      else { const k = [0, 1, 2].reduce((m, i) => (Math.abs(n[i]) > Math.abs(n[m]) ? i : m), 0); if (n[k] < 0) n = mul(n, -1); }
+      frame = frameOnPlane(c, n);
+    }
+    return { frame, planar, centre: c, pts, edgeChains: true, wires: chains.map((ch) => ({ wire: R.assembleWire(ch.edges), closed: ch.closed })) };
+  };
   // The solid a feature makes from a sketch profile: make(drawing) for the outlines and for the text,
   // combined so text inside an outline is cut out of it (and text outside it is added).
   const profileSolid = (sk, make) => {
@@ -3149,7 +3225,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       if (!ax) throw new Error('The axis face could not be found (use a cylindrical or conical face)');
       return ax;
     }
-    if (sk.faceProfile) throw new Error('To revolve a model face, choose a reference axis, a model edge or face, or a sketch line as the axis');
+    if (sk.faceProfile || !sk.sk) throw new Error('To revolve a model face or model edges, choose a reference axis, a model edge or face, or a sketch line as the axis');
     const fr = sk.frame, ax = S.revolveAxis(f, sk.sourceSketch || sk.sk);
     return { o: S.fromFrame2D(fr, ax.a[0], ax.a[1]), d: add(mul(fr.u, ax.d[0]), mul(fr.v, ax.d[1])) };
   };
@@ -3179,6 +3255,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const probe = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(sk.frame)).extrude(1e-3));
       try { return sub(bbox(probe).center, mul(sk.frame.n, 5e-4)); } finally { probe.delete(); }
     }
+    if (sk.pts) { const b = bbox(asShape(sk.wires.map((w) => w.wire))); return b.center; }
     const pts = sk.sk.curves.filter((c) => !c.construction).flatMap((c) => S.curvePoints(sk.sk, c));
     if (!pts.length) throw new Error('The profile has no curves');
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
@@ -4484,36 +4561,105 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }finally{owned.forEach(face=>face.delete());}
           break;
         }
-        case 'surfExtrude':
+        case 'surfExtrude': {
+          // (sketch contours, flat model faces' edges and chains of picked model edges, extruded along their plane's
+          // normal or along Direction; a start and an end as for a solid extrusion, angled ones trimming it; a draft
+          // for closed contours, each drafted as a solid by draftAway and its walls kept)
+          const sections=surfaceSections(f),parts=[],oc=R.getOC();
+          try{
+            const along=f.direction&&f.direction!=='none'?unit(resolveAxis(f.direction).d):null;
+            if(!along&&sections.some(s=>!s.planar))throw new Error('Model edges that do not lie in one plane need a Direction');
+            const first=sections.find(s=>s.planar)||sections[0];
+            if(!along)for(const s of sections)if(Math.abs(dot(s.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(s.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Surface profiles must lie in the same plane');
+            const a=along||first.frame.n;
+            const draftAng=ev(f.draft??0);
+            if(!Number.isFinite(draftAng)||Math.abs(draftAng)>=89)throw new Error('The draft angle must be between 0° and 89°');
+            const drafted=Math.abs(draftAng)>1e-9,ang=f.draftOutward?-draftAng:draftAng;
+            const startMode=f.startFrom||'profile';
+            if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
+            const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null,startOffset=startMode==='offset'?ev(f.startOffset??0):0;
+            if(!Number.isFinite(startOffset))throw new Error('Start offset must be finite');
+            if(startSurface&&Math.abs(dot(startSurface.n,a))<1e-7)throw new Error('The start surface is parallel to the extrusion direction');
+            if(f.startFace&&startSurface)res.features[f.id]={...(res.features[f.id]||{}),startFace:f.startFace};
+            const end=f.end||'blind';
+            if(!['blind','midplane','twoSides','upToVertex','upToSurface','offsetSurface'].includes(end))throw new Error('Select a supported extrusion end');
+            for(const s of sections){
+              const fr=s.frame||frameOnPlane(s.centre,a),n=fr.n;
+              if(Math.abs(dot(a,n))<1e-7)throw new Error('The extrusion direction lies in the contours’ plane');
+              // (heights along a from p to a plane; planes parallel to the contours' plane at a height above its origin)
+              const height=(pl,p)=>dot(sub(pl.p,p),pl.n)/dot(a,pl.n),at=(h)=>({p:add(fr.o,mul(a,h)),n});
+              const start=startSurface||at(startOffset);
+              let lower,upper;
+              if(['blind','midplane','twoSides'].includes(end)){
+                const iv=extrusionInterval(f,ev);lower={p:add(start.p,mul(a,iv.start)),n:start.n};upper={p:add(start.p,mul(a,iv.end)),n:start.n};
+              }else{
+                let E;
+                if(end==='upToVertex'){E={p:resolvePoint(f.toPoint,f.toVertex),n};if(f.toVertex)res.features[f.id]={...(res.features[f.id]||{}),toVertex:f.toVertex};}
+                else{
+                  E=resolveSurface(f.toPlane,f.toFace);if(f.toFace)res.features[f.id]={...(res.features[f.id]||{}),toFace:f.toFace};
+                  if(Math.abs(dot(E.n,a))<1e-7)throw new Error('The end surface is parallel to the extrusion direction');
+                  if(end==='offsetSurface'){const offset=ev(f.toOffset)*(f.toFlip?-1:1),side=Math.sign(dot(sub(start.p,E.p),E.n))||1;E={...E,p:add(E.p,mul(E.n,side*offset))};}
+                }
+                const hs=height(start,fr.o),he=height(E,fr.o);
+                if(Math.abs(he-hs)<1e-6)throw new Error('The end lies on the start');
+                [lower,upper]=he>hs?[start,E]:[E,start];
+              }
+              const flat=(pl)=>Math.abs(dot(unit(pl.n),n))>1-1e-12;
+              for(const {wire,closed} of s.wires){
+                const b=bbox(wire),corners=[];
+                for(const x of [b.min[0],b.max[0]])for(const y of [b.min[1],b.max[1]])for(const z of [b.min[2],b.max[2]]){const p=[x,y,z];corners.push(sub(p,mul(a,dot(sub(p,fr.o),n)/dot(a,n))));}
+                for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end cross or leave no extrusion height over the contour');
+                const parallel=flat(lower)&&flat(upper),low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p)));
+                const [h0,h1]=parallel?[height(lower,fr.o),height(upper,fr.o)]:[low-5,high+5];
+                // (the wire's plane: its contour's, at height 0; moved to h0 and swept to h1)
+                const sweep=(shape)=>{const v=new R.Vector(mul(a,h1-h0)),moved=shape.clone().translate(mul(a,h0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
+                const big=b.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
+                const trim=(shape)=>{
+                  if(parallel)return shape;
+                  for(const [pl,sign] of [[lower,1],[upper,-1]]){
+                    const nn=mul(pl.n,(dot(pl.n,a)>0?1:-1)*sign),u=unit(cross(nn,Math.abs(nn[0])<.9?[1,0,0]:[0,1,0]));
+                    const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(add(fr.o,mul(a,height(pl,fr.o))),u,nn)).extrude(2*big);
+                    try{shape=boolByList('common',shape,[block]);}finally{block.delete();}
+                  }
+                  return shape;
+                };
+                if(!drafted){parts.push(trim(sweep(wire)));continue;}
+                if(!closed)throw new Error('A draft needs closed contours (an open one has no inside to narrow towards)');
+                const face=R.makeFace(wire);let solid;
+                try{solid=trim(sweep(face));}finally{face.delete();}
+                if(!solidsOf(solid).length)throw new Error('The start and end leave no extrusion');
+                const out=draftAway(solid,start,a,ang,[lower,upper]);
+                const onEnd=(fc)=>fc.geomType==='PLANE'&&[lower,upper].some(pl=>Math.abs(dot(unit(vec(fc.normalAt())),unit(pl.n)))>1-1e-9&&Math.abs(dot(sub(flatCentre(fc),pl.p),unit(pl.n)))<1e-6);
+                const walls=out.faces.filter(fc=>!onEnd(fc));
+                if(!walls.length)throw new Error('The draft could not be made');
+                parts.push(asShape(walls));
+              }
+            }
+          }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}
+          for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this direction and these ends');}finally{check.delete();}}
+          const shape=asShape(parts);
+          if(!shape.faces.length)throw new Error('The start and end leave no surface');
+          surfaces.push(bodyRec(newId(f.id),shape,f.id));
+          applied.push({op:'add',tool:shape});
+          break;
+        }
         case 'surfRevolve': {
-          const refs=Array.isArray(f.profiles)?f.profiles:f.sketch?[f.sketch]:[];
-          if(!refs.length)throw new Error('Select one or more surface contours');
-          const sections=refs.map(ref=>{
-            const source=sketches.get(LR.sourceId(ref));if(!source)throw new Error('A surface profile sketch is missing');
-            const subset=typeof ref==='string'?source.sk:LR.resolveContour(source.sk,ref).sketch;
-            return {...source,sk:subset,sourceSketch:source.sk,id:LR.sourceId(ref)};
-          });
-          const first=sections[0];for(const sk of sections)if(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Surface profiles must lie in the same plane');
-          const oc=R.getOC(),parts=[],extrusion=f.type==='surfExtrude'?extrusionInterval(f,ev):null,axis=f.type==='surfRevolve'?revolveAxisOf(f,first):null,revolution=axis?revolveExtent(f,first,axis):null;
-          if(revolution?.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
-          for(const sk of sections){
-            if(axis)checkRevolveAxis(sk,axis);
-            const axisLine=f.axis==='sketchLine'?(f.axisSketch?.sketch===sk.id?f.axisSketch.curve:null):f.axis;
-            const subset=revolution?{...sk.sk,curves:sk.sk.curves.filter(c=>c.id!==axisLine)}:sk.sk;
-            const wires=sketchWires(subset,sk.frame);
-            if(!wires.length)throw new Error('The selected surface contour contains no usable curves');
-            try{for(let wi=0;wi<wires.length;wi++){let wire=wires[wi],maker,vector,ax;
-              try{
-                if(extrusion){
-                  const sign=dot(sk.frame.n,first.frame.n)<0?-1:1,start=sign<0?-extrusion.end:extrusion.start,end=sign<0?-extrusion.start:extrusion.end;
-                  if(start)wires[wi]=wire=wire.translate(mul(sk.frame.n,start));vector=new R.Vector(mul(sk.frame.n,end-start));
-                  maker=new oc.BRepPrimAPI_MakePrism(wire.wrapped,vector.wrapped,false,true);
-                }else{ax=R.makeAx1(axis.o,axis.d);maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);}
-                let shape=R.cast(maker.Shape());if(revolution?.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);
-              }finally{maker?.delete();vector?.delete();ax?.delete();}
-            }}finally{wires.forEach(w=>w.delete());}
-          }
-          for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
+          const sections=surfaceSections(f,true),parts=[];
+          try{
+            const first=sections.find(s=>s.planar)||sections[0];
+            for(const sk of sections)if(sk.planar&&first.planar&&(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5))throw new Error('Surface profiles must lie in the same plane');
+            if(!first.planar&&f.projectAxis)throw new Error('Model edges that do not lie in one plane cannot have the axis projected into their plane');
+            const oc=R.getOC(),axis=revolveAxisOf(f,first),revolution=revolveExtent(f,first,axis);
+            if(revolution.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
+            for(const sk of sections){
+              if(sk.planar)checkRevolveAxis(sk,axis);
+              for(const {wire} of sk.wires){
+                const ax=R.makeAx1(axis.o,axis.d),maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);
+                try{let shape=R.cast(maker.Shape());if(revolution.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);}finally{maker.delete();ax.delete();}
+              }
+            }
+            for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
+          }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}
           const shape = asShape(parts);
           surfaces.push(bodyRec(newId(f.id), shape, f.id));
           applied.push({ op: 'add', tool: shape });

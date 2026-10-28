@@ -2097,7 +2097,7 @@ class App {
     return true;
   }
 
-  loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false)); }
+  loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false && !this.pm.planarEdges)); }
 
   loftCandidates() {
     if (!this.loftPicking()) return [];
@@ -2218,7 +2218,7 @@ class App {
   // Extrude and Revolve take flat model faces as profiles too (where no sketch profile is clicked)
   faceProfilePicking() {
     const f = this.pm?.feature;
-    return !!f && ['extrude', 'revolve'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
+    return !!f && ['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
   }
 
   // A flat model face added as a profile, or removed when it is picked again
@@ -2242,7 +2242,7 @@ class App {
     if (!f) return null;
     if(['loft','surfLoft'].includes(f.type)&&this.pm.loftConnector&&!this.pm.loftEndSlot)return 'loftConnector';
     if(this.pm.scopePick&&['extrude','revolve','sweep'].includes(f.type)&&['cut','intersect'].includes(f.op)&&f.scopeAll===false)return 'body';
-    if (f.type === 'surfPlanar' && this.pm.planarEdges) return 'edge';
+    if (['surfPlanar', 'surfExtrude', 'surfRevolve'].includes(f.type) && this.pm.planarEdges) return 'edge';
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
@@ -2278,11 +2278,11 @@ class App {
     if (f.type === 'weldTrim' || f.type === 'weldBead') return 'body';
     if (f.type === 'endCap' || f.type === 'weldGusset') return 'faces';
     if (f.type === 'moveFace') return f.mode === 'rotate' && f.faces?.length && !f.edge ? 'edge' : 'faces';
-    if(f.type==='extrude'&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start')return 'face';
+    if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start')return 'face';
     if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&f.end2==='upToVertex')return 'vertex';
     if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&['upToSurface','offsetSurface'].includes(f.end2))return 'face';
-    if (f.type === 'extrude' && f.end === 'upToVertex') return 'vertex';
-    if (f.type === 'extrude' && (f.end === 'upToSurface' || f.end === 'offsetSurface')) return 'face';
+    if (['extrude', 'surfExtrude'].includes(f.type) && f.end === 'upToVertex') return 'vertex';
+    if (['extrude', 'surfExtrude'].includes(f.type) && (f.end === 'upToSurface' || f.end === 'offsetSurface')) return 'face';
     if (scoped) return 'body';
     if (f.type === 'axis' && f.axisType === 'edge') return 'edge';
     if (f.type === 'point' && f.pointType === 'vertex') return 'vertex';
@@ -2334,20 +2334,20 @@ class App {
       return;
     }
     if (mode === 'edge') {
-      if (['surfFill','surfPlanar'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
-      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
+      if (['surfFill','surfPlanar','surfExtrude','surfRevolve'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
+      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || ((f.type === 'surfExtrude' || f.type === 'surfRevolve') && this.pm.planarEdges) || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
         const i = f.edges.findIndex((x) => this.viewport.edgeIndexForPoint(x.p) === hit.index);
         if (i >= 0) f.edges.splice(i, 1);
-        else f.edges.push({ p: hit.edge.mid, ...(f.type === 'surfPlanar' ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) });
+        else { f.edges ||= []; f.edges.push({ p: hit.edge.mid, ...(['surfPlanar', 'surfExtrude', 'surfRevolve'].includes(f.type) ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) }); }
       } else f.edge = { p: hit.edge.mid };
     } else if (mode === 'vertex') {
       if (f.type === 'extrude' && this.pm.extrudeSurfaceSlot === 'end2' && f.side2) { f.toVertex2 = { p: hit.point.toArray() }; f.toPoint2 = null; }
-      else if (['extrude', 'revolve', 'surfRevolve'].includes(f.type)) { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
+      else if (['extrude', 'surfExtrude', 'revolve', 'surfRevolve'].includes(f.type)) { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
       else if (f.type === 'sketch3d') { const q = hit.point.toArray().map((x) => +x.toFixed(6)); (f.pts ||= []).push({ x: q[0], y: q[1], z: q[2] }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
       if (f.type === 'split') f.toolFace = { p: hit.p, n: hit.n };
-      else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
+      else if(['extrude','surfExtrude'].includes(f.type)&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
       else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='end2'&&f.side2){f.toFace2={p:hit.p,n:hit.n};f.toPlane2=null;}
       else { f.toFace = { p: hit.p, n: hit.n }; f.toPlane = null; }
     }
@@ -2438,7 +2438,7 @@ class App {
       vp.setVertexMarkers(pts?.length ? { selected: pts, hover: this._fpDrag ? pts[this._fpDrag.i] ?? null : null } : null);
     } else if (mode === 'vertex') {
       const two = f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2';
-      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : ['revolve', 'surfRevolve'].includes(f.type) ? f.toVertex : f.type === 'sketch3d' ? null : f.vertex;
+      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : ['surfExtrude', 'revolve', 'surfRevolve'].includes(f.type) ? f.toVertex : f.type === 'sketch3d' ? null : f.vertex;
       vp.setVertexMarkers({ selected: ref && !(two ? f.toPoint2 : f.toPoint) ? ref.p : null, hover: this.hoverVertex ?? null });
     }
   }
@@ -2461,9 +2461,9 @@ class App {
       }
     }
     if (f) {
-      if(f.type==='extrude'&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
+      if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
@@ -2999,14 +2999,14 @@ class App {
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';
-      else if(f.type==='extrude'&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start'){key='startPlane';f.startFace=null;}
+      else if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start'){key='startPlane';f.startFace=null;}
       else if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&['upToSurface','offsetSurface'].includes(f.end2)){key='toPlane2';f.toFace2=null;}
-      else if (f.type === 'extrude' && (f.end === 'upToSurface' || f.end === 'offsetSurface')) { key = 'toPlane'; f.toFace = null; }
+      else if (['extrude', 'surfExtrude'].includes(f.type) && (f.end === 'upToSurface' || f.end === 'offsetSurface')) { key = 'toPlane'; f.toFace = null; }
       else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && this.pm.revolveEndPick) { key = 'toPlane'; f.toFace = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPlanes') key = slot('planeA', 'planeB');
     } else if (kind === 'point') {
       if (f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2' && f.end2 === 'upToVertex') { key = 'toPoint2'; f.toVertex2 = null; }
-      else if (f.type === 'extrude' && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
+      else if (['extrude', 'surfExtrude'].includes(f.type) && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
       else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToVertex' && this.pm.revolveEndPick) { key = 'toPoint'; f.toVertex = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPoints') key = slot('pointA', 'pointB');
     } else if (kind === 'axis') {

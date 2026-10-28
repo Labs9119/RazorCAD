@@ -1048,15 +1048,33 @@ const PM_SCHEMAS = {
   ],
   surfExtrude: [
     {title:'Contours',fields:[{key:'profiles',type:'loftSelection'}]},
+    {title:'Model Edges',fields:[{key:'edges',type:'edges'}]},
+    {title:'Start',fields:[
+      {key:'startFrom',type:'select',label:'Start from',default:'profile',options:[['profile','Contour plane'],['offset','Offset from the contours'],['surface','Plane / planar face']]},
+      {key:'startOffset',type:'expr',label:'Start offset',unit:'mm',show:f=>f.startFrom==='offset'},
+      {key:'startPlane',type:'surfaceRef',label:'Start surface',show:f=>f.startFrom==='surface'},
+    ]},
     {title:'Direction',fields:[
-      {key:'end',type:'select',label:'Direction',options:[['blind','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
-      {key:'depth',type:'expr',label:'Depth',unit:'mm'},
+      {key:'end',type:'select',label:'Direction',options:[['blind','One side'],['twoSides','Two sides'],['midplane','Symmetric'],['upToVertex','Up To Vertex'],['upToSurface','Up To Surface'],['offsetSurface','Offset From Surface']]},
+      {key:'depth',type:'expr',label:'Depth',unit:'mm',show:f=>['blind','twoSides','midplane'].includes(f.end||'blind')},
       {key:'depth2',type:'expr',label:'Second depth',unit:'mm',default:0,show:f=>f.end==='twoSides'},
-      {key:'reverse',type:'check',label:'Reverse direction',show:f=>f.end!=='midplane'},
+      {key:'toPoint',type:'pointRef',label:'Vertex',show:f=>f.end==='upToVertex'},
+      {key:'toPlane',type:'surfaceRef',label:'Surface',show:isSurfEnd},
+      {key:'toOffset',type:'expr',label:'Offset',unit:'mm',default:5,show:f=>f.end==='offsetSurface'},
+      {key:'toFlip',type:'check',label:'Reverse offset (past the surface)',show:f=>f.end==='offsetSurface'},
+      {key:'reverse',type:'check',label:'Reverse direction',show:f=>['blind','twoSides'].includes(f.end||'blind')},
+      {key:'direction',type:'direction',label:'Along',none:true},
+      {key:'dirHint',type:'hint',text:'Along None extrudes square to the contours’ plane; choose an axis to extrude along it instead (needed for model edges that do not lie in one plane).'},
+    ]},
+    {title:'Draft',fields:[
+      {key:'draft',type:'expr',label:'Draft angle',unit:'°',default:0},
+      {key:'draftOutward',type:'check',label:'Draft outward (wider away from the contour)',show:f=>!!f.draft&&String(f.draft).trim()!=='0'},
+      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'Closed contours only: each narrows away from where it starts (or widens).'},
     ]},
   ],
   surfRevolve: [
     {title:'Contours',fields:[{key:'profiles',type:'loftSelection'}]},
+    {title:'Model Edges',fields:[{key:'edges',type:'edges'}]},
     REVOLUTION_AXIS,REVOLUTION_DIRECTIONS,
   ],
   surfPlanar: [
@@ -3753,11 +3771,12 @@ export class UI {
           if(f.referenceDefinition)s.dataset.datumField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity') s.dataset.patchContinuity = '';
           if (['sweep','surfSweep'].includes(f.type) && ['profile','path','guide'].includes(fd.key)) s.onfocus = () => { pm.sweepSlot = fd.key; };
-          if(f.type==='extrude'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(['extrude','surfExtrude'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.profilePick=f.type==='surfExtrude'?false:pm.profilePick;pm.planarEdges=false;pm.scopePick=false;a.updateSketchDisplay();};
           if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
           s.onchange = () => {
             f[fd.key] = s.value || null;
-            if(f.type==='extrude'){
+            if(f.type==='surfExtrude'&&(['surfaceRef','pointRef'].includes(fd.type)||fd.key==='startFrom'&&f.startFrom==='surface'||fd.key==='end'&&['upToVertex','upToSurface','offsetSurface'].includes(f.end))){pm.profilePick=false;pm.planarEdges=false;}
+            if(['extrude','surfExtrude'].includes(f.type)){
               if(fd.key==='startFrom'&&f.startFrom==='surface'){pm.extrudeSurfaceSlot='start';pm.extrudePick=false;pm.scopePick=false;}
               if(['surfaceRef','pointRef'].includes(fd.type)){pm.extrudeSurfaceSlot=REF_SLOT[fd.key];f[REF_PICKED[fd.key]]=null;}
               if(fd.key==='end')pm.extrudeSurfaceSlot='end';
@@ -3782,7 +3801,7 @@ export class UI {
           wrap.appendChild(s);
           body.appendChild(this.row(fd.label, wrap));
           if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.revolveEndPick?' on':''),'data-revolve-end-pick':fd.key,onclick:()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(fd.type==='pointRef'?'Click the vertex the revolution goes up to.':'Select the plane or flat face the revolution goes up to.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
-          if(f.type==='extrude'&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
+          if(['extrude','surfExtrude'].includes(f.type)&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]&&(f.type==='extrude'||pm.profilePick===false&&!pm.planarEdges)?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;if(f.type==='surfExtrude'){pm.profilePick=false;pm.planarEdges=false;}pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
         }
       }
     }
@@ -5252,12 +5271,12 @@ export class UI {
     const a = this.app, pm = a.pm, key = fd.key, guide = key === 'guides';
     const extrude = f.type === 'extrude', planar = f.type === 'surfPlanar', common=['revolve','surfExtrude','surfRevolve'].includes(f.type), surface=['surfExtrude','surfRevolve'].includes(f.type);
     pm.loftSlot ||= 'profiles'; f[key] ||= [];
-    const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false);
+    const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false && !pm.planarEdges);
     body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'aria-pressed': String(active), disabled: guide && f.ruled, 'data-loft-slot': key, onclick: () => {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
       if (extrude) pm.extrudePick = !active;
       if (planar) pm.planarEdges = active;
-      if (common) { pm.profilePick=!active; pm.revolveEndPick=false; }
+      if (common) { pm.profilePick=!active; pm.revolveEndPick=false; pm.planarEdges=false; pm.extrudeSurfaceSlot=null; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
     if (!guide) {
@@ -5543,14 +5562,16 @@ export class UI {
   renderEdgeList(body, f) {
 
     const a = this.app;
+    f.edges ||= [];
     const n = f.edges.length;
-    if(['surfFill','surfPlanar'].includes(f.type)){
+    if(['surfFill','surfPlanar','surfExtrude','surfRevolve'].includes(f.type)){
       const label=el('label'),checkbox=el('input',{type:'checkbox','data-patch-chain':''});checkbox.checked=!!f.chainSelection;
       checkbox.onchange=()=>{f.chainSelection=checkbox.checked;this.renderPM();};
       label.append(checkbox,document.createTextNode(' Chain selection'));body.appendChild(this.row(null,label,'check'));
       body.appendChild(el('div',{class:'pm-hint'},'Chain selection follows connected boundary edges on the clicked body and stops at branches. Turn it off to pick individual edges. Existing edge continuity settings are preserved.'));
     }
-    if(f.type==='surfPlanar')body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;this.renderPM();a.updateSketchDisplay();}},'Select model edges'));
+    if(['surfPlanar','surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;a.pm.revolveEndPick=false;a.pm.extrudeSurfaceSlot=null;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();}},'Select model edges'));
+    if(['surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Model edges join end to end into open or closed chains (without branches); they are extruded or revolved with the contours.'));
     if (f.type === 'surfFill') body.appendChild(el('button', { class: 'pm-btn' + (!a.pm.patchSupportPick ? ' on' : ''), 'data-patch-edges': '', onclick: () => { a.pm.patchSupportPick = false; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select boundary edges'));
     body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.'));
     const ul = el('div', { class: 'pm-list' });
