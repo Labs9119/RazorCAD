@@ -1260,7 +1260,7 @@ The **Sheet Metal** tab holds the sheet metal features. Sheet metal bodies are l
 
 A closed sketch (holes allowed) becomes a sheet of the given **thickness**. The **bend radius** and **K-factor** set here become the part's defaults. {idx:Base Flange}{idx:K-factor}
 
-**Bend calculation** {idx:bend allowance}{idx:bend deduction} (Base Flange, Sheet Metal Extrude, Lofted Bend, Transition): **K-factor**, or, from your bend table for this thickness and radius, the **Bend allowance** (the length a 90° bend takes flat) or the **Bend deduction** (how much shorter the flat is than the two outside lengths to the sharp, for a 90° bend). RazorCAD works out the K-factor it gives (refused when outside 0 to 1), so every flat length agrees with the table at 90° and other angles follow in proportion.
+**Bend calculation** {idx:bend allowance}{idx:bend deduction} (Base Flange, Sheet Metal Extrude, Lofted Bend, Transition): **K-factor**, or, from your bend table for this thickness and radius, the **Bend allowance** (the length a 90° bend takes flat) or the **Bend deduction** (how much shorter the flat is than the two outside lengths to the sharp, for a 90° bend). RazorCAD works out the K-factor it gives (refused when outside 0 to 1), so every flat length agrees with the table at 90° and other angles follow in proportion. **Bend table (by angle)** takes the allowance for several angles ("30: 1.5; 45: 2.0; 90: 4.2", for this thickness and the default radius): each bend's allowance is read from it, straight between its rows and in proportion past its ends; bends of another radius use the K-factor its 90° allowance gives.
 
 ## Gauge tables
 

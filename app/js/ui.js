@@ -325,7 +325,9 @@ const patternSources = (title, model = 'pick') => ({ title, fields: [
 ] });
 // (how a bend's flat length is worked out: kernel.worker.js sheetKFactor)
 const SM_BEND_CALC = [
-  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)']] },
+  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)'], ['table', 'Bend table (by angle)']] },
+  { key: 'bendTable', type: 'text', label: 'Allowances', placeholder: '30: 1.5; 45: 2.0; 90: 4.2', show: (f) => f.bendCalc === 'table' },
+  { key: 'btHint', type: 'hint', show: (f) => f.bendCalc === 'table', text: 'The bend allowance (mm) for each angle (°), from your bend table for this thickness and the default radius, separated by semicolons. Angles between rows are interpolated, angles past the ends in proportion; bends of another radius use the K-factor the 90° allowance gives.' },
   { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '', show: (f) => (f.bendCalc || 'k') === 'k' },
   { key: 'bendAllowance', type: 'expr', label: 'Bend allowance', unit: 'mm', default: 4.2, show: (f) => f.bendCalc === 'ba' },
   { key: 'bendDeduction', type: 'expr', label: 'Bend deduction', unit: 'mm', default: 3.8, show: (f) => f.bendCalc === 'bd' },

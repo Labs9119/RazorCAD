@@ -3364,7 +3364,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // length agrees with it at 90° (and other angles in proportion). A deduction with the outside setbacks: BA = 2(R + t) − BD
   const sheetKFactor = (f, R0, t) => {
     const m = f.bendCalc || 'k';
-    if (!['k', 'ba', 'bd'].includes(m)) throw new Error('Select a supported bend calculation');
+    if (!['k', 'ba', 'bd', 'table'].includes(m)) throw new Error('Select a supported bend calculation');
+    if (m === 'table') {
+      // (a bend table: 'angle: allowance' pairs; the K-factor the 90° allowance gives, carrying the table)
+      const rows = String(f.bendTable || '').split(/[;\n]+/).map((x) => x.trim()).filter(Boolean).map((x) => {
+        const m2 = x.match(/^(-?[\d.]+)\s*°?\s*[:=,\s]\s*(-?[\d.]+)$/);
+        if (!m2) throw new Error(`“${x}” is not a bend table row (an angle and its allowance, such as 90: 4.2)`);
+        const a = Number(m2[1]), b = Number(m2[2]);
+        if (!(a > 0 && a <= 180 && b > 0)) throw new Error(`Bend table row “${x}”: the angle must be from 0° to 180° and the allowance more than zero`);
+        return [(a * Math.PI) / 180, b];
+      }).sort((x, y) => x[0] - y[0]);
+      if (!rows.length) throw new Error('The bend table is empty: give a row for each angle, such as 90: 4.2');
+      if (rows.some((r, i) => i && Math.abs(r[0] - rows[i - 1][0]) < 1e-12)) throw new Error('The bend table gives an angle twice');
+      const K90 = (SM.tableAllowance(rows, Math.PI / 2) / (Math.PI / 2) - R0) / t;
+      if (!(K90 >= 0 && K90 <= 1)) throw new Error(`The bend table's 90° allowance gives a K-factor of ${Number.isFinite(K90) ? +K90.toFixed(4) : K90}: it must give one between 0 and 1`);
+      return Object.assign(new Number(K90), { table: { R: R0, t, rows } });
+    }
     let K;
     if (m === 'k') K = ev(f.kFactor);
     else {

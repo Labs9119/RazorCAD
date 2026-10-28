@@ -238,7 +238,20 @@ function runsFace(runs, tol = 1e-3) {
 }
 
 // ------------------------------------------------------------ bends
-export const bendAllowance = (ang, R0, K, t) => ang * (R0 + K * t);
+// (K may carry a bend table, K.table = { R, t, rows: [[angle (rad), BA], …] by angle}: for bends of that radius and
+// thickness the allowance is read from it, straight between its rows, in proportion to the angle past its ends)
+export const bendAllowance = (ang, R0, K, t) => {
+  const tb = K?.table;
+  if (tb && Math.abs(R0 - tb.R) < 1e-9 && Math.abs(t - tb.t) < 1e-9) return tableAllowance(tb.rows, ang);
+  return ang * (R0 + K * t);
+};
+export function tableAllowance(rows, ang) {
+  const first = rows[0], last = rows[rows.length - 1];
+  if (ang <= first[0]) return (first[1] * ang) / first[0];
+  if (ang >= last[0]) return (last[1] * ang) / last[0];
+  for (let i = 1; i < rows.length; i++) if (ang <= rows[i][0]) { const [a0, b0] = rows[i - 1], [a1, b1] = rows[i]; return b0 + ((b1 - b0) * (ang - a0)) / (a1 - a0); }
+  return last[1];
+}
 // setback from a bend line to the virtual sharp: outer (R + t) or inner (R) mould line
 export const setback = (ang, r) => r * (ang <= Math.PI / 2 + 1e-9 ? Math.tan(ang / 2) : 1);
 const stripFace = (b) => rectFace(b.p0, b.e, b.d, b.w, b.ba);
