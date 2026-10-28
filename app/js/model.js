@@ -257,7 +257,7 @@ export function createFeature(doc, type, props = {}) {
     // radiusMode (variable): 'ends' (start → end of each edge) | 'vertices' (vertexRadii: [{ p, r }], the others: radius);
     // setback: corners where three or more fillets meet blended from this distance (0: the kernel's own corner)
     // edgePoints (radiusMode 'vertices'): [{ edge (its place in edges), t (% of its length from its start), r }]
-    fillet: { radius: 2, edges: [], filletType: 'constant', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
+    fillet: { radius: 2, edges: [], filletType: 'constant', continuity: 'G1', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
     // Draft: face (neutral plane, flat) + faces to tilt by angle; reverse: pull the other way
     draft: { face: null, faces: [], angle: 3, reverse: false },
     // Rib: an open sketch, thickness, ribDir 'parallel' (in the sketch plane) | 'normal'; flip: the other side

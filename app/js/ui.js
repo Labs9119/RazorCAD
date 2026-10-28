@@ -1163,6 +1163,7 @@ const PM_SCHEMAS = {
     { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet'], ['fullRound', 'Full round']] }] },
     { title: 'Fillet Parameters', show: (f) => f.filletType !== 'fullRound', fields: [
       { key: 'sizeBy', type: 'select', label: 'Size by', default: 'radius', show: (f) => (f.filletType || 'constant') === 'constant', options: [['radius', 'Radius'], ['chord', 'Chord width']] },
+      { key: 'continuity', type: 'select', label: 'Shape', default: 'G1', show: (f) => (f.filletType || 'constant') === 'constant', options: [['G1', 'Round (tangent, G1)'], ['G2', 'Curvature continuous (G2)']] },
       { key: 'radiusMode', type: 'select', label: 'Radius', show: (f) => f.filletType === 'variable', options: [['ends', 'From the start to the end of each edge'], ['vertices', 'At vertices and points along edges']] },
       { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : f.sizeBy === 'chord' && (f.filletType || 'constant') === 'constant' ? 'Chord width' : 'Radius'), unit: 'mm' },
       { key: 'chHint', type: 'hint', show: (f) => (f.filletType || 'constant') === 'constant' && f.sizeBy === 'chord', text: 'The width across each fillet, edge to edge: each edge’s radius follows from how far its faces turn (at its middle).' },

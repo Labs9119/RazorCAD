@@ -1966,6 +1966,11 @@ const UI = {
     return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
   },
 
+  async 'fillet-g2'() {
+    const {run}=await import('/tests/fillet-g2-cases.js'),native=await run({threads:threadsPerKernel()});
+    return native.ok?{ok:true,detail:`${native.results.length} cases (a round as before; a G2 blend: one solid, its own shape, its tangent plane and curvature met)`}:{ok:false,detail:native};
+  },
+
   async 'sheet-metal-forms'() {
     const {run}=await import('/tests/sm-form-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} cases (a dimple, a bead, a lance and an emboss: volumes and where the material went)`}:{ok:false,detail:native};

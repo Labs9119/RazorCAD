@@ -4634,6 +4634,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
             result = setbackCorners(result, cs, ev(f.setback));
             res.notes[f.id] = `${cs.length} corner${cs.length === 1 ? '' : 's'} blended from ${+ev(f.setback).toFixed(3)} mm`;
           }
+          if (f.type === 'fillet' && f.continuity === 'G2') {
+            const g = g2Blends(input, result, edgeShapes, v);
+            result = g.shape;
+            res.notes[f.id] = `${g.n} round${g.n === 1 ? '' : 's'} made curvature continuous (G2): within ${+g.angle.toFixed(4)}° and ${g.curvature.toExponential(2)} /mm of the faces beside (${g.checked} points checked)`;
+          }
           applyBlend(result, whole);
           blendChain = chain || { type: f.type, base: input, items: [item] };
           blendChain.type = f.type;
@@ -10061,7 +10066,8 @@ function blendCorner(shape, face) {
     if (dot(k, e) > 0) lo = true; else hi = true;
   }
   if (!lo || !hi) throw new Error('The ends of the fillet or chamfer must meet flat faces');
-  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r };
+  // (sec: its section, the tangent lines a and b and the corner c, at 0 along e; the tool from `from` for `length`)
+  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r, sec: { a: A.T, c: C, b: B.T, e, from: t0 - big, length: t1 - t0 + 2 * big } };
 }
 // The edges of `shape` along a sharp edge left by blendCorner.
 function edgesAlong(shape, g) {
@@ -10106,6 +10112,57 @@ function holeFill(shape, face, maxD) {
   }
   return tool && { tool, count: group.length };
 }
+// Curvature continuous (G2) rounds: each round the fillet made (`after` from `before`, at the picked edges, radius r)
+// on a straight edge between flat faces swapped for a blend with the same set-back whose section is a quintic curve,
+// its first and last three control points in line with the faces beside it: so it leaves them with the same tangent
+// plane and no curvature (as they have), and is exact (an extruded curve, not a fitted patch).
+// { shape, n, angle (°), curvature (/mm) }: the worst seen on its edges with the faces beside it.
+function g2Blends(before, after, edges, r) {
+  const skin = R.makeCompound(before.faces.map((x) => x.clone()));
+  const near = (fc) => edges.some((e) => new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(e) <= r * 1.01 + 1e-6) && new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(skin) > 1e-6;
+  const lerp = (p, q, k) => add(p, mul(sub(q, p), k));
+  let shape = after, n = 0, angle = 0, curvature = 0, checked = 0;
+  const made = [];
+  // (a point on the face, not its centre: off a curved face)
+  const isMade = (fc) => { const q = vec(fc.pointOnSurface(0.5, 0.5)); return made.some((g) => new R.DistanceQuery(R.makeVertex(q)).distanceTo(g) < 1e-6); };
+  for (let pass = 0; pass < 200; pass++) {
+    const F = shape.faces.find((fc) => fc.geomType === 'CYLINDRE' || fc.geomType === 'CYLINDER' ? near(fc) : false);
+    if (!F) break;
+    let bc;
+    const one = solidsOf(shape);
+    if (one.length === 1) shape = one[0]; // (a solid, not a compound round it: inside it is inside)
+    try { bc = blendCorner(shape, F); } catch (e) { throw new Error(`A curvature continuous (G2) round needs a straight edge between two flat faces, ending at flat faces: ${e.message}`); }
+    const { a, c, b, e, from, length } = bc.sec;
+    const P = [a, lerp(a, c, 0.4), lerp(a, c, 0.8), lerp(b, c, 0.8), lerp(b, c, 0.4), b].map((q) => add(q, mul(e, from)));
+    const wire = R.assembleWire([R.makeBezierCurve(P), R.makeLine(P[5], add(c, mul(e, from))), R.makeLine(add(c, mul(e, from)), P[0])]);
+    const g = R.basicFaceExtrusion(R.makeFace(wire), new R.Vector(mul(e, length))).intersect(bc.tool);
+    shape = unify(bc.convex ? shape.fuse(bc.tool).cut(g) : shape.cut(bc.tool).fuse(g));
+    made.push(g);
+    n++;
+  }
+  // (any other round left: a corner, a curved edge)
+  if (shape.faces.some((fc) => fc.geomType !== 'PLANE' && near(fc) && !isMade(fc)))
+    throw new Error('Curvature continuous (G2) rounds are made on straight edges between flat faces: round the corners and curved edges in a fillet of their own');
+  // (checked on the CAD faces: each blend against the flat faces along it)
+  const oc = R.getOC(), all = shape.faces;
+  for (const G of all) {
+    if (G.geomType === 'PLANE' || !isMade(G)) continue;
+    for (const ed of G.edges) {
+      if (ed.geomType !== 'LINE') continue;
+      const nb = all.find((x) => !x.isSame(G) && x.geomType === 'PLANE' && x.edges.some((y) => y.isSame(ed)));
+      if (!nb) continue;
+      const nbEdge = nb.edges.find((y) => y.isSame(ed));
+      const uv = (edge, face, t) => { const q = oc.RazorCADSurfacePatch.UV(edge.wrapped, face.wrapped, t); try { return [q.X(), q.Y()]; } finally { q.delete(); } };
+      for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+        const q = compareSurfaceContinuity(R, G, nb, vec(ed.pointAt(t)), vec(ed.tangentAt(t)), { leftUV: uv(ed, G, t), rightUV: uv(nbEdge, nb, t) });
+        angle = Math.max(angle, q.angle); curvature = Math.max(curvature, q.curvatureError); checked++;
+      }
+    }
+  }
+  if (n && !checked) throw new Error('The curvature continuous (G2) round could not be checked against the faces beside it');
+  return { shape, n, angle, curvature, checked };
+}
+
 // (Kernel Lab k14) faces taken out of a solid by OpenCascade's defeaturing: their neighbours grown or shrunk to close the
 // gap, any faces (fillet chains with their corner blends, holes, bosses, faces of imported parts). null: this kernel
 // has no defeaturing, or it could not be done.
