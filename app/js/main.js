@@ -2561,7 +2561,7 @@ class App {
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
-    if (['nutPocket', 'insertHole', 'plasticScrewHole'].includes(f.type)) return 'faces';
+    if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer'].includes(f.type)) return 'faces';
     if (f.type === 'hole' && this.pm.holeEndPick && f.end === 'upToVertex') return 'vertex';
     if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
     if (f.type === 'boss' || f.type === 'snapHook') return 'faces';
@@ -4305,6 +4305,9 @@ class App {
     const selBody = sel?.kind === 'body' ? this.bodyById(sel.id) : sel?.kind === 'face' ? this.result.bodies?.[sel.body] : null;
     if (['smCornerRelief', 'smClosedCorner'].includes(type)) props.body = selBody?.sheet ? selBody.id : sheets.length === 1 ? sheets[0].id : null;
     if (type === 'smTabSlot' && sel?.kind === 'edge') props.edge = { p: sel.p };
+    // (3D printing shapes: the build orientation they are made for kept with the part)
+    if (['printableHole', 'bridgingLayer', 'bedChamfer', 'printableOverhangs'].includes(type) && !P3.orientationOf(doc)) doc.print = { ...(doc.print || {}), R: this.printOrientation() };
+    if (type === 'bridgingLayer' && sel?.kind === 'face' && sel.face.planar) props.faces = [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }];
     if (['hole', 'nutPocket', 'insertHole', 'plasticScrewHole'].includes(type)) {
       if (!this.result.body) { this.toast('There is no body to put holes in', true); return; }
       props.faces = sel?.kind === 'face' && sel.face.planar ? [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }] : [];

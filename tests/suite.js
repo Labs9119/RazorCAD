@@ -776,6 +776,11 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  async 'print-shapes'() {
+    const {run}=await import('/tests/print-shape-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    return {ok:true,detail:`${native.results.length} kernel cases (teardrop and flat-topped holes, the first-layer chamfer, a round facing down turned into a chamfer, bridging steps and a skin over a counterbore), each to its volume`};
+  },
+
   async 'print-fasteners'() {
     const {run}=await import('/tests/print-fastener-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     // (the panel: Nut Pocket from the 3D Print tab, a click on the top face)

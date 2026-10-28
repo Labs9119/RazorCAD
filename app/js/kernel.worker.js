@@ -7785,6 +7785,103 @@ async function rebuild(doc, previewId = null, opts = {}) {
           apply('cut', tool, true, null);
           break;
         }
+        case 'printableHole':
+        case 'bridgingLayer':
+        case 'bedChamfer':
+        case 'printableOverhangs': {
+          // 3D printing shapes (the 3D Print tab), against the part's build orientation (doc.print.R: up is its Z):
+          // - Printable Hole: holes lying on their side get a 45° teardrop top (or one cut flat at the top of the hole),
+          //   so they print without support
+          // - Bridging Layer: over a counterbore or pocket printed upside down, the face round the hole stepped up one
+          //   layer at a time (a slot as wide as the hole, then a square), so each layer bridges onto the one before; or
+          //   a skin one layer thick over the hole, drilled out after
+          // - First-Layer Chamfer: the edges on the bed chamfered, against the first layer spreading
+          // - Printable Overhangs: rounds facing down turned into 45° chamfers of the same size
+          const prof = P3.profileFor(doc, null), up = unit(P3.back(P3.orientationOf(doc) || P3.Y_UP, [0, 0, 1]));
+          const rec = solids.length === 1 ? solids[0] : solids.find((x) => x.id === f.body) || solids[0];
+          if (!rec) throw new Error('There is no solid to change');
+          const sideways = (d) => Math.abs(dot(unit(d), up)) < Math.sin(((ev(f.angle ?? 20)) * Math.PI) / 180);
+          if (f.type === 'printableHole') {
+            // (the holes: picked ones, or every hole whose axis lies within angle of level)
+            const picked = (f.faces || []).map((r0) => findFaceAny([rec], r0)?.face).filter(Boolean);
+            const cyl = (picked.length ? picked : rec.shape.faces).filter((fc) => { const s0 = surfOf(fc); return s0.t === 'CYLINDER' && faceHasSeam(fc) && sideways(s0.d); });
+            let n = 0, shape = rec.shape;
+            for (const fc of cyl) {
+              const s0 = surfOf(fc), d = unit(s0.d), mid = vec(fc.pointOnSurface(0.5, 0.5));
+              // (a hole, not a pin: material outside the round face)
+              if (solidAt(shape, add(mid, mul(unit(sub(mid, add(s0.p, mul(d, dot(sub(mid, s0.p), d))))), -s0.r * 0.5)))) continue;
+              const ts = edgeEnds(fc.edges).map((q) => dot(sub(q, s0.p), d)), t0 = Math.min(...ts), t1 = Math.max(...ts), r = s0.r;
+              const w = unit(sub(up, mul(d, dot(up, d)))), x = cross(d, w), o = add(s0.p, mul(d, t0));
+              const at = (a, b) => add(add(o, mul(x, a)), mul(w, b)), c45 = Math.SQRT1_2;
+              const sec = f.shape === 'flattop'
+                ? [at(-r * c45, r * c45), at(-(Math.SQRT2 - 1) * r, r), at((Math.SQRT2 - 1) * r, r), at(r * c45, r * c45), at(0, 0)]
+                : [at(-r * c45, r * c45), at(0, r * Math.SQRT2), at(r * c45, r * c45), at(0, 0)];
+              const v = new R.Vector(mul(d, t1 - t0));
+              try { shape = shape.cut(R.basicFaceExtrusion(R.makePolygon(sec), v)); } finally { v.delete(); }
+              n++;
+            }
+            if (!n) throw new Error(picked.length ? 'The picked faces are not holes lying on their side' : 'There are no holes lying on their side (within the angle of level) in this build orientation');
+            replaceSolid(rec, unify(shape), f.id);
+            res.notes[f.id] = `${n} hole${n === 1 ? '' : 's'} given a ${f.shape === 'flattop' ? 'flat-topped' : '45° teardrop'} top (up the build direction)`;
+          } else if (f.type === 'bridgingLayer') {
+            const hit = (f.faces || [])[0] && findFaceAny([rec], f.faces[0]);
+            if (!hit || hit.face.geomType !== 'PLANE') throw new Error('Click the flat face round the hole (the counterbore’s floor, printed facing down)');
+            const F = hit.face, n0 = unit(vec(F.normalAt())), into = mul(n0, -1), h = f.layer === '' || f.layer == null ? prof.layer : ev(f.layer), steps = Math.max(1, Math.round(ev(f.steps ?? 2)));
+            const inner = F.clone().innerWires();
+            if (inner.length !== 1) throw new Error('The face must have one hole in it');
+            const circ = inner[0].edges.map((e) => circleOf(e)).find(Boolean);
+            if (!circ) throw new Error('The hole in the face must be round');
+            const c = circ.c, d = 2 * circ.r, fr = frameOnPlane(c, n0), a = (ev(f.angle ?? 0) * Math.PI) / 180;
+            const ex = add(mul(fr.u, Math.cos(a)), mul(fr.v, Math.sin(a))), ey = cross(n0, ex), big = bbox(rec.shape).diag;
+            let shape = rec.shape;
+            if (f.mode === 'skin') {
+              shape = shape.fuse(R.drawCircle(d / 2).sketchOnPlane(new R.Plane(c, fr.u, into)).extrude(h));
+            } else {
+              // (step k: a strip as wide as the hole across the face's opening, then a square, each one layer up)
+              const opening = R.makeFace(R.assembleWire(F.clone().outerWire().edges.map((e) => e.clone())));
+              for (let k = 0; k < steps; k++) {
+                const o = add(c, mul(into, k * h)), len2 = k === 0 ? big : d / 2, rect = [add(add(o, mul(ex, -len2)), mul(ey, -d / 2)), add(add(o, mul(ex, len2)), mul(ey, -d / 2)), add(add(o, mul(ex, len2)), mul(ey, d / 2)), add(add(o, mul(ex, -len2)), mul(ey, d / 2))];
+                const v = new R.Vector(mul(into, h)), vo = new R.Vector(mul(into, k * h + h));
+                try {
+                  // (only within the opening: the face's outline carried up)
+                  const zone = R.basicFaceExtrusion(R.makePolygon(rect), v).intersect(R.basicFaceExtrusion(opening.clone().translate(mul(into, k * h)), v));
+                  shape = shape.cut(zone);
+                } finally { v.delete(); vo.delete(); }
+              }
+            }
+            replaceSolid(rec, unify(shape), f.id);
+            res.notes[f.id] = f.mode === 'skin' ? `A skin ${h} mm thick over the Ø${+d.toFixed(3)} hole (drill it out after printing)` : `${steps} bridging step${steps === 1 ? '' : 's'} of ${h} mm over the Ø${+d.toFixed(3)} hole`;
+          } else if (f.type === 'bedChamfer') {
+            const cs = ev(f.size ?? 0.4);
+            if (!(cs > 0)) throw new Error('The chamfer size must be greater than zero');
+            const pts = rec.shape.faces.flatMap((fc) => fc.edges.map((e) => vec(e.pointAt(0.5)))), low = Math.min(...pts.map((q) => dot(q, up)));
+            const bed = rec.shape.faces.filter((fc) => fc.geomType === 'PLANE' && dot(unit(vec(fc.normalAt())), up) < -1 + 1e-9 && Math.abs(dot(flatCentre(fc), up) - low) < 1e-6);
+            if (!bed.length) throw new Error('No face lies on the bed in this build orientation (Place on Bed first)');
+            const edges = bed.flatMap((fc) => fc.edges), isBed = (e) => edges.some((x) => x.isSame(e));
+            let out;
+            try { out = rec.shape.chamfer((e) => (isBed(e) ? cs : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error(`The edges on the bed could not be chamfered ${cs} (too big for the faces beside them?)`); }
+            replaceSolid(rec, unify(out), f.id);
+            res.notes[f.id] = `${edges.length} edge${edges.length === 1 ? '' : 's'} on the bed chamfered ${cs} × 45°`;
+          } else {
+            // (rounds facing down: open round faces whose axis lies level, their middle facing down more than 30° below level)
+            const downs = rec.shape.faces.filter((fc) => {
+              const s0 = surfOf(fc);
+              if (s0.t !== 'CYLINDER' || faceHasSeam(fc) || !sideways(s0.d)) return false;
+              const q = vec(fc.pointOnSurface(0.5, 0.5)), nq = unit(vec(fc.normalAt(q)));
+              return dot(nq, up) < -0.5;
+            });
+            if (!downs.length) throw new Error('There are no rounds facing down in this build orientation');
+            if (!R.getOC().LabDefeature) throw new Error('Printable Overhangs needs the geometry kernel with defeaturing');
+            const radii = downs.map((fc) => surfOf(fc).r), before = rec.shape, sharp = labDefeature(before, downs);
+            if (!sharp) throw new Error(`The rounds could not be taken out: ${labDefeatureError() || 'the faces round them cannot close the gap'}`);
+            const r0 = Math.min(...radii), edges = newEdgesNear(before, sharp, downs);
+            let out;
+            try { out = sharp.chamfer((e) => (edges.some((y) => y.isSame(e)) ? r0 : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error('The sharp edges could not be chamfered at the rounds’ size'); }
+            replaceSolid(rec, unify(out), f.id);
+            res.notes[f.id] = `${downs.length} round${downs.length === 1 ? '' : 's'} facing down turned into 45° chamfers of ${+r0.toFixed(3)}`;
+          }
+          break;
+        }
         case 'nutPocket':
         case 'insertHole':
         case 'plasticScrewHole': {

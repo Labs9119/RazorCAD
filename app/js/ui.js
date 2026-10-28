@@ -740,6 +740,34 @@ const PM_SCHEMAS = {
     ...SCOPE_GROUP,
   ],
   // (3D printing fasteners: sizes from the part's print profile unless given; 3D Print tab)
+  printableHole: [
+    { title: 'Printable Hole', fields: [
+      { key: 'shape', type: 'select', label: 'Top', options: [['teardrop', 'Teardrop (45°)'], ['flattop', 'Teardrop cut flat at the top of the hole']] },
+      { key: 'angle', type: 'expr', label: 'Holes within this of level', unit: '°' },
+      { key: 'faces', type: 'faceList', hint: 'Every hole lying on its side, up the part’s build direction (3D Print ▸ Place on Bed). Or click the holes to change only those.' },
+    ] },
+  ],
+  bridgingLayer: [
+    { title: 'Bridging Layer', fields: [
+      { key: 'mode', type: 'select', label: 'Kind', options: [['stepped', 'Steps (a slot, then a square)'], ['skin', 'A skin over the hole (drill it out)']] },
+      { key: 'steps', type: 'expr', label: 'Steps', show: (f) => f.mode !== 'skin' },
+      { key: 'layer', type: 'expr', label: 'Layer height (empty: the print profile’s)', unit: 'mm', optional: true },
+      { key: 'angle', type: 'expr', label: 'Direction of the first step', unit: '°', show: (f) => f.mode !== 'skin' },
+      { key: 'faces', type: 'faceList', hint: 'Click the flat face round the hole, facing down as it prints (a counterbore’s floor printed upside down).' },
+    ] },
+  ],
+  bedChamfer: [
+    { title: 'First-Layer Chamfer', fields: [
+      { key: 'size', type: 'expr', label: 'Chamfer', unit: 'mm' },
+      { key: 'bHint', type: 'hint', text: 'Every edge of the faces on the bed, in the part’s build orientation (3D Print ▸ Place on Bed), against the first layer spreading.' },
+    ] },
+  ],
+  printableOverhangs: [
+    { title: 'Printable Overhangs', fields: [
+      { key: 'angle', type: 'expr', label: 'Rounds whose axis is within this of level', unit: '°' },
+      { key: 'oHint', type: 'hint', text: 'Rounds facing down (up the part’s build direction) turned into 45° chamfers of the same size, which print without support.' },
+    ] },
+  ],
   nutPocket: [
     { title: 'Nut', fields: [
       { key: 'size', type: 'select', label: 'Nut (ISO 4032)', options: () => Object.keys(P3.NUTS).map((k) => [k, k]) },
@@ -2169,6 +2197,11 @@ export class UI {
         { icon: 'hole', label: 'Nut Pocket', action: () => a.startFeature('nutPocket') },
         { icon: 'hole', label: 'Insert Hole', action: () => a.startFeature('insertHole') },
         { icon: 'hole', label: 'Screw Hole for Plastic', action: () => a.startFeature('plasticScrewHole') },
+        'sep',
+        { icon: 'hole', label: 'Printable Hole', action: () => a.startFeature('printableHole') },
+        { icon: 'rib', label: 'Bridging Layer', action: () => a.startFeature('bridgingLayer') },
+        { icon: 'chamfer', label: 'First-Layer Chamfer', action: () => a.startFeature('bedChamfer') },
+        { icon: 'chamfer', label: 'Printable Overhangs', action: () => a.startFeature('printableOverhangs') },
         'sep',
         { icon: 'measure', label: 'Check Printability', action: () => a.checkPrintability() },
         { icon: 'draftAnalysis', label: 'Overhang Map', action: () => a.overhangMap(), active: a.analysis?.kind === 'overhang' },
