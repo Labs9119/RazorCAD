@@ -5361,6 +5361,12 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (rounds, chamfers, a concave round, ring rounds at a boss deleted or resized; defeaturing holes and rounds by size); the two panels`};
   },
 
+  async 'linked-sketch-blocks'() {
+    const {run}=await import('/tests/sketch-block-cases.js'),native=await run();
+    if(!native.ok)return {ok:false,detail:native};
+    return {ok:true,detail:`${native.results.length} cases (inserted turned with one rigid relation, three freedoms, dragged whole, updated with the block keeping a relation to it, exploded, a one-point block)`};
+  },
+
   async 'library-features'() {
     const {run,source,cube}=await import('/tests/library-feature-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};

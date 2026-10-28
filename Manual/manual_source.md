@@ -461,7 +461,7 @@ In the sketch Property panel, **Rotate 90°** turns the sketch axes about the sk
 | **Import DXF** | | See below |
 | **Linear Sketch Pattern** | | Opens a side panel with an orange preview. Select source entities before or after opening it, then choose an angle, line or curve as direction/path. Copies stay linked to their sources, path, quantity and spacing. Along a curve, spacing is measured along it and copies can rotate with it; open paths stop at their end. A straight direction also supports a second direction. |
 | **Circular Sketch Pattern** | | Copies the selected entities with the relations and dimensions among them. A selected point is the pattern's centre. |
-| **Make Block / Insert Block** | | Make Block saves the selection (with its relations) under a name in your settings. Insert Block places copies with a click, in any sketch, and can delete blocks from the library. |
+| **Make Block / Insert Block / Explode Block** | | Make Block saves the selection (with its relations) under a name in your settings. Insert Block places copies with a click, in any sketch, turned by an angle, and can delete blocks from the library. A **linked** copy (the default) moves and turns as one (a rigid Block relation holds it) and follows the block: Make Block again under the same name updates every copy in the sketch where it is, keeping relations from other geometry to it. Explode Block makes the selected copies plain geometry with the block's own relations and dimensions. Untick **Linked** for plain copies. |
 | **Text** | | See below |
 | **Gears** | | See the Gears chapter |
 | **Airfoil** | | See the Airfoils chapter |

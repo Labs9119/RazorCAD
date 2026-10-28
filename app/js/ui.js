@@ -1892,6 +1892,7 @@ export class UI {
         only2d({ icon: 'skCirPattern', label: 'Circular Sketch Pattern', action: () => (sk ? a.sketcher.circularPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skBlock', label: 'Make Block', action: () => (sk ? a.sketcher.makeBlock() : a.startSketch()) }),
         only2d({ id: 'tool-block', icon: 'skInsertBlock', label: 'Insert Block', action: () => (sk ? a.sketcher.insertBlock() : a.startSketch()), active: sk && a.sketcher.tool === 'block' }),
+        only2d({ icon: 'skBlock', label: 'Explode Block', action: () => (sk ? a.sketcher.explodeBlocks() : a.startSketch()) }),
         tool('text', 'text', 'Text'),
         only2d({ icon: 'gear', label: 'Gears', action: () => a.startGears() }),
         only2d({ icon: 'airfoil', label: 'Airfoil', action: () => a.startAirfoil() }),

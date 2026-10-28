@@ -924,7 +924,11 @@ export class Sketcher {
         else if (!this.sel.has(hit.id)) { this.sel.clear(); this.sel.add(hit.id); }
         if (!multi && !external) {
           if (S.patternEntities(this.f).has(hit.id)) this.app.status('Linked pattern copy: edit the original geometry or use Edit Pattern in the Property panel.');
-          else this.startDrag(hit, raw);
+          else {
+            const blk = S.blockOf(this.f, hit.id);
+            if (blk) this.app.status(`Block "${blk.name}": it moves and turns as one (Explode Block to change its geometry here, or change the block and Make Block again under its name).`);
+            this.startDrag(hit, raw);
+          }
         }
       } else {
         if (!multi) this.sel.clear();
@@ -973,10 +977,10 @@ export class Sketcher {
     if (t === 'block') {
       if (!this.blockIns) { this.setTool('select'); return; }
       const s = this.snap(raw);
-      const ids = S.pasteItems(this.f, this.blockIns.data, s.x, s.y);
+      const ids = this.blockIns.linked === false ? S.pasteItems(this.f, this.blockIns.data, s.x, s.y) : S.insertBlockInstance(this.f, this.blockIns, s.x, s.y, this.blockIns.angle || 0).curves;
       this.sel = new Set(ids);
       this.changed();
-      this.app.status(`Block "${this.blockIns.name}" inserted. Click for another copy; Esc ends.`);
+      this.app.status(`Block "${this.blockIns.name}" inserted${this.blockIns.linked === false ? ' (plain geometry)' : ': it moves as one, and follows the block when it is saved again (Explode Block makes it plain geometry)'}. Click for another copy; Esc ends.`);
       return;
     }
     if (t === 'tarc') {
@@ -1911,7 +1915,9 @@ export class Sketcher {
     list.push({ name, data });
     ui.prefs.blocks = list;
     ui.savePrefs();
-    this.app.status(`Block "${name}" saved: Insert Block puts copies of it in any sketch.`);
+    const n = S.updateBlockInstances(this.f, { name, data });
+    if (n) this.changed();
+    this.app.status(`Block "${name}" saved: Insert Block puts copies of it in any sketch.${n ? ` ${n} cop${n === 1 ? 'y' : 'ies'} of it in this sketch updated.` : ''}`);
   }
 
   async insertBlock() {
@@ -1919,21 +1925,33 @@ export class Sketcher {
     if (!list.length) { this.app.toast('No blocks yet: select entities and use Make Block first', true); return; }
     const v = await ui.promptFields('Insert Block', 'skBlock', [
       { key: 'name', label: 'Block', type: 'select', options: list.map((b) => [b.name, b.name]), value: this.blockIns?.name || list[list.length - 1].name },
+      { key: 'angle', label: 'Turned (°)', type: 'expr', value: this.blockIns?.angle || 0 },
+      { key: 'linked', label: 'Linked (moves as one, follows the block)', type: 'check', value: this.blockIns?.linked !== false },
       { key: 'del', label: 'Delete this block from the library instead', type: 'check', value: false },
     ]);
     if (!v || !this.active) return;
     const b = list.find((x) => x.name === v.name);
     if (!b) return;
     if (v.del) { ui.prefs.blocks = list.filter((x) => x !== b); ui.savePrefs(); this.app.status(`Block "${b.name}" deleted.`); return; }
-    this.blockIns = b;
+    this.blockIns = { ...b, angle: +this.app.result.ev(v.angle) || 0, linked: !!v.linked };
     this.setTool('block');
+  }
+
+  // Explode Block: the selected block copies made plain geometry (their own relations and dimensions back)
+  explodeBlocks() {
+    const ids = new Set([...this.sel].map((id) => S.blockOf(this.f, id)?.id).filter(Boolean));
+    if (!ids.size) { this.app.toast('Select an entity of a block copy first', true); return; }
+    for (const id of ids) S.explodeBlock(this.f, id);
+    this.changed();
+    this.app.status(`${ids.size} block cop${ids.size === 1 ? 'y' : 'ies'} exploded into plain geometry.`);
   }
 
   // the block at the cursor
   blockPreview() {
     const b = this.blockIns, c = this.cursor;
     if (!b || !c) return [];
-    const tmp = { points: b.data.points.map((q) => ({ ...q, x: q.x + c.p.x, y: q.y + c.p.y })), curves: b.data.curves, constraints: [] };
+    const a = ((b.angle || 0) * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const tmp = { points: b.data.points.map((q) => ({ ...q, x: q.x * ca - q.y * sa + c.p.x, y: q.x * sa + q.y * ca + c.p.y })), curves: b.data.curves, constraints: [] };
     return b.data.curves.map((cv) => S.curvePoints(tmp, cv));
   }
 
