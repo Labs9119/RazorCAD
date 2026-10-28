@@ -12,6 +12,25 @@ export const BUILTIN_PROFILES = [
   { ...FDM, name: 'ABS, 0.4 mm nozzle', material: 'ABS', density: 1.04, shrinks: true },
   { kind: 'resin', name: 'Resin', material: 'Resin', nozzle: 0, width: 0.3, layer: 0.05, bed: [130, 80, 160], overhang: 30, bridge: null, clearance: 0.1, fits: { press: 0.02, snug: 0.08, sliding: 0.15, loose: 0.3 }, density: 1.1, filament: null, shrinks: false, minHole: 0.5, minPin: 0.5, minGap: 0.2, minStroke: 0.3 },
 ];
+// Popular printers' build volumes (X × Y × Z, mm), to set a profile's bed from. checked: confirmed on the maker's own
+// pages (2026-10-29); the others are from retailers' and reviewers' listings: check them against your printer's
+// specifications.
+export const PRINTERS = [
+  { name: 'Prusa MK4 / MK4S', bed: [250, 210, 220], checked: true },
+  { name: 'Prusa CORE One', bed: [250, 220, 270], checked: true },
+  { name: 'Prusa CORE One L', bed: [300, 300, 330], checked: true },
+  { name: 'Prusa XL', bed: [360, 360, 360], checked: true },
+  { name: 'Prusa MINI+', bed: [180, 180, 180], checked: false },
+  { name: 'Bambu Lab A1 mini', bed: [180, 180, 180], checked: false },
+  { name: 'Bambu Lab A1', bed: [256, 256, 256], checked: false },
+  { name: 'Bambu Lab P1S', bed: [256, 256, 256], checked: false },
+  { name: 'Bambu Lab X1C', bed: [256, 256, 256], checked: false },
+  { name: 'Bambu Lab H2D', bed: [350, 320, 325], checked: false },
+  { name: 'Creality Ender-3 V3', bed: [220, 220, 250], checked: false },
+  { name: 'Creality K1 Max', bed: [300, 300, 300], checked: false },
+  { name: 'Elegoo Neptune 4 Pro', bed: [225, 225, 265], checked: false },
+  { name: 'Anycubic Kobra 3', bed: [250, 250, 260], checked: false },
+];
 export const PROFILE_FIELDS = [
   ['nozzle', 'Nozzle diameter', 'mm'], ['width', 'Extrusion width', 'mm'], ['layer', 'Layer height', 'mm'],
   ['overhang', 'Overhang limit (from vertical)', '°'], ['bridge', 'Longest bridge', 'mm'], ['clearance', 'Hole clearance (each side)', 'mm'],

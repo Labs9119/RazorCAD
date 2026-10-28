@@ -14,6 +14,8 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
   pins, closed hollows, bed contact and fit, warping, the support estimate, mass and filament; numbered on the model),
   **Overhang Map** and **Thickness Map**, **Export for Printing** (3MF or STL, laid out on the bed) and **Open in
   Slicer**.
+- **Printer** in Print Profile: the bed from a list of 14 popular printers (Prusa, Bambu Lab, Creality, Elegoo,
+  Anycubic); the sizes not confirmed on the maker's own page are marked to check.
 - Print features: **Nut Pocket** (and captive slots), **Insert Hole**, **Screw Hole for Plastic**, **Printable Hole**
   (teardrop or flat top), **Bridging Layer** (steps or a skin), **First-Layer Chamfer**, **Printable Overhangs** (rounds
   facing down to 45° chamfers), **Fit Clearance**, **Print-in-Place Hinge**, **Split for Printing** (with dowel holes),
