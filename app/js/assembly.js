@@ -26,6 +26,7 @@ import { ExplodeTool, explodeOffsets, drawExplodeLines, animateExplode } from '.
 import { hashText, packResult, unpackResult } from './modelcache.js';
 import { packMesh, unpackMesh, MESH_CACHE } from './partmeshes.js';
 import { AssemblyView } from './asmview.js';
+import { revisionsDialog } from './revisions.js';
 import { bomRows, bomPropNames, bomCell, bomTotals, bomSources, bomColumnMenu, meshVolume, massOf } from './bom.js';
 import { editCustomProps } from './custprops.js';
 import { MotionTool } from './motion.js';
@@ -2595,6 +2596,57 @@ export class AssemblyEditor {
     return seen.size;
   }
 
+  // Pack and Go: the assembly with everything in it (parts and sub-assemblies, as the assembly has them now) copied into
+  // one folder, each a file of its own, names given a prefix / suffix if asked; the copied assemblies use the copied
+  // files. The assembly open here is left as it is. Returns the files written ([{ name, path }]), or null.
+  async packAndGo(opts = null) {
+    const a = this.app;
+    const v = opts || (await a.ui.promptFields('Pack and Go', 'save', [
+      { key: 'prefix', label: 'Before each name', type: 'text', value: '' },
+      { key: 'suffix', label: 'After each name', type: 'text', value: '' },
+    ], 'Every part and sub-assembly of the assembly is copied, with the assembly, into the folder you choose next (to send it on, or to start a variant of it).'));
+    if (!v) return null;
+    const folder = v.folder || (await platform.pickFolder());
+    if (!folder) return null;
+    const top = JSON.parse(JSON.stringify(this.doc)), used = new Set(), out = [];
+    const safe = (s) => (String(s || 'Part').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').replace(/^[\s.]+|[\s.]+$/g, '').slice(0, 120) || 'Part');
+    const nameOf = (base, ext) => { let b = safe(`${v.prefix || ''}${base}${v.suffix || ''}`), n = b + ext, k = 2; while (used.has(n.toLowerCase())) n = `${b} (${k++})${ext}`; used.add(n.toLowerCase()); return n; };
+    const written = new Map(); // (the same document used twice: one file)
+    const sep = String(folder).includes('\\') ? '\\' : '/';
+    const write = async (doc, name) => {
+      const path = await platform.saveInto(folder, name, new TextEncoder().encode(docJSON(doc, null, doc.kind === 'assembly' ? 1 : 0)));
+      if (!path) throw new Error(`${name} could not be written`);
+      out.push({ name, path });
+      return path;
+    };
+    const pack = async (doc, depth) => {
+      if (depth > 16) return;
+      for (const p of doc.parts || []) {
+        if (p.libKey || !p.doc) continue;
+        const key = JSON.stringify(p.doc);
+        if (!written.has(key)) {
+          const sub = this.isSub(p);
+          if (sub) await pack(p.doc, depth + 1);
+          const name = nameOf(p.name || p.doc.name || 'Part', sub ? ASM_EXT : '.rcad');
+          p.doc.name = name.replace(/\.[^.]+$/, '');
+          written.set(key, await write(p.doc, name) || `${folder}${sep}${name}`);
+        }
+        p.path = written.get(key);
+        p.name = String(p.path).split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+      }
+    };
+    try {
+      await a.withProgress?.('Pack and Go…', async () => {
+        await pack(top, 0);
+        const name = nameOf(this.doc.name || 'Assembly', ASM_EXT);
+        top.name = name.replace(/\.[^.]+$/, '');
+        await write(top, name);
+      });
+    } catch (e) { a.toast('Pack and Go failed: ' + e.message, true); return null; }
+    a.status(`Pack and Go: ${out.length} file${out.length === 1 ? '' : 's'} written${platform.desktop ? ` to ${folder}` : ''}.`);
+    return out;
+  }
+
   // Each part and sub-assembly that is only inside this assembly saved as a file of its own beside it (the
   // assembly at mainPath, just saved): parts as .rcad, sub-assemblies as .rasm, those inside a sub-assembly
   // before it, so every assembly file uses the files of what is in it. Returns how many files were written, or
@@ -2744,6 +2796,8 @@ export class AssemblyEditor {
         'sep',
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
+        { label: 'Pack and Go…', icon: 'save', action: () => this.packAndGo(), disabled: !this.doc.components.length },
+        { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, this.doc, () => this.commit('Revision'), ASM_EXT) },
         'sep',
         { label: 'Export ▸ STEP…', icon: 'step', action: () => this.exportSTEP(), disabled: !this.doc.components.length },
         'sep',

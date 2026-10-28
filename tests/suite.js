@@ -2320,6 +2320,31 @@ const UI = {
     return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), and is left out of the part as the assembly builds it' };
   },
 
+  async 'pack-and-go-and-revisions'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), {platform} = await import('/js/platform.js'), R = await import('/js/revisions.js');
+    // (revision letters)
+    const seq = ['', 'A', 'B', 'Z', 'AZ', 'ZZ', '3', 'R7'].map(R.nextRev).join(' ');
+    if (seq !== 'A B C AA BA AAA 4 R8') return { ok: false, detail: 'Revision letters: ' + seq };
+    const box = (name, w) => { const d = M.newDoc(); d.name = name; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); const P = [[0, 0], [w, 0], [w, w], [0, w]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4])); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: w })); return d; };
+    // (a part's revisions: A then B, each keeping the part as it was)
+    const pd = box('Bracket', 10);
+    R.newRevision(pd, { desc: 'Initial release' }); pd.features[1].depth = 12; const e = R.newRevision(pd, { desc: 'Thicker' });
+    const snapA = JSON.parse(pd.revisionLog[0].snapshot);
+    if (e.rev !== 'B' || snapA.features[1].depth !== 10 || pd.customProps.find((p) => p.name === 'Revision').value !== 'B' || snapA.revisionLog) return { ok: false, detail: 'Revisions are not kept as they should be' };
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, p1 = asm.addPart(box('Base', 20), null, null), p2 = asm.addPart(box('Pin', 5), null, null);
+    await asm.addComponent(p1); await asm.addComponent(p2); await asm.addComponent(p2);
+    const files = [], keep = platform.saveInto;
+    platform.saveInto = async (folder, name, bytes) => { files.push({ name, text: new TextDecoder().decode(bytes) }); return `${folder}/${name}`; };
+    let out; try { out = await asm.packAndGo({ prefix: 'P1-', suffix: '', folder: 'C:/pack' }); } finally { platform.saveInto = keep; }
+    const names = files.map((f) => f.name).sort().join(', ');
+    if (!out || names !== 'P1-Assembly1.rasm, P1-Base.rcad, P1-Pin.rcad') return { ok: false, detail: 'Files: ' + names };
+    const top = JSON.parse(files.at(-1).text);
+    if (top.parts.length !== 2 || !top.parts.every((p) => p.path.startsWith('C:/pack/P1-') && p.doc)) return { ok: false, detail: 'The copied assembly does not use the copied files' };
+    if (asm.doc.parts.some((p) => p.path)) return { ok: false, detail: 'Pack and Go changed the open assembly' };
+    return { ok: true, detail: `revision letters A, B … AA; a part's revisions keep it as it was; Pack and Go wrote ${files.length} files (${names}), the copy using them, the open assembly left as it was` };
+  },
+
   async 'assembly-fasten-all-holes'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), SP = await import('/js/stdparts.js');
     const plate = M.newDoc(); plate.name = 'Plate';

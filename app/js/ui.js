@@ -25,6 +25,7 @@ import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
 import { PIPE_SIZES, pipeLabel } from './routing.js';
 import { stackUp } from './stackup.js';
+import { revisionsDialog } from './revisions.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
@@ -1636,6 +1637,7 @@ export class UI {
         'sep',
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
+        { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, a.doc, () => a.commit()) },
         'sep',
         { label: 'Import STEP / STL…', icon: 'import', key: 'Ctrl+I', action: () => a.importFile() },
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
