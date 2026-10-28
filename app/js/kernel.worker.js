@@ -8278,7 +8278,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = rolled
             ? `Thickness ${+t.toFixed(4)} mm · rolled: ${rolled.bends} bend${rolled.bends === 1 ? '' : 's'}${rolled.bends ? ` R${+rolled.rMin.toFixed(2)}${rolled.rMax - rolled.rMin > 0.005 ? `–R${+rolled.rMax.toFixed(2)}` : ''}` : ''}${rolled.straight ? ` + ${rolled.straight} straight run${rolled.straight === 1 ? '' : 's'}` : ''}, following the surface to within ${rolled.tol} mm${rolled.trimmed?.at ? ` · trimmed back ${+rolled.trimmed.length.toFixed(2)} mm at its ${rolled.trimmed.at} (it would run into itself)` : rolled.trimmed?.overlaps ? ' · ⚠ the sheet runs into itself (tick "Trim where it would run into itself")' : ''}`
             : detected?.developed
-              ? `Thickness ${+t.toFixed(4)} mm${set(autoT, 'from')} · unrolled: ${detected.developed} curved face${detected.developed === 1 ? '' : 's'} laid flat at the neutral layer (K ${+K.toFixed(3)})${match}`
+              ? `Thickness ${+t.toFixed(4)} mm${set(autoT, 'from')} · unrolled: ${detected.developed} curved face${detected.developed === 1 ? '' : 's'} laid flat at the neutral layer (K ${+K.toFixed(3)})${detected.stretch ? `, curved both ways: spread out, stretched up to ${+(detected.stretch.max * 100).toFixed(2)} % (98 % of it; ${+(detected.stretch.rms * 100).toFixed(2)} % on average), area ${+((detected.stretch.area - 1) * 100).toFixed(2)} %` : ''}${match}`
               : `Thickness ${+t.toFixed(4)} mm${set(autoT, 'from')} · ${sheet.bends.length} bend${sheet.bends.length === 1 ? '' : 's'}${radii ? ` ${radii}${rWhy}` : ''}${match}`;
           break;
         }

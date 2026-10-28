@@ -4097,7 +4097,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     // Convert to Sheet Metal of shapes curved other than as plain bends: a cone wall (radius 50 to 80 over 60 high,
     // 2 thick about that line), half way round and all the way (a ring: cut open at a seam), written to STEP, read
     // back and converted from its biggest face with K 0.5 (the neutral layer is the line turned round): unrolled,
-    // the flat is the cone's own area; a spherical cap (curved both ways) is refused
+    // the flat is the cone's own area; a spherical cap (curved both ways) is spread out flat, its stretch reported
     const { KernelClient } = await import('/js/kernelclient.js'), k = new KernelClient({ threads: threadsPerKernel() });
     const convert = async (d) => {
       const r0 = await k.rebuild(d, null, null);
@@ -4124,7 +4124,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       const cf = M.createFeature(di, 'smConvert', { face: { p: best.p, n: best.n, body: b1.id }, kFactor: 0.5 });
       di.features.push(cf);
       const r2 = await k.rebuild(di, null, null);
-      return { di, sheet: r2.body?.bodies?.find((b) => b.sheet)?.sheet, errors: (r2.errors || []).map((e) => e[1]) };
+      return { di, sheet: r2.body?.bodies?.find((b) => b.sheet)?.sheet, errors: (r2.errors || []).map((e) => e[1]), note: r2.notes?.[cf.id] || '' };
     };
     // a closed profile in the front plane turned round its vertical axis
     const turned = (name, pts, curves, angle) => {
@@ -4167,8 +4167,11 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       ], 360);
       let b;
       try { b = await convert(cap); } catch (e) { b = { errors: ['(cap) ' + e.message] }; }
-      if (b.sheet || !b.errors.some((e) => /curved both ways/i.test(e))) bad.push(`spherical cap: ${b.sheet ? 'converted' : JSON.stringify(b.errors)}`);
-      else out.push('a spherical cap refused (curved both ways)');
+      // (the neutral layer, K 0.5: radius 51; its cap's area 2πR²(1 − cos 40°); laid flat it keeps its edge lengths as
+      // nearly as it can: the area within 5 %, no edge stretched 10 % or more, both in the note)
+      const capArea = 2 * Math.PI * 51 * 51 * (1 - c40), st = /stretched up to ([\d.]+) % \(98 % of it; ([\d.]+) % on average\), area (-?[\d.]+) %/.exec(b.note || '');
+      if (!b.sheet || b.sheet.lofted !== 'developed' || !st || Math.abs(b.sheet.flatArea / capArea - 1) > 0.05 || +st[1] >= 10) bad.push(`spherical cap: ${b.sheet ? `${b.sheet.lofted}, ${b.sheet.flatArea} for ${capArea}, note ${b.note}` : JSON.stringify(b.errors)}`);
+      else out.push(`a spherical cap (curved both ways) spread out flat: ${b.sheet.flatArea.toFixed(1)} mm² for ${capArea.toFixed(1)} curved, stretched up to ${st[1]} %`);
       return !bad.length ? { ok: true, detail: out.join('; ') } : { ok: false, detail: bad.join('; ') + (out.length ? ' | ' + out.join('; ') : '') };
     } finally { k.dispose(); }
   },

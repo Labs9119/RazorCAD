@@ -3000,7 +3000,6 @@ function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, dev
   const i0 = info.findIndex((F) => F.face.isSame(picked));
   if (i0 < 0) throw new Error('Pick a face of the body');
   const P0 = info[i0];
-  if (P0.type === 'SPHERE' || P0.type === 'TORUS') throw new Error(`The picked face is curved both ways (${P0.type.toLowerCase()}): it cannot be unrolled flat`);
   // the thickness: the nearest parallel face facing the other way, behind the picked face (a curved one: straight
   // through the sheet from the middle of the picked face, to the first face reached)
   let t = Infinity;
@@ -3053,8 +3052,8 @@ function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, dev
         let smooth = false;
         try { smooth = dot3(faceNormal(F.face, ed.m), faceNormal(G.face, ed.m)) > 0.9995; } catch { smooth = false; }
         if (smooth) {
-          // (any other curved face: unrolled, when it is curved one way only: developedSheet)
-          if (G.type === 'SPHERE' || G.type === 'TORUS') throw new Error(`A face curved both ways (${G.type.toLowerCase()}) joins the sheet: it cannot be unrolled flat`);
+          // (any other curved face: unrolled by developedSheet; curved both ways (a dished end), spread out as nearly
+          // as it can be, its stretch reported)
         } else if (!(sharp && F.type === 'PLANE' && G.type === 'PLANE' && ed.line && hasPartner(G))) continue;
         side.add(G);
         queue.push(G);
@@ -3069,7 +3068,7 @@ function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, dev
     if (Rset != null) throw new Error('A sheet with curved faces other than plain bends keeps the body\'s own shape: use the body\'s bend radii');
     const sheet = developedSheet(solid, [...side].map((F) => F.face), P0, { t: tSet > 0 ? tSet : t, K });
     const curved = [...side].filter((F) => F.type !== 'PLANE').length;
-    return { sheet, exact: tSet == null, detected: { kind: 'solid', t, radii: [], bends: 0, sharp: 0, developed: curved } };
+    return { sheet, exact: tSet == null, detected: { kind: 'solid', t, radii: [], bends: 0, sharp: 0, developed: curved, ...(sheet.stretch ? { stretch: sheet.stretch } : {}) } };
   }
   if (![...side].some((F) => F.type === 'CYLINDRE')) side = walk(true);
   const planes = [...side].filter((F) => F.type === 'PLANE');
@@ -3272,13 +3271,99 @@ export function exactCorners(sheet, solid) {
 // a body converted from another program has them: its side (the faces found from the picked one) is meshed finely,
 // moved to the neutral layer (K·t from the inside of the curves) and laid out flat triangle by triangle, each
 // edge keeping its length. Where the shape closes on itself (a ring) the triangles meet again out of place: there
-// the pattern is cut (a seam). A face curved both ways (a dished end) can't be laid flat: refused. The sheet is
+// the pattern is cut (a seam). A face curved both ways (a dished end) can't be laid flat exactly: it is spread out on
+// its best plane and relaxed so every edge of the mesh keeps its length as nearly as it can (dishedFlat), and the
+// largest stretch is reported (sheet.stretch). The sheet is
 // marked like a lofted bend (lofted.method 'developed'), so features that need real bends refuse it; folded, it is
 // the body itself, and its flat pattern is the unrolled outline with its holes.
 const DEV_TOL = 1e-5; // × the part's size: the mesh's largest distance from a curved face
 const DEV_DEFECT = 4e-3; // rad: more than this short of a full turn round a point of the mesh, a face is curved both ways
 const DEV_CRACK = 0.1; // mm: a loop of the outline narrower than this on average is no cut-out (see below)
-export function developedSheet(solid, faces, P0, { t, K }) {
+// A mesh curved both ways laid out flat as nearly as it can be (scaled at the end to the same area: a pressed dish keeps
+// its volume), as Flatten Surface does it: projected onto its best
+// plane (square to its average normal, weighted by area), then relaxed, edge by edge, each pulled towards its length
+// on the sheet (half the error each end), 400 passes, once at full strength and once damped; of all the layouts met
+// (the projection and every 25 passes) the one with the least length change (root mean square, and the worst) and
+// nothing folded over is kept.
+// Returns { xy (per point), maxStrain (the largest edge length change, a fraction), area (flat / curved), rms, flip }.
+function dishedFlat(P, T, Mn, edges) {
+  let n = [0, 0, 0], a3 = 0, c3 = [0, 0, 0];
+  for (const tri of T) {
+    const c = cross3(sub3(P[tri[1]], P[tri[0]]), sub3(P[tri[2]], P[tri[0]])), a = len3(c) / 2;
+    a3 += a; c3 = add3(c3, mul3(add3(add3(P[tri[0]], P[tri[1]]), P[tri[2]]), a / 3));
+    n = add3(n, dot3(c, add3(add3(Mn[tri[0]], Mn[tri[1]]), Mn[tri[2]])) < 0 ? mul3(c, -1) : c);
+  }
+  n = unit3(n); c3 = mul3(c3, 1 / a3);
+  const u = unit3(cross3(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), v = cross3(n, u);
+  const proj = () => P.map((p) => { const d = sub3(p, c3); return [dot3(d, u), dot3(d, v)]; });
+  // (a dish is nearly always turned round an axis: the second start lays each point at its distance along the dish's
+  // profile from the middle, at its angle round the axis (azimuthal equidistant): lengths out from the middle exact,
+  // those round it a little long, θ / sin θ at an angle θ off the axis)
+  const equidistant = () => {
+    const pr = P.map((p) => { const d = sub3(p, c3); return [dot3(d, u), dot3(d, v), dot3(d, n)]; });
+    let ix = 0; pr.forEach((q, i) => { if (Math.hypot(q[0], q[1]) < Math.hypot(pr[ix][0], pr[ix][1])) ix = i; });
+    const o = pr[ix], rho = pr.map((q) => Math.hypot(q[0] - o[0], q[1] - o[1])), rmax = Math.max(...rho), B = 200, sum = new Float64Array(B + 1), cnt = new Float64Array(B + 1);
+    pr.forEach((q, i) => { const k = Math.round((rho[i] / rmax) * B); sum[k] += q[2]; cnt[k]++; });
+    const hs = []; for (let k = 0; k <= B; k++) if (cnt[k]) hs.push([(k / B) * rmax, sum[k] / cnt[k]]);
+    const arc = [0]; for (let k = 1; k < hs.length; k++) arc.push(arc[k - 1] + Math.hypot(hs[k][0] - hs[k - 1][0], hs[k][1] - hs[k - 1][1]));
+    const sAt = (r) => { let k = 1; while (k < hs.length - 1 && hs[k][0] < r) k++; const f = (r - hs[k - 1][0]) / ((hs[k][0] - hs[k - 1][0]) || 1); return arc[k - 1] + f * (arc[k] - arc[k - 1]) + (k === 1 && r < hs[0][0] ? r - hs[0][0] : 0); };
+    return pr.map((q, i) => { const r = rho[i]; if (r < 1e-12) return [0, 0]; const sc = sAt(r) / r; return [(q[0] - o[0]) * sc, (q[1] - o[1]) * sc]; });
+  };
+  const E = [];
+  for (const e of edges.keys()) { const a = Math.floor(e / 4294967296), b = e % 4294967296; E.push([a, b, len3(sub3(P[a], P[b]))]); }
+  const turn = (xy, tri) => { const [A, B, C] = tri.map((i) => xy[i]); return ((B[0] - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (B[1] - A[1])) / 2; };
+  // (triangles with no area on the sheet, as at a pole, where the mesh repeats a point: never folded, never a test)
+  const real = T.filter((tri) => tri[0] !== tri[1] && tri[1] !== tri[2] && tri[0] !== tri[2] && len3(cross3(sub3(P[tri[1]], P[tri[0]]), sub3(P[tri[2]], P[tri[0]]))) > 1e-9 * a3);
+  // (the largest stretch over edges of a fair length: a quarter of the median and more; slivers, as in the fan of
+  // triangles at a dish's pole, say nothing of the sheet)
+  const fair = [...E.map((e) => e[2])].sort((x, y) => x - y)[E.length >> 1] / 4;
+  const score = (xy) => {
+    let rms = 0, mx = 0, pos = 0, neg = 0;
+    for (const [a, b, L] of E) { const st = Math.abs(Math.hypot(xy[b][0] - xy[a][0], xy[b][1] - xy[a][1]) - L) / (L || 1); rms += st * st; if (L >= fair) mx = Math.max(mx, st); }
+    for (const tri of real) { const ar = turn(xy, tri); if (ar >= 0) pos += ar; else neg -= ar; }
+    const flip = Math.min(pos, neg) / ((pos + neg) || 1);
+    rms = Math.sqrt(rms / E.length);
+    // (and the worst stretch counts: a layout crushed in one place loses to one a little worse on average)
+    return { rms, mx, flip, area: (pos + neg) / a3, s: rms + 3 * flip + 0.25 * mx };
+  };
+  let best = null;
+  for (const [start, damp] of [[proj, 1], [proj, 0.35], [equidistant, 1], [equidistant, 0.35]]) {
+    const xy = start();
+    { const sc = score(xy); if (!best || sc.s < best.s) best = { ...sc, xy: xy.map((q) => [...q]) }; }
+    for (let it = 0; it < 400; it++) {
+      let worst = 0;
+      for (const [a, b, L] of E) {
+        const dx = xy[b][0] - xy[a][0], dy = xy[b][1] - xy[a][1], d = Math.hypot(dx, dy) || 1e-12, k = ((d - L) / d / 2) * damp;
+        worst = Math.max(worst, Math.abs(d - L) / (L || 1));
+        xy[a][0] += dx * k; xy[a][1] += dy * k; xy[b][0] -= dx * k; xy[b][1] -= dy * k;
+      }
+      if (worst < 1e-7 || (it + 1) % 25 === 0) {
+        const sc = score(xy);
+        if (sc.s < best.s) best = { ...sc, xy: xy.map((q) => [...q]) };
+        if (worst < 1e-7) break;
+      }
+    }
+  }
+  // (untangled: a point of a triangle folded over moves to the middle of its neighbours, until none is; a few at a
+  // crowded point, such as a dish's pole)
+  const xy = best.xy, nb = P.map(() => []);
+  for (const [a, b] of E) { nb[a].push(b); nb[b].push(a); }
+  const sgn = real.reduce((x, tri) => x + turn(xy, tri), 0) >= 0 ? 1 : -1;
+  for (let it = 0; it < 200; it++) {
+    const bad = new Set();
+    for (const tri of real) if (sgn * turn(xy, tri) <= 0) for (const i of tri) bad.add(i);
+    if (!bad.size) break;
+    for (const i of bad) if (nb[i].length) { let x = 0, y = 0; for (const j of nb[i]) { x += xy[j][0]; y += xy[j][1]; } xy[i] = [x / nb[i].length, y / nb[i].length]; }
+  }
+  // (scaled evenly to the dish's own area: pressed, the sheet keeps its volume, so the blank has the dish's area)
+  { const k = Math.sqrt(1 / score(xy).area); for (const q of xy) { q[0] *= k; q[1] *= k; } }
+  const sc = score(xy);
+  // (the stretch 98 % of the mesh stays within: a few edges at a crowded point, as a pole, where the mesh's normals
+  // are poor, say nothing of the sheet)
+  const st = E.filter((e) => e[2] >= fair).map(([a, b, L]) => Math.abs(Math.hypot(xy[b][0] - xy[a][0], xy[b][1] - xy[a][1]) / L - 1)).sort((x, y) => x - y);
+  return { xy, maxStrain: st[Math.min(st.length - 1, Math.floor(st.length * 0.98))] ?? sc.mx, area: sc.area, flip: sc.flip, rms: sc.rms };
+}
+export function developedSheet(solid, faces, P0, { t, K, coarse = false }) {
   const O = oc();
   const builder = new O.TopoDS_Builder(), comp = new O.TopoDS_Compound();
   builder.MakeCompound(comp);
@@ -3289,7 +3374,8 @@ export function developedSheet(solid, faces, P0, { t, K }) {
   // (meshed as one: each edge divided once, for both its faces; finer for a small part, about a hundred-thousandth
   // of its size, 0.005 to 0.05 mm)
   const bb = solid.boundingBox.bounds, size = Math.hypot(bb[1][0] - bb[0][0], bb[1][1] - bb[0][1], bb[1][2] - bb[0][2]);
-  const m = side.mesh({ tolerance: Math.min(0.05, Math.max(0.005, size * DEV_TOL)), angularTolerance: 0.05 });
+  // (curved both ways: meshed again more coarsely, about a thousandth of its size, so relaxing it can spread out)
+  const m = side.mesh(coarse ? { tolerance: Math.max(0.05, size * 1e-3), angularTolerance: 0.1 } : { tolerance: Math.min(0.05, Math.max(0.005, size * DEV_TOL)), angularTolerance: 0.05 });
   const gs = m.faceGroups.reduce((n, g) => n + g.count, 0) === m.triangles.length ? 1 : 3;
   // the points of the mesh, each once (a point on an edge is in both its faces' meshes)
   const key = (i) => `${Math.round(m.vertices[3 * i] * 1e5)},${Math.round(m.vertices[3 * i + 1] * 1e5)},${Math.round(m.vertices[3 * i + 2] * 1e5)}`;
@@ -3354,9 +3440,14 @@ export function developedSheet(solid, faces, P0, { t, K }) {
   // (of the sheet's own side: the shape's test; the neutral layer, moved by different amounts where the curves turn the
   // other way, is a hair off developable there)
   for (const tri of T) for (let s = 0; s < 3; s++) angSum[tri[s]] += ang(V[tri[s]], V[tri[(s + 1) % 3]], V[tri[(s + 2) % 3]]);
-  let worst = 0;
-  for (let i = 0; i < V.length; i++) if (inner[i]) worst = Math.max(worst, Math.abs(2 * Math.PI - angSum[i]));
-  if (worst > DEV_DEFECT) throw new Error(`A face of the sheet is curved both ways (by ${(worst * 180 / Math.PI).toFixed(2)}° at a point): it cannot be unrolled flat`);
+  // (the worst point, and the whole: on a fine mesh of a gently curved dish each point is only a little short, but
+  // together they add up to the dish's whole curvature, e.g. 1.47 rad for a sphere cap 40° round)
+  let worst = 0, total = 0;
+  for (let i = 0; i < V.length; i++) if (inner[i]) { const d = Math.abs(2 * Math.PI - angSum[i]); worst = Math.max(worst, d); total += d; }
+  const both = worst > DEV_DEFECT || total > 25 * DEV_DEFECT || faces.some((f) => ['SPHERE', 'TORUS'].includes(f.geomType));
+  // (curved both ways: spread out and relaxed, not unrolled; the outline is then one piece, no seams)
+  if (both && !coarse) return developedSheet(solid, faces, P0, { t, K, coarse: true });
+  const dished = both ? dishedFlat(P, T, Mn, edges) : null;
   // laid out flat, from the picked face (flat: in its own plane, so the flat pattern lies under it; curved: from one
   // of its triangles, in that triangle's plane), triangle by triangle
   const t0 = T[fixedTri[0]];
@@ -3366,7 +3457,14 @@ export function developedSheet(solid, faces, P0, { t, K }) {
   const proj = (p) => { const d = sub3(p, fr.o); return [dot3(d, fr.u), dot3(d, fr.v)]; };
   const C = new Array(T.length).fill(null); // per triangle: its three corners flat
   const queue = [];
-  for (const k of kind.get(P0.face.hashCode) === 'PLANE' ? fixedTri : fixedTri.slice(0, 1)) { C[k] = T[k].map((i) => proj(P[i])); queue.push(k); }
+  if (dished) {
+    // (turned and moved onto the sheet's frame by the picked triangle's first edge: as the triangles would start)
+    const [i0, i1] = T[fixedTri[0]], A = dished.xy[i0], B = dished.xy[i1], A2 = proj(P[i0]), B2 = proj(P[i1]);
+    const th = Math.atan2(B2[1] - A2[1], B2[0] - A2[0]) - Math.atan2(B[1] - A[1], B[0] - A[0]), c = Math.cos(th), sn = Math.sin(th);
+    const to = (q) => { const x = q[0] - A[0], y = q[1] - A[1]; return [A2[0] + c * x - sn * y, A2[1] + sn * x + c * y]; };
+    T.forEach((tri, k) => { C[k] = tri.map((i) => to(dished.xy[i])); });
+  }
+  else for (const k of kind.get(P0.face.hashCode) === 'PLANE' ? fixedTri : fixedTri.slice(0, 1)) { C[k] = T[k].map((i) => proj(P[i])); queue.push(k); }
   for (let qi = 0; qi < queue.length; qi++) {
     const k = queue[qi], tri = T[k];
     for (let s = 0; s < 3; s++) {
@@ -3450,13 +3548,14 @@ export function developedSheet(solid, faces, P0, { t, K }) {
   const A = areaOf(region);
   if (Math.abs(A - triArea) > 1e-4 * triArea) throw new Error('The unrolled sheet would overlap itself: it cannot be laid out flat in one piece');
   const local = applyM(solid, invM(frameM(fr)));
-  const rp = proj(P[T[fixedTri[0]][0]]), rq = proj(P[T[fixedTri[0]][1]]), rr = proj(P[T[fixedTri[0]][2]]);
+  const [rp, rq, rr] = C[fixedTri[0]];
   // (a point on the picked face, in the sheet's frame: the face is found by it again after a cut)
   const seed = apM(invM(frameM(fr)), [0, 1, 2].map((c) => (V[t0[0]][c] + V[t0[1]][c] + V[t0[2]][c]) / 3));
   return {
     t, K, R: 0, frame: fr, region, bends: [], flat: null, stale: null, nextBend: 1,
     rootPt: [(rp[0] + rq[0] + rr[0]) / 3, (rp[1] + rq[1] + rr[1]) / 3],
     lofted: { method: 'developed', solid: local, seed, bendLines: [] },
+    ...(dished ? { stretch: { max: dished.maxStrain, rms: dished.rms, area: dished.area } } : {}),
   };
 }
 
