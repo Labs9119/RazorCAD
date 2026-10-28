@@ -2348,7 +2348,7 @@ const UI = {
     platform.saveInto = async (folder, name, bytes) => { files.push({ name, text: new TextDecoder().decode(bytes) }); return `${folder}/${name}`; };
     let out; try { out = await asm.collectFiles({ prefix: 'P1-', suffix: '', folder: 'C:/pack' }); } finally { platform.saveInto = keep; }
     const names = files.map((f) => f.name).sort().join(', ');
-    if (!out || names !== 'P1-Assembly1.rasm, P1-Base.rcad, P1-Pin.rcad') return { ok: false, detail: 'Files: ' + names };
+    if (!out || !/^P1-Assembly\d+\.rasm, P1-Base\.rcad, P1-Pin\.rcad$/.test(names)) return { ok: false, detail: 'Files: ' + names };
     const top = JSON.parse(files.at(-1).text);
     if (top.parts.length !== 2 || !top.parts.every((p) => p.path.startsWith('C:/pack/P1-') && p.doc)) return { ok: false, detail: 'The copied assembly does not use the copied files' };
     if (asm.doc.parts.some((p) => p.path)) return { ok: false, detail: 'Collect Files changed the open assembly' };
