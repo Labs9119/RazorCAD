@@ -1074,10 +1074,32 @@ const PM_SCHEMAS = {
       { key: 'wall', type: 'expr', label: 'Wall', unit: 'mm', show: (f) => f.size === 'custom' },
       { key: 'corner', type: 'select', label: 'Corners', options: [['elbow', 'Elbows (fittings)'], ['bend', 'Bends (one bent tube)']] },
       { key: 'radius', type: 'expr', label: 'Bend radius (auto: 1.5 × the size for elbows, 3 × OD for bends)', unit: 'mm' },
-      { key: 'flanges', type: 'check', label: 'Flanges at the ends' },
+      { key: 'reduceAt', type: 'select', label: 'Reducer', options: [['none', 'None'], ['start', 'At the first end'], ['end', 'At the last end'], ['both', 'At both ends']] },
+      { key: 'reduceSize', type: 'select', label: 'Reduced to', options: PIPE_SIZES.map((s) => [String(s.dn), pipeLabel(s)]), show: (f) => f.reduceAt && f.reduceAt !== 'none' && f.size !== 'custom' },
+      { key: 'flanges', type: 'check', label: 'Flanges at the (other) ends' },
       { key: 'flangeD', type: 'expr', label: 'Flange outside diameter', unit: 'mm', show: (f) => !!f.flanges },
       { key: 'flangeT', type: 'expr', label: 'Flange thickness', unit: 'mm', show: (f) => !!f.flanges },
-      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the corners of the route, each corner an elbow (or a bend of one tube). The pipes are on the weldment Cut List with their lengths; the elbows and flanges are bodies of their own.' },
+      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the fittings: an elbow (or a bend) at each corner, a tee where a line branches square off a straight run. The pipes are on the weldment Cut List with their lengths; the fittings are bodies of their own. Spool Drawing makes an isometric drawing with the cut list and the fittings.' },
+    ] },
+  ],
+  ductFitting: [
+    { title: 'Fitting', fields: [
+      { key: 'kind', type: 'select', label: 'Kind', options: [['elbow', 'Segmented elbow'], ['cone', 'Cone (reducer)'], ['transition', 'Round to rectangle'], ['offset', 'Offset'], ['lateral', 'Lateral (branch)']] },
+      { key: 'D', type: 'expr', label: 'Diameter (outside)', unit: 'mm' },
+      { key: 't', type: 'expr', label: 'Sheet thickness', unit: 'mm' },
+      { key: 'seam', type: 'expr', label: 'Seam allowance (flat patterns)', unit: 'mm' },
+      { key: 'angle', type: 'expr', label: 'Angle', unit: '°', show: (f) => f.kind === 'elbow' },
+      { key: 'R', type: 'expr', label: 'Centre line radius', unit: 'mm', show: (f) => f.kind === 'elbow' },
+      { key: 'gores', type: 'expr', label: 'Gores (pieces)', unit: '#', show: (f) => f.kind === 'elbow' },
+      { key: 'D2', type: 'expr', label: 'Other diameter', unit: 'mm', show: (f) => f.kind === 'cone' },
+      { key: 'W', type: 'expr', label: 'Rectangle width', unit: 'mm', show: (f) => f.kind === 'transition' },
+      { key: 'H', type: 'expr', label: 'Rectangle height', unit: 'mm', show: (f) => f.kind === 'transition' },
+      { key: 'offset', type: 'expr', label: 'Offset (across)', unit: 'mm', show: (f) => f.kind === 'offset' },
+      { key: 'L', type: 'expr', label: (f) => (f.kind === 'lateral' ? 'Main length' : 'Length'), unit: 'mm', show: (f) => ['cone', 'transition', 'offset', 'lateral'].includes(f.kind) },
+      { key: 'branchD', type: 'expr', label: 'Branch diameter', unit: 'mm', show: (f) => f.kind === 'lateral' },
+      { key: 'branchAngle', type: 'expr', label: 'Branch angle', unit: '°', show: (f) => f.kind === 'lateral' },
+      { key: 'branchL', type: 'expr', label: 'Branch length (past the main)', unit: 'mm', show: (f) => f.kind === 'lateral' },
+      { key: 'dHint', type: 'hint', text: 'A sheet metal duct fitting, with its flat patterns developed on the sheet’s middle and a seam allowance along the long seam (File ▸ Export ▸ Duct Patterns writes them all to one DXF). Move it into place with Move Body.' },
     ] },
   ],
   cable: [
@@ -1643,6 +1665,7 @@ export class UI {
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
         { label: 'Export ▸ STL…', icon: 'stl', action: () => a.exportFile('stl') },
         { label: 'Export ▸ glTF (.glb) for web and AR…', icon: 'obj', action: () => a.exportFile('glb') },
+        { label: 'Export ▸ Duct Patterns (DXF)…', icon: 'dxf', action: () => a.exportDuctPatterns(), disabled: !a.doc?.features?.some((f) => f.type === 'ductFitting' && !f.suppressed) },
         { label: 'Export ▸ Flat Pattern as DXF…', icon: 'dxf', action: () => a.exportSheetDXF(), disabled: !a.flatView && !(a.result?.bodies || []).some((b) => b.sheet) },
         { label: 'Export ▸ Face as DXF…', icon: 'dxf', action: () => a.exportFaceDXF(), disabled: !a.flatView && !(a.selection?.kind === 'face' && a.selection.face.planar) },
         'sep',
@@ -1988,6 +2011,8 @@ export class UI {
         { icon: 'structMember', label: 'Structural Member', action: () => a.startFeature('structMember') },
         { icon: 'sweep', label: 'Pipe Route', action: () => a.startFeature('pipeRoute') },
         { icon: 'sweep', label: 'Cable', action: () => a.startFeature('cable') },
+        { icon: 'sweep', label: 'Duct Fitting', action: () => a.startFeature('ductFitting') },
+        { icon: 'cutList', label: 'Spool Drawing', action: () => a.spoolDrawing() },
         { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },
@@ -3538,6 +3563,7 @@ export class UI {
     items.push({ label: 'Rename', icon: 'rename', action: () => this.renameFeature(f.id) });
     // (feature folders)
     const inFolder = folderOfFeature(a.doc, f.id);
+    if (f.type === 'import' && f.context?.host) items.push({ label: 'Update Context', icon: 'part', action: () => a.updateContext(true) });
     if (f.type !== 'sketch3d') items.push({ label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature([f.id], f.name) });
     items.push({ label: 'Add to New Folder…', icon: 'folder', action: () => this.promptText('New Folder', 'folder', 'Name', 'Folder').then((v) => { if (v?.trim()) { newFeatureFolder(a.doc, v.trim(), [f.id]); a.commit(); this.renderTree(); } }) });
     for (const g of (a.doc.featureFolders || []).filter((x) => x !== inFolder)) items.push({ label: `Move to ${g.name}`, icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, g.id); a.commit(); this.renderTree(); } });

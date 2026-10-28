@@ -20,6 +20,7 @@ import { holeSpec, holeProfile } from './holes.js';
 import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
 import { pipeOf, bundleDiameter } from './routing.js';
+import { ductSpec, ductPatterns, lateral as ductLateral } from './ducts.js';
 import { normalize3d, solve3d, splineGeom } from './sketch3dmodel.js';
 import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
@@ -5893,67 +5894,134 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'pipeRoute': {
-          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the corners, the
-          // corners long radius elbows (fittings, each a body of its own) or bends (one bent tube); flanges at the open
-          // ends if asked. The straight pipes are weldment members, so they are on the cut list with their lengths
+          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the fittings, the
+          // corners long radius elbows (fittings, each a body of its own) or bends (bent tube); a tee where a line branches
+          // square off a straight run; a concentric reducer at an open end if asked; flanges at the other open ends if
+          // asked. The straight pipes are weldment members, so they are on the cut list with their lengths
           const segs = memberPath(f.path);
           if (!segs.length) throw new Error('Select the sketch or 3D sketch of the route (straight lines)');
           if (segs.some((g) => g.type !== 'line')) throw new Error('Draw the route with straight lines: its corners get the elbows or bends');
-          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7);
-          // (the route's points in order, from an end)
-          const near = (x, y) => len(sub(x, y)) < tol, ends = segs.flatMap((g) => [g.a, g.b]);
-          const deg = (q) => ends.filter((x) => near(x, q)).length;
-          if (ends.some((q) => deg(q) > 2)) throw new Error('The route must be one run without branches (tees are not made)');
-          let P = [ends.find((q) => deg(q) === 1) || segs[0].a];
-          const left = [...segs];
-          while (left.length) {
-            const last = P.at(-1), i = left.findIndex((g) => near(g.a, last) || near(g.b, last));
-            if (i < 0) throw new Error('The route’s lines must join end to end');
-            const g = left.splice(i, 1)[0];
-            P.push(near(g.a, last) ? g.b : g.a);
+          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7), short = pipe.label.replace(/^Pipe |^Tube /, '');
+          // (the route as a graph: its points, and for each line the points at its ends)
+          const nodes = [], nodeOf = (q) => { let k = nodes.findIndex((x) => len(sub(x.p, q)) < tol); if (k < 0) { nodes.push({ p: q, lines: [] }); k = nodes.length - 1; } return k; };
+          const lines = segs.map((g, li) => { const a = nodeOf(g.a), b = nodeOf(g.b); nodes[a].lines.push(li); nodes[b].lines.push(li); return { a, b, d: unit(sub(g.b, g.a)), L: len(sub(g.b, g.a)), cut: [0, 0] }; });
+          const away = (li, k) => (lines[li].a === k ? lines[li].d : mul(lines[li].d, -1)); // (the line's direction leaving node k)
+          const setCut = (li, k, c) => { lines[li].cut[lines[li].a === k ? 0 : 1] = c; };
+          const corners = [], tees = [], ends = [];
+          for (const [k, nd] of nodes.entries()) {
+            const m = nd.lines.length;
+            if (m === 1) ends.push({ k, out: mul(away(nd.lines[0], k), -1), li: nd.lines[0] });
+            else if (m === 2) {
+              const [l1, l2] = nd.lines, d1 = mul(away(l1, k), -1), d2 = away(l2, k), th = Math.acos(Math.max(-1, Math.min(1, dot(d1, d2))));
+              if (th < 1e-9) continue;
+              if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
+              const c = pipe.R * Math.tan(th / 2);
+              setCut(l1, k, c); setCut(l2, k, c);
+              corners.push({ k, d1, d2, th, c });
+            } else if (m === 3) {
+              const ds = nd.lines.map((li) => away(li, k));
+              const run = [[0, 1], [0, 2], [1, 2]].find(([x, y]) => dot(ds[x], ds[y]) < -1 + 1e-9);
+              const bi = run ? 3 - run[0] - run[1] : -1;
+              if (!run || Math.abs(dot(ds[bi], ds[run[0]])) > 1e-6) throw new Error('A branch must leave a straight run square to it (a tee): other branches are not made');
+              nd.lines.forEach((li) => setCut(li, k, pipe.tee));
+              tees.push({ k, r: ds[run[0]], b: ds[bi] });
+            } else throw new Error('Four or more lines meet at a point: crosses are not made (use two tees)');
           }
-          const closed = P.length > 3 && near(P[0], P.at(-1));
-          if (closed) throw new Error('The route must have two ends (not a closed loop)');
-          // (each corner: its turn and how far the elbow / bend reaches along the lines either side)
-          const n = P.length, dirs = [], cut = new Array(n).fill(0);
-          for (let i = 0; i + 1 < n; i++) dirs.push(unit(sub(P[i + 1], P[i])));
-          const corners = [];
-          for (let i = 1; i + 1 < n; i++) {
-            const c = Math.max(-1, Math.min(1, dot(dirs[i - 1], dirs[i]))), th = Math.acos(c);
-            if (th < 1e-9) continue;
-            if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
-            cut[i] = pipe.R * Math.tan(th / 2);
-            corners.push({ i, th });
-          }
-          for (let i = 0; i + 1 < n; i++) if (len(sub(P[i + 1], P[i])) < cut[i] + cut[i + 1] - 1e-9) throw new Error(`Line ${i + 1} of the route is too short for the ${f.corner === 'bend' ? 'bends' : 'elbows'} at its ends (the bend radius ${+pipe.R.toFixed(3)} needs ${+(cut[i] + cut[i + 1]).toFixed(3)})`);
-          const tube = (A, B) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(ro, L, A, d).cut(R.makeCylinder(ri, L + 2, sub(A, d), d)); };
+          if (!ends.length) throw new Error('The route must have open ends (not a closed loop)');
+          // (a reducer at the first or last open end, in the order the lines were drawn)
+          const rd = f.reduceAt && f.reduceAt !== 'none' ? pipeOf({ ...f, size: f.reduceSize, corner: 'elbow', radius: 'auto' }, ev) : null;
+          if (rd && !(rd.D < pipe.D)) throw new Error('The reducer must go down to a smaller size');
+          const endOrder = [...ends].sort((x, y) => x.li - y.li || (lines[x.li].a === x.k ? -1 : 1));
+          const reduced = rd ? (f.reduceAt === 'start' ? [endOrder[0]] : f.reduceAt === 'end' ? [endOrder.at(-1)] : [endOrder[0], endOrder.at(-1)]).filter((x, q, a) => a.indexOf(x) === q) : [];
+          for (const e of reduced) setCut(e.li, e.k, pipe.reducer);
+          for (const [li, l] of lines.entries()) if (l.L < l.cut[0] + l.cut[1] - 1e-9) throw new Error(`Line ${li + 1} of the route is too short for the fittings at its ends (it needs ${+(l.cut[0] + l.cut[1]).toFixed(3)})`);
+          const tube = (A, B, r1 = ro, r0 = ri) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(r1, L, A, d).cut(R.makeCylinder(r0, L + 2, sub(A, d), d)); };
           const disc = (r, p, d) => { const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawCircle(r).sketchOnPlane(new R.Plane(p, u, d)).face(); };
-          const elbow = ({ i, th }) => {
-            const d1 = dirs[i - 1], d2 = dirs[i], T1 = sub(P[i], mul(d1, cut[i])), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
+          const elbow = ({ k, d1, d2, th, c }) => {
+            const T1 = sub(nodes[k].p, mul(d1, c)), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
             return R.revolution(disc(ro, T1, d1), C, ax, a).cut(R.revolution(disc(ri, T1, d1), C, ax, a));
+          };
+          const tee = ({ k, r, b }) => {
+            const O = nodes[k].p, C = pipe.tee;
+            const outer = R.makeCylinder(ro, 2 * C, sub(O, mul(r, C)), r).fuse(R.makeCylinder(ro, C, O, b));
+            return unify(outer.cut(R.makeCylinder(ri, 2 * C + 2, sub(O, mul(r, C + 1)), r).fuse(R.makeCylinder(ri, C + 1, O, b))));
+          };
+          // (a reducer: its big end on the pipe, its small end at the route's end)
+          const reducer = ({ k, out }) => {
+            const E = nodes[k].p, H = pipe.reducer, A = sub(E, mul(out, H)), u = unit(cross(out, Math.abs(out[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+            const P2 = (rho, z) => add(add(A, mul(u, rho)), mul(out, z)), r2o = rd.D / 2, r2i = r2o - rd.t;
+            return R.revolution(R.makePolygon([P2(ri, 0), P2(ro, 0), P2(r2o, H), P2(r2i, H)]), A, out, 360);
           };
           const add1 = (shape, name, member) => { const rec = bodyRec(newId(f.id), shape, f.id); rec.name = name; if (member) rec.member = member; solids.push(rec); applied.push({ op: 'add', tool: shape }); };
           const straights = [];
-          for (let i = 0; i + 1 < n; i++) { const A = add(P[i], mul(dirs[i], cut[i])), B = sub(P[i + 1], mul(dirs[i], cut[i + 1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
+          for (const l of lines) { const A = add(nodes[l.a].p, mul(l.d, l.cut[0])), B = sub(nodes[l.b].p, mul(l.d, l.cut[1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
           const fits = corners.map(elbow);
           if (f.corner === 'bend') {
             let all = null;
-            for (const s of [...straights.map((s) => tube(s.A, s.B)), ...fits]) all = all ? all.fuse(s) : s;
-            const L = straights.reduce((t, s) => t + s.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
-            add1(unify(all), `${pipe.label} bent`, { label: `${pipe.label}, ${corners.length} bend${corners.length === 1 ? '' : 's'} R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
+            for (const sh of [...straights.map((x) => tube(x.A, x.B)), ...fits]) all = all ? all.fuse(sh) : sh;
+            const L = straights.reduce((t, x) => t + x.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
+            for (const piece of solidsOf(unify(all))) add1(piece, `${pipe.label} bent`, { label: `${pipe.label}, bent R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
           } else {
-            for (const s of straights) add1(tube(s.A, s.B), `${pipe.label} ${+s.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +s.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: s.A, b: s.B } });
-            corners.forEach((c, k) => add1(fits[k], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${pipe.label.replace(/^Pipe |^Tube /, '')}`));
+            for (const x of straights) add1(tube(x.A, x.B), `${pipe.label} ${+x.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +x.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: x.A, b: x.B } });
+            corners.forEach((c, q) => add1(fits[q], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${short}`));
           }
-          // (flanges at the two ends: rings on the pipe, flush with its end)
+          for (const t of tees) add1(tee(t), `Tee ${short}`);
+          for (const e of reduced) add1(reducer(e), `Reducer ${short} × ${rd.label.replace(/^Pipe |^Tube /, '')}`);
+          // (flanges at the open ends without a reducer: rings on the pipe, flush with its end)
           if (f.flanges) {
             const FD = ev(f.flangeD), FT = ev(f.flangeT);
             if (!(FD > pipe.D) || !(FT > 0)) throw new Error('The flanges need an outside diameter bigger than the pipe’s and a thickness');
-            for (const [E, d] of [[P[0], dirs[0]], [P[n - 1], mul(dirs[n - 2], -1)]]) add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${pipe.label.replace(/^Pipe |^Tube /, '')}`);
+            for (const e of ends.filter((x) => !reduced.includes(x))) { const E = nodes[e.k].p, d = mul(e.out, -1); add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${short}`); }
           }
           body = compoundOf(solids);
-          const total = straights.reduce((t, s) => t + s.L, 0);
-          res.notes[f.id] = `${pipe.label}: ${f.corner === 'bend' ? `one tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`}${f.flanges ? ', 2 flanges' : ''}`;
+          const total = straights.reduce((t, x) => t + x.L, 0), nf = f.flanges ? ends.length - reduced.length : 0;
+          const parts = [f.corner === 'bend' ? `bent tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`];
+          if (tees.length) parts.push(`${tees.length} tee${tees.length === 1 ? '' : 's'}`);
+          if (reduced.length) parts.push(`${reduced.length} reducer${reduced.length === 1 ? '' : 's'}`);
+          if (nf) parts.push(`${nf} flange${nf === 1 ? '' : 's'}`);
+          res.notes[f.id] = `${pipe.label}: ${parts.join(', ')}`;
+          break;
+        }
+        case 'ductFitting': {
+          // Duct fitting (thin sheet, outside sizes; ducts.js): a segmented elbow in the XY plane about the Z axis, a cone,
+          // a round-to-rectangle transition or an offset along Z, or a lateral (the main along Z, the branch towards +X)
+          const s = ductSpec(f, ev), ro = s.D / 2, ri = ro - s.t, big = 4 * (s.D + s.L + s.R + s.W + s.H + s.branchL);
+          const block = (p, n) => { const u = unit(cross(n, Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(p, u, n)).extrude(big); };
+          const tube = (r1, r0, A, d, L) => R.makeCylinder(r1, L, A, d).cut(R.makeCylinder(r0, L + 2, sub(A, d), d));
+          const loftTube = (wireAt) => { const o = R.loft([wireAt(0, 0), wireAt(1, 0)], { ruled: true }), i = R.loft([wireAt(0, s.t), wireAt(1, s.t)], { ruled: true }); return o.cut(i); };
+          let shape;
+          if (s.kind === 'elbow') {
+            const A = (s.angle * Math.PI) / 180, a = A / (s.gores - 1), cuts = [0, ...Array.from({ length: s.gores - 1 }, (_, k) => a / 2 + k * a).slice(0, s.gores - 1), A].filter((x, k, l) => k === 0 || x > l[k - 1] + 1e-12);
+            const dirAt = (th) => [-Math.sin(th), Math.cos(th), 0], at = (th, r) => [r * Math.cos(th), r * Math.sin(th), 0];
+            for (let g = 0; g + 1 < cuts.length; g++) {
+              const c0 = cuts[g], c1 = cuts[g + 1], end0 = g === 0, end1 = g + 2 === cuts.length, m = end0 ? 0 : end1 ? A : (c0 + c1) / 2;
+              const d = dirAt(m), Lg = (s.R + ro) * Math.tan(a) * 2 + 2, A0 = sub(at(m, s.R), mul(d, Lg / 2));
+              let gore = tube(ro, ri, A0, d, Lg);
+              // (between the cut planes through the Z axis at c0 and c1: kept on their inner sides)
+              gore = gore.intersect(block([0, 0, 0], dirAt(c0))).intersect(block([0, 0, 0], mul(dirAt(c1), -1)));
+              shape = shape ? shape.fuse(gore) : gore;
+            }
+            shape = unify(shape);
+          } else if (s.kind === 'cone') {
+            const r2o = s.D2 / 2, r2i = r2o - s.t, P = (rho, z) => [rho, 0, z];
+            shape = R.revolution(R.makePolygon([P(ri, 0), P(ro, 0), P(r2o, s.L), P(r2i, s.L)]), [0, 0, 0], [0, 0, 1], 360);
+          } else if (s.kind === 'transition') {
+            shape = loftTube((top, inset) => top ? R.assembleWire([R.makeCircle(ro - inset, [0, 0, s.L + (inset ? 1e-3 : 0)], [0, 0, 1])]) : R.makePolygon([[s.W / 2 - inset, -(s.H / 2 - inset), inset ? -1e-3 : 0], [s.W / 2 - inset, s.H / 2 - inset, inset ? -1e-3 : 0], [-(s.W / 2 - inset), s.H / 2 - inset, inset ? -1e-3 : 0], [-(s.W / 2 - inset), -(s.H / 2 - inset), inset ? -1e-3 : 0]]).outerWire());
+          } else if (s.kind === 'offset') {
+            shape = loftTube((top, inset) => R.assembleWire([R.makeCircle(ro - inset, [top ? s.offset : 0, 0, top ? s.L + (inset ? 1e-3 : 0) : inset ? -1e-3 : 0], [0, 0, 1])]));
+          } else if (s.kind === 'lateral') {
+            const L = ductLateral(s), b = (s.branchAngle * Math.PI) / 180, d = [Math.sin(b), 0, Math.cos(b)], O = [0, 0, s.L / 2], rbo = s.branchD / 2, rbi = rbo - s.t;
+            const outer = R.makeCylinder(ro, s.L, [0, 0, 0], [0, 0, 1]).fuse(R.makeCylinder(rbo, L.len, O, d));
+            const inner = R.makeCylinder(ri, s.L + 2, [0, 0, -1], [0, 0, 1]).fuse(R.makeCylinder(rbi, L.len + 1, O, d));
+            shape = unify(outer.cut(inner));
+          }
+          if (!shape || !solidsOf(shape).length) throw new Error('The fitting could not be made');
+          const rec = bodyRec(newId(f.id), shape, f.id);
+          rec.name = { elbow: `Elbow ${s.angle}° Ø${s.D}`, cone: `Cone Ø${s.D} × Ø${s.D2}`, transition: `Transition ${s.W}×${s.H} to Ø${s.D}`, offset: `Offset Ø${s.D}`, lateral: `Lateral Ø${s.D} × Ø${s.branchD}` }[s.kind];
+          solids.push(rec); applied.push({ op: 'add', tool: shape });
+          body = compoundOf(solids);
+          const pats = ductPatterns(s);
+          res.notes[f.id] = `${rec.name}: ${pats.map((p) => `${p.qty} × ${p.name} ${+p.size[0].toFixed(1)} × ${+p.size[1].toFixed(1)}`).join(', ')} (flat, File ▸ Export ▸ Duct Patterns)`;
           break;
         }
         case 'cable': {
@@ -8051,7 +8119,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const m = meshes[i];
       // (color / transparency: the look an import gave the body)
       // (meshKey: the same for a body meshed the same as before: the page keeps what it works out from the triangles)
-      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, meshKey: `${KERNEL_SESSION}|${tol}|${ang}|${diagQ}|${shapeId(s.shape)}`, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
+      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, meshKey: `${KERNEL_SESSION}|${tol}|${ang}|${diagQ}|${shapeId(s.shape)}`, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.name ? { kname: s.name } : {}), ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
       for (const pts of m.facePts) lastFacePts.push(pts);
       nv += m.m.vertices.length; nt += m.m.triangles.length; nf += m.m.faceGroups.length; ne += m.edges.length;
     });

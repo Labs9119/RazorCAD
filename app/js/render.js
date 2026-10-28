@@ -125,8 +125,10 @@ export async function renderImage(vp, opts = {}) {
       cam.left = cx - w; cam.right = cx + w; cam.top = cy + h; cam.bottom = cy - h;
     }
     cam.updateProjectionMatrix();
+    let key = null, keyAt = null;
     if (opts.floor !== false) {
-      const key = new THREE.DirectionalLight(0xffffff, 1.6), right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+      key = new THREE.DirectionalLight(0xffffff, 1.6);
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
       key.position.copy(centre).add(new THREE.Vector3(0, R * 3, 0)).addScaledVector(right, R * 1.2);
       key.target.position.copy(centre);
       key.castShadow = true;
@@ -134,14 +136,40 @@ export async function renderImage(vp, opts = {}) {
       Object.assign(key.shadow.camera, { left: -R * 1.6, right: R * 1.6, top: R * 1.6, bottom: -R * 1.6, near: R * 0.1, far: R * 8 });
       key.shadow.radius = 6; key.shadow.bias = -R * 1e-5;
       scene.add(key, key.target);
+      keyAt = key.position.clone();
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(R * 40, R * 40), new THREE.ShadowMaterial({ opacity: 0.28 }));
       floor.rotation.x = -Math.PI / 2;
       floor.position.set(centre.x, box.min.y - R * 1e-3, centre.z);
       floor.receiveShadow = true;
       scene.add(floor);
     } else scene.add(new THREE.HemisphereLight(0xffffff, 0x808080, 0.6));
-    r.render(scene, cam);
-    const url = canvas.toDataURL('image/png');
+    // (passes: each with the camera moved by part of a pixel (smooth edges) and the key light by part of its size (soft
+    // shadows), averaged; Halton points spread them evenly)
+    const n = Math.max(1, Math.min(256, Math.round(opts.samples ?? 1)));
+    let url;
+    if (n === 1) { r.render(scene, cam); url = canvas.toDataURL('image/png'); } else {
+      const gl = r.getContext(), acc = new Float32Array(width * height * 4), px = new Uint8Array(width * height * 4);
+      const halton = (i, b) => { let f = 1, x = 0; while (i > 0) { f /= b; x += f * (i % b); i = Math.floor(i / b); } return x; };
+      const lu = new THREE.Vector3(), lv = new THREE.Vector3();
+      if (key) { const ld = key.position.clone().sub(key.target.position).normalize(); lu.crossVectors(ld, Math.abs(ld.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(); lv.crossVectors(ld, lu); }
+      for (let k = 0; k < n; k++) {
+        const jx = halton(k + 1, 2) - 0.5, jy = halton(k + 1, 3) - 0.5;
+        cam.setViewOffset(width, height, jx, jy, width, height);
+        if (key) { const a = 2 * Math.PI * halton(k + 1, 5), rr = Math.sqrt(halton(k + 1, 7)) * R * 0.35; key.position.copy(keyAt).addScaledVector(lu, Math.cos(a) * rr).addScaledVector(lv, Math.sin(a) * rr); }
+        r.render(scene, cam);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        for (let i = 0; i < acc.length; i++) acc[i] += px[i];
+        opts.onPass?.(k + 1, n);
+        if (k % 8 === 7) await new Promise((res) => setTimeout(res, 0));
+      }
+      cam.clearViewOffset();
+      // (readPixels reads bottom row first: turned the right way up)
+      const out = document.createElement('canvas'); out.width = width; out.height = height;
+      const ctx = out.getContext('2d'), im = ctx.createImageData(width, height);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const s = ((height - 1 - y) * width + x) * 4, d = (y * width + x) * 4; for (let c = 0; c < 4; c++) im.data[d + c] = Math.round(acc[s + c] / n); }
+      ctx.putImageData(im, 0, 0);
+      url = out.toDataURL('image/png');
+    }
     env.dispose();
     group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
     return { url, width, height };

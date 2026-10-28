@@ -2065,14 +2065,11 @@ export class AssemblyEditor {
       chosen = others.slice(0, 40).filter((_, i) => v['c' + i]);
       if (!chosen.length) return null;
     }
-    const P0 = poseOf(c), inv = P0.q.clone().invert();
-    const pool = a.kernelPool || a.kernel, ctx = [];
+    const ctx = [];
     await a.withProgress?.('Bringing in the context…', async () => {
       for (const x of chosen) {
-        const px = this.part(x.part), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p)), cfg = this.eff(x).config;
-        const doc = { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
-        try { const r = await pool.request('partSTEP', { doc: JSON.stringify(doc), pose: { p: t, q: [q.x, q.y, q.z, q.w] }, name: x.name || px.name }, 'asm-parts'); ctx.push({ comp: x, text: r.text }); }
-        catch (e) { a.toast(`${x.name || px.name} could not come into context: ${e.message}`, true); }
+        try { ctx.push({ comp: x, text: await this.contextStep(c, x), sig: this.contextSig(c, x) }); }
+        catch (e) { a.toast(`${x.name || this.part(x.part).name} could not come into context: ${e.message}`, true); }
       }
     }) ?? null;
     if (!ctx.length) return null;
@@ -2081,11 +2078,11 @@ export class AssemblyEditor {
     const doc = a.doc;
     if (!doc || doc === this.doc) return null;
     const made = [];
-    for (const { comp, text } of ctx) {
+    for (const { comp, text, sig } of ctx) {
       let f = doc.features.find((g) => g.type === 'import' && g.context?.comp === comp.id);
-      if (f) { f.data = text; f.rev = newRev(); }
+      if (f) { f.data = text; f.rev = newRev(); f.context = { ...f.context, host: c.id, sig }; }
       else {
-        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name } });
+        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name, host: c.id, sig } });
         f.name = `Context: ${comp.name || this.part(comp.part).name}`;
         insertFeature(doc, f);
       }
@@ -2098,6 +2095,43 @@ export class AssemblyEditor {
     a.status(`Editing ${p.name} in context: ${ctx.length} part${ctx.length === 1 ? '' : 's'} in as transparent context bodies. Sketch on them, use their edges or extrude up to them; they are left out of the part in the assembly. Save the part to update the assembly.`);
     this.contextOf = { asmTab, comp: c.id };
     return { ids: made };
+  }
+  // Context: another component's part as a STEP file where it is from the host component (the part edited), and a
+  // signature of that (its part as built, its configuration, where it is from the host) to tell when it changed.
+  contextPose(host, x) {
+    const P0 = poseOf(host), inv = P0.q.clone().invert(), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p));
+    return { p: t, q: [q.x, q.y, q.z, q.w] };
+  }
+  contextDoc(x) {
+    const px = this.part(x.part), cfg = this.eff(x).config;
+    return { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
+  }
+  contextSig(host, x) {
+    const P = this.contextPose(host, x);
+    return hash(JSON.stringify(this.contextDoc(x))) + ':' + [...P.p, ...P.q].map((v) => (Math.abs(v) < 5e-10 ? 0 : v).toFixed(9)).join(',');
+  }
+  async contextStep(host, x) {
+    const pool = this.app.kernelPool || this.app.kernel;
+    const r = await pool.request('partSTEP', { doc: JSON.stringify(this.contextDoc(x)), pose: this.contextPose(host, x), name: x.name || this.part(x.part).name }, 'asm-parts');
+    return r.text;
+  }
+  // The context features of a part (doc) edited in context in this assembly brought up to date: those whose
+  // component's part, configuration or place from the host changed (force: all), and those whose component is gone
+  // suppressed. Returns { updated, gone }.
+  async refreshContext(doc, force = false) {
+    let updated = 0, gone = 0;
+    for (const f of doc.features.filter((g) => g.type === 'import' && g.context?.host)) {
+      const host = this.comp(f.context.host), x = this.comp(f.context.comp);
+      if (!host) continue;
+      if (!x || !this.part(x.part)) { if (!f.suppressed) { f.suppressed = true; f.context = { ...f.context, gone: true }; gone++; } continue; }
+      const sig = this.contextSig(host, x);
+      if (!force && sig === f.context.sig) continue;
+      f.data = await this.contextStep(host, x);
+      f.rev = newRev();
+      f.context = { ...f.context, sig, gone: undefined };
+      updated++;
+    }
+    return { updated, gone };
   }
   compMenu(c) {
     const sub = this.isSub(this.part(c.part));

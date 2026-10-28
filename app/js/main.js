@@ -20,6 +20,7 @@ import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
 import { nest, nestShapes, nestEnts, placeEnts, outlineLoops } from './nest.js';
+import { ductSpec, ductPatterns, patternEnts } from './ducts.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -724,7 +725,7 @@ class App {
         ...b, index, own, ownMaterial: !!own?.material,
         material: M.materialById(M.bodyMaterialId(this.doc, b.id)),
         // (weldment members are called after their profile)
-        defaultName: b.member ? b.member.label : M.findFeature(this.doc, b.last)?.name || 'Body',
+        defaultName: b.kname || (b.member ? b.member.label : M.findFeature(this.doc, b.last)?.name || 'Body'), // (kname: the feature's own name for it: Cavity, Elbow 90°…)
       };
     });
     // shape signature of each solid (identical bodies are listed once with a count)
@@ -1182,6 +1183,30 @@ class App {
 
   // Export flat patterns as DXF: one body (save dialog) or all sheet metal bodies (into a chosen
   // folder). Each one is previewed first; the layer colours / line types can be changed there.
+  // Spool Drawing: a drawing of the part's pipe routes: one isometric view, the weldment cut list (the straight pipes and
+  // their lengths) and a table of the fittings (elbows, tees, reducers, flanges) and how many.
+  async spoolDrawing() {
+    const bodies = this.result?.bodies || [];
+    const fitRe = /^(Elbow|Tee|Reducer|Flange) /, counts = new Map();
+    for (const b of bodies) if (fitRe.test(b.name || '')) counts.set(b.name, (counts.get(b.name) || 0) + 1);
+    if (!this.doc.features.some((f) => f.type === 'pipeRoute' && !f.suppressed)) { this.toast('Make a pipe route first (Weldments ▸ Pipe Route)', true); return null; }
+    await this.newDrawing(true);
+    const ed = this.drawing;
+    if (!ed?.doc?.models?.length) return null;
+    const sheet = ed.sheet, mid = ed.doc.models[0].id, f = D.frameRect(sheet, ed.doc.format);
+    ed.doc.views = ed.doc.views.filter((v) => v.sheet !== sheet.id);
+    const v = { id: D.newId(ed.doc, 'v'), name: 'Isometric', type: 'model', orient: 'iso', model: mid, sheet: sheet.id, style: 'hlr', tangent: true, scale: null, x: f.x0 + (f.x1 - f.x0) * 0.42, y: f.y0 + (f.y1 - f.y0) * 0.45 };
+    ed.doc.views.push(v);
+    ed.selected = new Set([v.id]);
+    ed.addCutList();
+    const rows = [['FITTING', 'QTY'], ...[...counts].sort((a, b) => a[0].localeCompare(b[0])).map(([n, q]) => [n, String(q)])];
+    if (rows.length > 1) ed.doc.anns.push({ id: D.newId(ed.doc, 'a'), type: 'table', sheet: sheet.id, title: 'FITTINGS', header: true, rows, pos: [f.x1 - 95, f.y0 + 8] });
+    ed.changed();
+    await ed.updateGeometry();
+    this.status('Spool drawing: the isometric view, the cut list of the straight pipes and the fittings. Add dimensions and balloons as you need.');
+    return ed;
+  }
+
   // Nest Flat Patterns: every sheet metal body's flat pattern (identical bodies counted, times their quantity and
   // the sets asked for) laid out on stock sheets, shown, and written as one DXF (the sheets side by side).
   async nestFlatPatterns(opts = null) {
@@ -1232,6 +1257,22 @@ class App {
       { label: 'Close' },
     ]);
     return result;
+  }
+  // Duct Patterns: the flat patterns of every duct fitting of the part, side by side in one DXF.
+  ductPatternList() {
+    const out = [];
+    for (const f of this.doc.features.filter((g) => g.type === 'ductFitting' && !g.suppressed)) {
+      try { for (const p of ductPatterns(ductSpec(f, (x) => this.result.ev(String(x))))) out.push({ ...p, name: `${f.name}: ${p.name}` }); } catch (e) { this.toast(`${f.name}: ${e.message}`, true); }
+    }
+    return out;
+  }
+  async exportDuctPatterns() {
+    const list = this.ductPatternList();
+    if (!list.length) { this.toast('There are no duct fittings', true); return null; }
+    const settings = loadDxfSettings(), mapping = { ...settings.mapping, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
+    const bytes = new TextEncoder().encode(buildDXF(patternEnts(list), mapping));
+    try { const path = await platform.saveBinary(dxfFileName(`${this.safeName()} duct patterns`), bytes, 'dxf'); if (path) this.status(`${list.length} flat pattern${list.length === 1 ? '' : 's'} exported: ${String(path).split(/[\\/]/).pop()}`); } catch (err) { this.toast('DXF export failed: ' + err.message, true); }
+    return bytes;
   }
   async exportNestDXF({ parts, sheets, opts }) {
     const settings = loadDxfSettings(), mapping = { ...settings.mapping, SHEET: settings.mapping?.SHEET || { color: 8, ltype: 'CONTINUOUS' }, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
@@ -1636,10 +1677,29 @@ class App {
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.updateTitle();
-    if (this.showTabModel(t)) { this.restoreSection(t.section); return; }
+    if (this.showTabModel(t)) { this.restoreSection(t.section); this.updateContext(); return; }
     await this.rebuild();
     if (t.view) this.viewport.restoreView(t.view);
     this.restoreSection(t.section);
+    this.updateContext();
+  }
+
+  // A part edited in context: its context bodies brought up to date from the open assembly they came from (the other
+  // parts changed or moved) when the part comes to the front, or when asked (force: all of them again).
+  async updateContext(force = false) {
+    const doc = this.doc, ctx = doc?.features?.filter((f) => f.type === 'import' && f.context?.host) || [];
+    if (!ctx.length || this.mode === 'drawing') return null;
+    const asm = this.tabs.map((t) => (t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' ? t.drawing : null)).find((x) => x && ctx.some((f) => x.comp(f.context.host)));
+    if (!asm) { if (force) this.toast('Open the assembly the context came from, then update it', true); return null; }
+    let r;
+    try { r = await this.withProgress('Updating the context…', () => asm.refreshContext(doc, force)); } catch (e) { this.toast('The context could not be updated: ' + e.message, true); return null; }
+    if (this.doc !== doc) return r;
+    if (r.updated || r.gone) {
+      this.commit();
+      await this.rebuild();
+      this.status(`Context from ${asm.doc.name || 'the assembly'}: ${r.updated ? `${r.updated} part${r.updated === 1 ? '' : 's'} brought up to date` : ''}${r.updated && r.gone ? ', ' : ''}${r.gone ? `${r.gone} no longer in it (suppressed)` : ''}.`);
+    } else if (force) this.status('The context is up to date.');
+    return r;
   }
 
   // A tab's model as last built: shown now; the kernel (which holds one part at a time) catches up behind.
@@ -4351,18 +4411,19 @@ class App {
         { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
         { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
         { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
+        { key: 'quality', label: 'Quality', type: 'select', options: [['1', 'Draft (one pass)'], ['16', 'Good (16 passes: smooth edges, soft shadows)'], ['64', 'Best (64 passes)']], value: String(prev.quality ?? 16) },
         ...bodies.slice(0, 24).map((b, i) => ({ key: 'look' + i, label: `${b.name}`, type: 'select', options: Object.entries(LOOKS).map(([k, l]) => [k, l.name]), value: this.doc.bodies?.[b.id]?.look || 'auto' })),
       ], 'One frame of the view as it is now. Each body’s look is kept with it.');
       if (!v) return null;
       let changed = false;
       bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
       if (changed) this.commit();
-      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1 };
+      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1, quality: +v.quality || 1 };
       this._renderOpts = o;
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
-    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, decals: this.doc.decals || [] })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
     if (o.quiet) return img;
     const box = document.createElement('div');
     box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;

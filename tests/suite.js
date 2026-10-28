@@ -1952,7 +1952,23 @@ const UI = {
     const px = g2.getImageData(0, 0, 320, 200).data; let red = 0, varied = new Set();
     for (let i = 0; i < px.length; i += 4) { if (px[i] > px[i + 1] + 60 && px[i] > px[i + 2] + 80) red++; varied.add(px[i] >> 4); }
     if (!red || varied.size < 4) { const samp = []; for (let y = 20; y < 200; y += 30) for (let x = 20; x < 320; x += 50) { const i = (y * 320 + x) * 4; samp.push(`${px[i]},${px[i + 1]},${px[i + 2]}`); } return { ok: false, detail: `The render looks wrong: ${red} red pixels, ${varied.size} levels; ${samp.join(' ')}` }; }
-    return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); the decal kept out of the kernel` };
+    // (16 passes: the same picture with smoother edges and softer shadows: more tones in it)
+    const tones = async (url) => { const x = await new Promise((res) => { const q = new Image(); q.onload = () => res(q); q.src = url; }); const c = document.createElement('canvas'); c.width = x.width; c.height = x.height; const g3 = c.getContext('2d'); g3.drawImage(x, 0, 0); const d3 = g3.getImageData(0, 0, c.width, c.height).data, set = new Set(); for (let i = 0; i < d3.length; i += 4) set.add((d3[i] << 16) | (d3[i + 1] << 8) | d3[i + 2]); return set.size; };
+    const one = await a.renderView({ size: '200x120', env: 'studio', floor: true, exposure: 1, quality: 1, quiet: true }), many = await a.renderView({ size: '200x120', env: 'studio', floor: true, exposure: 1, quality: 16, quiet: true });
+    const t1 = await tones(one.url), t16 = await tones(many.url);
+    if (!(t16 > t1 * 1.3)) return { ok: false, detail: `16 passes do not look smoother: ${t1} and ${t16} tones` };
+    return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); 16 passes ${t16} tones against ${t1}; the decal kept out of the kernel` };
+  },
+
+  async 'duct-fittings'() {
+    const {run,fixture}=await import('/tests/duct-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture({kind:'elbow',D:300,t:1,angle:90,R:450,gores:5});await a.setDoc(d.doc);await settle();
+    const list=a.ductPatternList();if(list.length!==2||list.reduce((s,p)=>s+p.qty,0)!==5)return {ok:false,detail:'The patterns of the elbow',list};
+    const DX=await import('/js/dxf.js'),DU=await import('/js/ducts.js'),dxf=DX.buildDXF(DU.patternEnts(list),{OUTLINE:{color:7,ltype:'CONTINUOUS'},NOTES:{color:7,ltype:'CONTINUOUS'}});
+    if(!dxf.includes('Elbow end gore x2'))return {ok:false,detail:'The DXF lacks the gore names'};
+    a.editFeature(d.feature.id);await settle();if(!(document.querySelector('#pm')?.textContent||'').includes('Gores'))return {ok:false,detail:'No panel'};a.cancelPM?.();
+    return {ok:true,detail:`${native.results.length} cases (an elbow's and a cone's exact volumes, transition / offset / lateral solids; gore heights, the cone's sector, unfolded lengths of a transition and an offset, a lateral's branch and main); the patterns to DXF`};
   },
 
   async 'nest-true-shapes'() {
@@ -2379,7 +2395,14 @@ const UI = {
     // (left out where the part is used: the assembly's mesh of it, an export)
     const pm = await a.kernel.request('partMesh', { doc: JSON.stringify(doc), withVolume: true });
     if (Math.abs(pm.body.volume - 8000) > 1e-6) return { ok: false, detail: `The context body went into the part as the assembly sees it (volume ${pm.body.volume}, ${Object.keys(pm.body).join(' ')})` };
-    return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), and is left out of the part as the assembly builds it' };
+    // (the base moved 20 further in the assembly: back in the part, its context body follows)
+    const partTab = a.tabIndex, asmTab = a.tabs.findIndex((t) => t.drawing === asm), sig0 = ctx.context.sig;
+    await a.activateTab(asmTab); cb.pos = [60, 0, 0]; asm.solve?.(); await wait(100);
+    await a.activateTab(partTab);
+    await until(() => a.doc.features.find((f) => f.id === ctx.id)?.context.sig !== sig0, 30000); await wait(300); await until(() => !a.kernel.pending, 30000);
+    const moved = await a.kernel.request('measure', { refs: [{ kind: 'vertex', p: [0, -60, 5] }, { kind: 'body', id: cb2.id }] });
+    if (moved.distance > 1e-9) return { ok: false, detail: 'The context did not follow the base', d: moved.distance };
+    return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), is left out of the part as the assembly builds it, and follows the base when it moves' };
   },
 
   async 'collect-files-and-revisions'() {
@@ -5642,12 +5665,20 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     const d=fixture('pipeRoute',{size:'50'});await a.setDoc(d.doc);await settle();
     const list=await a.kernel.request('cutList',{});
     if(list.length!==3||!list.every(m=>/DN50/.test(m.label)))return {ok:false,detail:'The straight pipes are not on the cut list',list};
+    // (a spool drawing of a route with a tee: one isometric view, the cut list, the fittings table)
+    {const {sketchFixture}=await import('/tests/routing-cases.js');const e=sketchFixture('pipeRoute',{size:'50'});await a.setDoc(e.doc);await settle();
+     const keep=a.ui.newDrawingSetup;a.ui.newDrawingSetup=async()=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A3L'),name:'Spool',props:{},sheet:null});
+     let ed;try{ed=await a.spoolDrawing();}finally{a.ui.newDrawingSetup=keep;}
+     const views=ed?.doc.views||[],tb=ed?.doc.anns.find(x=>x.type==='table'),cl=ed?.doc.anns.find(x=>x.type==='cutlist');
+     if(views.length!==1||views[0].orient!=='iso'||!cl||!tb||JSON.stringify(tb.rows)!==JSON.stringify([['FITTING','QTY'],['Tee DN50','1']]))return {ok:false,detail:'The spool drawing is not as it should be: '+JSON.stringify({views:views.map(v=>v.orient),tb:tb?.rows,cl:!!cl,ed:!!ed})};
+     await until(()=>ed.geos.get(views[0].id)?.edges?.length,60000,250);
+     await a.newDocument?.();closeModals();await settle();}
     for(const [type,title] of [['pipeRoute','Pipe'],['cable','Cable']]){
       const e=fixture(type,{});await a.setDoc(e.doc);a.editFeature(e.feature.id);await settle();
       if(!(document.querySelector('#pm')?.textContent||'').includes(title))return {ok:false,detail:`No ${title} in the ${type} panel`};
       a.cancelPM?.();await settle();
     }
-    return {ok:true,detail:`${native.results.length} kernel cases (elbows, bends, flanges, a custom tube at 45°, too short and branching routes refused, a cable and a bundle of wires); the pipes on the cut list; the two panels`};
+    return {ok:true,detail:`${native.results.length} kernel cases (elbows, bends, flanges, a custom tube at 45°, too short and branching routes refused, a cable and a bundle of wires); the pipes on the cut list; a spool drawing; the two panels`};
   },
 
   async '3d-annotations-and-step-ap242'() {
