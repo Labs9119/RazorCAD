@@ -10144,7 +10144,8 @@ function blendCorner(shape, face) {
     if (Math.abs(Math.abs(zA) - s.r2) > 1e-6 || Math.abs(Math.abs(rB - s.r) - s.r2) > 1e-6) throw new Error('The round is not tangent to the faces either side');
     const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), P = (rho, z) => add(add(o, mul(u, rho)), mul(d, z));
     const tool = R.revolution(R.makePolygon([P(s.r, 0), P(s.r, zA), P(rB, zA), P(rB, 0)]), o, d, 360);
-    return { tool, convex: !solidAt(shape, P(rB, zA)), edge: { kind: 'circle', o: add(o, mul(d, zA)), d, r: rB }, chamfer: false, r: s.r2 };
+    // (ring: the corner's section in the half-plane through the axis, for a G2 round revolved about it)
+    return { tool, convex: !solidAt(shape, P(rB, zA)), edge: { kind: 'circle', o: add(o, mul(d, zA)), d, r: rB }, chamfer: false, r: s.r2, ring: { a: P(s.r, zA), c: P(rB, zA), b: P(rB, 0), o, d } };
   }
   if (s.t !== 'CYLINDER' && s.t !== 'PLANE') throw new Error('That face is not a fillet or a chamfer');
   const lineDir = (x) => unit(sub(vec(x.endPoint), vec(x.startPoint)));
@@ -10234,37 +10235,48 @@ function holeFill(shape, face, maxD) {
 // { shape, n, angle (°), curvature (/mm) }: the worst seen on its edges with the faces beside it.
 function g2Blends(before, after, edges, r) {
   const skin = R.makeCompound(before.faces.map((x) => x.clone()));
-  const near = (fc) => edges.some((e) => new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(e) <= r * 1.01 + 1e-6) && new R.DistanceQuery(R.makeVertex(vec(fc.center))).distanceTo(skin) > 1e-6;
+  // (a point on the face: a ring round's centre is on its axis, far from its edge)
+  const near = (fc) => { const q = vec(fc.pointOnSurface(0.5, 0.5)); return edges.some((e) => new R.DistanceQuery(R.makeVertex(q)).distanceTo(e) <= r * 1.01 + 1e-6) && new R.DistanceQuery(R.makeVertex(q)).distanceTo(skin) > 1e-6; };
   const lerp = (p, q, k) => add(p, mul(sub(q, p), k));
   let shape = after, n = 0, angle = 0, curvature = 0, checked = 0;
   const made = [];
   // (a point on the face, not its centre: off a curved face)
   const isMade = (fc) => { const q = vec(fc.pointOnSurface(0.5, 0.5)); return made.some((g) => new R.DistanceQuery(R.makeVertex(q)).distanceTo(g) < 1e-6); };
   for (let pass = 0; pass < 200; pass++) {
-    const F = shape.faces.find((fc) => fc.geomType === 'CYLINDRE' || fc.geomType === 'CYLINDER' ? near(fc) : false);
+    const F = shape.faces.find((fc) => ['CYLINDRE', 'CYLINDER', 'TORUS'].includes(fc.geomType) && !isMade(fc) ? near(fc) : false);
     if (!F) break;
     let bc;
     const one = solidsOf(shape);
     if (one.length === 1) shape = one[0]; // (a solid, not a compound round it: inside it is inside)
-    try { bc = blendCorner(shape, F); } catch (e) { throw new Error(`A curvature continuous (G2) round needs a straight edge between two flat faces, ending at flat faces: ${e.message}`); }
-    const { a, c, b, e, from, length } = bc.sec;
-    const P = [a, lerp(a, c, 0.4), lerp(a, c, 0.8), lerp(b, c, 0.8), lerp(b, c, 0.4), b].map((q) => add(q, mul(e, from)));
-    const wire = R.assembleWire([R.makeBezierCurve(P), R.makeLine(P[5], add(c, mul(e, from))), R.makeLine(add(c, mul(e, from)), P[0])]);
-    const g = R.basicFaceExtrusion(R.makeFace(wire), new R.Vector(mul(e, length))).intersect(bc.tool);
+    try { bc = blendCorner(shape, F); } catch (e) { throw new Error(`A curvature continuous (G2) round needs a straight edge between two flat faces, ending at flat faces, or a circular edge between a flat face and a round face: ${e.message}`); }
+    let g;
+    if (bc.ring) {
+      // (a circular edge: the section in the half-plane through the axis, revolved all the way round: along the meridian
+      // the three end points in line give no curvature, as on the flat face and the cylinder's straight lines; round
+      // the axis the normal curvature (n · radial) / radius carries on wherever the normal and the radius do)
+      const { a, c, b, o, d } = bc.ring, P = [a, lerp(a, c, 0.4), lerp(a, c, 0.8), lerp(b, c, 0.8), lerp(b, c, 0.4), b];
+      const wire = R.assembleWire([R.makeBezierCurve(P), R.makeLine(b, c), R.makeLine(c, a)]);
+      g = R.revolution(R.makeFace(wire), o, d, 360);
+    } else {
+      const { a, c, b, e, from, length } = bc.sec;
+      const P = [a, lerp(a, c, 0.4), lerp(a, c, 0.8), lerp(b, c, 0.8), lerp(b, c, 0.4), b].map((q) => add(q, mul(e, from)));
+      const wire = R.assembleWire([R.makeBezierCurve(P), R.makeLine(P[5], add(c, mul(e, from))), R.makeLine(add(c, mul(e, from)), P[0])]);
+      g = R.basicFaceExtrusion(R.makeFace(wire), new R.Vector(mul(e, length))).intersect(bc.tool);
+    }
     shape = unify(bc.convex ? shape.fuse(bc.tool).cut(g) : shape.cut(bc.tool).fuse(g));
     made.push(g);
     n++;
   }
   // (any other round left: a corner, a curved edge)
   if (shape.faces.some((fc) => fc.geomType !== 'PLANE' && near(fc) && !isMade(fc)))
-    throw new Error('Curvature continuous (G2) rounds are made on straight edges between flat faces: round the corners and curved edges in a fillet of their own');
+    throw new Error('Curvature continuous (G2) rounds are made on straight edges between flat faces and on circular edges between a flat face and a round face: round the corners and other curved edges in a fillet of their own');
   // (checked on the CAD faces: each blend against the flat faces along it)
   const oc = R.getOC(), all = shape.faces;
   for (const G of all) {
     if (G.geomType === 'PLANE' || !isMade(G)) continue;
     for (const ed of G.edges) {
-      if (ed.geomType !== 'LINE') continue;
-      const nb = all.find((x) => !x.isSame(G) && x.geomType === 'PLANE' && x.edges.some((y) => y.isSame(ed)));
+      if (ed.geomType !== 'LINE' && ed.geomType !== 'CIRCLE') continue;
+      const nb = all.find((x) => !x.isSame(G) && ['PLANE', 'CYLINDRE', 'CYLINDER'].includes(x.geomType) && !isMade(x) && x.edges.some((y) => y.isSame(ed)));
       if (!nb) continue;
       const nbEdge = nb.edges.find((y) => y.isSame(ed));
       const uv = (edge, face, t) => { const q = oc.RazorCADSurfacePatch.UV(edge.wrapped, face.wrapped, t); try { return [q.X(), q.Y()]; } finally { q.delete(); } };
