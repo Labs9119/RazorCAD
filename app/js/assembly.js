@@ -2178,15 +2178,18 @@ export class AssemblyEditor {
     }) ?? null;
     if (!ctx.length) return null;
     const asmTab = a.tabs[a.tabIndex];
+    // (the assembly's own id, kept with the context: component ids repeat from one assembly to another)
+    this.doc.uid ||= newRev() + newRev();
+    const asmUid = this.doc.uid;
     await this.openPart(c.id);
     const doc = a.doc;
     if (!doc || doc === this.doc) return null;
     const made = [];
     for (const { comp, text, sig } of ctx) {
       let f = doc.features.find((g) => g.type === 'import' && g.context?.comp === comp.id);
-      if (f) { f.data = text; f.rev = newRev(); f.context = { ...f.context, host: c.id, sig }; }
+      if (f) { f.data = text; f.rev = newRev(); f.context = { ...f.context, host: c.id, asm: asmUid, sig }; }
       else {
-        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name, host: c.id, sig } });
+        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name, host: c.id, asm: asmUid, sig } });
         f.name = `Context: ${comp.name || this.part(comp.part).name}`;
         insertFeature(doc, f);
       }
@@ -2224,7 +2227,8 @@ export class AssemblyEditor {
   // suppressed. Returns { updated, gone }.
   async refreshContext(doc, force = false) {
     let updated = 0, gone = 0;
-    for (const f of doc.features.filter((g) => g.type === 'import' && g.context?.host)) {
+    // (not context from another assembly: its id kept with the context, when both have one)
+    for (const f of doc.features.filter((g) => g.type === 'import' && g.context?.host && !(g.context.asm && this.doc.uid && g.context.asm !== this.doc.uid))) {
       const host = this.comp(f.context.host), x = this.comp(f.context.comp);
       if (!host) continue;
       if (!x || !this.part(x.part)) { if (!f.suppressed) { f.suppressed = true; f.context = { ...f.context, gone: true }; gone++; } continue; }

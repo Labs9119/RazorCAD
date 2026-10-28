@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 00:08 — Edit in Context follows its own assembly when several are open
+
+- A part edited in context brought its context bodies up to date from the first open assembly with a component of the
+  same id (component ids such as c1 repeat from one assembly to another), so with two assemblies open it could follow
+  the wrong one: the context stayed where it was, or a body went missing. The assembly now keeps an id of its own,
+  stored with the context, and the part follows that assembly (context made before, or an assembly not saved since,
+  still by the component).
+- Test assembly-edit-in-context: another assembly with the same component ids open first; the part rebuilt before it is
+  measured (it failed in the whole run, after other assembly tests).
+
 ## 2026-10-28 22:34 — Plastic parts and moulds, direct editing, library features, routing, in-context design, MBD, rendering, nesting, DFM and more
 - **Patterns** with spacing and angle growing from copy to copy; **Table Driven Pattern** (x, y, angle rows, pasted
   from a spreadsheet). **Hole**: counterdrills. **Sheet metal**: bend tables by angle; **Nest Flat Patterns** on

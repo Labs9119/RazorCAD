@@ -2521,6 +2521,10 @@ const UI = {
   async 'assembly-edit-in-context'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), THREE = await import('three');
     const box = (name, w) => { const d = M.newDoc(); d.name = name; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); const P = [[-w / 2, -w / 2], [w / 2, -w / 2], [w / 2, w / 2], [-w / 2, w / 2]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4])); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: w })); return d; };
+    // (another assembly open first, its components with the same ids: the context follows its own assembly)
+    a.newAssembly(); await wait(300); closeModals();
+    const other = a.drawing, po = other.addPart(box('Other', 15), null, null);
+    await other.addComponent(po); await other.addComponent(po);
     a.newAssembly(); await wait(300); closeModals();
     const asm = a.drawing, pa = asm.addPart(box('Lid', 20), null, null), pb = asm.addPart(box('Base', 10), null, null);
     await asm.addComponent(pa); await asm.addComponent(pb);
@@ -2530,7 +2534,9 @@ const UI = {
     ca.pos = [0, 0, 0]; ca.rot = [qz.x, qz.y, qz.z, qz.w]; ca.fixed = true; cb.pos = [40, 0, 0]; cb.rot = [0, 0, 0, 1]; cb.fixed = true;
     await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000);
     const r = await asm.editInContext(ca.id, [cb.id]);
-    await wait(300); await until(() => !a.kernel.pending, 30000);
+    // (the part rebuilt here before it is measured: the kernel measures what it built last, which on a busy run can be
+    // another model, e.g. the assembly's parts being loaded)
+    await wait(300); await until(() => !a.kernel.pending, 30000); await a.rebuild();
     const doc = a.doc, ctx = doc.features.find((f) => f.type === 'import' && f.context);
     if (!r || !ctx || ctx.context.comp !== cb.id) return { ok: false, detail: 'No context feature in the part', r };
     const bodies = a.result.bodies || [], cb2 = bodies.find((b) => b.id.startsWith(ctx.id));
@@ -2546,8 +2552,11 @@ const UI = {
     const partTab = a.tabIndex, asmTab = a.tabs.findIndex((t) => t.drawing === asm), sig0 = ctx.context.sig;
     await a.activateTab(asmTab); cb.pos = [60, 0, 0]; asm.solve?.(); await wait(100);
     await a.activateTab(partTab);
-    await until(() => a.doc.features.find((f) => f.id === ctx.id)?.context.sig !== sig0, 30000); await wait(300); await until(() => !a.kernel.pending, 30000);
-    const moved = await a.kernel.request('measure', { refs: [{ kind: 'vertex', p: [0, -60, 5] }, { kind: 'body', id: cb2.id }] });
+    await until(() => a.doc.features.find((f) => f.id === ctx.id)?.context.sig !== sig0, 30000);
+    // (until the part, rebuilt, has the base where it moved to)
+    const movedTo = async () => { await until(() => !a.kernel.pending, 30000); await a.rebuild(); return a.kernel.request('measure', { refs: [{ kind: 'vertex', p: [0, -60, 5] }, { kind: 'body', id: cb2.id }] }); };
+    let moved = await movedTo();
+    for (let i = 0; i < 20 && !(moved.distance <= 1e-9); i++) { await wait(250); moved = await movedTo(); }
     if (moved.distance > 1e-9) return { ok: false, detail: 'The context did not follow the base', d: moved.distance };
     return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), is left out of the part as the assembly builds it, and follows the base when it moves' };
   },

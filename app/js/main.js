@@ -1754,7 +1754,10 @@ class App {
   async updateContext(force = false) {
     const doc = this.doc, ctx = doc?.features?.filter((f) => f.type === 'import' && f.context?.host) || [];
     if (!ctx.length || this.mode === 'drawing') return null;
-    const asm = this.tabs.map((t) => (t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' ? t.drawing : null)).find((x) => x && ctx.some((f) => x.comp(f.context.host)));
+    // (the assembly the context came from: by its id (component ids repeat from one assembly to another); else, for
+    // context made before assemblies had one or an assembly not saved since, one with the host component)
+    const asms = this.tabs.map((t) => (t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' ? t.drawing : null)).filter(Boolean);
+    const asm = asms.find((x) => x.doc.uid && ctx.some((f) => f.context.asm === x.doc.uid)) || asms.find((x) => ctx.some((f) => x.comp(f.context.host)));
     if (!asm) { if (force) this.toast('Open the assembly the context came from, then update it', true); return null; }
     let r;
     try { r = await this.withProgress('Updating the context…', () => asm.refreshContext(doc, force)); } catch (e) { this.toast('The context could not be updated: ' + e.message, true); return null; }
