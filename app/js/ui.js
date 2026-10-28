@@ -1510,6 +1510,10 @@ const PM_SCHEMAS = {
   boundarySurf: [
     { title: 'Direction 1', fields: [{ key: 'dir1', type: 'curveList' }] },
     { title: 'Direction 2', fields: [{ key: 'dir2', type: 'curveList' }, { key: 'bHint', type: 'hint', text: 'The first and last curves of each direction bound the surface and must meet at their ends; the curves between shape it. With curves in one direction only, use Lofted Surface.' }] },
+    { title: 'Meeting Other Faces', fields: [
+      { key: 'continuity', type: 'select', label: 'Along their edges', options: [['G0', 'Touching (G0)'], ['G1', 'Tangent (G1)'], ['G2', 'Curvature continuous (G2)']] },
+      { key: 'supportFaces', type: 'faceList', patchSupport: true, show: (f) => (f.continuity || 'G0') !== 'G0', hint: 'Click the faces to meet: a bounding curve running along one of their edges meets that face tangent (or with the same curvature too).' },
+    ] },
   ],
   surfOffset: [
     { title: 'Parameters', fields: [{ key: 'distance', type: 'expr', label: 'Distance', unit: 'mm' }, { key: 'flip', type: 'check', label: 'Flip direction' }] },

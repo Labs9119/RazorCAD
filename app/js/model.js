@@ -315,7 +315,8 @@ export function createFeature(doc, type, props = {}) {
     splitLine: { tool: '', faces: [] },
     compCurve: { edges: [] },
     // curves in two directions (sketches, 3D sketches, composite / projected curves)
-    boundarySurf: { dir1: [], dir2: [] },
+    // continuity: 'G0' | 'G1' | 'G2' to supportFaces, along the bounding curves that run on their edges
+    boundarySurf: { dir1: [], dir2: [], continuity: 'G0', supportFaces: [] },
     // faces unrolled flat (relaxation iterations for doubly curved ones)
     flattenSurf: { faces: [], iterations: 1000 },
     // weldment members: profile standard / ptype / size (or dims for 'custom') along every segment of path

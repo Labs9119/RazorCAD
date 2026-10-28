@@ -5639,6 +5639,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const ends = bound.flatMap((w) => [vec(w.startPoint), vec(w.endPoint)]);
           const tol = Math.max(1e-3, bboxOfAll(bound).diag * 1e-5);
           for (const q of ends) if (ends.filter((x) => len(sub(x, q)) < tol).length < 2) throw new Error('The first and last curves of the two directions must meet at their ends (they bound the surface)');
+          const cont = f.continuity || 'G0';
+          if (cont !== 'G0') {
+            // (tangent / curvature continuous to faces: a bounding curve along an edge of a support face meets that
+            // face G1 / G2, as the edge itself; the others just touch; the curves between are passed through. Checked
+            // on the CAD faces by the patch builder)
+            const sup = (f.supportFaces || []).map((r) => findFaceAny([...solids, ...surfaces], r)?.face).filter(Boolean);
+            if (!sup.length) throw new Error('Click the faces the surface is to meet tangent (or with matching curvature)');
+            const along = (e, x) => [0.13, 0.5, 0.87].every((t) => new R.DistanceQuery(R.makeVertex(vec(e.pointAt(t)))).distanceTo(x) < 1e-4);
+            const entries = [];
+            for (const w of bound) for (const e of w.edges) {
+              let hitE = null, hitF = null;
+              for (const sf of sup) { const x = sf.edges.find((y) => along(e, y) && along(y, e)); if (x) { hitE = x; hitF = sf; break; } }
+              entries.push(hitE ? { edge: hitE, support: hitF, continuity: cont } : { edge: e, support: null, continuity: 'G0' });
+            }
+            const n = entries.filter((x) => x.support).length;
+            if (!n) throw new Error('None of the bounding curves runs along an edge of the support faces');
+            const inner = [...d1.slice(1, -1), ...d2.slice(1, -1)].flatMap((w) => w.edges);
+            const got = buildSurfacePatch(R, entries, { fatal: isFatal, message: (e) => (e instanceof WebAssembly.Exception ? R.getOC().getExceptionMessage(e).join(': ') : e.message || String(e)), stack, interior: inner.length ? { edges: inner, points: [] } : null });
+            surfaces.push(bodyRec(newId(f.id), got.shape, f.id));
+            applied.push({ op: 'add', tool: got.shape });
+            res.notes[f.id] = `${cont === 'G2' ? 'Curvature continuous (G2)' : 'Tangent (G1)'} to the faces along ${n} edge${n === 1 ? '' : 's'}: within ${+(got.angle || 0).toFixed(4)}°${cont === 'G2' ? ` and ${(got.curvature || 0).toExponential(2)} /mm` : ''}, touching to ${(got.contact || 0).toExponential(1)} mm`;
+            break;
+          }
           const oc = R.getOC(), mk = new oc.BRepOffsetAPI_MakeFilling(3, 15, 2, false, 1e-5, 1e-4, 0.01, 0.1, 8, 9);
           let shape;
           try {

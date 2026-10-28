@@ -2003,6 +2003,11 @@ const UI = {
     return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
   },
 
+  async 'boundary-surface-continuity'() {
+    const {run}=await import('/tests/boundary-cases.js'),native=await run({threads:threadsPerKernel()});
+    return native.ok?{ok:true,detail:`${native.results.length} cases (touching; G1 and G2 to a face along its edge, checked; a face it does not run along refused)`}:{ok:false,detail:native};
+  },
+
   async 'freeform-face'() {
     const {run}=await import('/tests/freeform-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} cases (one handle with the edges kept G0 / G1 / G2: through it, tangent plane and curvature kept, less bulge the more is held; a reshaped face reshaped again; a round refused)`}:{ok:false,detail:native};
