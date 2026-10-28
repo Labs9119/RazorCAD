@@ -5404,6 +5404,8 @@ class App {
         && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(e.key) && this.ui.treeKey(e)) { e.preventDefault(); return; }
       // the user's own shortcuts (Help ▸ Customize Shortcuts) come first
       if (!typing && !document.querySelector('.modal-back') && !document.querySelector('#cmd-search') && this.ui.runShortcut(e)) { e.preventDefault(); return; }
+      // the manual (F1): at what is being done
+      if (e.key === 'F1' && !ctrl && !e.altKey) { e.preventDefault(); this.ui.helpForPM(); return; }
       if (((ctrl && k === 'k' && !e.shiftKey && !e.altKey) || (e.key === '/' && !ctrl && !typing)) && !document.querySelector('.modal-back') && !document.querySelector('#cmd-search')) {
         e.preventDefault();
         this.ui.commandSearch();

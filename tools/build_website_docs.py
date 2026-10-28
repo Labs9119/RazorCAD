@@ -316,6 +316,12 @@ def main():
     sm.append("</urlset>")
     (SITE / "sitemap.xml").write_text("\n".join(sm) + "\n", encoding="utf-8")
     print(f"{len(chapters)} chapters written to {OUT}")
+    # the manual RazorCAD shows itself (Help > User Manual, F1), before the browser version is copied from the app
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("build_app_help", Path(__file__).with_name("build_app_help.py"))
+    app_help = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app_help)
+    app_help.build()
     # the browser version (razorcad.com/app/), brought up to date with the website
     import importlib.util
     spec = importlib.util.spec_from_file_location("build_web_app", Path(__file__).with_name("build_web_app.py"))

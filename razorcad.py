@@ -619,6 +619,21 @@ def first(result):
     return result if isinstance(result, str) else result[0]
 
 
+class HelpApi:
+    """Methods the manual's own window calls (window.pywebview.api.<name>() there)."""
+
+    def __init__(self, api):
+        self._api = api
+
+    def dock(self, section='', query=''):
+        """The manual back in RazorCAD's window, at the same place; its own window closed."""
+        place = json.dumps({'id': section or None, 'q': query or None})
+        api = self._api
+        threading.Thread(target=lambda: api._window.evaluate_js('window.app && window.app.ui.help.dock(%s)' % place), daemon=True).start()
+        threading.Timer(0.5, api._close_help).start()  # (after this call has answered the window: it is gone then)
+        return True
+
+
 class Api:
     """Methods callable from JavaScript as window.pywebview.api.<name>()."""
 
@@ -633,6 +648,7 @@ class Api:
         self._dialog_lock = threading.Lock()  # one file dialog at a time (see _file_dialog)
         self._open_queue = []     # files given on the command line, for the interface to open
         self._ui_ready = False    # (the interface has asked for them: later requests are pushed to it)
+        self._help = None         # the manual's own window (help_window), while it is open
 
     # --- file dialogs ------------------------------------------------------
 
@@ -997,6 +1013,49 @@ class Api:
             raise ValueError('That file is too big for a macro')
         with open(path, encoding='utf-8-sig') as f:
             return {'name': os.path.basename(path), 'content': f.read()}
+
+    # --- the manual in a window of its own -------------------------------
+
+    def help_window(self, url, section='', query='', create=True):
+        """The manual in a window of its own, which can be moved anywhere (onto another monitor too), sized and
+        closed apart from RazorCAD's window: brought to `section` (or a search for `query`) when it is open, else
+        opened there (create). True: shown."""
+        if not isinstance(url, str) or not url.startswith(('http://127.0.0.1', 'http://localhost', 'file:')):
+            return False  # (only RazorCAD's own page)
+        place = json.dumps({'id': section or None, 'q': query or None})
+        w = self._help
+        if w is not None:
+            try:
+                w.evaluate_js('window.showHelp && window.showHelp(%s)' % place)
+                try:
+                    w.restore()
+                except Exception:
+                    pass
+                w.show()
+                return True
+            except Exception:
+                self._help = None
+        if not create:
+            return False
+        w = webview.create_window(APP_NAME + ' Manual', url, js_api=HelpApi(self), width=560, height=860,
+                                  min_size=(320, 320), background_color='#FFFFFF')
+
+        def closed():
+            if self._help is w:
+                self._help = None
+                # (help goes back to the panel next time)
+                threading.Thread(target=lambda: self._window.evaluate_js('window.app && window.app.ui.help.windowClosed()'), daemon=True).start()
+        w.events.closed += closed
+        self._help = w
+        return True
+
+    def _close_help(self):
+        w, self._help = self._help, None
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
 
     def where_used(self, path):
         """The assemblies and drawings (.rasm, .rdrw) in the file's folder and the folders under it (up to 3 deep,
@@ -1489,6 +1548,8 @@ def main():
         return False
 
     window.events.closing += on_closing
+    # (the manual's own window goes with RazorCAD's)
+    window.events.closed += lambda: api._close_help()
     # Rendering: use the dedicated graphics card (on PCs with two), let the GPU rasterize, and
     # give the interface plenty of memory. (The geometry kernel has its own 4 GB address space.)
     extra = ('--force_high_performance_gpu --ignore-gpu-blocklist --enable-gpu-rasterization '

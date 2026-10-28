@@ -166,6 +166,16 @@ Press [[Ctrl+K]] (or [[/]]), or click the magnifier next to Save, and type part 
 - It searches every command of the menus and the ribbon of the document in front: part, sketch, 3D sketch, assembly or drawing.
 - Each result shows where the command lives (its menu or ribbon tab) and its shortcut.
 - With nothing typed, the commands you used lately come first.
+- Sections of this manual about what you typed are listed after the commands (**Manual · ** and their chapter): pick one to read it in the manual panel.
+
+## The manual in RazorCAD
+
+This manual is built into RazorCAD. **Help ▸ User Manual**, the **?** at the top right of the window or [[F1]] opens it in a panel at the right of the window, beside the model; with a Property panel open, [[F1]] or the panel's **?** opens it at that feature. {idx:manual, in RazorCAD}{idx:help}{idx:F1}
+
+- **Search**: type in the box at its top what you are looking for (a feature, a command, a word): the sections that have all the words are listed, the best first, with the words marked. Click one (or [[Enter]] for the first) to read it; the words are marked in it too. The arrows ‹ › go back and forward through what you read; with nothing typed it lists the chapters.
+- **Wider or narrower**: drag its left edge. RazorCAD keeps the width for next time.
+- **A window of its own**: **⧉** puts the manual in a window of its own, at the same place. Move it anywhere, onto another monitor too, and size it as you like; help you open while it is open shows there. **⇤** in that window puts it back in the panel; closing that window puts help back in the panel next time.
+- **Close**: **✕** closes the panel. Your parts, assemblies and drawings stay open as they are; nothing is saved or closed with it.
 
 ## Your own keyboard shortcuts
 
@@ -2159,6 +2169,7 @@ Run `python serve.py` and open http://localhost:8765/ in a browser. In that mode
 | Accept / cancel Property panel | [[Enter]] / [[Esc]] |
 | Edit a feature | Double-click it in the tree |
 | Search commands | [[Ctrl+K]] or [[/]] |
+| The manual (at the feature being edited) | [[F1]] |
 | Your own shortcuts | Help ▸ Customize Shortcuts |
 | Focus to the panel, ribbon or view | [[F6]] / [[Shift+F6]] |
 | In a tree: move / close or open / open the item / first or last | [[↑]] [[↓]] / [[←]] [[→]] / [[Enter]] / [[Home]] [[End]] |

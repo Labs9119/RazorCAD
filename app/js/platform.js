@@ -300,6 +300,17 @@ export const platform = {
     return [];
   },
 
+  // The manual in a window of its own, showing place ({ id, q }); create: opened when it is not open. true: shown.
+  // Desktop: a second window of the app's (python: help_window); browser: a pop-up window.
+  async helpWindow(url, place = {}, create = true) {
+    if (desktop) return api().help_window(url, place.id || '', place.q || '', !!create);
+    const w = this._helpWin;
+    if (w && !w.closed) { try { w.showHelp?.(place); w.focus(); return true; } catch { /* gone */ } }
+    if (!create) return false;
+    this._helpWin = window.open(url, 'razorcad-manual', 'popup,width=560,height=860');
+    return !!this._helpWin;
+  },
+
   // A point cloud file's bytes: { name, bytes } or null.
   async openPointCloud() {
     if (desktop) { const r = await api().open_points(); if (!r) return null; const bin = atob(r.data), b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return { name: r.name, bytes: b }; }

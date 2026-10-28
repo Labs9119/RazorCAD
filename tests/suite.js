@@ -1642,6 +1642,83 @@ const UI = {
     return { ok, detail: `dragged from 50 % to ${t1} % (the mark ${moved.toFixed(2)} mm from the quarter point while dragging); volume ${v0?.toFixed(2)} → ${v1?.toFixed(2)} mm³${a.result.errors?.length ? ' ' + JSON.stringify(a.result.errors) : ''}` };
   },
 
+  // The manual inside RazorCAD: F1 with the Fillet panel open shows the manual's Fillet section in a panel at the
+  // right; the search finds Freeform; its left edge dragged 100 px left makes it 100 px wider (and the 3D view
+  // narrower); ✕ closes it with the part as it was; ⧉ puts it in a window of its own (a pop-up in the browser) at the
+  // same section, the panel closed; F1 then shows there; ⇤ in that window docks it back; Ctrl+K finds manual sections
+  async 'help-manual-panel'() {
+    const a = window.app;
+    if (a.mode === 'drawing') { const i = a.tabs.findIndex((t) => t.kind !== 'drawing'); if (i >= 0) await a.activateTab(i); }
+    await a.newDocument?.();
+    closeModals();
+    const d = a.doc, S = await import('/js/sketchmodel.js');
+    const s0 = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    S.buildCenterRect(s0, 'O', 0, 0, 50, 30);
+    const ex = M.createFeature(d, 'extrude', { sketch: s0.id, depth: 10 });
+    for (const x of [s0, ex]) M.insertFeature(d, x);
+    a.commit(); await a.rebuild();
+    const panel = document.getElementById('helppanel'), out = [];
+    const key = (k, o = {}) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...o }));
+    try {
+      a.startFeature('fillet'); await wait(200);
+      const cw0 = a.viewport.canvas.clientWidth;
+      key('F1');
+      await until(() => !panel.hidden && panel.querySelector('.hv-article h2') || null, 10000);
+      const title = panel.querySelector('.hv-article h2')?.textContent;
+      await wait(300);
+      const cw1 = a.viewport.canvas.clientWidth;
+      out.push(['F1 on the Fillet panel: the Fillet section, the view narrower', title === 'Fillet' && cw1 < cw0 - 200, `${title}; view ${cw0} → ${cw1} px`]);
+      a.cancelPM?.(); await wait(100);
+      // (search)
+      const input = panel.querySelector('.hv-q');
+      input.value = 'freeform'; input.dispatchEvent(new Event('input'));
+      await until(() => panel.querySelector('.hv-hit') || null, 5000);
+      const first = panel.querySelector('.hv-hit b')?.textContent;
+      out.push(['the search for "freeform" finds the Freeform section first', first === 'Freeform', first]);
+      panel.querySelector('.hv-hit').click();
+      await until(() => panel.querySelector('.hv-article h2')?.textContent === 'Freeform' || null, 5000);
+      out.push(['clicked, it is shown with the word marked', !!panel.querySelector('.hv-article mark'), panel.querySelector('.hv-article h2')?.textContent]);
+      // (wider by dragging its left edge)
+      const sp = document.getElementById('help-splitter'), r = sp.getBoundingClientRect(), w0 = panel.getBoundingClientRect().width;
+      const ev = (t, x) => sp.dispatchEvent(new PointerEvent(t, { clientX: x, clientY: r.top + 50, button: 0, buttons: t === 'pointerup' ? 0 : 1, pointerId: 1, bubbles: true }));
+      try { ev('pointerdown', r.left + 2); ev('pointermove', r.left - 48); ev('pointermove', r.left - 98); ev('pointerup', r.left - 98); } catch (e) { out.push(['drag', false, String(e)]); }
+      await wait(200);
+      const w1 = panel.getBoundingClientRect().width;
+      out.push(['its left edge dragged 100 px left: 100 px wider', Math.abs(w1 - w0 - 100) < 3, `${w0} → ${w1} px`]);
+      // (closed: the part as it was)
+      const n0 = a.doc.features.length, tabs0 = a.tabs.length;
+      panel.querySelector('[data-help-close]').click(); await wait(200);
+      out.push(['✕ closes it; the part stays open as it was', panel.hidden && a.doc === d && a.doc.features.length === n0 && a.tabs.length === tabs0 && a.viewport.canvas.clientWidth > cw1 + 200, `features ${a.doc.features.length}, tabs ${a.tabs.length}, view ${a.viewport.canvas.clientWidth} px`]);
+      // (a window of its own)
+      await a.ui.help.open('Fillet');
+      await until(() => panel.querySelector('.hv-article h2')?.textContent === 'Fillet' || null, 5000);
+      panel.querySelector('[data-help-pop]').click();
+      const P = await import('/js/platform.js');
+      const win = await until(() => { const w = P.platform._helpWin; return w && !w.closed && w.document?.querySelector('.hv-article h2') ? w : null; }, 10000).catch(() => null);
+      out.push(['⧉: a window of its own at the same section, the panel closed', !!win && win.document.querySelector('.hv-article h2').textContent === 'Fillet' && panel.hidden, win ? win.document.querySelector('.hv-article h2')?.textContent : 'no window (pop-ups blocked?)']);
+      if (win) {
+        await a.ui.help.open('Freeform');
+        await until(() => win.document.querySelector('.hv-article h2')?.textContent === 'Freeform' || null, 5000).catch(() => null);
+        out.push(['help asked for again: shown in that window, not the panel', win.document.querySelector('.hv-article h2')?.textContent === 'Freeform' && panel.hidden, win.document.querySelector('.hv-article h2')?.textContent]);
+        win.document.querySelector('[data-help-dock]').click();
+        await until(() => !panel.hidden || null, 5000).catch(() => null);
+        await wait(200);
+        out.push(['⇤ docks it back at the same section, the window closed', !panel.hidden && panel.querySelector('.hv-article h2')?.textContent === 'Freeform' && win.closed, `${panel.hidden ? 'hidden' : panel.querySelector('.hv-article h2')?.textContent}, window ${win.closed ? 'closed' : 'open'}`]);
+      }
+      a.ui.help.close();
+      // (the command search)
+      key('k', { ctrlKey: true }); await wait(100);
+      const cs = document.querySelector('#cmd-search input');
+      if (cs) { cs.value = 'harness formboard'; cs.dispatchEvent(new Event('input')); await wait(100); }
+      const rows = [...document.querySelectorAll('#cmd-search .cs-manual')].map((x) => x.querySelector('.cs-l')?.textContent);
+      out.push(['Ctrl+K finds sections of the manual too', rows.length > 0, rows.join('; ')]);
+      document.querySelector('#cmd-search')?.remove();
+    } finally { a.ui.help.close(); try { P_close(); } catch { /* none */ } }
+    function P_close() { import('/js/platform.js').then((P) => { try { P.platform._helpWin?.close(); } catch { /* gone */ } }); }
+    const bad = out.filter((x) => !x[1]);
+    return { ok: !bad.length, detail: out.map(([n, ok, v]) => `${ok ? '✓' : '✗'} ${n} (${v})`).join('; ') };
+  },
+
   // A freeform face's handle dragged on the model: a 100 × 60 × 10 block, its top face reshaped by one handle 2 mm up;
   // pressed on the handle's mark and dragged up the screen, the handle's height grows, the mark follows while dragging
   // and the face rebuilds through it (more volume)

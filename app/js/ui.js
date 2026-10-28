@@ -20,6 +20,7 @@ import { SHEET_SIZES as DW_SIZES } from './drawingformats.js';
 import { inferPlaneType, planeRefs, legacyDatumRefs, useReferenceRelations } from './refgeom.js';
 import * as G from './geometry.js';
 import { platform } from './platform.js';
+import { HelpPanel, loadManual, searchManual } from './help.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
@@ -1577,6 +1578,7 @@ export class UI {
     this.buildLeftTabs();
     this.buildHUD();
     this.buildSplitter();
+    this.help = new HelpPanel(app);
     this.prefs = {};
     this.renderCommandManager();
     // the user's own toolbar layout (and other preferences), once the desktop app answers
@@ -1605,7 +1607,8 @@ export class UI {
       if (!e.target.closest('#ctxmenu')) this.closeContext();
     });
     window.addEventListener('blur', () => { this.closeDropdown(); this.closeContext(); });
-    $('#help-btn').onclick = () => this.showShortcuts();
+    $('#help-btn').onclick = () => this.help.open();
+    loadManual().then((m) => { this.manual = m; }).catch(() => {}); // (for the command search's manual results)
   }
 
   // ------------------------------------------------------------ menus
@@ -1814,6 +1817,7 @@ export class UI {
         { label: 'Claude Settings…', icon: 'gear', action: () => this.showClaudeSettings() },
       ],
       Help: [
+        { label: 'User Manual', icon: 'help', key: 'F1', action: () => this.help.open() },
         { label: 'Getting Started Tour', icon: 'help', action: () => this.startTour() },
         { label: 'Search Commands…', icon: 'search', key: 'Ctrl+K', action: () => this.commandSearch() },
         { label: 'Customize Shortcuts…', icon: 'select', action: () => this.showShortcutEditor() },
@@ -3709,6 +3713,7 @@ export class UI {
     const act = el('div', { class: 'pm-actions' });
     if (ok) act.appendChild(el('button', { title: 'OK (Enter)', onclick: () => this.app.okPM() }, icon('ok')));
     if (cancel) act.appendChild(el('button', { title: 'Cancel (Esc)', onclick: () => this.app.cancelPM() }, icon('cancel')));
+    act.appendChild(el('button', { class: 'pm-help', title: `${tr(title)} in the manual (F1)`, 'data-pm-help': '', onclick: () => this.helpForPM() }, '?'));
     root.appendChild(act);
   }
 
@@ -6148,6 +6153,16 @@ export class UI {
     const dlg = this.modal('Part Material', 'material', wrap, [{ label: 'Apply', primary: true, action: apply }, { label: 'Cancel' }]);
   }
 
+  // ---- The manual (help.js): F1 opens it at what is being done (the Property panel open: its feature), else the
+  // search box
+  helpTopic() {
+    const a = this.app, pm = a.pm;
+    if (pm?.kind === 'feature' && pm.feature) return TYPE_INFO[pm.feature.type]?.base?.replace(/-/g, ' ') || pm.feature.type;
+    if (a.mode === 'sketch') return 'Sketching';
+    return pm?.title || null;
+  }
+  helpForPM() { const t = this.helpTopic(); return t ? this.help.forTopic(t) : this.help.open(); }
+
   // ---- Command search (Ctrl+K or /): type part of a command's name, Enter runs it. Every command of the menus
   // and toolbars of the document in front (part, sketch, assembly or drawing); the ones used lately first.
   commandList() {
@@ -6178,7 +6193,7 @@ export class UI {
     try { recent = JSON.parse(localStorage.getItem('razorcad.recentCommands') || '[]'); } catch { recent = []; }
     const back = el('div', { id: 'cmd-search' });
     const box = el('div', { class: 'cs-box' });
-    const input = el('input', { type: 'text', spellcheck: 'false', placeholder: `Search ${all.length} commands…` });
+    const input = el('input', { type: 'text', spellcheck: 'false', placeholder: `Search ${all.length} commands and the manual…` });
     const list = el('div', { class: 'cs-list' });
     box.append(input, list);
     back.appendChild(box);
@@ -6187,6 +6202,7 @@ export class UI {
     const close = () => back.remove();
     const run = (c) => {
       close();
+      if (c.manual) { setTimeout(() => c.action(), 0); return; }
       try { localStorage.setItem('razorcad.recentCommands', JSON.stringify([c.k, ...recent.filter((x) => x !== c.k)].slice(0, 8))); } catch { /* no storage */ }
       this.app.macros?.note(c.label);
       setTimeout(() => c.action(), 0);
@@ -6205,13 +6221,19 @@ export class UI {
       }
       return scored.sort((x, y) => x[0] - y[0]).slice(0, 12).map((x) => x[1]);
     };
+    // (and the manual's sections about it, after the commands: opened in the manual panel)
+    const manualHits = (q) => {
+      if (!this.manual || !q.trim()) return [];
+      return searchManual(this.manual, q, 4).map(({ s }) => ({ label: s.title, where: 'Manual · ' + s.chapter, icon: 'help', key: '', k: 'manual:' + s.id, manual: s.id, action: () => this.help.open(s.id, { q }) }));
+    };
     const render = () => {
       shown = find(input.value);
+      shown = [...shown.slice(0, Math.max(6, 12 - 4)), ...manualHits(input.value)];
       at = Math.min(at, Math.max(0, shown.length - 1));
       list.innerHTML = '';
       if (!shown.length) list.appendChild(el('div', { class: 'cs-none' }, 'No command found'));
       shown.forEach((c, i) => {
-        const row = el('div', { class: 'cs-row' + (i === at ? ' on' : '') }, `<span class="cs-ic">${icon(c.icon)}</span><span class="cs-l">${esc(tr(c.label))}</span><span class="cs-w">${esc(c.where)}${c.key ? ` · ${esc(c.key)}` : ''}</span>`);
+        const row = el('div', { class: 'cs-row' + (i === at ? ' on' : '') + (c.manual ? ' cs-manual' : '') }, `<span class="cs-ic">${icon(c.icon)}</span><span class="cs-l">${esc(c.manual ? c.label : tr(c.label))}</span><span class="cs-w">${esc(c.where)}${c.key ? ` · ${esc(c.key)}` : ''}</span>`);
         row.onpointerdown = (e) => { e.preventDefault(); run(c); };
         row.onpointerenter = () => { at = i; list.querySelectorAll('.cs-row').forEach((r, j) => r.classList.toggle('on', j === at)); };
         list.appendChild(row);

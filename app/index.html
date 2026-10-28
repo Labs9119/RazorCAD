@@ -6,6 +6,7 @@
 <title>RazorCAD</title>
 <link rel="icon" type="image/svg+xml" href="razorcad.svg">
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/help.css">
 <script type="importmap">
 {
   "imports": {
@@ -21,7 +22,7 @@
     <div class="logo"><img class="logo-mark" src="razorcad.svg" alt=""><span>RazorCAD</span></div>
     <nav id="menubar"></nav>
     <div id="doc-title">Part1</div>
-    <div class="titlebar-right"><button id="help-btn" title="Keyboard shortcuts">?</button></div>
+    <div class="titlebar-right"><button id="help-btn" title="User manual (F1)">?</button></div>
   </header>
 
   <div id="commandmanager">
@@ -60,6 +61,8 @@
       <svg id="dw-svg" xmlns="http://www.w3.org/2000/svg"></svg>
       <div id="dw-sheets"></div>
     </section>
+    <div id="help-splitter" hidden title="Drag to make the manual wider or narrower"></div>
+    <aside id="helppanel" hidden aria-label="User manual"></aside>
   </main>
 
   <footer id="statusbar">

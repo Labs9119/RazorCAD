@@ -1,0 +1,69 @@
+/* The manual inside RazorCAD (js/help.js): docked at the right of the window (#helppanel) or in a window of its own
+   (help.html). Its own colours, so the pop-out window needs only this file. */
+.help-view {
+  --hv-bg: #ffffff; --hv-head: #f5f6f8; --hv-line: #dde1e7; --hv-rule: #c8cdd5; --hv-text: #1d2430; --hv-muted: #5f6877;
+  --hv-accent: #1f6fd1; --hv-hover: #eaf1fc; --hv-row: #f4f6f9; --hv-mark: #fff1a8;
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%;
+  background: var(--hv-bg); color: var(--hv-text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif; font-size: 13px;
+}
+.hv-head { display: flex; align-items: center; gap: 4px; padding: 6px; background: var(--hv-head); border-bottom: 1px solid var(--hv-line); flex: none; }
+.hv-q { flex: 1; min-width: 60px; height: 26px; padding: 0 8px; border: 1px solid var(--hv-rule); border-radius: 4px; font: inherit; background: #fff; color: inherit; }
+.hv-q:focus { outline: 2px solid #b9d3f6; border-color: var(--hv-accent); }
+.hv-nav, .hv-tool { flex: none; width: 26px; height: 26px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--hv-text); font-size: 15px; line-height: 1; cursor: pointer; }
+.hv-nav { font-size: 18px; }
+.hv-nav:hover:not(:disabled), .hv-tool:hover { background: var(--hv-hover); border-color: #c3d6f3; }
+.hv-nav:disabled { color: #b8bec8; cursor: default; }
+.hv-body { flex: 1; overflow: auto; padding: 10px 14px 24px; min-height: 0; }
+.hv-note { color: var(--hv-muted); margin: 2px 0 8px; }
+.hv-hit { display: block; padding: 7px 8px; margin: 0 -8px; border-radius: 4px; color: inherit; text-decoration: none; border-bottom: 1px solid #eef0f3; }
+.hv-hit:hover, .hv-hit:focus { background: var(--hv-hover); outline: none; }
+.hv-hit b { display: block; color: var(--hv-accent); font-weight: 600; }
+.hv-where { display: block; font-size: 11.5px; color: var(--hv-muted); margin: 1px 0 3px; }
+.hv-snip { display: block; font-size: 12px; line-height: 1.4; color: #3a4350; }
+.hv-toc { display: flex; flex-direction: column; }
+.hv-ch { padding: 6px 8px; margin: 0 -8px; border-radius: 4px; color: var(--hv-accent); text-decoration: none; }
+.hv-ch:hover { background: var(--hv-hover); }
+.help-view mark { background: var(--hv-mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+.hv-crumbs { font-size: 11.5px; color: var(--hv-muted); margin-bottom: 4px; }
+.hv-article { line-height: 1.5; overflow-wrap: anywhere; }
+.hv-article h2 { font-size: 17px; margin: 0 0 8px; }
+.hv-article h3 { font-size: 14.5px; margin: 16px 0 6px; }
+.hv-article p, .hv-article ul, .hv-article ol { margin: 8px 0; }
+.hv-article ul, .hv-article ol { padding-left: 20px; }
+.hv-article li { margin: 3px 0; }
+.hv-article code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.92em; background: var(--hv-row); padding: 0 4px; border-radius: 3px; }
+.hv-article pre { background: var(--hv-row); border: 1px solid var(--hv-line); padding: 8px 10px; overflow-x: auto; }
+.hv-article pre code { background: none; padding: 0; }
+.hv-article kbd { font: 500 0.9em inherit; padding: 0 5px; border: 1px solid var(--hv-rule); border-bottom-width: 2px; border-radius: 3px; background: #fff; white-space: nowrap; }
+.hv-article .table-wrap { overflow-x: auto; margin: 10px 0; }
+.hv-article table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.hv-article th, .hv-article td { border: 1px solid var(--hv-rule); padding: 5px 7px; text-align: left; vertical-align: top; }
+.hv-article thead th { background: var(--hv-row); font-weight: 600; }
+.hv-article .callout { margin: 10px 0; padding: 8px 12px; border-left: 3px solid #8a93a1; background: var(--hv-row); }
+.hv-article .callout-tip { border-left-color: #2f8a4f; }
+.hv-article .callout-warning { border-left-color: #c62828; }
+.hv-pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 10px; border-top: 1px solid var(--hv-line); }
+.hv-pager a { color: var(--hv-accent); text-decoration: none; max-width: 48%; }
+.hv-pager a:hover { text-decoration: underline; }
+.hv-pager .hv-next { margin-left: auto; text-align: right; }
+
+/* docked: a column at the right of the workspace, its left edge dragged to size it */
+#workspace.help-open { grid-template-columns: var(--lp-width, 270px) 4px minmax(200px, 1fr) 5px var(--help-width, 420px); }
+#help-splitter { cursor: col-resize; background: var(--bg, #e7eaee); border-left: 1px solid var(--border, #c8cdd5); }
+#help-splitter:hover { background: #c3d6f3; }
+#helppanel { min-width: 0; min-height: 0; overflow: hidden; }
+#helppanel[hidden], #help-splitter[hidden] { display: none; }
+
+/* in a window of its own */
+body.help-window { margin: 0; height: 100vh; overflow: hidden; }
+body.help-window #help-root { height: 100%; }
+
+:root[data-theme="dark"] .help-view {
+  --hv-bg: #23282f; --hv-head: #1b1f25; --hv-line: #343b45; --hv-rule: #3e4651; --hv-text: #dde3ea; --hv-muted: #9ba5b3;
+  --hv-accent: #6aa6f0; --hv-hover: #2e3946; --hv-row: #2a3038; --hv-mark: #5c4f12;
+}
+:root[data-theme="dark"] .hv-q, :root[data-theme="dark"] .hv-article kbd { background: #1b1f25; }
+:root[data-theme="dark"] .hv-snip { color: #c2cad4; }
+:root[data-theme="dark"] .hv-hit { border-bottom-color: #2e343c; }
+:root[data-theme="dark"] body.help-window { background: #23282f; }
