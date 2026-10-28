@@ -5296,6 +5296,50 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = note;
           break;
         }
+        case 'editFillet': {
+          // Delete Fillet / Resize Fillet (direct editing, e.g. of an imported part): each picked fillet or chamfer face
+          // taken back to the sharp edge its neighbours meet at (mode 'delete'), or then rounded or chamfered again at
+          // radius (mode 'resize')
+          if (!(f.faces || []).length) throw new Error('Click the fillet or chamfer faces');
+          const resize = f.mode === 'resize', r = resize ? ev(f.radius) : 0;
+          if (resize && !(r > 0)) throw new Error('The new size must be more than zero');
+          let rec = null;
+          const sharp = [];
+          for (const ref of f.faces) {
+            const hit = findFaceAny(rec ? [rec] : solids, ref);
+            if (!hit) throw new Error(rec ? 'The faces must be on the same body' : 'A selected face could not be found on a solid body');
+            rec = hit.body;
+            const b = blendCorner(rec.shape, hit.face), out = unify(b.convex ? rec.shape.fuse(b.tool) : rec.shape.cut(b.tool));
+            if (solidsOf(out).length !== solidsOf(rec.shape).length) throw new Error('Taking out that face would split the body');
+            rec = replaceSolid(rec, out, f.id)[0];
+            sharp.push(b);
+          }
+          if (resize) {
+            const edges = sharp.flatMap((b) => edgesAlong(rec.shape, b.edge)), cham = sharp.every((b) => b.chamfer);
+            if (!edges.length) throw new Error('The sharp edge could not be found to round again');
+            let out;
+            try { out = rec.shape[cham ? 'chamfer' : 'fillet']((x) => (edges.some((y) => y.isSame(x)) ? r : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error(`The edge${edges.length > 1 ? 's' : ''} could not be ${cham ? 'chamfered' : 'rounded'} at ${r} (too big for the faces beside ${edges.length > 1 ? 'them' : 'it'}?)`); }
+            replaceSolid(rec, unify(out), f.id);
+          }
+          res.notes[f.id] = `${f.faces.length} ${sharp.every((b) => b.chamfer) ? 'chamfer' : 'fillet'}${f.faces.length === 1 ? '' : 's'} ${resize ? `resized to ${r}` : 'deleted'} (was ${[...new Set(sharp.map((b) => (b.chamfer ? 'chamfered' : `R${+b.r.toFixed(4)}`)))].join(', ')})`;
+          break;
+        }
+        case 'defeature': {
+          // Defeature: fillets up to filletR and holes up to holeD across taken out of a body (or every solid), for a
+          // simpler part to send on or analyse; each one exactly (the faces round it carried back to meet)
+          const maxR = f.fillets === false ? 0 : ev(f.filletR ?? 0), maxD = f.holes === false ? 0 : ev(f.holeD ?? 0);
+          if (!(maxR > 0) && !(maxD > 0)) throw new Error('Give a fillet radius or a hole size to take out');
+          const recs = f.body ? solids.filter((x) => x.id === f.body) : [...solids];
+          if (!recs.length) throw new Error(f.body ? 'The body is missing' : 'There is no solid to defeature');
+          let nf = 0, nh = 0;
+          for (const rec of recs) {
+            const out = defeatureShape(rec.shape, maxR, maxD);
+            nf += out.fillets; nh += out.holes;
+            if (out.fillets || out.holes) replaceSolid(rec, out.shape, f.id);
+          }
+          res.notes[f.id] = `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
+          break;
+        }
         case 'replaceFace': {
           // a flat face of a solid moved onto a surface body: the body is carried through the face and cut back
           // to the surface (the surface must reach past the face's outline)
@@ -9526,6 +9570,157 @@ function faceAxis(face) {
   } catch {
     return null; // (this kernel build cannot read a cone's axis: the face is measured without it)
   } finally { ad.delete(); }
+}
+
+// ------------------------------------------------------------ direct editing: fillets, chamfers and holes taken out
+// The faces of `shape` sharing an edge with `face`, each once, with the edges they share.
+function faceNeighbours(shape, face) {
+  const out = [], all = shape.faces;
+  for (const e of face.edges) for (const g of all) {
+    if (g.isSame(face) || !g.edges.some((x) => x.isSame(e))) continue;
+    let nb = out.find((x) => x.face.isSame(g));
+    if (!nb) out.push((nb = { face: g, edges: [] }));
+    nb.edges.push(e);
+  }
+  return out;
+}
+const solidAt = (shape, p) => new R.DistanceQuery(R.makeVertex(p)).distanceTo(shape) < 1e-9;
+const edgeEnds = (edges) => edges.flatMap((x) => [vec(x.startPoint), vec(x.endPoint)]);
+function faceHasSeam(face) {
+  const oc = R.getOC(), T = oc.TopAbs_ShapeEnum, seen = [];
+  const ex = new oc.TopExp_Explorer(face.wrapped, T.TopAbs_EDGE, T.TopAbs_SHAPE);
+  try {
+    while (ex.More()) { const e = ex.Current(); if (seen.some((x) => x.IsSame(e))) return true; seen.push(e); ex.Next(); }
+    return false;
+  } finally { ex.delete(); }
+}
+// The corner a fillet or chamfer face cut off (or filled in): { tool, convex, edge, chamfer, r }. A round on a straight
+// edge (a cylinder tangent to two flat faces), a ring round (a full torus between a flat face and a coaxial round face)
+// or a chamfer (a flat strip between two flat faces). The tool is the piece between the face and the sharp corner where
+// its neighbours meet, extended (plus the round's own sector): fused back on (a convex edge) or cut away (a concave
+// one) it leaves the sharp edge `edge` ({ kind: 'line', p, d } or { kind: 'circle', o, d, r }).
+function blendCorner(shape, face) {
+  const s = surfOf(face), nb = faceNeighbours(shape, face), big = bbox(shape).diag + 10;
+  if (s.t === 'TORUS') {
+    const pl = nb.find((x) => x.face.geomType === 'PLANE'), cy = nb.find((x) => x.face.geomType === 'CYLINDRE');
+    if (nb.length !== 2 || !pl || !cy) throw new Error('A round on a circular edge must go all the way round, between a flat face and a round face');
+    const d = s.d, o = s.p, sp = surfOf(pl.face), sc = surfOf(cy.face);
+    if (len(cross(sp.n, d)) > 1e-6 || len(cross(sc.d, d)) > 1e-6 || len(cross(sub(sc.p, o), d)) > 1e-6) throw new Error('The faces either side of the round are not square to it and on its axis');
+    const zA = dot(sub(sp.p, o), d), rB = sc.r;
+    if (Math.abs(Math.abs(zA) - s.r2) > 1e-6 || Math.abs(Math.abs(rB - s.r) - s.r2) > 1e-6) throw new Error('The round is not tangent to the faces either side');
+    const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), P = (rho, z) => add(add(o, mul(u, rho)), mul(d, z));
+    const tool = R.revolution(R.makePolygon([P(s.r, 0), P(s.r, zA), P(rB, zA), P(rB, 0)]), o, d, 360);
+    return { tool, convex: !solidAt(shape, P(rB, zA)), edge: { kind: 'circle', o: add(o, mul(d, zA)), d, r: rB }, chamfer: false, r: s.r2 };
+  }
+  if (s.t !== 'CYLINDER' && s.t !== 'PLANE') throw new Error('That face is not a fillet or a chamfer');
+  const lineDir = (x) => unit(sub(vec(x.endPoint), vec(x.startPoint)));
+  let e = s.d;
+  if (s.t === 'PLANE') {
+    const lines = face.edges.filter((x) => x.geomType === 'LINE').sort((a, b) => edgeLength(b) - edgeLength(a));
+    if (!lines.length) throw new Error('A chamfer face has straight edges');
+    e = lineDir(lines[0]);
+  }
+  const along = (x) => x.geomType === 'LINE' && len(cross(lineDir(x), e)) < 1e-6;
+  const sides = nb.filter((x) => x.face.geomType === 'PLANE' && x.edges.some(along) && Math.abs(dot(surfOf(x.face).n, e)) < 1e-6);
+  if (sides.length !== 2 || (s.t === 'PLANE' && sides.some((x) => Math.abs(dot(surfOf(x.face).n, s.n)) < 1e-6))) throw new Error(s.t === 'PLANE' ? 'That face is not a chamfer between two flat faces' : 'That round does not run between two flat faces');
+  const p0 = s.t === 'CYLINDER' ? s.p : vec(sides[0].edges.find(along).startPoint), proj = (q) => sub(q, mul(e, dot(sub(q, p0), e)));
+  const [A, B] = sides.map((x) => ({ n: surfOf(x.face).n, T: proj(vec(x.edges.find(along).startPoint)) }));
+  if (s.t === 'CYLINDER') for (const X of [A, B]) if (Math.abs(Math.abs(dot(sub(X.T, s.p), X.n)) - s.r) > 1e-6 || len(cross(X.n, unit(sub(X.T, proj(s.p))))) > 1e-6) throw new Error('The round is not tangent to the faces either side');
+  const tA = cross(e, A.n), den = dot(tA, B.n);
+  if (Math.abs(den) < 1e-9) throw new Error('The faces either side are parallel (a full round): there is no corner to go back to');
+  const C = add(A.T, mul(tA, dot(sub(B.T, A.T), B.n) / den));
+  const ts = edgeEnds(face.edges).map((q) => dot(sub(q, p0), e)), t0 = Math.min(...ts), t1 = Math.max(...ts), mid = (t0 + t1) / 2;
+  const convex = !solidAt(shape, add(C, mul(e, mid)));
+  if (s.t === 'CYLINDER' && solidAt(shape, add(proj(s.p), mul(e, mid))) !== convex) throw new Error('That face is not a fillet');
+  const prof = (s.t === 'CYLINDER' ? [proj(s.p), A.T, C, B.T] : [A.T, C, B.T]).map((q) => add(q, mul(e, t0 - big)));
+  let tool = R.basicFaceExtrusion(R.makePolygon(prof), new R.Vector(mul(e, t1 - t0 + 2 * big)));
+  // (cut back to the planes of the faces at its ends, kept on the side the face is on)
+  const fc = vec(face.center);
+  let lo = false, hi = false;
+  for (const x of nb) {
+    if (sides.includes(x)) continue;
+    if (x.face.geomType !== 'PLANE') throw new Error('The ends of the fillet or chamfer must meet flat faces');
+    const sx = surfOf(x.face);
+    if (Math.abs(dot(sx.n, e)) < 1e-6) continue;
+    const k = mul(sx.n, Math.sign(dot(sub(fc, sx.p), sx.n)) || 1), u = unit(cross(k, Math.abs(k[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    tool = tool.intersect(R.drawRectangle(4 * big, 4 * big).sketchOnPlane(new R.Plane(sx.p, u, k)).extrude(4 * big));
+    if (dot(k, e) > 0) lo = true; else hi = true;
+  }
+  if (!lo || !hi) throw new Error('The ends of the fillet or chamfer must meet flat faces');
+  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r };
+}
+// The edges of `shape` along a sharp edge left by blendCorner.
+function edgesAlong(shape, g) {
+  return shape.edges.filter((x) => {
+    const q = [vec(x.startPoint), vec(x.endPoint)];
+    if (g.kind === 'line') return x.geomType === 'LINE' && q.every((p) => len(cross(sub(p, g.p), g.d)) < 1e-6);
+    return x.geomType === 'CIRCLE' && q.every((p) => Math.abs(dot(sub(p, g.o), g.d)) < 1e-6 && Math.abs(len(cross(sub(p, g.o), g.d)) - g.r) < 1e-6);
+  });
+}
+// A hole filled in: the coaxial cylinders and cones round a concave cylinder face (its counterbore, countersink, drill
+// point), every one ending at circles, none wider than maxD. null: not such a hole.
+function holeFill(shape, face, maxD) {
+  const s = surfOf(face);
+  if (s.t !== 'CYLINDER' || !faceHasSeam(face)) return null;
+  const { p: o, d } = s, onAxis = (x) => { const a = faceAxis(x); return a && len(cross(a.d, d)) < 1e-6 && len(cross(sub(a.o, o), d)) < 1e-6; };
+  const group = [face], todo = [face];
+  while (todo.length) {
+    for (const nb of faceNeighbours(shape, todo.pop())) {
+      if (group.some((g) => g.isSame(nb.face))) continue;
+      const t = nb.face.geomType;
+      if ((t === 'CYLINDRE' || t === 'CONE') && onAxis(nb.face)) { group.push(nb.face); todo.push(nb.face); }
+      // (a counterbore's floor: a flat ring square to the axis, between coaxial circles)
+      else if (t === 'PLANE' && len(cross(surfOf(nb.face).n, d)) < 1e-6 && nb.face.edges.every((x) => x.geomType === 'CIRCLE' && len(cross(sub(circleOf(x)?.c ?? [NaN, NaN, NaN], o), d)) < 1e-6)) { group.push(nb.face); todo.push(nb.face); }
+    }
+  }
+  let tool = null;
+  for (const g of group) {
+    if (g.geomType === 'PLANE') continue;
+    for (const x of g.edges) {
+      if (x.geomType === 'CIRCLE') { const q = vec(x.startPoint); if (len(cross(sub(q, o), d)) * 2 > maxD + 1e-9) return null; continue; }
+      // (else only its seam: a line in a plane through the axis)
+      if (!(x.geomType === 'LINE' && Math.abs(dot(cross(unit(sub(vec(x.endPoint), vec(x.startPoint))), d), sub(vec(x.startPoint), o))) < 1e-6 && faceHasSeam(g))) return null;
+    }
+    const pts = edgeEnds(g.edges).map((q) => [dot(sub(q, o), d), len(cross(sub(q, o), d))]);
+    const a = pts.reduce((m, q) => (q[0] < m[0] ? q : m)), b = pts.reduce((m, q) => (q[0] > m[0] ? q : m));
+    if (!(b[0] - a[0] > 1e-9)) continue;
+    if (g === face && solidAt(shape, add(o, mul(d, (a[0] + b[0]) / 2)))) return null; // (a shaft, not a hole)
+    const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), P = (rho, z) => add(add(o, mul(u, rho)), mul(d, z));
+    const prof = [[0, a[0]], [a[1], a[0]], [b[1], b[0]], [0, b[0]]].filter((q, i, l) => i === 0 || Math.hypot(q[0] - l[i - 1][0], q[1] - l[i - 1][1]) > 1e-9); // (a point: no corner there)
+    const piece = R.revolution(R.makePolygon(prof.map(([rho, z]) => P(rho, z))), o, d, 360);
+    tool = tool ? tool.fuse(piece) : piece;
+  }
+  return tool && { tool, count: group.length };
+}
+// Fillets (radius up to maxR) and holes (up to maxD across) taken out of a solid, one at a time, as many as can be.
+function defeatureShape(shape, maxR, maxD) {
+  const bad = new Set(), key = (fc) => vec(fc.center).map((x) => x.toFixed(5)).join();
+  const one = (sh) => { const l = solidsOf(sh); return l.length === 1 ? l[0] : sh; }; // (a solid, so points inside it are found)
+  shape = one(shape);
+  let fillets = 0, holes = 0;
+  for (let pass = 0; pass < 1000; pass++) {
+    let done = false;
+    for (const fc of shape.faces) {
+      const k = key(fc);
+      if (bad.has(k)) continue;
+      const s = surfOf(fc);
+      try {
+        if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9))) {
+          const b = blendCorner(shape, fc), out = unify(b.convex ? shape.fuse(b.tool) : shape.cut(b.tool));
+          if (solidsOf(out).length !== solidsOf(shape).length) throw new Error('split');
+          shape = one(out); fillets++; done = true; break;
+        }
+        if (maxD > 0 && s.t === 'CYLINDER' && 2 * s.r <= maxD + 1e-9) {
+          const h = holeFill(shape, fc, maxD);
+          if (!h) { bad.add(k); continue; }
+          shape = one(unify(shape.fuse(h.tool))); holes++; done = true; break;
+        }
+      } catch (e) { if (isFatal(e)) throw e; }
+      bad.add(k);
+    }
+    if (!done) break;
+  }
+  return { shape, fillets, holes };
 }
 
 // The faces of `body` that contain `edge`, in a stable order (by face centre).

@@ -131,6 +131,8 @@ export const TYPE_INFO = {
   surfTrim: { base: 'Surface-Trim', icon: 'surfTrim' },
   surfExtend: { base: 'Surface-Extend', icon: 'surfExtend' },
   deleteFace: { base: 'Delete-Face', icon: 'deleteFace' },
+  editFillet: { base: 'Edit-Fillet', icon: 'fillet' },
+  defeature: { base: 'Defeature', icon: 'deleteFace' },
   replaceFace: { base: 'Replace-Face', icon: 'replaceFace' },
   ruledSurface: { base: 'Ruled-Surface', icon: 'ruledSurface' },
   untrim: { base: 'Untrim-Surface', icon: 'untrim' },
@@ -282,6 +284,8 @@ export function createFeature(doc, type, props = {}) {
     surfExtend: { edges: [], distance: 10 },
     // mode 'delete' (leave the hole) | 'patch' (fill each hole; tangent: G1 to the faces round it)
     deleteFace: { faces: [], mode: 'delete', tangent: false },
+    editFillet: { faces: [], mode: 'delete', radius: 1 },
+    defeature: { body: null, fillets: true, filletR: 2, holes: true, holeD: 6 },
     // flat faces of a solid moved onto surface body `tool`
     replaceFace: { faces: [], tool: null },
     // ruleType 'normal' (square to the face) | 'direction' (along an axis, tilted by angle); both: both sides

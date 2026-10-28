@@ -2289,10 +2289,10 @@ class App {
     if (f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange') return 'edge';
     if (f.type === 'surfFill') return this.pm.patchSupportPick ? 'faces' : 'edge';
     if (f.type === 'surfExtend') return 'edge';
-    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim') return 'faces';
+    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
-    if (['smCornerRelief', 'smFold'].includes(f.type)) return 'body';
+    if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToSurface') return 'face';

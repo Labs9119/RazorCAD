@@ -5350,6 +5350,17 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (bosses with draft, holes and ribs, snap hooks, a lip and a groove on a rim, a vent; rejections); the four panels`};
   },
 
+  async 'delete-resize-fillet-and-defeature'() {
+    const {run,fixture}=await import('/tests/defeature-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    for(const [type,title] of [['editFillet','Fillet / Chamfer Faces'],['defeature','Take Out']]){
+      const d=fixture([],{type,options:{}});await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+      if(!(document.querySelector('#pm')?.textContent||'').includes(title))return {ok:false,detail:`No ${title} in the ${type} panel`};
+      a.cancelPM?.();await settle();
+    }
+    return {ok:true,detail:`${native.results.length} kernel cases (rounds, chamfers, a concave round, ring rounds at a boss deleted or resized; defeaturing holes and rounds by size); the two panels`};
+  },
+
   async 'core-and-cavity'() {
     const {run}=await import('/tests/mold-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, with shrinkage, without the part; a plane off the part refused)`}:{ok:false,detail:native};

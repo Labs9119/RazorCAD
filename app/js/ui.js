@@ -1289,6 +1289,24 @@ const PM_SCHEMAS = {
       { key: 'dHint', type: 'hint', text: (f) => (f.mode === 'patch' ? 'Each hole left by the deleted faces gets a smooth patch: good for taking out fillets, small features and bad faces of imported parts.' : 'The faces are taken out; the rest stays as a surface body (e.g. to rebuild them with other surface tools).') },
     ] },
   ],
+  editFillet: [
+    { title: 'Fillet / Chamfer Faces', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the fillet or chamfer faces of a solid (e.g. an imported part).' }] },
+    { title: 'Options', fields: [
+      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Delete (back to a sharp edge)'], ['resize', 'Resize (round or chamfer it again)']] },
+      { key: 'radius', type: 'expr', label: 'New radius / chamfer distance', unit: 'mm', show: (f) => f.mode === 'resize' },
+      { key: 'eHint', type: 'hint', text: 'Rounds along straight edges between flat faces, full rounds on circular edges (between a flat face and a round one) and chamfers. The faces either side are carried on to meet exactly; the ends must meet flat faces.' },
+    ] },
+  ],
+  defeature: [
+    { title: 'Body', fields: [{ key: 'body', type: 'bodySel', label: 'Body (none: every solid)', kinds: ['solid'] }] },
+    { title: 'Take Out', fields: [
+      { key: 'fillets', type: 'check', default: true, label: 'Fillets' },
+      { key: 'filletR', type: 'expr', label: 'Up to radius', unit: 'mm', show: (f) => f.fillets !== false },
+      { key: 'holes', type: 'check', default: true, label: 'Holes' },
+      { key: 'holeD', type: 'expr', label: 'Up to diameter', unit: 'mm', show: (f) => f.holes !== false },
+      { key: 'dHint', type: 'hint', text: 'Small fillets and holes (with their counterbores, countersinks and drill points) are taken out exactly, for a simpler part to send to a supplier or to analyse. Fillets whose ends do not meet flat faces, and holes that break out of the side, stay.' },
+    ] },
+  ],
   replaceFace: [
     { title: 'Faces to Replace', fields: [{ key: 'faces', type: 'faceList', hint: 'Click flat faces of a solid.' }] },
     { title: 'Replacement Surface', fields: [
@@ -1907,6 +1925,8 @@ export class UI {
         { icon: 'knit', label: 'Knit Surface', action: () => a.startFeature('knit') },
         { icon: 'surfSolid', label: 'Convert to Solid', action: () => a.startFeature('surfSolid') },
         { icon: 'deleteFace', label: 'Delete Face', action: () => a.startFeature('deleteFace') },
+        { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
+        { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
         { icon: 'replaceFace', label: 'Replace Face', action: () => a.startFeature('replaceFace') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },

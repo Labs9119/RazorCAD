@@ -989,6 +989,14 @@ Four features for moulded parts (Features tab). {idx:plastic features}
 
 Push or pull flat faces along their normal, or turn a face about one of its edges. The neighbouring faces follow. {idx:Move Face}
 
+## Delete or Resize Fillet, Defeature
+
+These edit a solid directly, with no history needed: good for imported parts. {idx:Delete Fillet}{idx:Resize Fillet}{idx:direct editing}
+
+**Delete / Resize Fillet** (Surfaces tab): click fillet or chamfer faces. **Delete** carries the faces either side on until they meet at a sharp edge again; **Resize** then rounds (or chamfers) that edge at the **New radius**. It works on rounds along straight edges between flat faces (convex or concave), full rounds on circular edges (between a flat face and a round face, like the foot or top rim of a boss) and chamfers between flat faces. The ends of a straight round must meet flat faces.
+
+**Defeature** {idx:Defeature} takes every fillet up to a radius and every hole up to a diameter out of a body (or of every solid), for a simpler part to send to a supplier or to analyse. A hole is filled with its counterbore, countersink and drill point; one whose counterbore is wider than the limit stays whole. Fillets whose ends do not meet flat faces, and holes that break out of the side of the part, stay; the message says how many were taken out.
+
 ## Scale
 
 Scales every body by one factor, about the origin or about the centre of the bodies. {idx:scale}
