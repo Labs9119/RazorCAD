@@ -1811,6 +1811,7 @@ export class UI {
         { icon: 'cutSweep', label: 'Sweep Cut', action: () => a.startFeature('sweep', 'cut') },
         { icon: 'cutLoft', label: 'Loft Cut', action: () => a.startFeature('loft', 'cut') },
         { icon: 'hole', label: 'Hole', action: () => a.startFeature('hole') },
+        { icon: 'folder', label: 'Library Feature', action: () => a.insertLibraryFeature() },
         'sep',
         { icon: 'helix', label: 'Helix', action: () => a.startFeature('helix') },
         { icon: 'threadCut', label: 'Thread Cut', action: () => a.startFeature('thread', 'cut') },
@@ -2769,6 +2770,7 @@ export class UI {
         menu: () => [
           { label: 'Linear Pattern of the Folder…', icon: 'lpattern', action: () => a.patternFolder(g.id, 'lpattern') },
           { label: 'Circular Pattern of the Folder…', icon: 'cpattern', action: () => a.patternFolder(g.id, 'cpattern') },
+          { label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature(g.ids, g.name) },
           'sep',
           { label: 'Rename', icon: 'rename', action: () => this.promptText('Rename Folder', 'folder', 'Name', g.name).then((v) => { if (v?.trim()) { g.name = v.trim(); a.commit(); this.renderTree(); } }) },
           { label: 'Delete Folder (keep its features)', icon: 'trash', action: () => { doc.featureFolders = doc.featureFolders.filter((x) => x !== g); if (!doc.featureFolders.length) delete doc.featureFolders; a.commit(); this.renderTree(); } },
@@ -3481,6 +3483,7 @@ export class UI {
     items.push({ label: 'Rename', icon: 'rename', action: () => this.renameFeature(f.id) });
     // (feature folders)
     const inFolder = folderOfFeature(a.doc, f.id);
+    if (f.type !== 'sketch3d') items.push({ label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature([f.id], f.name) });
     items.push({ label: 'Add to New Folder…', icon: 'folder', action: () => this.promptText('New Folder', 'folder', 'Name', 'Folder').then((v) => { if (v?.trim()) { newFeatureFolder(a.doc, v.trim(), [f.id]); a.commit(); this.renderTree(); } }) });
     for (const g of (a.doc.featureFolders || []).filter((x) => x !== inFolder)) items.push({ label: `Move to ${g.name}`, icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, g.id); a.commit(); this.renderTree(); } });
     if (inFolder) items.push({ label: 'Remove from Folder', icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, null); a.commit(); this.renderTree(); } });

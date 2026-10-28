@@ -34,6 +34,7 @@ import { installA11y, onControl } from './a11y.js';
 import { machineInfo, kernelBudget, memoryFor, threadsPerKernel } from './machine.js';
 import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
+import * as LF from './libfeatures.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -3689,6 +3690,7 @@ class App {
 
   createSketchOn(plane) {
     if (this.pm?.kind === 'selectPlane' && this.pm.forSketch) return this.setSketchPlane(this.pm.forSketch, plane);
+    if (this.pm?.kind === 'selectPlane' && this.pm.forLibrary) return this.placeLibraryFeature(this.pm.forLibrary, plane);
     if (this.pm?.kind === 'selectPlane') this.pm = null;
     this.setHoverPlane(null);
     const f = M.createFeature(this.doc, 'sketch', { plane });
@@ -4229,6 +4231,66 @@ class App {
     this.commit();
     this.refresh();
     this.status(doc.rollbackAt ? `Rolled back to before ${M.findFeature(doc, doc.rollbackAt).name}. New features are inserted above the bar; drag it to the bottom to roll forward.` : 'Rolled forward to the end.');
+  }
+
+  // ------------------------------------------------------------ library features (libfeatures.js), kept in the settings
+  async saveLibraryFeature(ids, name0) {
+    const frameOf = (id) => { const fr = this.result.sketches.get(id)?.frame; return fr ? G.frameToJSON(fr) : null; };
+    const prefs = this.ui.prefs, list = prefs.libraryFeatures || [];
+    const name = (await this.ui.promptText('Save as Library Feature', 'folder', 'Name of the library feature (it is kept with your settings, for any part):', name0 || `Library Feature ${list.length + 1}`))?.trim();
+    if (!name) return null;
+    let lib;
+    try { lib = LF.makeLibraryFeature(this.doc, ids, frameOf, name); } catch (e) { this.toast(e.message, true); return null; }
+    prefs.libraryFeatures = [...list.filter((x) => x.name !== name), lib];
+    this.ui.savePrefs();
+    this.status(`Library feature "${name}" saved (${lib.items.length} feature${lib.items.length === 1 ? '' : 's'}${lib.equations.length ? `, variables ${lib.equations.map((e) => e.name).join(', ')}` : ''}). Insert it from Features ▸ Library Feature.`);
+    return lib;
+  }
+
+  async insertLibraryFeature() {
+    const ui = this.ui, list = ui.prefs.libraryFeatures || [];
+    if (!list.length) { this.toast('No library features yet: right-click a feature or a folder in the tree and Save as Library Feature', true); return; }
+    let lib = list[list.length - 1];
+    {
+      const v = await ui.promptFields('Library Feature', 'folder', [
+        { key: 'name', label: 'Library feature', type: 'select', options: list.map((b) => [b.name, b.name]), value: lib.name },
+        { key: 'del', label: 'Delete it from the library instead', type: 'check', value: false },
+      ]);
+      if (!v) return;
+      lib = list.find((x) => x.name === v.name);
+      if (!lib) return;
+      if (v.del) { ui.prefs.libraryFeatures = list.filter((x) => x !== lib); ui.savePrefs(); this.status(`Library feature "${lib.name}" deleted.`); return; }
+    }
+    const v = await ui.promptFields(`Insert ${lib.name}`, 'folder', [
+      ...lib.equations.map((e) => ({ key: 'var:' + e.name, label: e.name, type: 'expr', value: e.expr })),
+      { key: 'angle', label: 'Turned about the face’s normal (°)', type: 'expr', value: '0' },
+    ], 'Then click the plane or flat face to put it on (its first sketch goes there).');
+    if (!v) return;
+    const values = Object.fromEntries(lib.equations.map((e) => [e.name, v['var:' + e.name]]));
+    if (this.pm) this.cancelPM();
+    this.pm = { kind: 'selectPlane', forLibrary: { lib, values, angle: +this.result.ev(v.angle) || 0 } };
+    this.status(`Select the plane or flat face for ${lib.name}.`);
+    this.updatePlanes();
+    this.ui.renderPM();
+    this.ui.refreshCommandStates();
+    this.showBanner(`Select the plane or flat face for ${lib.name}`);
+  }
+
+  placeLibraryFeature({ lib, values, angle }, plane) {
+    const fr = plane.ref === 'face' ? plane.frame : G.STD_PLANES[plane.ref] ? G.frameToJSON(G.stdFrame(plane.ref)) : this.result.planes.get(plane.ref) ? G.frameToJSON(this.result.planes.get(plane.ref)) : null;
+    this.pm = null;
+    this.showBanner(null);
+    this.setHoverPlane?.(null);
+    if (!fr) { this.toast('That plane could not be found', true); return; }
+    const out = LF.insertLibraryFeature(this.doc, lib, fr, { values, angle });
+    this.commit();
+    this.ui.renderPM();
+    this.ui.refreshCommandStates();
+    this.refresh?.();
+    this.rebuild();
+    const ren = Object.entries(out.renamed);
+    this.status(`${lib.name} inserted (${out.ids.length} feature${out.ids.length === 1 ? '' : 's'}).${ren.length ? ` Its variables are ${ren.map(([a, b]) => `${b} (for ${a})`).join(', ')}, as the part has those names already.` : ''}`);
+    return out;
   }
 
   newBodyFolder(kind, name = null, bodyIds = []) {

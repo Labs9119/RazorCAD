@@ -5361,6 +5361,22 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (rounds, chamfers, a concave round, ring rounds at a boss deleted or resized; defeaturing holes and rounds by size); the two panels`};
   },
 
+  async 'library-features'() {
+    const {run,source,cube}=await import('/tests/library-feature-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const src=source();await a.setDoc(src.doc);await settle();
+    const menu=a.ui.featureMenu(src.cut).map(x=>x.label);if(!menu.includes('Save as Library Feature…'))return {ok:false,detail:'No Save as Library Feature in the feature menu'};
+    const keep=a.ui.promptText;a.ui.promptText=async()=>'Pocket test';let lib;
+    try{lib=await a.saveLibraryFeature(src.pocket,'Pocket');}finally{a.ui.promptText=keep;}
+    const saved=(a.ui.prefs.libraryFeatures||[]).find(x=>x.name==='Pocket test');
+    if(!lib||!saved||saved.items.length!==3)return {ok:false,detail:'The library feature was not kept in the settings',lib};
+    await a.setDoc(cube());await settle();
+    const out=a.placeLibraryFeature({lib:saved,values:{dep:'4'},angle:0},{ref:'face',frame:{o:[0,0,20],u:[1,0,0],v:[0,1,0],n:[0,0,1]}});await settle();
+    a.ui.prefs.libraryFeatures=a.ui.prefs.libraryFeatures.filter(x=>x!==saved);a.ui.savePrefs();
+    if(!out||out.ids.length!==3||a.result.errors.size)return {ok:false,detail:'Inserting in the app failed',errors:[...a.result.errors]};
+    return {ok:true,detail:`${native.results.length} kernel cases (kept with its sketch and variable; inserted turned and deeper; two copies with variables of their own; a reference outside refused); saved and inserted in the app`};
+  },
+
   async 'core-and-cavity'() {
     const {run}=await import('/tests/mold-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, with shrinkage, without the part; a plane off the part refused)`}:{ok:false,detail:native};
