@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import { icon } from './icons.js';
 import { platform } from './platform.js';
-import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName } from './model.js';
+import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName, createFeature, insertFeature, newRev } from './model.js';
 import { STD_TYPES, makeStdPart, fitToHole, fitLength, stdLengths, lengthLabel, setParts, heightOf } from './stdparts.js';
 import { gauss } from './sketch3dmodel.js';
 import { fmt, evalEquations, isValidName } from './expr.js';
@@ -26,6 +26,7 @@ import { ExplodeTool, explodeOffsets, drawExplodeLines, animateExplode } from '.
 import { hashText, packResult, unpackResult } from './modelcache.js';
 import { packMesh, unpackMesh, MESH_CACHE } from './partmeshes.js';
 import { AssemblyView } from './asmview.js';
+import { revisionsDialog } from './revisions.js';
 import { bomRows, bomPropNames, bomCell, bomTotals, bomSources, bomColumnMenu, meshVolume, massOf } from './bom.js';
 import { editCustomProps } from './custprops.js';
 import { MotionTool } from './motion.js';
@@ -72,6 +73,9 @@ export const MATE_TYPES = {
   screw: { label: 'Screw', icon: 'mateConcentric', value: 'mm/rev' },
   // (with more entities: width, a second face on each component; symmetric, the plane between them)
   width: { label: 'Width', icon: 'mateDistance', extra: 2 },
+  // (slot: a pin or point the set distance from a straight edge, between its ends; path: a point on a curved edge)
+  slot: { label: 'Slot', icon: 'mateDistance', value: 'mm' },
+  path: { label: 'Path', icon: 'mateTangent' },
   symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
 };
 
@@ -148,6 +152,33 @@ function mateEquations(m, A, B, C = null, D = null) {
     if (m._lim === 'hi') return x - hi;
     return x < lo ? x - lo : x > hi ? x - hi : 0;
   };
+  if (t === 'slot') {
+    // (the edge the one with a length, second picked first; the pin's closest point to it no further than its ends)
+    const [P, L] = B().len ? [A, B] : [B, A];
+    const along = () => { const l = L(), p = P(); if (p.kind === 'axis') { const w = cross(p.d, l.d), ww = dot(w, w); if (ww < 1e-18) return dot(sub(p.p, l.p), l.d); const r = sub(p.p, l.p); return dot(cross(p.d, r), w) / ww; } return dot(sub(p.p, l.p), l.d); };
+    eqs.push(() => {
+      const l = L(), p = P(), r = sub(p.p, l.p);
+      if (p.kind === 'axis') { const w = cross(p.d, l.d), lw = len(w); return (lw < 1e-9 ? len(cross(r, unit(l.d))) : Math.abs(dot(r, mul(w, 1 / lw)))) - v; }
+      return len(cross(r, unit(l.d))) - v;
+    });
+    // (between the ends: a limit, held by solveAssembly's active sets)
+    eqs.push(() => { const x = along(), hi = L().len; if (m._lim === 'free') return 0; if (m._lim === 'lo') return x; if (m._lim === 'hi') return x - hi; return x < 0 ? x : x > hi ? x - hi : 0; });
+    return eqs;
+  }
+  if (t === 'path') {
+    // (the point on the polyline of the curved edge: the second picked when both have one)
+    const [P, C] = B().pts ? [A, B] : [B, A];
+    const nearest = () => {
+      const q = P().p, pts = C().pts; let best = pts[0], bd = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], d = sub(pts[i], a), dd = dot(d, d), s = dd > 0 ? Math.max(0, Math.min(1, dot(sub(q, a), d) / dd)) : 0, x = add(a, mul(d, s)), e = len(sub(q, x));
+        if (e < bd) { bd = e; best = x; }
+      }
+      return sub(q, best);
+    };
+    for (const k of [0, 1, 2]) eqs.push(() => nearest()[k]);
+    return eqs;
+  }
   if (t === 'width') {
     // (B's two faces parallel to A's, their middle plane on A's)
     if (!C || !D) return eqs;
@@ -232,11 +263,11 @@ export function mateChoices(A, B) {
   const cyl = (o) => o.kind === 'axis' && o.r > 0;
   switch (k) {
     case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
-    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
+    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
     case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
-    case 'axis,point': return ['coincident', 'distance', 'lock'];
+    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path'] : []), 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
-    case 'point,point': return ['coincident', 'distance', 'symmetric', 'lock'];
+    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path'] : []), 'lock'];
     default: return ['lock'];
   }
 }
@@ -249,16 +280,67 @@ export const originRef = (key) => (key === 'origin'
 const ORIGIN_POSE = { p: [0, 0, 0], q: new THREE.Quaternion() };
 
 // Solve the mates: components not fixed (and not pinned) move as little as they must. Returns { ok, residual }.
+// Component patterns (doc.compPatterns: { id, name, kind: 'linear' | 'circular' | 'mirror', seeds: [component ids],
+// linear: dir (world, unit), dist, count, dir2?, dist2, count2; circular: axis { p, d } (world), angle, count, equal;
+// mirror: plane { p, n } (world)). Each copy is a component of its own ({ patternOf, seed, k }), fixed, placed from
+// its seed after every solve: moved, turned about the axis, or placed as the seed's mirror image (the part itself is
+// not mirrored: for parts the same both ways round). Adds and removes copies as counts change; returns whether any did.
+export function applyCompPatterns(doc, newId = (b) => b + Math.random().toString(36).slice(2, 8)) {
+  const pats = doc.compPatterns || [];
+  let changed = false;
+  const keep = new Set();
+  for (const pt of pats) {
+    const seeds = pt.seeds.map((id) => doc.components.find((c) => c.id === id)).filter(Boolean);
+    const xs = compPatternTransforms(pt);
+    for (const s of seeds) xs.forEach((X, k) => {
+      let c = doc.components.find((x) => x.patternOf === pt.id && x.seed === s.id && x.k === k);
+      if (!c) { c = { id: newId('c'), part: s.part, name: `${s.name} (${pt.name} ${k + 2})`, config: s.config ?? null, pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true, hidden: false, patternOf: pt.id, seed: s.id, k }; doc.components.push(c); changed = true; }
+      c.part = s.part; c.config = s.config ?? null; c.fixed = true;
+      const ps = X(poseOf(s));
+      c.pos = ps.p.map(r6); c.rot = [ps.q.x, ps.q.y, ps.q.z, ps.q.w].map((x) => Math.round(x * 1e12) / 1e12);
+      keep.add(c.id);
+    });
+  }
+  const before = doc.components.length;
+  doc.components = doc.components.filter((c) => !c.patternOf || keep.has(c.id));
+  if (doc.components.length !== before) { changed = true; const ids = new Set(doc.components.map((c) => c.id)); doc.mates = (doc.mates || []).filter((m) => (m.a.comp === ORIGIN || ids.has(m.a.comp)) && (m.b.comp === ORIGIN || ids.has(m.b.comp))); }
+  return changed;
+}
+// A pattern's placements for each copy: functions of a pose { p, q } to the copy's
+export function compPatternTransforms(pt) {
+  const out = [], n = Math.max(1, Math.round(Number(pt.count) || 1));
+  if (pt.kind === 'linear') {
+    const d = unit(pt.dir), s = Number(pt.dist) || 0, two = pt.dir2 && Number(pt.count2) > 1;
+    const d2 = two ? unit(pt.dir2) : [0, 0, 0], s2 = Number(pt.dist2) || 0, n2 = two ? Math.round(Number(pt.count2)) : 1;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n2; j++) if (i || j) { const v = add(mul(d, i * s), mul(d2, j * s2)); out.push((ps) => ({ p: add(ps.p, v), q: ps.q.clone() })); }
+  } else if (pt.kind === 'circular') {
+    const total = Number(pt.angle) || 0, step = pt.equal === false ? total : Math.abs(total) >= 360 ? total / n : total / Math.max(1, n - 1);
+    const o = pt.axis.p, d = unit(pt.axis.d);
+    for (let i = 1; i < n; i++) {
+      const R = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...d), (step * i * Math.PI) / 180);
+      out.push((ps) => ({ p: add(o, applyQ(R, sub(ps.p, o))), q: R.clone().multiply(ps.q) }));
+    }
+  } else if (pt.kind === 'mirror') {
+    const o = pt.plane.p, nn = unit(pt.plane.n), M = new THREE.Matrix4().set(1 - 2 * nn[0] * nn[0], -2 * nn[0] * nn[1], -2 * nn[0] * nn[2], 0, -2 * nn[1] * nn[0], 1 - 2 * nn[1] * nn[1], -2 * nn[1] * nn[2], 0, -2 * nn[2] * nn[0], -2 * nn[2] * nn[1], 1 - 2 * nn[2] * nn[2], 0, 0, 0, 0, 1);
+    out.push((ps) => {
+      // (the turn M·R·M, a true rotation: the copy faces as the mirror image does, its own part the same way round)
+      const Rm = new THREE.Matrix4().makeRotationFromQuaternion(ps.q), T = M.clone().multiply(Rm).multiply(M);
+      return { p: sub(ps.p, mul(nn, 2 * dot(sub(ps.p, o), nn))), q: new THREE.Quaternion().setFromRotationMatrix(T) };
+    });
+  }
+  return out;
+}
+
 // Limited distance and angle mates by active sets: each held free inside its limits or exactly at the one it is
 // past, the assembly solved, then each checked again where it ended up (a free one now past a limit held there)
 export function solveAssembly(doc, opts = {}) {
-  const limited = (opts.only || doc.mates).filter((m) => m.limit && !m.suppressed);
+  const limited = (opts.only || doc.mates).filter((m) => (m.limit || m.type === 'slot') && !m.suppressed);
   if (!limited.length) return solveMates(doc, opts);
   const comps = new Map(doc.components.map((c) => [c.id, c]));
   const pose = (id) => (id === ORIGIN ? ORIGIN_POSE : comps.get(id) ? poseOf(comps.get(id)) : null);
   // (where a limit stands: the value equation's band residual with the poses as they are)
   const where = (m) => {
-    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); return o; };
+    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r, len: r.len }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); if (r.pts) o.pts = r.pts.map((q) => toWorld(ps, q)); return o; };
     const eqs = mateEquations({ ...m, _lim: undefined }, ref(m.a), ref(m.b));
     const x = eqs.length ? eqs[eqs.length - 1]() : 0;
     return Math.abs(x) < 1e-12 ? 'free' : x < 0 ? 'lo' : 'hi';
@@ -296,9 +378,10 @@ function solveMates(doc, { pinned = new Set(), only = null } = {}) {
   let cur = X;
   const world = (ref) => () => {
     const ps = poseAt(ref.comp, cur);
-    const o = { kind: ref.kind, p: toWorld(ps, ref.p), r: ref.r };
+    const o = { kind: ref.kind, p: toWorld(ps, ref.p), r: ref.r, len: ref.len };
     if (ref.n) o.n = dirWorld(ps, ref.n);
     if (ref.d) o.d = dirWorld(ps, ref.d);
+    if (ref.pts) o.pts = ref.pts.map((q) => toWorld(ps, q));
     return o;
   };
   const eqs = [];
@@ -1162,12 +1245,14 @@ export class AssemblyEditor {
   worldRef(r) {
     const ps = this.poseOfId(r.comp);
     if (!ps) return null;
-    return { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r };
+    return { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r, len: r.len, pts: r.pts && r.pts.map((q) => toWorld(ps, q)) };
   }
 
   // ---------------------------------------------------------------- solving
   solve(opts) {
     const r = solveAssembly(this.view(), opts);
+    // (pattern copies placed from their seeds, where these are now)
+    if (this.doc.compPatterns?.length && applyCompPatterns(this.doc, (b) => this.uid(b))) this.loadParts?.();
     this.solveOk = r.ok;
     if (r.ok) this.dofs = r.dofs || new Map();
     return r;
@@ -1665,7 +1750,7 @@ export class AssemblyEditor {
     const sp = makeStdPart(type, size, length, material);
     const p = this.stdPartOf(sp);
     if (!hole) { await this.addComponent(p.id); return this.doc.components[this.doc.components.length - 1]; }
-    this.begin();
+    if (!opts.batch) this.begin();
     const set = setParts(type, size);
     const wsp = (opts.washer || opts.nut) ? makeStdPart(...set.washer, null, material) : null;
     const nsp = opts.nut ? makeStdPart(...set.nut, null, material) : null;
@@ -1698,6 +1783,7 @@ export class AssemblyEditor {
         }
       } else place(sp, h, h.end, h.face, sp.align);
     }
+    if (opts.batch) return made.find((c) => c.part === p.id) || made[0];
     await this.loadParts();
     this.solve();
     this.sel = { kind: 'comp', id: made.find((c) => c.part === p.id)?.id || made[0].id };
@@ -1933,10 +2019,91 @@ export class AssemblyEditor {
     await a.openFromFile({ name: p.name + (sub ? ASM_EXT : '.rcad'), content: JSON.stringify(p.doc), path: null });
     return a.tabs[a.tabIndex];
   }
+  // Positions (doc.positions: [{ id, name, comps: { component id: { pos, rot } } }]): where the components are now, kept
+  // under a name: shown in a drawing view as an alternate position (phantom lines), or the assembly put back there.
+  savePosition(name) {
+    const list = (this.doc.positions ||= []);
+    let n = 1;
+    while (list.some((p) => p.id === 'pos' + n)) n++;
+    const p = { id: 'pos' + n, name: name || `Position ${n}`, comps: Object.fromEntries(this.doc.components.map((c) => [c.id, { pos: [...c.pos], rot: [...c.rot] }])) };
+    list.push(p);
+    this.commit('Save position');
+    return p;
+  }
+  restorePosition(id) {
+    const p = (this.doc.positions || []).find((x) => x.id === id);
+    if (!p) return false;
+    for (const c of this.doc.components) { const q = p.comps[c.id]; if (q) { c.pos = [...q.pos]; c.rot = [...q.rot]; } }
+    this.solve(); this.updateGeometry(); this.renderAll();
+    this.commit('Restore position');
+    return true;
+  }
+  async positionsDialog() {
+    const a = this.app, list = this.doc.positions || [];
+    const v = await a.ui.promptFields('Positions', 'explode', [
+      { key: 'act', label: 'Do', type: 'select', options: [['save', 'Keep where the components are now as a position'], ...list.flatMap((p) => [['go:' + p.id, `Put the components back at ${p.name}`], ['del:' + p.id, `Delete ${p.name}`]])], value: 'save' },
+      { key: 'name', label: 'Name (a new position)', type: 'text', value: `Position ${list.length + 1}` },
+    ], 'A position keeps where every component is (e.g. a lid open, after changing a mate). A drawing view of the assembly can show a position as an alternate position, in phantom lines.');
+    if (!v) return;
+    if (v.act === 'save') { const p = this.savePosition(v.name.trim()); a.status(`${p.name} kept: a drawing view can show it as an alternate position.`); }
+    else if (v.act.startsWith('go:')) this.restorePosition(v.act.slice(3));
+    else if (v.act.startsWith('del:')) { this.doc.positions = list.filter((p) => p.id !== v.act.slice(4)); if (!this.doc.positions.length) delete this.doc.positions; this.commit('Delete position'); }
+  }
+  // Edit in Context: the part opened with the other parts of the assembly in it as context bodies (transparent), where
+  // they are from it, so it can be sketched on them, take their edges or be extruded up to them. The context bodies are
+  // references only: left out of the part where it is used. Again on the same component: the context brought up to date.
+  async editInContext(id, pick = null) {
+    const a = this.app, c = this.comp(id), p = c && this.part(c.part);
+    if (!p) return null;
+    if (this.isSub(p) || p.libKey) { a.toast('Edit in Context works on parts made here (not sub-assemblies or library parts)', true); return null; }
+    const others = this.doc.components.filter((x) => x.id !== c.id && !this.eff(x).suppressed && !this.eff(x).hidden && this.part(x.part) && !this.isSub(this.part(x.part)));
+    if (!others.length) { a.toast('There are no other parts to show in context', true); return null; }
+    let chosen = pick ? others.filter((x) => pick.includes(x.id)) : null;
+    if (!chosen) {
+      const v = await a.ui.promptFields(`Edit ${c.name || p.name} in Context`, 'part', others.slice(0, 40).map((x, i) => ({ key: 'c' + i, label: x.name || this.part(x.part).name, type: 'check', value: others.length <= 12 })), 'The parts ticked come into the part as transparent context bodies, where they are in the assembly.');
+      if (!v) return null;
+      chosen = others.slice(0, 40).filter((_, i) => v['c' + i]);
+      if (!chosen.length) return null;
+    }
+    const P0 = poseOf(c), inv = P0.q.clone().invert();
+    const pool = a.kernelPool || a.kernel, ctx = [];
+    await a.withProgress?.('Bringing in the context…', async () => {
+      for (const x of chosen) {
+        const px = this.part(x.part), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p)), cfg = this.eff(x).config;
+        const doc = { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
+        try { const r = await pool.request('partSTEP', { doc: JSON.stringify(doc), pose: { p: t, q: [q.x, q.y, q.z, q.w] }, name: x.name || px.name }, 'asm-parts'); ctx.push({ comp: x, text: r.text }); }
+        catch (e) { a.toast(`${x.name || px.name} could not come into context: ${e.message}`, true); }
+      }
+    }) ?? null;
+    if (!ctx.length) return null;
+    const asmTab = a.tabs[a.tabIndex];
+    await this.openPart(c.id);
+    const doc = a.doc;
+    if (!doc || doc === this.doc) return null;
+    const made = [];
+    for (const { comp, text } of ctx) {
+      let f = doc.features.find((g) => g.type === 'import' && g.context?.comp === comp.id);
+      if (f) { f.data = text; f.rev = newRev(); }
+      else {
+        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name } });
+        f.name = `Context: ${comp.name || this.part(comp.part).name}`;
+        insertFeature(doc, f);
+      }
+      made.push(f.id);
+    }
+    a.commit();
+    await a.rebuild?.();
+    const ids = (a.result?.bodies || []).filter((b) => made.includes(String(b.id).split(/[.~]/)[0])).map((b) => b.id);
+    if (ids.length) a.setBodiesTransparent(ids, true);
+    a.status(`Editing ${p.name} in context: ${ctx.length} part${ctx.length === 1 ? '' : 's'} in as transparent context bodies. Sketch on them, use their edges or extrude up to them; they are left out of the part in the assembly. Save the part to update the assembly.`);
+    this.contextOf = { asmTab, comp: c.id };
+    return { ids: made };
+  }
   compMenu(c) {
     const sub = this.isSub(this.part(c.part));
     return [
       { label: sub ? 'Open Sub-assembly' : 'Open Part', icon: sub ? 'assembly' : 'part', action: () => this.openPart(c.id) },
+      ...(sub ? [] : [{ label: 'Edit in Context…', icon: 'part', action: () => this.editInContext(c.id) }]),
       { label: 'Mate…', icon: 'mate', action: () => this.startMate() },
       'sep',
       c.fixed ? { label: 'Float', icon: 'float', action: () => this.setFixed(c.id, false) } : { label: 'Fix', icon: 'fix', action: () => this.setFixed(c.id, true) },
@@ -1948,6 +2115,144 @@ export class AssemblyEditor {
       { label: 'Rename', icon: 'rename', action: () => this.renameComponent(c.id) },
       { label: 'Delete', icon: 'trash', key: 'Del', action: () => this.deleteComponent(c.id) },
     ];
+  }
+
+  // ---------------------------------------------------------------- fasteners everywhere
+  // The lined-up holes of the assembly: every round hole of each component (a cylinder whose faces look in towards
+  // its axis), in stacks of holes on one axis through different components. [{ holes: [{ comp, li, gi, ref, p, d, r }] }]
+  holeStacks() {
+    const leaves = this._leaves || this.leaves(), holes = [];
+    leaves.forEach((l, li) => {
+      const c = l.comp;
+      if (l.chain.length || this.eff(c).suppressed || this.part(c.part)?.libKey) return;
+      const m = this.parts.get(l.gk)?.mesh;
+      if (!m) return;
+      const ps = poseOf(c), V = m.vertices, T = m.triangles;
+      m.faceGroups.forEach((g, gi) => {
+        const s = g.surf;
+        if (s?.t !== 'CYLINDER' || !g.count) return;
+        const [a, b, cc] = [0, 1, 2].map((k) => { const v = T[g.start + k]; return [V[3 * v], V[3 * v + 1], V[3 * v + 2]]; });
+        const N = cross(sub(b, a), sub(cc, a)), mid = mul(add(add(a, b), cc), 1 / 3), d = unit(s.d), rad = sub(mid, add(s.p, mul(d, dot(sub(mid, s.p), d))));
+        if (!(dot(N, rad) < 0)) return; // (a shaft, not a hole)
+        const ref = { comp: c.id, kind: 'axis', p: s.p.map(r6), d: s.d.map(r6), r: r6(s.r), face: gi, gi: `${li}:f${gi}`, what: 'Cylindrical face' };
+        holes.push({ comp: c, li, gi, ref, p: toWorld(ps, s.p), d: unit(dirWorld(ps, s.d)), r: s.r });
+      });
+    });
+    const root = holes.map((_, i) => i), find = (i) => (root[i] === i ? i : (root[i] = find(root[i])));
+    for (let i = 0; i < holes.length; i++) for (let j = i + 1; j < holes.length; j++) {
+      const A = holes[i], B = holes[j];
+      if (len(cross(A.d, B.d)) < 1e-4 && len(cross(sub(B.p, A.p), A.d)) < 1e-3) root[find(i)] = find(j);
+    }
+    const groups = new Map();
+    holes.forEach((h, i) => { const k = find(i); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(h); });
+    // (one hole per component: the widest of a stepped one is its counterbore)
+    return [...groups.values()].map((hs) => ({ holes: [...new Map(hs.sort((x, y) => x.r - y.r).map((h) => [h.comp.id, h])).values()] }));
+  }
+  // A fastener in each stack of lined-up holes through two or more components (singles: in every hole), sized to the
+  // holes, as long as the stack (with a washer under its head, and a washer and nut on the far side), mated in it;
+  // stacks with a fastener already left alone. The number put in.
+  async autoFasten({ kind = 'hexBolt', washer = true, nut = true, singles = false } = {}) {
+    const stacks = this.holeStacks().filter((s) => s.holes.length >= (singles ? 1 : 2));
+    // (a fastener already on the axis: a standard part's component whose own axis lies on it)
+    const filled = (st) => this.doc.components.some((c) => {
+      if (!this.part(c.part)?.libKey) return false;
+      const ps = poseOf(c), up = dirWorld(ps, [0, 1, 0]), h = st.holes[0];
+      return len(cross(up, h.d)) < 1e-4 && len(cross(sub(ps.p, h.p), h.d)) < 1e-3;
+    });
+    let n = 0;
+    this.begin();
+    for (const st of stacks) {
+      if (filled(st)) continue;
+      // (the stack's two outer ends: of all its holes' ends, the furthest towards the camera (where the fastener goes in,
+      // as for a single hole) and the furthest away)
+      const hs = st.holes.map((x) => ({ x, h: this.holeOf(x.ref) })).filter((o) => o.h);
+      if (!hs.length) continue;
+      const u = unit(dirWorld(this.poseOfId(hs[0].x.comp.id), hs[0].h.end.n));
+      let top = null, bot = null;
+      for (const o of hs) {
+        const X = this.poseOfId(o.x.comp.id);
+        for (const [e, fc, far] of [[o.h.end, o.h.face, false], [o.h.far, o.h.farFace, true]]) {
+          const t = dot(toWorld(X, e.p), u);
+          if (!top || t > top.t) top = { o, e, fc, far, t };
+          if (!bot || t < bot.t) bot = { o, e, fc, t, X };
+        }
+      }
+      const h = top.o.h;
+      if (top.far) [h.end, h.face, h.far, h.farFace] = [h.far, h.farFace, h.end, h.face];
+      const P = this.poseOfId(top.o.x.comp.id), qi = P.q.clone().invert(), local = (w) => applyQ(qi, sub(w, P.p));
+      if (bot.o !== top.o) { h.far = { p: local(toWorld(bot.X, bot.e.p)).map(r6), n: unit(applyQ(qi, dirWorld(bot.X, bot.e.n))).map(r6), sign: -1 }; h.farFace = bot.fc; }
+      const depth = top.t - bot.t;
+      const fit = fitToHole(kind, 2 * Math.max(...st.holes.map((x) => x.r)));
+      const L = fastenerLength(kind, fit.size, depth, { washer, nut });
+      await this.insertStdPart(kind, fit.size, L, 'steel', h, { washer, nut, batch: true });
+      n++;
+    }
+    await this.loadParts();
+    this.solve();
+    this.change(n ? `${n} fastener${n === 1 ? '' : 's'} put in (${stacks.length - n} stack${stacks.length - n === 1 ? '' : 's'} had one already or no fit).` : 'No stacks of holes to fasten (or each has a fastener already).');
+    return n;
+  }
+  async autoFastenDialog() {
+    const kinds = STD_TYPES.filter((t) => t.fastener).map((t) => [t.id, t.label]);
+    const v = await this.app.ui.promptFields('Fasten All Holes', 'stdParts', [
+      { key: 'kind', label: 'Fastener', type: 'select', options: kinds, value: 'hexBolt' },
+      { key: 'washer', label: 'Washer under the head', type: 'check', value: true },
+      { key: 'nut', label: 'Washer and nut on the far side', type: 'check', value: true },
+      { key: 'singles', label: 'Also holes through one component only', type: 'check', value: false },
+    ], 'Every stack of lined-up holes through two or more components gets a fastener sized to the holes and as long as the stack, mated in it. Stacks with a fastener already are left alone.');
+    if (v) await this.autoFasten(v);
+  }
+
+  // ---------------------------------------------------------------- component patterns
+  // The components selected (or the one), and a picked edge, axis or face for the direction, axis or mirror plane
+  async startCompPattern(kind, edit = null) {
+    const pt0 = edit ? this.doc.compPatterns.find((x) => x.id === edit) : null;
+    const seeds = pt0 ? pt0.seeds : [...new Set([this.selComp()?.id, ...(this.sel?.kind === 'refs' ? this.sel.refs.map((r) => r.comp) : [])].filter((id) => id && id !== ORIGIN && !this.comp(id)?.patternOf))];
+    if (!seeds.length) { this.app.toast('Select the component to pattern first', true); return; }
+    kind = pt0?.kind || kind;
+    const ref = this.sel?.kind === 'refs' ? this.sel.refs.map((r) => this.worldRef(r)).find((r) => r && (kind === 'mirror' ? r.kind === 'plane' : r.kind === 'axis')) : null;
+    const axes = [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis'], ...(ref ? [['ref', kind === 'mirror' ? 'The selected face' : 'The selected edge / axis']] : [])];
+    const planes = [['yz', 'YZ plane (x = 0)'], ['xz', 'XZ plane (y = 0)'], ['xy', 'XY plane (z = 0)'], ...(ref ? [['ref', 'The selected face']] : [])];
+    const fields = kind === 'linear' ? [
+      { key: 'dir', label: 'Direction', type: 'select', options: axes, value: pt0 ? 'keep' : ref ? 'ref' : 'x' }, { key: 'dist', label: 'Spacing (mm)', value: pt0?.dist ?? 50 }, { key: 'count', label: 'Instances', value: pt0?.count ?? 3 },
+      { key: 'dir2', label: 'Second direction', type: 'select', options: [['none', 'None'], ...axes.filter(([k]) => k !== 'ref')], value: pt0?.dir2 ? 'keep' : 'none' }, { key: 'dist2', label: 'Second spacing (mm)', value: pt0?.dist2 ?? 50 }, { key: 'count2', label: 'Second instances', value: pt0?.count2 ?? 2 },
+    ] : kind === 'circular' ? [
+      { key: 'axis', label: 'Axis', type: 'select', options: axes, value: pt0 ? 'keep' : ref ? 'ref' : 'z' }, { key: 'angle', label: 'Angle (°)', value: pt0?.angle ?? 360 }, { key: 'count', label: 'Instances', value: pt0?.count ?? 4 }, { key: 'equal', label: 'Equal spacing (angle is total)', type: 'check', value: pt0 ? pt0.equal !== false : true },
+    ] : [{ key: 'plane', label: 'Mirror plane', type: 'select', options: planes, value: pt0 ? 'keep' : ref ? 'ref' : 'yz' }];
+    if (pt0) for (const f of fields) if (f.type === 'select' && f.value === 'keep') f.options = [['keep', 'As it is'], ...f.options];
+    const title = { linear: 'Component Pattern', circular: 'Circular Component Pattern', mirror: 'Mirror Components' }[kind];
+    const v = await this.app.ui.promptFields(title, { linear: 'lpattern', circular: 'cpattern', mirror: 'mirror' }[kind], fields, `${seeds.length} component${seeds.length === 1 ? '' : 's'}: ${seeds.map((id) => this.comp(id)?.name).join(', ')}. Copies are fixed and follow their seeds.${kind === 'mirror' ? ' Mirror places copies as the mirror image (the parts are not mirrored: for parts the same both ways round).' : ''}`);
+    if (!v) return;
+    const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, PL = { yz: [1, 0, 0], xz: [0, 1, 0], xy: [0, 0, 1] };
+    const num = (x, name) => { const n = Number(x); if (!Number.isFinite(n)) throw new Error(`${name} must be a number`); return n; };
+    try {
+      const pt = pt0 ? { ...pt0 } : { id: this.uid('cp'), name: `${{ linear: 'Pattern', circular: 'Circular Pattern', mirror: 'Mirror' }[kind]}${(this.doc.compPatterns || []).length + 1}`, kind, seeds };
+      if (kind === 'linear') {
+        if (v.dir !== 'keep') pt.dir = v.dir === 'ref' ? ref.d : AX[v.dir];
+        pt.dist = num(v.dist, 'The spacing'); pt.count = Math.round(num(v.count, 'The instances'));
+        if (v.dir2 === 'none') { delete pt.dir2; } else if (v.dir2 !== 'keep') pt.dir2 = AX[v.dir2];
+        pt.dist2 = num(v.dist2, 'The second spacing'); pt.count2 = Math.round(num(v.count2, 'The second instances'));
+      } else if (kind === 'circular') {
+        if (v.axis !== 'keep') pt.axis = v.axis === 'ref' ? { p: ref.p, d: ref.d } : { p: [0, 0, 0], d: AX[v.axis] };
+        pt.angle = num(v.angle, 'The angle'); pt.count = Math.round(num(v.count, 'The instances')); pt.equal = !!v.equal;
+      } else if (v.plane !== 'keep') pt.plane = v.plane === 'ref' ? { p: ref.p, n: ref.n } : { p: [0, 0, 0], n: PL[v.plane] };
+      if (!(pt.count >= 1) || (pt.count || 1) * (pt.count2 || 1) > 400) throw new Error('Between 1 and 400 instances');
+      this.begin();
+      this.doc.compPatterns = [...(this.doc.compPatterns || []).filter((x) => x.id !== pt.id), pt];
+      applyCompPatterns(this.doc, (b) => this.uid(b));
+      await this.loadParts();
+      this.solve();
+      this.change(`${pt.name}: ${this.doc.components.filter((c) => c.patternOf === pt.id).length} copies`);
+    } catch (e) { this.app.toast(e.message, true); }
+  }
+  deleteCompPattern(id) {
+    const pt = (this.doc.compPatterns || []).find((x) => x.id === id);
+    if (!pt) return;
+    this.begin();
+    this.doc.compPatterns = this.doc.compPatterns.filter((x) => x !== pt);
+    applyCompPatterns(this.doc, (b) => this.uid(b));
+    this.doc.parts = this.doc.parts.filter((p) => this.doc.components.some((x) => x.part === p.id));
+    this.change(`${pt.name} deleted (with its copies).`);
   }
 
   // ---------------------------------------------------------------- mates
@@ -2017,6 +2322,7 @@ export class AssemblyEditor {
     if (pm.type === 'gear') pm.value ??= A.r > 0 && B.r > 0 ? r6(A.r / B.r) : 1;
     if (pm.type === 'rack') { const r = A.kind === 'axis' && A.r > 0 ? A.r : B.r; pm.value ??= r6(2 * Math.PI * (r || 10)); }
     if (pm.type === 'screw') pm.value ??= 1;
+    if (pm.type === 'slot') { const [P, L] = B.len ? [A, B] : [A.len ? B : A, A.len ? A : B]; const r = sub(P.p, L.p); pm.value ??= r6(P.kind === 'axis' && len(cross(P.d, L.d)) > 1e-9 ? Math.abs(dot(r, unit(cross(P.d, L.d)))) : len(cross(r, unit(L.d)))); }
     if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') pm.side ??= 1;
     if (pm.type === 'tangent') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
@@ -2290,6 +2596,57 @@ export class AssemblyEditor {
     return seen.size;
   }
 
+  // Collect Files: the assembly with everything in it (parts and sub-assemblies, as the assembly has them now) copied into
+  // one folder, each a file of its own, names given a prefix / suffix if asked; the copied assemblies use the copied
+  // files. The assembly open here is left as it is. Returns the files written ([{ name, path }]), or null.
+  async collectFiles(opts = null) {
+    const a = this.app;
+    const v = opts || (await a.ui.promptFields('Collect Files', 'save', [
+      { key: 'prefix', label: 'Before each name', type: 'text', value: '' },
+      { key: 'suffix', label: 'After each name', type: 'text', value: '' },
+    ], 'Every part and sub-assembly of the assembly is copied, with the assembly, into the folder you choose next (to send it on, or to start a variant of it).'));
+    if (!v) return null;
+    const folder = v.folder || (await platform.pickFolder());
+    if (!folder) return null;
+    const top = JSON.parse(JSON.stringify(this.doc)), used = new Set(), out = [];
+    const safe = (s) => (String(s || 'Part').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').replace(/^[\s.]+|[\s.]+$/g, '').slice(0, 120) || 'Part');
+    const nameOf = (base, ext) => { let b = safe(`${v.prefix || ''}${base}${v.suffix || ''}`), n = b + ext, k = 2; while (used.has(n.toLowerCase())) n = `${b} (${k++})${ext}`; used.add(n.toLowerCase()); return n; };
+    const written = new Map(); // (the same document used twice: one file)
+    const sep = String(folder).includes('\\') ? '\\' : '/';
+    const write = async (doc, name) => {
+      const path = await platform.saveInto(folder, name, new TextEncoder().encode(docJSON(doc, null, doc.kind === 'assembly' ? 1 : 0)));
+      if (!path) throw new Error(`${name} could not be written`);
+      out.push({ name, path });
+      return path;
+    };
+    const pack = async (doc, depth) => {
+      if (depth > 16) return;
+      for (const p of doc.parts || []) {
+        if (p.libKey || !p.doc) continue;
+        const key = JSON.stringify(p.doc);
+        if (!written.has(key)) {
+          const sub = this.isSub(p);
+          if (sub) await pack(p.doc, depth + 1);
+          const name = nameOf(p.name || p.doc.name || 'Part', sub ? ASM_EXT : '.rcad');
+          p.doc.name = name.replace(/\.[^.]+$/, '');
+          written.set(key, await write(p.doc, name) || `${folder}${sep}${name}`);
+        }
+        p.path = written.get(key);
+        p.name = String(p.path).split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+      }
+    };
+    try {
+      await a.withProgress?.('Collect Files…', async () => {
+        await pack(top, 0);
+        const name = nameOf(this.doc.name || 'Assembly', ASM_EXT);
+        top.name = name.replace(/\.[^.]+$/, '');
+        await write(top, name);
+      });
+    } catch (e) { a.toast('Collect Files failed: ' + e.message, true); return null; }
+    a.status(`Collect Files: ${out.length} file${out.length === 1 ? '' : 's'} written${platform.desktop ? ` to ${folder}` : ''}.`);
+    return out;
+  }
+
   // Each part and sub-assembly that is only inside this assembly saved as a file of its own beside it (the
   // assembly at mainPath, just saved): parts as .rcad, sub-assemblies as .rasm, those inside a sub-assembly
   // before it, so every assembly file uses the files of what is in it. Returns how many files were written, or
@@ -2379,23 +2736,30 @@ export class AssemblyEditor {
       assembly: [
         { icon: 'insertComponent', label: 'Insert Components', action: () => this.insertComponents() },
         { icon: 'stdParts', label: 'Standard Parts', action: () => this.standardParts() },
+        { icon: 'stdParts', label: 'Fasten All Holes', action: () => this.autoFastenDialog() },
         { icon: 'equations', label: 'Equations', action: () => this.showEquations() },
         { icon: 'asmHole', label: 'Assembly Hole', action: () => this.startAsmFeature('hole'), active: this.holeTool?.f?.type === 'hole' },
         { icon: 'asmCut', label: 'Assembly Cut', action: () => this.startAsmFeature('cut'), active: this.holeTool?.f?.type === 'cut' },
         { icon: 'mate', label: 'Mate', key: 'M', action: () => this.startMate(), active: !!this.pm },
+        { icon: 'lpattern', label: 'Component Pattern', action: () => this.startCompPattern('linear') },
+        { icon: 'cpattern', label: 'Circular Component Pattern', action: () => this.startCompPattern('circular') },
+        { icon: 'mirror', label: 'Mirror Components', action: () => this.startCompPattern('mirror') },
         'sep',
         { icon: 'fix', label: 'Fix', action: () => selC && this.setFixed(selC.id, true), disabled: !selC || selC.fixed },
         { icon: 'float', label: 'Float', action: () => selC && this.setFixed(selC.id, false), disabled: !selC || !selC.fixed },
         { icon: selC && this.eff(selC).hidden ? 'show' : 'hide', label: selC && this.eff(selC).hidden ? 'Show Component' : 'Hide Component', action: () => selC && this.setHidden(selC.id, !this.eff(selC).hidden), disabled: !selC },
         { icon: 'suppress', label: selC && this.eff(selC).suppressed ? 'Unsuppress' : 'Suppress', action: () => selC && this.setSuppressed(selC.id, !this.eff(selC).suppressed), disabled: !selC },
         { icon: 'part', label: 'Open Part', action: () => selC && this.openPart(selC.id), disabled: !selC },
+        { icon: 'part', label: 'Edit in Context', action: () => selC && this.editInContext(selC.id), disabled: !selC },
         'sep',
         { icon: 'explode', label: 'Exploded View', action: () => this.startExplode(), active: !!this.explodeTool },
+        { icon: 'explode', label: 'Positions', action: () => this.positionsDialog() },
         { icon: 'explode', label: this.doc.exploded ? 'Collapse' : 'Explode', action: () => (this.doc.exploded ? this.setExploded(null, true) : this.doc.explodes.length && this.setExploded(this.doc.explodes[this.doc.explodes.length - 1].id, true)), disabled: !this.doc.explodes.length },
         { icon: 'motion', label: 'Motion Study', action: () => this.startMotion(), active: !!this.motionTool },
         'sep',
         { icon: 'bom', label: 'Bill of Materials', action: () => this.showBOM() },
         { icon: 'interference', label: 'Interference Check', action: () => this.checkInterference() },
+        { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.app.ui.showStackUp(this.doc, () => this.commit('Tolerance stack-up')) },
         { icon: 'section', label: 'Section View', action: () => this.toggleSection(), active: !!this.vp.section },
         { icon: 'collide', label: 'Collision Detection', action: () => this.setCollideMode(this.collideMode === 'off' ? 'stop' : 'off'), active: this.collideMode !== 'off' },
         { icon: 'speed', label: 'Speed Mode', action: () => this.setSpeedMode(!this.doc.speedMode), active: !!this.doc.speedMode },
@@ -2432,6 +2796,8 @@ export class AssemblyEditor {
         'sep',
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
+        { label: 'Collect Files…', icon: 'save', action: () => this.collectFiles(), disabled: !this.doc.components.length },
+        { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, this.doc, () => this.commit('Revision'), ASM_EXT) },
         'sep',
         { label: 'Export ▸ STEP…', icon: 'step', action: () => this.exportSTEP(), disabled: !this.doc.components.length },
         'sep',
@@ -2560,6 +2926,12 @@ export class AssemblyEditor {
       });
       if (isSub && open) subRows(p.doc, e.config, c, c.id, 2);
     }
+    for (const pt of this.doc.compPatterns || []) row({
+      ic: { linear: 'lpattern', circular: 'cpattern', mirror: 'mirror' }[pt.kind], label: pt.name, depth: 1,
+      sub: `(${pt.seeds.map((id) => this.comp(id)?.name || '?').join(', ')} · ${this.doc.components.filter((c) => c.patternOf === pt.id).length} copies)`,
+      onDbl: () => this.startCompPattern(pt.kind, pt.id),
+      menu: () => [{ label: 'Edit Pattern', icon: 'edit', action: () => this.startCompPattern(pt.kind, pt.id) }, 'sep', { label: 'Delete', icon: 'trash', action: () => this.deleteCompPattern(pt.id) }],
+    });
     const open = !this._matesClosed;
     row({ ic: 'mate', label: `Mates (${this.doc.mates.length})`, depth: 1, cls: 'tree-folder', twisty: this.doc.mates.length ? (open ? '▼' : '▶') : '', onTwisty: () => { this._matesClosed = open; this.renderTree(); } });
     if (open) for (const m0 of this.doc.mates) {
@@ -2685,7 +3057,7 @@ export class AssemblyEditor {
       g2.appendChild(bar);
       const info = MATE_TYPES[pm.type];
       if (info?.value) {
-        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)' }[pm.type] || 'Distance'));
+        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)', slot: 'Distance from the edge (0: on it)' }[pm.type] || 'Distance'));
         const vu = info.value === '°' ? '°' : info.value === 'ratio' ? '' : 'mm';
         g2.appendChild(ui.exprInput(pm.value ?? 0, vu, (v) => { const x = Number(v); if (Number.isFinite(x) && x > 0 || (vu !== '' && Number.isFinite(x))) { pm.value = x; this.previewMate(); } }, { min: 0 }));
         if (pm.type === 'gear') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two gears\' cylinders (their pitch circles): the ratio starts as their radii\'s. Turn one gear and the other follows. Use Reverse for an internal gear (both turn the same way).'));
@@ -2749,10 +3121,14 @@ function refOfFace(m, gi) {
 function refOfEdge(m, ei) {
   const e = m.edges[ei];
   if (!e) return null;
-  if (e.circ) return { kind: 'axis', p: e.circ.c.map(r6), d: e.circ.n.map(r6), r: r6(e.circ.r), circle: true, what: 'Circular edge' };
+  // (the edge's points, at most 256, for a path mate)
+  const pts = []; const n = Math.floor(e.pts.length / 3), step = Math.max(1, Math.ceil(n / 256));
+  for (let i = 0; i < n; i += step) pts.push(e.pts.slice(3 * i, 3 * i + 3).map(r6));
+  if (n && (n - 1) % step) pts.push(e.pts.slice(3 * (n - 1), 3 * n).map(r6));
+  if (e.circ) return { kind: 'axis', p: e.circ.c.map(r6), d: e.circ.n.map(r6), r: r6(e.circ.r), circle: true, what: 'Circular edge', pts };
   if (e.type === 'LINE' && e.pts.length >= 6) {
     const a = e.pts.slice(0, 3), b = e.pts.slice(-3);
-    return { kind: 'axis', p: a.map(r6), d: unit(sub(b, a)).map(r6), what: 'Edge' };
+    return { kind: 'axis', p: a.map(r6), d: unit(sub(b, a)).map(r6), len: r6(len(sub(b, a))), what: 'Edge' };
   }
-  return { kind: 'point', p: e.mid.map(r6), what: 'Edge middle' };
+  return { kind: 'point', p: e.mid.map(r6), what: 'Edge middle', pts };
 }

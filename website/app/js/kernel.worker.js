@@ -19,12 +19,14 @@ import * as SM from './sheetmetal.js';
 import { holeSpec, holeProfile } from './holes.js';
 import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
+import { pipeOf, bundleDiameter } from './routing.js';
 import { normalize3d, solve3d, splineGeom } from './sketch3dmodel.js';
 import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
 import { compareSurfaceContinuity, surfaceNormalAtUV } from './surfacecontinuity.js';
 import { guideScaleLaw } from './sweepguides.js';
 import { sweepWithOrientation, scaleLaw } from './sweepoptions.js';
+import * as SO from './sketchoffset.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
@@ -215,6 +217,7 @@ let lastMeshTol = 0.01;
 
 let lastBody = null;
 let lastSolids = [];
+let lastContext = new Set(); // (the ids of the context bodies in the last rebuild)
 let lastSurfaces = [];
 let lastName = 'Part';
 const importCache = new Map();
@@ -2494,6 +2497,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const axes = new Map();
   const points = new Map();
   const tools = new Map();
+  // (import features holding other parts of an assembly, for reference: Edit in Context; from the list, as features
+  // restored from the rebuild cache are not run again)
+  const contextFeats = new Set((doc.features || []).filter((f) => f.type === 'import' && f.context).map((f) => f.id));
   let applied = []; // tools applied by the current feature (for previews)
   let blendPair = null; // a fillet/chamfer on one body: that body before and after (for its preview)
   let body = null;    // all bodies together (one solid, or a compound of several)
@@ -2760,7 +2766,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
       const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
       const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
-      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
+      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, chains, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
     }
     if (f.edges?.length) out.push(edgeSection(f));
     return out;
@@ -3364,7 +3370,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // length agrees with it at 90° (and other angles in proportion). A deduction with the outside setbacks: BA = 2(R + t) − BD
   const sheetKFactor = (f, R0, t) => {
     const m = f.bendCalc || 'k';
-    if (!['k', 'ba', 'bd'].includes(m)) throw new Error('Select a supported bend calculation');
+    if (!['k', 'ba', 'bd', 'table'].includes(m)) throw new Error('Select a supported bend calculation');
+    if (m === 'table') {
+      // (a bend table: 'angle: allowance' pairs; the K-factor the 90° allowance gives, carrying the table)
+      const rows = String(f.bendTable || '').split(/[;\n]+/).map((x) => x.trim()).filter(Boolean).map((x) => {
+        const m2 = x.match(/^(-?[\d.]+)\s*°?\s*[:=,\s]\s*(-?[\d.]+)$/);
+        if (!m2) throw new Error(`“${x}” is not a bend table row (an angle and its allowance, such as 90: 4.2)`);
+        const a = Number(m2[1]), b = Number(m2[2]);
+        if (!(a > 0 && a <= 180 && b > 0)) throw new Error(`Bend table row “${x}”: the angle must be from 0° to 180° and the allowance more than zero`);
+        return [(a * Math.PI) / 180, b];
+      }).sort((x, y) => x[0] - y[0]);
+      if (!rows.length) throw new Error('The bend table is empty: give a row for each angle, such as 90: 4.2');
+      if (rows.some((r, i) => i && Math.abs(r[0] - rows[i - 1][0]) < 1e-12)) throw new Error('The bend table gives an angle twice');
+      const K90 = (SM.tableAllowance(rows, Math.PI / 2) / (Math.PI / 2) - R0) / t;
+      if (!(K90 >= 0 && K90 <= 1)) throw new Error(`The bend table's 90° allowance gives a K-factor of ${Number.isFinite(K90) ? +K90.toFixed(4) : K90}: it must give one between 0 and 1`);
+      return Object.assign(new Number(K90), { table: { R: R0, t, rows } });
+    }
     let K;
     if (m === 'k') K = ev(f.kFactor);
     else {
@@ -3852,7 +3873,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
         return found;
       };
       // (a folder named in the features: what is in it, before the pattern, that a pattern can copy)
-      const FOLDER_SKIP = new Set(['sketch', 'sketch3d', 'plane', 'axis', 'point', 'helix', 'compCurve', 'projCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern']);
+      const FOLDER_SKIP = new Set(['sketch', 'sketch3d', 'plane', 'axis', 'point', 'helix', 'compCurve', 'projCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'tablePattern']);
       const patternSources = (pf) => {
         const at = doc.features.findIndex((x) => x.id === pf.id);
         const fromFolders = (x) => {
@@ -3909,6 +3930,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // (with cuts waiting: the body it was drawn on is worked out only if asked for, by sectionCurves)
           sketchBodies.set(f.id, pending.length ? { body: null, lazy: { base: body, tools: pending.map((x) => x.tool) }, frame, surfaces: surfaces.map((x) => x.shape) } : { body, frame, surfaces: surfaces.map((x) => x.shape) });
           if (f.entities) S.migrateSketch(f, vars);
+          if (f.constraints?.some((k) => k.type === 'equation')) S.updateEquationCurves(f, vars);
           const lost = updateProjections(f, frame, dense ? null : body, sketches, surfaces.map((x) => x.shape));
           const sol = solveSketch(f, ev);
           sketches.set(f.id, { frame, sk: f });
@@ -4231,8 +4253,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const two = f.dir2 && f.dir2 !== 'none';
           const c2 = two ? Math.max(1, Math.round(ev(f.count2))) : 1;
           const step = (k, c) => { const d = ev(f['dist' + k]); return f['spacing' + k] === 'total' ? (c > 1 ? d / (c - 1) : 0) : d; };
-          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * step(1, c1));
-          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * step(2, c2)) : [0, 0, 0];
+          // (inc1 / inc2: each spacing that much more than the one before; the i-th instance at i·spacing + inc·i(i−1)/2,
+          // the other way the same)
+          const at = (k, s, i) => { const n = Math.abs(i), inc = ev(f['inc' + k] ?? 0) || 0; return Math.sign(i) * (n * s + (inc * n * (n - 1)) / 2); };
+          const s1 = step(1, c1), s2 = two ? step(2, c2) : 0;
+          const u1 = mul(resolveAxis(f.dir1).d, f.rev1 ? -1 : 1), u2 = two ? mul(resolveAxis(f.dir2).d, f.rev2 ? -1 : 1) : [0, 0, 0];
           const range = (c, sym) => Array.from({ length: sym ? 2 * c - 1 : c }, (_, k) => (sym ? k - (c - 1) : k));
           const skip = patternSkips(f, two);
           const xs = [];
@@ -4240,7 +4265,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (!i && !j) continue;
             if (two && f.seedOnly2 && i && j) continue;
             if (skip.has(two ? `${i}.${j}` : `${i}`)) continue;
-            xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+            xs.push(xMove(add(mul(u1, at(1, s1, i)), mul(u2, at(2, s2, j)))));
           }
           if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
@@ -4266,7 +4291,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (let k = 0; k < rings; k++) for (let i = sym ? -(n - 1) : 0; i < n; i++) {
             if (!i && !k) continue;
             if (skip.has(rings > 1 ? `${i}.${k}` : `${i}`)) continue;
-            const turn = xTurn(step * i, ax.o, ax.d);
+            // (angleInc: each angle between copies that much more than the one before)
+            const ai = Math.abs(i), inc = ev(f.angleInc ?? 0) || 0, turn = xTurn(Math.sign(i) * (step * ai + (inc * ai * (ai - 1)) / 2), ax.o, ax.d);
             xs.push(k ? (i ? xChain(xMove(mul(out, k)), turn) : xMove(mul(out, k))) : turn);
           }
           if (xs.length > 400) throw new Error('Too many instances (max 400)');
@@ -4291,6 +4317,31 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const base = pts.reduce((b, q) => (len(sub(q, c0)) - dot(sub(q, c0), s2.frame.n) * 0 < len(sub(b, c0)) ? q : b), pts[0]);
           await patternAll(f, pts.filter((q) => q !== base).map((q) => xMove(sub(q, base))));
           res.notes[f.id] = `${pts.length - 1} cop${pts.length === 2 ? 'y' : 'ies'} at the sketch points`;
+          break;
+        }
+        case 'tablePattern': {
+          // Table-driven pattern: a copy at each row of a table (x, y and optionally an angle, from the feature, in the
+          // plane's directions; the angle turns the copy about the plane's normal through the feature). The plane: one
+          // chosen, or the feature's own sketch plane (else Front)
+          let fr;
+          if (f.plane) fr = resolveFrame(f.plane);
+          else { const sd = patternSources(f).ids[0], sf = sd && doc.features.find((x) => x.id === sd); fr = (sf?.sketch && sketches.get(sf.sketch)?.frame) || STD.front; }
+          const rows = String(f.table || '').split(/[\n;]+/).map((r) => r.trim()).filter((r) => r && !/^[#/]/.test(r));
+          const xs = [];
+          for (const [i, r] of rows.entries()) {
+            const cells = r.split(/[,\t]/.test(r) ? /\s*[,\t]\s*/ : /\s+/).filter(Boolean); // (spaces part the cells only when there are no commas or tabs)
+            if (i === 0 && cells.some((c) => /^[A-Za-z]/.test(c) && !(c in vars))) continue; // (a header row)
+            if (cells.length < 2 || cells.length > 3) throw new Error(`Row ${i + 1} of the table needs x, y and optionally an angle`);
+            const [x, y, a = 0] = cells.map((c) => ev(c));
+            if (![x, y, a].every(Number.isFinite)) throw new Error(`Row ${i + 1} of the table is not numbers`);
+            if (Math.abs(x) < 1e-12 && Math.abs(y) < 1e-12 && Math.abs(a) < 1e-12) continue; // (the feature itself)
+            const t = add(mul(fr.u, x), mul(fr.v, y));
+            xs.push(Math.abs(a) > 1e-12 ? xChain(xTurn(a, patternCentre(f), fr.n), xMove(t)) : xMove(t));
+          }
+          if (!xs.length) throw new Error('Give the table rows: x, y (and an angle) from the feature for each copy');
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
+          await patternAll(f, xs);
+          res.notes[f.id] = `${xs.length} cop${xs.length === 1 ? 'y' : 'ies'} from the table`;
           break;
         }
         case 'curvePattern': {
@@ -4839,17 +4890,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 [lower,upper]=he>hs?[start,E]:[E,start];
               }
               const flat=(pl)=>Math.abs(dot(unit(pl.n),n))>1-1e-12;
-              for(const {wire,closed} of s.wires){
+              for(const [wi,{wire,closed}] of s.wires.entries()){
                 const b=bbox(wire),corners=[];
                 for(const x of [b.min[0],b.max[0]])for(const y of [b.min[1],b.max[1]])for(const z of [b.min[2],b.max[2]]){const p=[x,y,z];corners.push(sub(p,mul(a,dot(sub(p,fr.o),n)/dot(a,n))));}
                 for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end cross or leave no extrusion height over the contour');
                 const parallel=flat(lower)&&flat(upper),low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p)));
                 const [h0,h1]=parallel?[height(lower,fr.o),height(upper,fr.o)]:[low-5,high+5];
                 // (the wire's plane: its contour's, at height 0; moved to h0 and swept to h1)
-                const sweep=(shape)=>{const v=new R.Vector(mul(a,h1-h0)),moved=shape.clone().translate(mul(a,h0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
+                const sweep=(shape,g0=h0,g1=h1)=>{const v=new R.Vector(mul(a,g1-g0)),moved=shape.clone().translate(mul(a,g0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
                 const big=b.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
-                const trim=(shape)=>{
-                  if(parallel)return shape;
+                const trim=(shape,always=false)=>{
+                  if(parallel&&!always)return shape;
                   for(const [pl,sign] of [[lower,1],[upper,-1]]){
                     const nn=mul(pl.n,(dot(pl.n,a)>0?1:-1)*sign),u=unit(cross(nn,Math.abs(nn[0])<.9?[1,0,0]:[0,1,0]));
                     const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(add(fr.o,mul(a,height(pl,fr.o))),u,nn)).extrude(2*big);
@@ -4858,7 +4909,35 @@ async function rebuild(doc, previewId = null, opts = {}) {
                   return shape;
                 };
                 if(!drafted){parts.push(trim(sweep(wire)));continue;}
-                if(!closed)throw new Error('A draft needs closed contours (an open one has no inside to narrow towards)');
+                if(!closed){
+                  // (an open contour, lines and arcs of a sketch: leaning to its left as drawn (Draft outward: its right)
+                  // away from where it starts; the contour offset in its plane by the height times the angle's tangent,
+                  // below and above the start (sketchoffset.js: lines stay lines, arcs arcs), joined by ruled faces (flat
+                  // and conical), then trimmed to the ends)
+                  const chain=s.chains?.[wi];
+                  if(!chain||!s.sk)throw new Error('A draft of an open contour takes a sketch’s lines and arcs (not model edges)');
+                  if(chain.items.some((it)=>!['line','arc'].includes(it.c.type)))throw new Error('A draft of an open contour takes lines and arcs');
+                  if(along&&Math.abs(Math.abs(dot(a,n))-1)>1e-9)throw new Error('A draft of an open contour extrudes square to it (Along: None)');
+                  if(!flat(start))throw new Error('A draft of an open contour starts from a plane parallel to it');
+                  const hs=height(start,fr.o),tn=Math.tan((ang*Math.PI)/180),sgn=dot(a,n)>0?1:-1;
+                  const level=(h)=>{
+                    const d=Math.abs(h-hs)*tn,pl=rPlane(fr,add(fr.o,mul(fr.n,sgn*h)));
+                    const pieces=Math.abs(d)<1e-12?null:SO.geometry(s.sk,chain,d).pieces;
+                    if(!pieces)return wire.clone().translate(mul(a,h));
+                    let pen=R.draw(pieces[0].a);
+                    for(const g of pieces){
+                      if(g.type==='line')pen=pen.lineTo(g.b);
+                      else{const a0=Math.atan2(g.a[1]-g.c[1],g.a[0]-g.c[0]),sw=g.span*(g.rev?-1:1);pen=pen.threePointsArcTo(g.b,[g.c[0]+g.r*Math.cos(a0+sw/2),g.c[1]+g.r*Math.sin(a0+sw/2)]);}
+                    }
+                    return pen.done().sketchOnPlane(pl).wire;
+                  };
+                  let shell;
+                  const ws=[level(low-5),level(hs),level(high+5)];
+                  try{shell=R.loft(ws,{ruled:true},true);}catch(e){if(isFatal(e))throw e;throw new Error('The open contour could not be drafted at this angle (an arc would shrink to nothing?)');}
+                  finally{ws.forEach((w)=>w.delete());}
+                  parts.push(trim(shell,true));
+                  continue;
+                }
                 const face=R.makeFace(wire);let solid;
                 try{solid=trim(sweep(face));}finally{face.delete();}
                 if(!solidsOf(solid).length)throw new Error('The start and end leave no extrusion');
@@ -4884,13 +4963,31 @@ async function rebuild(doc, previewId = null, opts = {}) {
             for(const sk of sections)if(sk.planar&&first.planar&&(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5))throw new Error('Surface profiles must lie in the same plane');
             if(!first.planar&&f.projectAxis)throw new Error('Model edges that do not lie in one plane cannot have the axis projected into their plane');
             const oc=R.getOC(),axis=revolveAxisOf(f,first),revolution=revolveExtent(f,first,axis);
-            if(revolution.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
             for(const sk of sections){
               if(sk.planar)checkRevolveAxis(sk,axis);
               for(const {wire} of sk.wires){
                 const ax=R.makeAx1(axis.o,axis.d),maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);
                 try{let shape=R.cast(maker.Shape());if(revolution.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);}finally{maker.delete();ax.delete();}
               }
+            }
+            if(revolution.clip){
+              // (up to a plane beside the axis: the surface turned 359°, cut by the plane; of what lies on the profile's side,
+              // the pieces (faces joined by edges) that start at the profile and do not reach the far end)
+              const pl=revolution.clip,c=profileCentre(first),side=Math.sign(dot(sub(c,pl.p),pl.n)),sgn=f.reverse?-1:1;
+              if(!side)throw new Error('The end surface passes through the profile');
+              const nIn=mul(unit(pl.n),side),all=asShape(parts),b=bbox(all),big=b.diag+len(sub(b.center,pl.p))+100,u=unit(cross(nIn,Math.abs(nIn[0])<.9?[1,0,0]:[0,1,0]));
+              const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(pl.p,u,nIn)).extrude(2*big);
+              let kept;try{kept=boolByList('common',all,[block]);}finally{block.delete();}
+              const faces=kept.faces,group=faces.map((_,i)=>i),root=(i)=>(group[i]===i?i:(group[i]=root(group[i])));
+              const edgesOf=faces.map((fc)=>fc.edges);
+              for(let i=0;i<faces.length;i++)for(let j=i+1;j<faces.length;j++)if(edgesOf[i].some((e)=>edgesOf[j].some((x)=>x.isSame(e))))group[root(i)]=root(j);
+              const pieces=new Map();faces.forEach((fc,i)=>{const r=root(i);if(!pieces.has(r))pieces.set(r,[]);pieces.get(r).push(fc);});
+              const start=asShape(sections.flatMap((s)=>s.wires.map((w)=>w.wire))),end=start.clone().rotate(sgn*359,axis.o,axis.d);
+              const touches=(shape,other)=>{const q=new R.DistanceQuery(shape);try{return q.distanceTo(other)<1e-7;}finally{q.delete();}};
+              const keep=[...pieces.values()].map((fs)=>asShape(fs)).filter((p)=>touches(p,start));
+              if(!keep.length)throw new Error('The end surface leaves nothing of the revolution');
+              if(keep.some((p)=>touches(p,end)))throw new Error('The end surface does not stop the revolution all the way round');
+              parts.length=0;parts.push(...keep);
             }
             for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
           }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}
@@ -5228,6 +5325,50 @@ async function rebuild(doc, previewId = null, opts = {}) {
           else { surfaces.push(bodyRec(rec.id, sewn, f.id)); if (solidsOf(rec.shape).length) note += ' (the body is now a surface body)'; }
           body = compoundOf(solids);
           res.notes[f.id] = note;
+          break;
+        }
+        case 'editFillet': {
+          // Delete Fillet / Resize Fillet (direct editing, e.g. of an imported part): each picked fillet or chamfer face
+          // taken back to the sharp edge its neighbours meet at (mode 'delete'), or then rounded or chamfered again at
+          // radius (mode 'resize')
+          if (!(f.faces || []).length) throw new Error('Click the fillet or chamfer faces');
+          const resize = f.mode === 'resize', r = resize ? ev(f.radius) : 0;
+          if (resize && !(r > 0)) throw new Error('The new size must be more than zero');
+          let rec = null;
+          const sharp = [];
+          for (const ref of f.faces) {
+            const hit = findFaceAny(rec ? [rec] : solids, ref);
+            if (!hit) throw new Error(rec ? 'The faces must be on the same body' : 'A selected face could not be found on a solid body');
+            rec = hit.body;
+            const b = blendCorner(rec.shape, hit.face), out = unify(b.convex ? rec.shape.fuse(b.tool) : rec.shape.cut(b.tool));
+            if (solidsOf(out).length !== solidsOf(rec.shape).length) throw new Error('Taking out that face would split the body');
+            rec = replaceSolid(rec, out, f.id)[0];
+            sharp.push(b);
+          }
+          if (resize) {
+            const edges = sharp.flatMap((b) => edgesAlong(rec.shape, b.edge)), cham = sharp.every((b) => b.chamfer);
+            if (!edges.length) throw new Error('The sharp edge could not be found to round again');
+            let out;
+            try { out = rec.shape[cham ? 'chamfer' : 'fillet']((x) => (edges.some((y) => y.isSame(x)) ? r : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error(`The edge${edges.length > 1 ? 's' : ''} could not be ${cham ? 'chamfered' : 'rounded'} at ${r} (too big for the faces beside ${edges.length > 1 ? 'them' : 'it'}?)`); }
+            replaceSolid(rec, unify(out), f.id);
+          }
+          res.notes[f.id] = `${f.faces.length} ${sharp.every((b) => b.chamfer) ? 'chamfer' : 'fillet'}${f.faces.length === 1 ? '' : 's'} ${resize ? `resized to ${r}` : 'deleted'} (was ${[...new Set(sharp.map((b) => (b.chamfer ? 'chamfered' : `R${+b.r.toFixed(4)}`)))].join(', ')})`;
+          break;
+        }
+        case 'defeature': {
+          // Defeature: fillets up to filletR and holes up to holeD across taken out of a body (or every solid), for a
+          // simpler part to send on or analyse; each one exactly (the faces round it carried back to meet)
+          const maxR = f.fillets === false ? 0 : ev(f.filletR ?? 0), maxD = f.holes === false ? 0 : ev(f.holeD ?? 0);
+          if (!(maxR > 0) && !(maxD > 0)) throw new Error('Give a fillet radius or a hole size to take out');
+          const recs = f.body ? solids.filter((x) => x.id === f.body) : [...solids];
+          if (!recs.length) throw new Error(f.body ? 'The body is missing' : 'There is no solid to defeature');
+          let nf = 0, nh = 0;
+          for (const rec of recs) {
+            const out = defeatureShape(rec.shape, maxR, maxD);
+            nf += out.fillets; nh += out.holes;
+            if (out.fillets || out.holes) replaceSolid(rec, out.shape, f.id);
+          }
+          res.notes[f.id] = `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
           break;
         }
         case 'replaceFace': {
@@ -5749,6 +5890,91 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           body = compoundOf(solids);
           res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}`;
+          break;
+        }
+        case 'pipeRoute': {
+          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the corners, the
+          // corners long radius elbows (fittings, each a body of its own) or bends (one bent tube); flanges at the open
+          // ends if asked. The straight pipes are weldment members, so they are on the cut list with their lengths
+          const segs = memberPath(f.path);
+          if (!segs.length) throw new Error('Select the sketch or 3D sketch of the route (straight lines)');
+          if (segs.some((g) => g.type !== 'line')) throw new Error('Draw the route with straight lines: its corners get the elbows or bends');
+          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7);
+          // (the route's points in order, from an end)
+          const near = (x, y) => len(sub(x, y)) < tol, ends = segs.flatMap((g) => [g.a, g.b]);
+          const deg = (q) => ends.filter((x) => near(x, q)).length;
+          if (ends.some((q) => deg(q) > 2)) throw new Error('The route must be one run without branches (tees are not made)');
+          let P = [ends.find((q) => deg(q) === 1) || segs[0].a];
+          const left = [...segs];
+          while (left.length) {
+            const last = P.at(-1), i = left.findIndex((g) => near(g.a, last) || near(g.b, last));
+            if (i < 0) throw new Error('The route’s lines must join end to end');
+            const g = left.splice(i, 1)[0];
+            P.push(near(g.a, last) ? g.b : g.a);
+          }
+          const closed = P.length > 3 && near(P[0], P.at(-1));
+          if (closed) throw new Error('The route must have two ends (not a closed loop)');
+          // (each corner: its turn and how far the elbow / bend reaches along the lines either side)
+          const n = P.length, dirs = [], cut = new Array(n).fill(0);
+          for (let i = 0; i + 1 < n; i++) dirs.push(unit(sub(P[i + 1], P[i])));
+          const corners = [];
+          for (let i = 1; i + 1 < n; i++) {
+            const c = Math.max(-1, Math.min(1, dot(dirs[i - 1], dirs[i]))), th = Math.acos(c);
+            if (th < 1e-9) continue;
+            if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
+            cut[i] = pipe.R * Math.tan(th / 2);
+            corners.push({ i, th });
+          }
+          for (let i = 0; i + 1 < n; i++) if (len(sub(P[i + 1], P[i])) < cut[i] + cut[i + 1] - 1e-9) throw new Error(`Line ${i + 1} of the route is too short for the ${f.corner === 'bend' ? 'bends' : 'elbows'} at its ends (the bend radius ${+pipe.R.toFixed(3)} needs ${+(cut[i] + cut[i + 1]).toFixed(3)})`);
+          const tube = (A, B) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(ro, L, A, d).cut(R.makeCylinder(ri, L + 2, sub(A, d), d)); };
+          const disc = (r, p, d) => { const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawCircle(r).sketchOnPlane(new R.Plane(p, u, d)).face(); };
+          const elbow = ({ i, th }) => {
+            const d1 = dirs[i - 1], d2 = dirs[i], T1 = sub(P[i], mul(d1, cut[i])), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
+            return R.revolution(disc(ro, T1, d1), C, ax, a).cut(R.revolution(disc(ri, T1, d1), C, ax, a));
+          };
+          const add1 = (shape, name, member) => { const rec = bodyRec(newId(f.id), shape, f.id); rec.name = name; if (member) rec.member = member; solids.push(rec); applied.push({ op: 'add', tool: shape }); };
+          const straights = [];
+          for (let i = 0; i + 1 < n; i++) { const A = add(P[i], mul(dirs[i], cut[i])), B = sub(P[i + 1], mul(dirs[i], cut[i + 1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
+          const fits = corners.map(elbow);
+          if (f.corner === 'bend') {
+            let all = null;
+            for (const s of [...straights.map((s) => tube(s.A, s.B)), ...fits]) all = all ? all.fuse(s) : s;
+            const L = straights.reduce((t, s) => t + s.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
+            add1(unify(all), `${pipe.label} bent`, { label: `${pipe.label}, ${corners.length} bend${corners.length === 1 ? '' : 's'} R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
+          } else {
+            for (const s of straights) add1(tube(s.A, s.B), `${pipe.label} ${+s.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +s.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: s.A, b: s.B } });
+            corners.forEach((c, k) => add1(fits[k], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${pipe.label.replace(/^Pipe |^Tube /, '')}`));
+          }
+          // (flanges at the two ends: rings on the pipe, flush with its end)
+          if (f.flanges) {
+            const FD = ev(f.flangeD), FT = ev(f.flangeT);
+            if (!(FD > pipe.D) || !(FT > 0)) throw new Error('The flanges need an outside diameter bigger than the pipe’s and a thickness');
+            for (const [E, d] of [[P[0], dirs[0]], [P[n - 1], mul(dirs[n - 2], -1)]]) add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${pipe.label.replace(/^Pipe |^Tube /, '')}`);
+          }
+          body = compoundOf(solids);
+          const total = straights.reduce((t, s) => t + s.L, 0);
+          res.notes[f.id] = `${pipe.label}: ${f.corner === 'bend' ? `one tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`}${f.flanges ? ', 2 flanges' : ''}`;
+          break;
+        }
+        case 'cable': {
+          // Cable / harness: a round bundle swept along a sketch or 3D sketch (a spline route follows its curves): its
+          // diameter given, or from its wires (count, wire diameter); its length with slack added in the note
+          let w = null;
+          const c3 = curves.get(f.path), s2 = sketches.get(f.path);
+          if (c3?.wire) w = c3.wire;
+          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed?.()) || sketchWires(s2.sk, s2.frame)[0];
+          if (!w) throw new Error('Select the sketch or 3D sketch of the cable’s route');
+          const D = f.sizeBy === 'wires' ? bundleDiameter(Math.round(ev(f.wires)), ev(f.wireD)) : ev(f.diameter);
+          if (!(D > 0)) throw new Error('The cable needs a diameter (or wires of a diameter)');
+          const st = vec(w.startPoint), t0 = unit(vec(w.tangentAt(0))), prof = R.assembleWire([R.makeCircle(D / 2, st, t0)]);
+          let sh = null;
+          for (const tm of ['round', 'right', 'transformed']) { try { sh = R.genericSweep(prof, w, { frenet: false, transitionMode: tm }); break; } catch (e) { if (isFatal(e)) throw e; } }
+          if (!sh || !solidsOf(sh).length) throw new Error('The cable could not follow the route (a corner tighter than its radius?)');
+          const L = R.measureLength(w), slack = ev(f.slack ?? 0) / 100;
+          const rec = bodyRec(newId(f.id), sh, f.id); rec.name = `Cable Ø${+D.toFixed(2)}`;
+          solids.push(rec); applied.push({ op: 'add', tool: sh });
+          body = compoundOf(solids);
+          res.notes[f.id] = `Cable Ø${+D.toFixed(2)}${f.sizeBy === 'wires' ? ` (${Math.round(ev(f.wires))} wires Ø${ev(f.wireD)})` : ''}: route ${+L.toFixed(1)} mm, cut length ${+(L * (1 + slack)).toFixed(1)} mm${slack ? ` with ${+(slack * 100).toFixed(2)} % slack` : ''}`;
           break;
         }
         case 'surfOffset': {
@@ -6940,6 +7166,179 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = `${f.cuts.length} cut${f.cuts.length === 1 ? '' : 's'} made in the assembly${through ? ', through all' : ''}`;
           break;
         }
+        case 'boss':
+        case 'snapHook': {
+          // Plastic part features at points (clicked on flat faces, or a sketch's points / circle centres), rising out of
+          // the face along its normal (reverse: the other way). boss: a post outerD across, height high, its wall drafted
+          // by draft, a hole holeD × holeDepth down from its top, ribs (count, ribWidth, ribLength, ribHeight) out from
+          // its foot. snapHook: a beam (thickness across, width wide, length high) with a hook at its tip, overhang out,
+          // its lead-in at insertAngle from the beam and its catch at retainAngle (90: square); turned angle about the
+          // normal from the face's X direction
+          const locs = [];
+          if (f.sketch) {
+            const s = sketches.get(f.sketch);
+            if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
+            const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
+            const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
+            for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: S.fromFrame2D(s.frame, pt.x, pt.y), n: mul(s.frame.n, f.reverse ? -1 : 1) });
+          }
+          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, n: mul(unit(fc.n), f.reverse ? -1 : 1) });
+          if (!locs.length) throw new Error('Click points on a flat face for them, or select a sketch with points on the face');
+          if (!body) throw new Error('There is no body to put them on');
+          const poly = (fr, pts) => R.makePolygon(pts.map(([x, y]) => add(add(fr.o, mul(fr.x, x)), mul(fr.z, y))));
+          let tool = null;
+          for (const { p, n } of locs) {
+            const base = frameOnPlane(p, n), a = ((ev(f.angle ?? 0) || 0) * Math.PI) / 180;
+            const X = add(mul(base.u, Math.cos(a)), mul(base.v, Math.sin(a))), Y = cross(n, X);
+            let one;
+            if (f.type === 'boss') {
+              const D = ev(f.outerD), H = ev(f.height), d = ev(f.holeD ?? 0), hd = f.holeDepth === '' || f.holeDepth == null ? H : ev(f.holeDepth), dr = ev(f.draft ?? 0);
+              if (!(D > 0 && H > 0)) throw new Error('The boss needs a diameter and a height');
+              if (!(d >= 0 && d < D)) throw new Error('The boss’s hole must be narrower than the boss');
+              if (!(hd > 0 && hd <= H + 1e-9) && d > 0) throw new Error('The boss’s hole depth must be more than zero and no more than its height');
+              if (!(dr >= 0 && dr < 45)) throw new Error('The boss’s draft must be from 0° to 45°');
+              const R0 = D / 2, Rt = R0 - H * Math.tan((dr * Math.PI) / 180);
+              if (!(Rt > d / 2 + 1e-6)) throw new Error('The boss’s draft leaves no wall round its hole at the top');
+              const fr = { o: p, x: X, z: n };
+              one = R.revolution(poly(fr, [[0, -0.05], [R0, -0.05], [R0, 0], [Rt, H], [0, H]]), p, n, 360);
+              const nr = Math.round(ev(f.ribs ?? 0) || 0);
+              if (nr > 0) {
+                const w = ev(f.ribWidth), L = ev(f.ribLength), h = ev(f.ribHeight ?? H * 0.75);
+                if (!(w > 0 && L > 0 && h > 0 && h <= H)) throw new Error('The ribs need a width, a length out from the boss and a height up to the boss’s');
+                for (let i = 0; i < nr; i++) {
+                  const t = (2 * Math.PI * i) / nr, rx = add(mul(X, Math.cos(t)), mul(Y, Math.sin(t))), side = cross(n, rx), rf = { o: add(p, mul(side, -w / 2)), x: rx, z: n };
+                  const tri = poly(rf, [[0, -0.05], [R0 + L, -0.05], [R0 + L, 0], [R0 - h * Math.tan((dr * Math.PI) / 180), h], [0, h]]);
+                  const v = new R.Vector(mul(side, w));
+                  try { one = one.fuse(R.basicFaceExtrusion(tri, v)); } finally { v.delete(); }
+                }
+              }
+              if (d > 0) one = one.cut(R.revolution(poly(fr, [[0, H + 0.05], [d / 2, H + 0.05], [d / 2, H - hd], [0, H - hd]]), p, n, 360));
+            } else {
+              const L = ev(f.length), t = ev(f.thickness), w = ev(f.width), h = ev(f.overhang), ai = ev(f.insertAngle ?? 30), ar = ev(f.retainAngle ?? 90);
+              if (!(L > 0 && t > 0 && w > 0 && h > 0)) throw new Error('The snap hook needs a length, a thickness, a width and an overhang');
+              if (!(ai > 0 && ai < 90) || !(ar > 0 && ar <= 90)) throw new Error('The snap hook’s lead-in angle must be between 0° and 90°, its catch angle above 0° and up to 90°');
+              const hh = h / Math.tan((ai * Math.PI) / 180), dd = ar >= 90 ? 0 : h / Math.tan((ar * Math.PI) / 180);
+              if (!(hh + dd < L - 1e-6)) throw new Error('The hook is taller than the beam: make the beam longer or the lead-in steeper');
+              const fr = { o: add(p, mul(Y, -w / 2)), x: X, z: n };
+              const prof = poly(fr, [[-t / 2, -0.05], [t / 2, -0.05], [t / 2, L - hh - dd], [t / 2 + h, L - hh], [t / 2, L], [-t / 2, L]]);
+              const v = new R.Vector(mul(Y, w));
+              try { one = R.basicFaceExtrusion(prof, v); } finally { v.delete(); }
+            }
+            tool = tool ? tool.fuse(one) : one;
+          }
+          tools.set(f.id, { shape: tool, op: 'add', merge: true, scope: null });
+          apply('add', tool, true, null);
+          res.features[f.id] = { faces: f.faces || [] };
+          res.notes[f.id] = `${locs.length} ${f.type === 'boss' ? 'boss' : 'snap hook'}${locs.length === 1 ? '' : f.type === 'boss' ? 'es' : 's'}`;
+          break;
+        }
+        case 'mold': {
+          // Core and cavity: a block round the part (margin beyond it every way), the part grown by shrink % (the plastic
+          // shrinks as it cools) taken out of it, split by a parting plane square to the pull direction: at the part's
+          // largest section along it (parting 'auto'), or at partingAt from the part's lowest point. The half the pull
+          // direction points into is the cavity, the other the core; holes along the pull become shut-offs where the
+          // plane crosses them. keepPart: the part stays as a body too
+          const rec = solids.length === 1 ? solids[0] : solids.find((s) => s.id === f.body);
+          if (!rec) throw new Error(solids.length ? 'Choose the body to make the mould for' : 'There is no part to make a mould for');
+          const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, key = f.dir || 'y', d = key.startsWith('-') ? mul(AX[key[1]], -1) : AX[key];
+          const margin = ev(f.margin ?? 10), shrink = ev(f.shrink ?? 0) / 100;
+          if (!(margin > 0)) throw new Error('The block margin must be more than zero');
+          if (!(shrink > -0.5 && shrink < 0.5)) throw new Error('The shrinkage must be a few per cent');
+          const b0 = bbox(rec.shape), c0 = b0.center;
+          let part = rec.shape.clone();
+          if (Math.abs(shrink) > 1e-12) part = part.scale(1 + shrink, c0);
+          const b = bbox(part), corners = [];
+          for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) corners.push([x, y, z]);
+          const lo = Math.min(...corners.map((q) => dot(q, d))), hi = Math.max(...corners.map((q) => dot(q, d)));
+          let h;
+          if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
+          else {
+            // (the largest section: the part's area in slabs across the pull direction, the middle of the largest run)
+            const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), big = b.diag + 10, N = 40, areas = [];
+            for (let i = 0; i < N; i++) {
+              const t = lo + ((i + 0.5) * (hi - lo)) / N, slab = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(add(mul(d, t - 1e-3), sub(c0, mul(d, dot(c0, d)))), u, d)).extrude(2e-3);
+              let a = 0; try { a = Math.abs(R.measureVolume(part.intersect(slab))) / 2e-3; } catch (e) { if (isFatal(e)) throw e; } finally { slab.delete(); }
+              areas.push(a);
+            }
+            const top = Math.max(...areas), runs = areas.map((a) => a >= top * (1 - 1e-6));
+            const first = runs.indexOf(true), last = runs.lastIndexOf(true);
+            h = lo + ((first + last + 1) / 2 / N) * (hi - lo);
+          }
+          if (!(h > lo + 1e-6 && h < hi - 1e-6)) throw new Error('The parting plane must cross the part');
+          const ub = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), vb = cross(d, ub);
+          const spans = (v) => [Math.min(...corners.map((q) => dot(q, v))) - margin, Math.max(...corners.map((q) => dot(q, v))) + margin];
+          const [u0, u1] = spans(ub), [v0, v1] = spans(vb), base = (t) => add(add(mul(ub, (u0 + u1) / 2), mul(vb, (v0 + v1) / 2)), mul(d, t));
+          const half = (t0, t1) => R.drawRectangle(u1 - u0, v1 - v0).sketchOnPlane(new R.Plane(base(t0), ub, d)).extrude(t1 - t0);
+          const cavity = half(h, hi + margin).cut(part), core = half(lo - margin, h).cut(part);
+          const recs = [bodyRec(newId(f.id + 'cav'), cavity, f.id), bodyRec(newId(f.id + 'core'), core, f.id)];
+          recs[0].name = 'Cavity'; recs[1].name = 'Core';
+          if (f.keepPart === false) solids = solids.filter((s) => s !== rec);
+          solids.push(...recs);
+          body = compoundOf(solids);
+          applied.push({ op: 'add', tool: cavity }, { op: 'add', tool: core });
+          res.notes[f.id] = `Core and cavity, parting ${+(h - lo).toFixed(3)} mm up the part along the pull${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          break;
+        }
+        case 'lipGroove': {
+          // A lip (raised) or a groove (sunk) along a flat rim face (a shelled part's open edge): the band of the face
+          // width wide along its inner edge (side 'inner') or its outer one, raised height or sunk that deep
+          if (!f.face?.n) throw new Error('Click the flat rim face for the lip or groove');
+          const hit = findFaceAny(solids, f.face);
+          if (!hit || hit.face.geomType !== 'PLANE') throw new Error('The rim face could not be found (a flat face)');
+          const w = ev(f.width), h = ev(f.height);
+          if (!(w > 0 && h > 0)) throw new Error('The lip or groove needs a width and a height');
+          const n = unit(vec(hit.face.normalAt())), outer = hit.face.clone().outerWire(), inners = hit.face.clone().innerWires();
+          const area = (wire) => { const fc = R.makeFace(wire.clone()); try { return R.measureArea(fc); } finally { fc.delete(); } };
+          let band;
+          if ((f.side || 'inner') === 'inner') {
+            if (!inners.length) throw new Error('The rim face has no inner edge (choose the outer side)');
+            const inner = inners[0], a0 = area(inner);
+            // (the inner edge offset out into the face)
+            const bigger = [w, -w].map((d) => { try { return inner.clone().offset2D(d, 'intersection'); } catch (e) { if (isFatal(e)) throw e; return null; } }).filter(Boolean).sort((x, y) => area(y) - area(x))[0];
+            if (!bigger || !(area(bigger) > a0)) throw new Error('The lip is wider than the rim');
+            band = R.addHolesInFace(R.makeFace(bigger), [inner]);
+          } else {
+            const a0 = area(outer);
+            const smaller = [w, -w].map((d) => { try { return outer.clone().offset2D(d, 'intersection'); } catch (e) { if (isFatal(e)) throw e; return null; } }).filter(Boolean).sort((x, y) => area(x) - area(y))[0];
+            if (!smaller || !(area(smaller) < a0)) throw new Error('The lip is wider than the rim');
+            band = R.addHolesInFace(R.makeFace(outer), [smaller]);
+          }
+          // (the band must lie on the rim face)
+          const onRim = Math.abs(R.measureArea(band) - R.measureArea(boolByList('common', band, [hit.face]))) < 1e-6 * R.measureArea(band);
+          if (!onRim) throw new Error('The band runs off the rim face: make the lip narrower');
+          const groove = f.kind === 'groove', v = new R.Vector(mul(n, groove ? -(h + 0.05) : h + 0.05));
+          let tool;
+          try { tool = R.basicFaceExtrusion(groove ? band.clone().translate(mul(n, 0.05)) : band.clone().translate(mul(n, -0.05)), v); } finally { v.delete(); }
+          tools.set(f.id, { shape: tool, op: groove ? 'cut' : 'add', merge: true, scope: null });
+          apply(groove ? 'cut' : 'add', tool, true, null);
+          res.features[f.id] = { face: f.face };
+          break;
+        }
+        case 'vent': {
+          // A vent: slots slotWidth wide, barWidth apart, at angle, across a sketch's closed outline kept margin in from
+          // it, cut depth deep into the body (through: right through), along the sketch's normal (reverse: the other way)
+          const sk = getSketch(f.sketch);
+          if (!sk.drawing) throw new Error('The vent sketch needs a closed outline');
+          const sw = ev(f.slotWidth), bw = ev(f.barWidth), m = ev(f.margin ?? 0), ang = ev(f.angle ?? 0) || 0;
+          if (!(sw > 0 && bw > 0 && m >= 0)) throw new Error('The vent needs a slot width and a bar width (and a margin of zero or more)');
+          let zone = m > 0 ? sk.drawing.offset(-m) : sk.drawing;
+          const pts = sk.regions.flatMap((r) => r.outer.poly), cx = pts.reduce((s, q) => s + q[0], 0) / pts.length, cy = pts.reduce((s, q) => s + q[1], 0) / pts.length;
+          const span = 2 * Math.max(...pts.map((q) => Math.hypot(q[0] - cx, q[1] - cy))) + 2 * (sw + bw), pitch = sw + bw, count = Math.ceil(span / pitch) + 1;
+          let strips = null;
+          for (let i = 0; i < count; i++) {
+            const off = (i - (count - 1) / 2) * pitch, rect = R.drawRectangle(span, sw).translate(0, off).rotate(ang, [0, 0]).translate(cx, cy);
+            strips = strips ? strips.fuse(rect) : rect;
+          }
+          const slots = zone.intersect(strips);
+          const n = mul(sk.frame.n, f.reverse ? 1 : -1), through = f.end === 'through';
+          const bb = body ? bbox(body) : null, depth = through ? 2 * (bb?.diag || 100) + len(sub(bb?.center || [0, 0, 0], sk.frame.o)) : ev(f.depth);
+          if (!(depth > 0)) throw new Error('The vent depth must be greater than zero');
+          const start = through ? add(sk.frame.o, mul(n, -depth / 2)) : add(sk.frame.o, mul(n, -0.05));
+          const tool = slots.sketchOnPlane(rPlane(sk.frame, start)).extrude((through ? depth : depth + 0.05) * (dot(n, sk.frame.n) > 0 ? 1 : -1));
+          tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
+          apply('cut', tool, true, null);
+          break;
+        }
         case 'hole': {
           // Hole: simple, counterbored, countersunk or tapped holes at sketch points / circle centres
           // or clicked points on a flat face, square into the material
@@ -6947,6 +7346,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(spec.d > 0)) throw new Error('The hole diameter must be greater than zero');
           if (spec.type === 'cbore' && !(spec.cbD > spec.d && spec.cbDepth > 0)) throw new Error('The counterbore must be wider than the hole and have a depth');
           if (spec.type === 'csink' && !(spec.csD > spec.d && spec.csAng > 0 && spec.csAng < 180)) throw new Error('The countersink must be wider than the hole, at an angle between 0° and 180°');
+          if (spec.type === 'cdrill' && !(spec.cdD > spec.d && spec.cdDepth > 0 && spec.cdAng > 0 && spec.cdAng < 180)) throw new Error('The counterdrill must be wider than the hole, have a depth, and a point angle between 0° and 180°');
           const locs = [];
           if (f.sketch) {
             const s = sketches.get(f.sketch);
@@ -7009,6 +7409,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (depths.some((d) => !(d > 0))) throw new Error(end === 'blind' ? 'The hole depth must be greater than zero' : 'A hole’s end lies behind where it starts (reverse it, or choose another end)');
           const depth = depths[0];
           if (spec.type === 'cbore' && depths.some((d) => d <= spec.cbDepth)) throw new Error('The hole must be deeper than its counterbore');
+          if (spec.type === 'cdrill' && depths.some((d) => d <= spec.cdDepth + (spec.cdD - spec.d) / 2 / Math.tan((spec.cdAng * Math.PI) / 360))) throw new Error('The hole must be deeper than its counterdrill');
           // (a drill point at a blind hole's end, of drillAngle; open ends go a hair past where they leave the material,
           // less than half way to where it starts again)
           const point = end === 'blind' && f.drillPoint !== false, pointAngle = ev(f.drillAngle ?? 118);
@@ -7604,6 +8005,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
   if (useCache) rebuildCache = { eqKey, entries };
 
 
+  // (the context bodies of a part edited in context are references only: left out where the part is used, in an
+  // assembly, a drawing or an export)
+  const isContext = (s) => contextFeats.has(String(s.id).split(/[.~]/)[0]);
+  if ((opts.partial || opts.noContext) && contextFeats.size) {
+    solids = solids.filter((s) => !isContext(s));
+    surfaces = surfaces.filter((s) => !isContext(s));
+    body = solids.length ? compoundOf(solids) : null;
+  }
+  lastContext = new Set([...solids, ...surfaces].filter(isContext).map((s) => s.id));
   if (opts.partial) return { solids, surfaces, features: res.features, threads: res.threads };
   lastFeatureDiffs = featureDiffs;
   lastSketchBodies = sketchBodies;
@@ -7732,6 +8142,7 @@ function updateProjections(f, frame, body, sketches, surfaceShapes = []) {
 async function exportBody(format, bodyId = null, info = {}) {
   if (!lastBody && !lastSurfaces.length) throw new Error('There is no body to export');
   let list = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
+  if (!bodyId && lastContext.size) list = list.filter((s) => !lastContext.has(s.id));
   if (bodyId) {
     list = list.filter((s) => s.id === bodyId);
     if (!list.length) throw new Error('That body no longer exists');
@@ -9287,6 +9698,201 @@ function faceAxis(face) {
   } finally { ad.delete(); }
 }
 
+// ------------------------------------------------------------ direct editing: fillets, chamfers and holes taken out
+// The faces of `shape` sharing an edge with `face`, each once, with the edges they share.
+function faceNeighbours(shape, face) {
+  const out = [], all = shape.faces;
+  for (const e of face.edges) for (const g of all) {
+    if (g.isSame(face) || !g.edges.some((x) => x.isSame(e))) continue;
+    let nb = out.find((x) => x.face.isSame(g));
+    if (!nb) out.push((nb = { face: g, edges: [] }));
+    nb.edges.push(e);
+  }
+  return out;
+}
+const solidAt = (shape, p) => new R.DistanceQuery(R.makeVertex(p)).distanceTo(shape) < 1e-9;
+const edgeEnds = (edges) => edges.flatMap((x) => [vec(x.startPoint), vec(x.endPoint)]);
+function faceHasSeam(face) {
+  const oc = R.getOC(), T = oc.TopAbs_ShapeEnum, seen = [];
+  const ex = new oc.TopExp_Explorer(face.wrapped, T.TopAbs_EDGE, T.TopAbs_SHAPE);
+  try {
+    while (ex.More()) { const e = ex.Current(); if (seen.some((x) => x.IsSame(e))) return true; seen.push(e); ex.Next(); }
+    return false;
+  } finally { ex.delete(); }
+}
+// The corner a fillet or chamfer face cut off (or filled in): { tool, convex, edge, chamfer, r }. A round on a straight
+// edge (a cylinder tangent to two flat faces), a ring round (a full torus between a flat face and a coaxial round face)
+// or a chamfer (a flat strip between two flat faces). The tool is the piece between the face and the sharp corner where
+// its neighbours meet, extended (plus the round's own sector): fused back on (a convex edge) or cut away (a concave
+// one) it leaves the sharp edge `edge` ({ kind: 'line', p, d } or { kind: 'circle', o, d, r }).
+function blendCorner(shape, face) {
+  const s = surfOf(face), nb = faceNeighbours(shape, face), big = bbox(shape).diag + 10;
+  if (s.t === 'TORUS') {
+    const pl = nb.find((x) => x.face.geomType === 'PLANE'), cy = nb.find((x) => x.face.geomType === 'CYLINDRE');
+    if (nb.length !== 2 || !pl || !cy) throw new Error('A round on a circular edge must go all the way round, between a flat face and a round face');
+    const d = s.d, o = s.p, sp = surfOf(pl.face), sc = surfOf(cy.face);
+    if (len(cross(sp.n, d)) > 1e-6 || len(cross(sc.d, d)) > 1e-6 || len(cross(sub(sc.p, o), d)) > 1e-6) throw new Error('The faces either side of the round are not square to it and on its axis');
+    const zA = dot(sub(sp.p, o), d), rB = sc.r;
+    if (Math.abs(Math.abs(zA) - s.r2) > 1e-6 || Math.abs(Math.abs(rB - s.r) - s.r2) > 1e-6) throw new Error('The round is not tangent to the faces either side');
+    const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), P = (rho, z) => add(add(o, mul(u, rho)), mul(d, z));
+    const tool = R.revolution(R.makePolygon([P(s.r, 0), P(s.r, zA), P(rB, zA), P(rB, 0)]), o, d, 360);
+    return { tool, convex: !solidAt(shape, P(rB, zA)), edge: { kind: 'circle', o: add(o, mul(d, zA)), d, r: rB }, chamfer: false, r: s.r2 };
+  }
+  if (s.t !== 'CYLINDER' && s.t !== 'PLANE') throw new Error('That face is not a fillet or a chamfer');
+  const lineDir = (x) => unit(sub(vec(x.endPoint), vec(x.startPoint)));
+  let e = s.d;
+  if (s.t === 'PLANE') {
+    const lines = face.edges.filter((x) => x.geomType === 'LINE').sort((a, b) => edgeLength(b) - edgeLength(a));
+    if (!lines.length) throw new Error('A chamfer face has straight edges');
+    e = lineDir(lines[0]);
+  }
+  const along = (x) => x.geomType === 'LINE' && len(cross(lineDir(x), e)) < 1e-6;
+  const sides = nb.filter((x) => x.face.geomType === 'PLANE' && x.edges.some(along) && Math.abs(dot(surfOf(x.face).n, e)) < 1e-6);
+  if (sides.length !== 2 || (s.t === 'PLANE' && sides.some((x) => Math.abs(dot(surfOf(x.face).n, s.n)) < 1e-6))) throw new Error(s.t === 'PLANE' ? 'That face is not a chamfer between two flat faces' : 'That round does not run between two flat faces');
+  const p0 = s.t === 'CYLINDER' ? s.p : vec(sides[0].edges.find(along).startPoint), proj = (q) => sub(q, mul(e, dot(sub(q, p0), e)));
+  const [A, B] = sides.map((x) => ({ n: surfOf(x.face).n, T: proj(vec(x.edges.find(along).startPoint)) }));
+  if (s.t === 'CYLINDER') for (const X of [A, B]) if (Math.abs(Math.abs(dot(sub(X.T, s.p), X.n)) - s.r) > 1e-6 || len(cross(X.n, unit(sub(X.T, proj(s.p))))) > 1e-6) throw new Error('The round is not tangent to the faces either side');
+  const tA = cross(e, A.n), den = dot(tA, B.n);
+  if (Math.abs(den) < 1e-9) throw new Error('The faces either side are parallel (a full round): there is no corner to go back to');
+  const C = add(A.T, mul(tA, dot(sub(B.T, A.T), B.n) / den));
+  const ts = edgeEnds(face.edges).map((q) => dot(sub(q, p0), e)), t0 = Math.min(...ts), t1 = Math.max(...ts), mid = (t0 + t1) / 2;
+  const convex = !solidAt(shape, add(C, mul(e, mid)));
+  if (s.t === 'CYLINDER' && solidAt(shape, add(proj(s.p), mul(e, mid))) !== convex) throw new Error('That face is not a fillet');
+  const prof = (s.t === 'CYLINDER' ? [proj(s.p), A.T, C, B.T] : [A.T, C, B.T]).map((q) => add(q, mul(e, t0 - big)));
+  let tool = R.basicFaceExtrusion(R.makePolygon(prof), new R.Vector(mul(e, t1 - t0 + 2 * big)));
+  // (cut back to the planes of the faces at its ends, kept on the side the face is on)
+  const fc = vec(face.center);
+  let lo = false, hi = false;
+  for (const x of nb) {
+    if (sides.includes(x)) continue;
+    if (x.face.geomType !== 'PLANE') throw new Error('The ends of the fillet or chamfer must meet flat faces');
+    const sx = surfOf(x.face);
+    if (Math.abs(dot(sx.n, e)) < 1e-6) continue;
+    const k = mul(sx.n, Math.sign(dot(sub(fc, sx.p), sx.n)) || 1), u = unit(cross(k, Math.abs(k[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    tool = tool.intersect(R.drawRectangle(4 * big, 4 * big).sketchOnPlane(new R.Plane(sx.p, u, k)).extrude(4 * big));
+    if (dot(k, e) > 0) lo = true; else hi = true;
+  }
+  if (!lo || !hi) throw new Error('The ends of the fillet or chamfer must meet flat faces');
+  return { tool, convex, edge: { kind: 'line', p: C, d: e }, chamfer: s.t === 'PLANE', r: s.r };
+}
+// The edges of `shape` along a sharp edge left by blendCorner.
+function edgesAlong(shape, g) {
+  return shape.edges.filter((x) => {
+    const q = [vec(x.startPoint), vec(x.endPoint)];
+    if (g.kind === 'line') return x.geomType === 'LINE' && q.every((p) => len(cross(sub(p, g.p), g.d)) < 1e-6);
+    return x.geomType === 'CIRCLE' && q.every((p) => Math.abs(dot(sub(p, g.o), g.d)) < 1e-6 && Math.abs(len(cross(sub(p, g.o), g.d)) - g.r) < 1e-6);
+  });
+}
+// A hole filled in: the coaxial cylinders and cones round a concave cylinder face (its counterbore, countersink, drill
+// point), every one ending at circles, none wider than maxD. null: not such a hole.
+function holeFill(shape, face, maxD) {
+  const s = surfOf(face);
+  if (s.t !== 'CYLINDER' || !faceHasSeam(face)) return null;
+  const { p: o, d } = s, onAxis = (x) => { const a = faceAxis(x); return a && len(cross(a.d, d)) < 1e-6 && len(cross(sub(a.o, o), d)) < 1e-6; };
+  const group = [face], todo = [face];
+  while (todo.length) {
+    for (const nb of faceNeighbours(shape, todo.pop())) {
+      if (group.some((g) => g.isSame(nb.face))) continue;
+      const t = nb.face.geomType;
+      if ((t === 'CYLINDRE' || t === 'CONE') && onAxis(nb.face)) { group.push(nb.face); todo.push(nb.face); }
+      // (a counterbore's floor: a flat ring square to the axis, between coaxial circles)
+      else if (t === 'PLANE' && len(cross(surfOf(nb.face).n, d)) < 1e-6 && nb.face.edges.every((x) => x.geomType === 'CIRCLE' && len(cross(sub(circleOf(x)?.c ?? [NaN, NaN, NaN], o), d)) < 1e-6)) { group.push(nb.face); todo.push(nb.face); }
+    }
+  }
+  let tool = null;
+  for (const g of group) {
+    if (g.geomType === 'PLANE') continue;
+    for (const x of g.edges) {
+      if (x.geomType === 'CIRCLE') { const q = vec(x.startPoint); if (len(cross(sub(q, o), d)) * 2 > maxD + 1e-9) return null; continue; }
+      // (else only its seam: a line in a plane through the axis)
+      if (!(x.geomType === 'LINE' && Math.abs(dot(cross(unit(sub(vec(x.endPoint), vec(x.startPoint))), d), sub(vec(x.startPoint), o))) < 1e-6 && faceHasSeam(g))) return null;
+    }
+    const pts = edgeEnds(g.edges).map((q) => [dot(sub(q, o), d), len(cross(sub(q, o), d))]);
+    const a = pts.reduce((m, q) => (q[0] < m[0] ? q : m)), b = pts.reduce((m, q) => (q[0] > m[0] ? q : m));
+    if (!(b[0] - a[0] > 1e-9)) continue;
+    if (g === face && solidAt(shape, add(o, mul(d, (a[0] + b[0]) / 2)))) return null; // (a shaft, not a hole)
+    const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), P = (rho, z) => add(add(o, mul(u, rho)), mul(d, z));
+    const prof = [[0, a[0]], [a[1], a[0]], [b[1], b[0]], [0, b[0]]].filter((q, i, l) => i === 0 || Math.hypot(q[0] - l[i - 1][0], q[1] - l[i - 1][1]) > 1e-9); // (a point: no corner there)
+    const piece = R.revolution(R.makePolygon(prof.map(([rho, z]) => P(rho, z))), o, d, 360);
+    tool = tool ? tool.fuse(piece) : piece;
+  }
+  return tool && { tool, count: group.length };
+}
+// Fillets (radius up to maxR) and holes (up to maxD across) taken out of a solid, one at a time, as many as can be.
+function defeatureShape(shape, maxR, maxD) {
+  const bad = new Set(), key = (fc) => vec(fc.center).map((x) => x.toFixed(5)).join();
+  const one = (sh) => { const l = solidsOf(sh); return l.length === 1 ? l[0] : sh; }; // (a solid, so points inside it are found)
+  shape = one(shape);
+  let fillets = 0, holes = 0;
+  for (let pass = 0; pass < 1000; pass++) {
+    let done = false;
+    for (const fc of shape.faces) {
+      const k = key(fc);
+      if (bad.has(k)) continue;
+      const s = surfOf(fc);
+      try {
+        if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9))) {
+          const b = blendCorner(shape, fc), out = unify(b.convex ? shape.fuse(b.tool) : shape.cut(b.tool));
+          if (solidsOf(out).length !== solidsOf(shape).length) throw new Error('split');
+          shape = one(out); fillets++; done = true; break;
+        }
+        if (maxD > 0 && s.t === 'CYLINDER' && 2 * s.r <= maxD + 1e-9) {
+          const h = holeFill(shape, fc, maxD);
+          if (!h) { bad.add(k); continue; }
+          shape = one(unify(shape.fuse(h.tool))); holes++; done = true; break;
+        }
+      } catch (e) { if (isFatal(e)) throw e; }
+      bad.add(k);
+    }
+    if (!done) break;
+  }
+  return { shape, fillets, holes };
+}
+
+// DFM check of solids for machining: sharp inside corners (a concave straight edge between flat faces: a cutter
+// leaves its radius there), inside rounds smaller than the smallest cutter (minR), holes smaller than minHole or
+// deeper than maxRatio × their diameter, hole sizes that are not standard drills (whole or half millimetres up to
+// 20, whole above), and very small faces (below tiny mm²). [{ kind, level: 'warn' | 'info', text, p }]
+function dfmCheck(list, { minR = 1, minHole = 1, maxRatio = 10, tiny = 0.01 } = {}) {
+  const out = [], f3 = (x) => +x.toFixed(3);
+  for (const rec of list) {
+    const shape = rec.shape, faces = shape.faces;
+    if (faces.length > 4000) { out.push({ kind: 'size', level: 'info', text: `${rec.id}: ${faces.length} faces, too many to check here` }); continue; }
+    for (const fc of faces) {
+      const s = surfOf(fc), area = faceArea(fc);
+      if (area < tiny) out.push({ kind: 'tiny', level: 'info', text: `A very small face (${f3(area)} mm²): an import artefact or a sliver?`, p: vec(fc.center) });
+      if (s.t !== 'CYLINDER') continue;
+      const closed = faceHasSeam(fc), ends = edgeEnds(fc.edges), ts = ends.map((q) => dot(sub(q, s.p), s.d)), t0 = Math.min(...ts), t1 = Math.max(...ts);
+      const mid = add(s.p, mul(s.d, (t0 + t1) / 2)), concave = !solidAt(shape, mid);
+      if (!concave) continue;
+      const D = 2 * s.r;
+      if (!closed) { if (s.r < minR - 1e-9) out.push({ kind: 'radius', level: 'warn', text: `An inside round R${f3(s.r)} is smaller than the smallest cutter (R${minR})`, p: vec(fc.center) }); continue; }
+      const depth = t1 - t0;
+      if (D < minHole - 1e-9) out.push({ kind: 'hole', level: 'warn', text: `A hole Ø${f3(D)} is smaller than Ø${minHole}`, p: vec(fc.center) });
+      if (depth > maxRatio * D + 1e-9) out.push({ kind: 'deep', level: 'warn', text: `A hole Ø${f3(D)} is ${f3(depth)} deep: ${f3(depth / D)} × its diameter (more than ${maxRatio} ×)`, p: vec(fc.center) });
+      const std = D <= 20 ? Math.abs(D * 2 - Math.round(D * 2)) < 1e-6 : Math.abs(D - Math.round(D)) < 1e-6;
+      if (!std) out.push({ kind: 'drill', level: 'info', text: `A hole Ø${f3(D)} is not a standard drill size (reamed, bored or a clearance hole?)`, p: vec(fc.center) });
+    }
+    // (sharp inside corners: concave straight edges between flat faces)
+    const edges = shape.edges;
+    if (edges.length > 20000) continue;
+    for (const e of edges) {
+      if (e.geomType !== 'LINE') continue;
+      const fs = adjacentFaces(shape, e);
+      if (fs.length !== 2 || fs.some((x) => x.geomType !== 'PLANE')) continue;
+      const a = vec(e.startPoint), b = vec(e.endPoint), d = unit(sub(b, a)), m = mul(add(a, b), 0.5), L = len(sub(b, a));
+      const [nA, nB] = fs.map((x) => unit(vec(x.normalAt())));
+      if (len(cross(nA, nB)) < 1e-6) continue;
+      // (the direction into face A from the edge: concave when it runs the way face B looks)
+      let tA = unit(cross(nA, d));
+      const eps = Math.max(1e-4, L * 1e-3);
+      if (new R.DistanceQuery(R.makeVertex(add(m, mul(tA, eps)))).distanceTo(fs[0]) > eps * 0.5) tA = mul(tA, -1);
+      if (dot(nB, tA) > 1e-6) out.push({ kind: 'corner', level: 'warn', text: `A sharp inside corner ${f3(L)} long: a cutter leaves its radius (add one of R${minR} or more, or plan for EDM)`, p: m });
+    }
+  }
+  return out;
+}
+
 // The faces of `body` that contain `edge`, in a stable order (by face centre).
 function adjacentFaces(body, edge) {
   const oc = R.getOC(), T = oc.TopAbs_ShapeEnum;
@@ -10386,12 +10992,23 @@ async function handleMessage(e) {
     } else if (type === 'partMesh') {
       const doc = JSON.parse(data.doc);
       doc.rollbackAt = null;
-      const out = await rebuild(doc, null, { coarse: !!data.coarse });
+      const out = await rebuild(doc, null, { coarse: !!data.coarse, noContext: true });
       const r = out.res;
       result = { body: r.body, errors: [...(r.errors instanceof Map ? r.errors : Object.entries(r.errors || {}))].length };
       // (Kernel Lab: the solids' volume, for the BOM's mass, instead of the display mesh's)
       if (data.withVolume && r.body && lastSolids.length) { const ex = exactProps(lastSolids.map((x) => x.shape), 1e-6); r.body.volume = ex.reduce((t, x, i) => t + finite(x.volume, () => preciseVolume(lastSolids[i].shape)), 0); }
       transfer = out.transfer;
+    } else if (type === 'partSTEP') {
+      // a part's solids as a STEP file, placed by pose { p, q: [x, y, z, w] } (Edit in Context: another part, where it is
+      // from the part being edited)
+      const doc = JSON.parse(data.doc);
+      doc.rollbackAt = null;
+      const part = await rebuild(doc, null, { partial: true });
+      if (!part.solids.length) throw new Error('The part has no solids');
+      const [qx, qy, qz, qw] = data.pose?.q || [0, 0, 0, 1], s = Math.hypot(qx, qy, qz), ang = (2 * Math.atan2(s, qw) * 180) / Math.PI, t = data.pose?.p || [0, 0, 0];
+      const placed = part.solids.map((r) => { let sh = r.shape.clone(); if (s > 1e-12 && Math.abs(ang) > 1e-9) sh = sh.rotate(ang, [0, 0, 0], [qx / s, qy / s, qz / s]); return { shape: sh.translate(t), name: data.name || 'Context' }; });
+      const blob = R.exportSTEP(placed, { unit: 'mm' });
+      result = { text: await blob.text() };
     } else if (type === 'exportAssemblySTEP') {
       result = await exportAssemblySTEP(data.doc);
       transfer = [result.bytes.buffer];
@@ -10402,6 +11019,10 @@ async function handleMessage(e) {
       result = await drawingPick(data.doc, data.view, data.p);
     } else if (type === 'drawingViews') {
       result = await drawingViews(data.doc, data.views || []);
+    } else if (type === 'dfmCheck') {
+      const list = data.bodyId ? lastSolids.filter((r) => r.id === data.bodyId) : lastSolids;
+      if (!list.length) throw new Error('There is no solid to check');
+      result = dfmCheck(list, data.opts || {});
     } else if (type === 'sheetCheck') {
       const rec = lastSolids.find((r) => r.id === data.bodyId && r.sheet);
       if (!rec) throw new Error('That body is not sheet metal');

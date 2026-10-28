@@ -32,8 +32,10 @@ export function holeSpec(f, ev) {
   const out = { type, d, thread: null };
   if (type === 'cbore') { out.cbD = custom ? ev(f.cboreD) : row[4]; out.cbDepth = custom ? ev(f.cboreDepth) : row[5]; }
   if (type === 'csink') { out.csD = custom ? ev(f.csinkD) : row[6]; out.csAng = custom ? ev(f.csinkAngle ?? 90) : 90; }
+  // (a counterdrill: a wider drill to a depth, its point's cone down to the hole; standard sizes: the counterbore's)
+  if (type === 'cdrill') { out.cdD = custom ? ev(f.cdrillD) : row[4]; out.cdDepth = custom ? ev(f.cdrillDepth) : row[5]; out.cdAng = ev(f.cdrillAngle ?? 118); }
   const what = custom ? '' : `${f.size} ${f.fit || 'normal'} `;
-  out.label = type === 'slot' ? `${what}slot ${+d.toFixed(3)} wide` : type === 'cbore' ? `${what}Ø${+d.toFixed(3)} counterbore Ø${+out.cbD.toFixed(3)} × ${+out.cbDepth.toFixed(3)}`
+  out.label = type === 'cdrill' ? `${what}Ø${+d.toFixed(3)} counterdrill Ø${+out.cdD.toFixed(3)} × ${+out.cdDepth.toFixed(3)} × ${+out.cdAng.toFixed(1)}°` : type === 'slot' ? `${what}slot ${+d.toFixed(3)} wide` : type === 'cbore' ? `${what}Ø${+d.toFixed(3)} counterbore Ø${+out.cbD.toFixed(3)} × ${+out.cbDepth.toFixed(3)}`
     : type === 'csink' ? `${what}Ø${+d.toFixed(3)} countersink Ø${+out.csD.toFixed(3)} × ${+out.csAng.toFixed(1)}°`
       : `${what}Ø${+d.toFixed(3)}`;
   return out;
@@ -45,6 +47,7 @@ export function holeSpec(f, ev) {
 export function holeProfile(spec, depth, point, pointAngle = 118) {
   const r = spec.d / 2, pts = [[0, -0.05]];
   if (spec.type === 'cbore') { pts.push([spec.cbD / 2, -0.05], [spec.cbD / 2, spec.cbDepth], [r, spec.cbDepth]); }
+  else if (spec.type === 'cdrill') { const R = spec.cdD / 2; pts.push([R, -0.05], [R, spec.cdDepth], [r, spec.cdDepth + (R - r) / Math.tan(((spec.cdAng || 118) * Math.PI) / 360)]); }
   else if (spec.type === 'csink') {
     const rc = spec.csD / 2, h = (rc - r) / Math.tan(((spec.csAng || 90) * Math.PI) / 360);
     pts.push([rc + 0.05 * Math.tan(((spec.csAng || 90) * Math.PI) / 360), -0.05], [r, h]);

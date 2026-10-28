@@ -19,6 +19,7 @@ import { platform } from './platform.js';
 import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
+import { nest, nestEnts } from './nest.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -34,6 +35,9 @@ import { installA11y, onControl } from './a11y.js';
 import { machineInfo, kernelBudget, memoryFor, threadsPerKernel } from './machine.js';
 import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
+import * as LF from './libfeatures.js';
+import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
+import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -51,6 +55,7 @@ const $ = (s) => document.querySelector(s);
 class App {
   constructor() {
     this.viewport = new Viewport($('#viewport'), $('#c'), $('#labels'));
+    this.annot3d = new Annotations3D(this);
     this.history = new M.History();
     this.sketcher = new Sketcher(this);
     this.sketch3d = new Sketcher3D(this);
@@ -640,6 +645,8 @@ class App {
 
   applyResult(r) {
     const doc = this.doc;
+    this.annot3d?.refresh();
+    showDecals(this.viewport, this.doc.decals);
     if (this.flatView) this.exitFlatten(); // the model changed: back to the model view
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -855,6 +862,8 @@ class App {
     const k = this.analysis?.kind;
     if (k === 'curvature') this.status(`Curvature: blue flat → green → yellow → red tightest (red: radius ${fmt(1 / this.viewport.curvatureMax, 2)} mm or less). Click Curvature again to turn it off.`);
     else if (k === 'draft') this.status(`Draft analysis: green ≥ ${this.analysis.angle}° draft toward the pull direction, red ≥ ${this.analysis.angle}° away from it, yellow needs draft. Click Draft Analysis again to turn it off.`);
+    else if (k === 'thickness') { const t = this.viewport.thicknessStats; this.status(`Thickness: red under ${fmt(this.analysis.min, 3)} mm, blue over ${fmt(this.analysis.max, 3)} mm, green to yellow between. Walls ${t && Number.isFinite(t.min) ? `${fmt(t.min, 3)} to ${fmt(t.max, 3)} mm` : 'not found'}${t ? `; ${Math.round(t.thin * 100)} % too thin, ${Math.round(t.thick * 100)} % too thick` : ''}. Click again to turn it off.`); }
+    else if (k === 'undercut') this.status(`Undercut check: green free along the pull direction, blue free against it, red undercut (${Math.round((this.viewport.undercutShare || 0) * 100)} % of the surface): the mould cannot release it either way. Click again to turn it off.`);
     else if (k === 'zebra') this.status('Zebra stripes: smooth (tangent / curvature-continuous) joins show stripes running on without a kink. Click again to turn them off.');
     else this.status('Ready');
   }
@@ -1172,6 +1181,56 @@ class App {
 
   // Export flat patterns as DXF: one body (save dialog) or all sheet metal bodies (into a chosen
   // folder). Each one is previewed first; the layer colours / line types can be changed there.
+  // Nest Flat Patterns: every sheet metal body's flat pattern (identical bodies counted, times their quantity and
+  // the sets asked for) laid out on stock sheets, shown, and written as one DXF (the sheets side by side).
+  async nestFlatPatterns(opts = null) {
+    const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
+    if (!sheets.length) { this.toast('There are no sheet metal bodies to nest', true); return null; }
+    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1 };
+    const v = opts || (await this.ui.promptFields('Nest Flat Patterns', 'dxfAll', [
+      { key: 'W', label: 'Sheet width', type: 'expr', value: prev.W }, { key: 'H', label: 'Sheet height', type: 'expr', value: prev.H },
+      { key: 'margin', label: 'Margin (round the sheet)', type: 'expr', value: prev.margin }, { key: 'gap', label: 'Gap between parts', type: 'expr', value: prev.gap },
+      { key: 'rotate', label: 'Parts may be turned 90°', type: 'check', value: prev.rotate }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
+    ], 'Each part is placed as the rectangle round its flat pattern.'));
+    if (!v) return null;
+    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: !!v.rotate, sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))) };
+    this._nestOpts = o;
+    const parts = [];
+    for (const g of groupBodies(sheets)) {
+      let data;
+      try { data = await this.withProgress(`Flattening ${g.rep.name}…`, () => this.kernel.request('sheetFlat', { bodyId: g.rep.id, flip: this.flatFlip(g.rep.id) })); } catch (err) { this.toast(`${g.rep.name}: ${err.message}`, true); continue; }
+      const each = Math.max(1, Math.round(+(this.doc.bodies?.[g.rep.id]?.qty) || 1));
+      parts.push({ name: g.rep.name, qty: g.members.length * each * o.sets, size: data.size, area: data.area, ents: data.ents });
+    }
+    let laid;
+    try { laid = nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
+    const n = parts.reduce((t, p) => t + p.qty, 0), useAll = laid.reduce((t, s) => t + s.used, 0) / laid.length;
+    const result = { parts, sheets: laid, opts: o };
+    if (opts?.quiet) return result;
+    // (the layout, drawn small)
+    const k = 560 / Math.max(o.W, 1), svgH = laid.length * (o.H * k + 14);
+    let svg = `<svg width="${o.W * k + 2}" height="${svgH}" style="background:#fff;border:1px solid #ccc">`;
+    laid.forEach((s, j) => {
+      const oy = j * (o.H * k + 14);
+      svg += `<rect x="1" y="${oy + 1}" width="${o.W * k}" height="${o.H * k}" fill="#f4f6f8" stroke="#555"/>`;
+      for (const q of s.placed) svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8"><title>${parts[q.i].name.replace(/[&<>]/g, '')}</title></rect>`;
+    });
+    svg += '</svg>';
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="pm-hint" style="margin-bottom:6px">${n} part${n === 1 ? '' : 's'} on ${laid.length} sheet${laid.length === 1 ? '' : 's'} of ${o.W} × ${o.H}: ${laid.map((s, j) => `sheet ${j + 1} ${(s.used * 100).toFixed(1)} %`).join(', ')} used (${(useAll * 100).toFixed(1)} % on average).</div><div style="max-height:60vh;overflow:auto">${svg}</div>`;
+    this.ui.modal('Nest Flat Patterns', 'dxfAll', box, [
+      { label: 'Export DXF…', primary: true, action: () => { this.exportNestDXF(result); return false; } },
+      { label: 'Close' },
+    ]);
+    return result;
+  }
+  async exportNestDXF({ parts, sheets, opts }) {
+    const settings = loadDxfSettings(), mapping = { ...settings.mapping, SHEET: settings.mapping?.SHEET || { color: 8, ltype: 'CONTINUOUS' }, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
+    const bytes = new TextEncoder().encode(buildDXF(nestEnts(parts, sheets, opts), mapping));
+    try { const path = await platform.saveBinary(dxfFileName(`${this.safeName()} nest`), bytes, 'dxf'); if (path) this.status(`Nest exported: ${String(path).split(/[\\/]/).pop()}`); } catch (err) { this.toast('DXF export failed: ' + err.message, true); }
+    return bytes;
+  }
+
   async exportSheetDXF(bodyId = null, all = false) {
     if (this.mode === 'sketch') { this.toast('Exit the sketch first', true); return; }
     const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
@@ -2273,6 +2332,8 @@ class App {
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
     if (f.type === 'hole' && this.pm.holeEndPick && f.end === 'upToVertex') return 'vertex';
     if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
+    if (f.type === 'boss' || f.type === 'snapHook') return 'faces';
+    if (f.type === 'lipGroove') return 'flatface';
     if (f.type === 'shell' || f.type === 'surfOffset' || f.type === 'surfCopy' || f.type === 'hole' || f.type === 'smClosedCorner' || f.type === 'smCrossBreak' || f.type === 'smGusset' || (f.type === 'smForm' && f.formType !== 'louver')) return 'faces';
     const scoped = (f.type === 'extrude' || f.type === 'revolve') && (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false;
     if (f.type === 'deleteBody' || f.type === 'deleteSurface') return 'body';
@@ -2285,10 +2346,10 @@ class App {
     if (f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange') return 'edge';
     if (f.type === 'surfFill') return this.pm.patchSupportPick ? 'faces' : 'edge';
     if (f.type === 'surfExtend') return 'edge';
-    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim') return 'faces';
+    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
-    if (['smCornerRelief', 'smFold'].includes(f.type)) return 'body';
+    if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToSurface') return 'face';
@@ -2317,7 +2378,7 @@ class App {
     if (f.type === 'point' && f.pointType === 'vertex') return 'vertex';
     if (f.type === 'point' && (f.pointType === 'arcCenter' || f.pointType === 'edgeMid')) return 'edge';
     // (a pattern: faces of the features to copy, or bodies to copy whole)
-    if (['lpattern', 'cpattern', 'spattern', 'curvePattern'].includes(f.type)) return f.pick === 'bodies' ? 'body' : 'faces';
+    if (['lpattern', 'cpattern', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) return f.pick === 'bodies' ? 'body' : 'faces';
     if (f.type === 'mirror') return 'body';
     return null;
   }
@@ -2539,7 +2600,7 @@ class App {
     } else if (['smCornerRelief', 'smClosedCorner', 'smFold'].includes(f.type)) {
       if (!b?.sheet) { this.toast('Select a sheet metal body'); return true; }
       f.body = f.body === id ? null : id;
-    } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern'].includes(f.type)) {
+    } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) {
       f.bodies = Array.isArray(f.bodies) ? f.bodies : [];
       toggle(f.bodies);
     } else if (f.type === 'moveBody' || f.type === 'split') {
@@ -2986,7 +3047,7 @@ class App {
     if (!b) { this.toast('That body no longer exists', true); return; }
     try {
       this.status(`Exporting ${b.name} as STEP…`);
-      const bytes = await this.withProgress(`Exporting ${b.name}…`, () => this.kernel.exportBody('step', id, this.exportInfo()));
+      const bytes = await this.withProgress(`Exporting ${b.name}…`, () => this.stepBytes(id));
       const file = (b.name.replace(/[^\w\- \[\]]+/g, '_') || 'Body') + '.step';
       const path = await platform.saveBinary(file, bytes, 'step');
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');
@@ -3166,6 +3227,8 @@ class App {
       return;
     }
     if (this.pickMode() === 'measure') { this.measureClick(e); return; }
+    if (this.pm?.kind === 'annotate') { this.annotateClick(e); return; }
+    if (this.pm?.kind === 'decal') { this.decalClick(e); return; }
     // cycling through overlapping bodies: Shift+left-click steps back, a plain click on the spot selects
     if (this.cycleAllowed()) {
       const c = this._cycle;
@@ -3288,7 +3351,7 @@ class App {
       const fh = this.faceAt(e);
       if (!fh) {
         // (a pattern: a plane clicked goes to the panel as before, e.g. for a direction)
-        const p = ['lpattern', 'cpattern', 'spattern', 'curvePattern'].includes(this.pm.feature?.type) ? this.pickAt(e) : null;
+        const p = ['lpattern', 'cpattern', 'spattern', 'curvePattern', 'tablePattern'].includes(this.pm.feature?.type) ? this.pickAt(e) : null;
         if (p?.kind === 'plane') G.STD_PLANES[p.id] ? this.treePickPlane(p.id) : this.treePickFeature(p.id);
         return;
       }
@@ -3685,6 +3748,7 @@ class App {
 
   createSketchOn(plane) {
     if (this.pm?.kind === 'selectPlane' && this.pm.forSketch) return this.setSketchPlane(this.pm.forSketch, plane);
+    if (this.pm?.kind === 'selectPlane' && this.pm.forLibrary) return this.placeLibraryFeature(this.pm.forLibrary, plane);
     if (this.pm?.kind === 'selectPlane') this.pm = null;
     this.setHoverPlane(null);
     const f = M.createFeature(this.doc, 'sketch', { plane });
@@ -3956,7 +4020,7 @@ class App {
       const withCircle = [...doc.features].reverse().find((x) => x.type === 'sketch' && x.curves?.some((c) => c.type === 'circle'));
       if (withCircle) props.sketch = withCircle.id;
     }
-    if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern'].includes(type)) {
+    if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'tablePattern'].includes(type)) {
       const ok = (f) => f && !M.PATTERN_SKIP.has(f.type) && !f.suppressed;
       const src = ok(selF) ? selF : [...doc.features].reverse().find(ok);
       if (!src) { this.toast('Create a feature to pattern first (e.g. an extrude, a cut, a hole or a fillet).', true); return; }
@@ -4016,6 +4080,12 @@ class App {
       // the profile last used
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
       if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
+    }
+    if (type === 'pipeRoute' || type === 'cable') {
+      const isPath = (x) => x && (x.type === 'sketch' || x.type === 'sketch3d') && !x.suppressed;
+      const src = isPath(selF) ? selF : [...doc.features].reverse().find(isPath);
+      if (!src) { this.toast(`Draw the route first: a sketch or 3D sketch${type === 'pipeRoute' ? ' of straight lines' : ''}`, true); return; }
+      props.path = src.id;
     }
     if (type === 'draft' || type === 'dome' || type === 'moveFace') {
       if (!this.result.body) { this.toast('There is no solid body', true); return; }
@@ -4104,7 +4174,7 @@ class App {
     if (pm.kind === 'sketch') return this.exitSketch(true);
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(true);
-    if (pm.kind === 'selectPlane' || pm.kind === 'measure') return this.cancelPM();
+    if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate' || pm.kind === 'decal') return this.cancelPM();
     if (pm.kind === 'section') {
       // (a view of the model only: the cut stays, its arrow goes; nothing is built again)
       this.pm = null;
@@ -4159,6 +4229,7 @@ class App {
     if (pm.kind === 'section') this.clearSection();
     if (pm.kind === 'measure') { this.viewport.setMeasure(null); this.viewport.setPointMarks('measure-picks', null); this.viewport.setPointMarks('measure-hover', null); }
     if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.showBanner(null); }
+    if (pm.kind === 'annotate' || pm.kind === 'decal') this.showBanner(null);
     this.hoverEdge = null;
     this.hoverVertex = null;
     this.refresh();
@@ -4225,6 +4296,257 @@ class App {
     this.commit();
     this.refresh();
     this.status(doc.rollbackAt ? `Rolled back to before ${M.findFeature(doc, doc.rollbackAt).name}. New features are inserted above the bar; drag it to the bottom to roll forward.` : 'Rolled forward to the end.');
+  }
+
+  // DFM Check (machining): the kernel's findings listed, each shown on the model with a mark.
+  async dfmCheck(opts = null) {
+    if (!this.result?.body) { this.toast('There is no solid body to check', true); return null; }
+    const prev = this._dfmOpts || { minR: 1, minHole: 1, maxRatio: 10, tiny: 0.01 };
+    const v = opts || (await this.ui.promptFields('DFM Check', 'measure', [
+      { key: 'minR', label: 'Smallest cutter radius', type: 'expr', value: prev.minR },
+      { key: 'minHole', label: 'Smallest hole', type: 'expr', value: prev.minHole },
+      { key: 'maxRatio', label: 'Deepest hole (× its diameter)', type: 'expr', value: prev.maxRatio },
+      { key: 'tiny', label: 'Smallest face (mm²)', type: 'expr', value: prev.tiny },
+    ], 'Checks the solids for machining: sharp inside corners, small inside rounds, small or deep holes, hole sizes that are not standard drills, and very small faces. Thin walls: Evaluate ▸ Thickness Analysis; draft and undercuts: Draft Analysis and Undercut Check.'));
+    if (!v) return null;
+    const o = Object.fromEntries(Object.entries(v).filter(([k]) => k in prev).map(([k, x]) => [k, this.result.ev(String(x))]));
+    this._dfmOpts = o;
+    let found;
+    try { found = await this.withProgress('Checking…', () => this.kernel.request('dfmCheck', { opts: o })); } catch (e) { this.toast('DFM Check failed: ' + e.message, true); return null; }
+    this.viewport.setPointMarks('dfm', found.filter((x) => x.p).map((x, i) => ({ p: x.p, text: String(i + 1), cls: x.level === 'warn' ? 'pick' : '' })));
+    if (opts?.quiet) return found;
+    const box = document.createElement('div');
+    box.innerHTML = found.length ? `<ol style="margin:0;padding-left:22px;max-height:55vh;overflow:auto">${found.map((x) => `<li style="margin:3px 0">${x.level === 'warn' ? '⚠ ' : 'ⓘ '}${x.text.replace(/[&<>]/g, '')}</li>`).join('')}</ol>` : '<div class="pm-hint">Nothing found: no sharp inside corners, small or deep holes, odd hole sizes or very small faces.</div>';
+    this.ui.modal(`DFM Check — ${found.filter((x) => x.level === 'warn').length} warnings, ${found.filter((x) => x.level !== 'warn').length} notes`, 'measure', box, [{ label: 'Clear the marks', action: () => { this.viewport.setPointMarks('dfm', null); } }, { label: 'Close', primary: true }]);
+    return found;
+  }
+
+  // ------------------------------------------------------------ rendering and decals (render.js)
+  // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
+  renderSetup() {
+    const bodies = this.result?.bodies || [], vp = this.viewport;
+    return {
+      looks: bodies.map((b) => lookFor(this.doc.bodies?.[b.id]?.look, M.bodyMaterialId(this.doc, b.id))),
+      colors: bodies.map((_, i) => (Array.isArray(vp.bodyColors) ? vp.bodyColors[i] : vp.bodyColors) ?? 0xc3cad4),
+      hidden: new Set(vp.hiddenBodies || []),
+    };
+  }
+  async renderView(opts = null) {
+    const bodies = this.result?.bodies || [];
+    if (!this.viewport.bodyGeo) { this.toast('There is no model to render', true); return null; }
+    let o = opts;
+    if (!o) {
+      const prev = this._renderOpts || { size: '1920x1080', env: 'studio', floor: true, exposure: 1 };
+      const v = await this.ui.promptFields('Render', 'camera', [
+        { key: 'size', label: 'Size', type: 'select', options: [['view', 'As the view'], ['1280x720', '1280 × 720'], ['1920x1080', '1920 × 1080'], ['2560x1440', '2560 × 1440'], ['3840x2160', '3840 × 2160']], value: prev.size },
+        { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
+        { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
+        { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
+        ...bodies.slice(0, 24).map((b, i) => ({ key: 'look' + i, label: `${b.name}`, type: 'select', options: Object.entries(LOOKS).map(([k, l]) => [k, l.name]), value: this.doc.bodies?.[b.id]?.look || 'auto' })),
+      ], 'One frame of the view as it is now. Each body’s look is kept with it.');
+      if (!v) return null;
+      let changed = false;
+      bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
+      if (changed) this.commit();
+      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1 };
+      this._renderOpts = o;
+    }
+    const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
+    let img;
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, decals: this.doc.decals || [] })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    if (o.quiet) return img;
+    const box = document.createElement('div');
+    box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
+    this.ui.modal(`Render — ${img.width} × ${img.height}`, 'camera', box, [
+      { label: 'Save PNG…', primary: true, action: () => { const b = Uint8Array.from(atob(img.url.split(',')[1]), (c) => c.charCodeAt(0)); platform.saveBinary(`${this.safeName()}.png`, b, 'png').then((p) => p && this.status('Saved ' + String(p).split(/[\\/]/).pop())); return false; } },
+      { label: 'Close' },
+    ]);
+    return img;
+  }
+  // Decal: a picture put on a flat face of the part (for the view and renders): opened, then the face clicked.
+  async addDecal() {
+    let file;
+    try { file = await platform.openImage(); } catch (e) { this.toast('Could not open the picture: ' + e.message, true); return; }
+    if (!file) return;
+    const img = await new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = file.url; });
+    if (!img?.naturalWidth) { this.toast('That picture could not be read', true); return; }
+    const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+    cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    const v = await this.ui.promptFields('Decal', 'sketchPicture', [{ key: 'w', label: 'Width', type: 'expr', value: 30 }, { key: 'angle', label: 'Turned (°)', type: 'expr', value: 0 }], 'Then click the flat face for it: it is centred where you click.');
+    if (!v) return;
+    if (this.pm) this.cancelPM();
+    const w = this.result.ev(String(v.w));
+    this.pm = { kind: 'decal', draft: { name: file.name, src: cv.toDataURL('image/png'), w, h: (w * cv.height) / cv.width, angle: this.result.ev(String(v.angle)) || 0 } };
+    this.showBanner('Click the flat face for the decal');
+    this.ui.renderPM();
+  }
+  decalClick(e) {
+    const fh = this.faceAt(e);
+    if (!fh) { this.toast('Click a flat face of the model'); return null; }
+    const face = this.viewport.faceInfo(fh.hit.face);
+    if (!face.planar) { this.toast('A decal goes on a flat face'); return null; }
+    const list = (this.doc.decals ||= []), d = { id: 'dc' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1), ...this.pm.draft, p: fh.hit.point.toArray(), n: face.normal.toArray() };
+    list.push(d);
+    this.pm = null;
+    this.showBanner(null);
+    this.commit();
+    this.ui.renderPM();
+    showDecals(this.viewport, this.doc.decals);
+    this.status(`Decal ${d.name} put on the face (Tools ▸ Decals… lists them; renders show them).`);
+    return d;
+  }
+  manageDecals() {
+    const list = this.doc.decals || [];
+    if (!list.length) { this.toast('No decals yet: View ▸ Decal puts one on a face', true); return; }
+    const box = document.createElement('div');
+    const render = () => {
+      box.innerHTML = '';
+      for (const d of [...(this.doc.decals || [])]) {
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0';
+        const t = document.createElement('span'); t.style.flex = '1'; t.textContent = `${d.name} (${+d.w.toFixed(2)} × ${+d.h.toFixed(2)})`;
+        const x = document.createElement('button'); x.textContent = 'Delete';
+        x.onclick = () => { this.doc.decals = this.doc.decals.filter((y) => y !== d); if (!this.doc.decals.length) delete this.doc.decals; this.commit(); showDecals(this.viewport, this.doc.decals); render(); };
+        row.append(t, x); box.appendChild(row);
+      }
+    };
+    render();
+    this.ui.modal('Decals', 'sketchPicture', box, [{ label: 'Close', primary: true }]);
+  }
+
+  // ------------------------------------------------------------ 3D annotations (annotations3d.js), in doc.annotations
+  async startAnnotation(kind0 = null) {
+    const ui = this.ui;
+    const kind = kind0 || (await ui.promptFields('3D Annotation', 'measure', [{ key: 'kind', label: 'Kind', type: 'select', options: [['note', 'Note'], ['dim', 'Dimension (between two points)'], ['gdt', 'Geometric tolerance'], ['datum', 'Datum'], ['finish', 'Surface finish']], value: 'note' }]))?.kind;
+    if (!kind) return;
+    const fields = {
+      note: [{ key: 'text', label: 'Note', type: 'text', value: '' }],
+      dim: [{ key: 'value', label: 'Value (empty: as measured)', type: 'expr', value: '' }, { key: 'plus', label: '+ Tolerance', type: 'expr', value: '0.1' }, { key: 'minus', label: '− Tolerance', type: 'expr', value: '0.1' }],
+      gdt: [{ key: 'symbol', label: 'Characteristic', type: 'select', options: GDT_SYMBOLS.map(([k, s, l]) => [k, `${s} ${l}`]), value: 'position' }, { key: 'dia', label: 'Diameter zone (Ø)', type: 'check', value: false }, { key: 'tol', label: 'Tolerance', type: 'expr', value: '0.05' }, { key: 'datums', label: 'Datums (e.g. A B C)', type: 'text', value: '' }],
+      datum: [{ key: 'letter', label: 'Datum letter', type: 'text', value: String.fromCharCode(65 + (this.doc.annotations || []).filter((x) => x.kind === 'datum').length % 26) }],
+      finish: [{ key: 'ra', label: 'Roughness Ra (µm)', type: 'expr', value: '1.6' }, { key: 'text', label: 'Process / note', type: 'text', value: '' }],
+    }[kind];
+    if (!fields) return;
+    const v = await ui.promptFields('3D Annotation', 'measure', fields, kind === 'dim' ? 'Then click the two points on the model.' : 'Then click the point on the model it is about.');
+    if (!v) return;
+    const draft = { kind, ...v };
+    for (const k of ['plus', 'minus', 'tol', 'ra']) if (k in draft) draft[k] = this.result.ev(String(draft[k] || 0));
+    if (this.pm) this.cancelPM();
+    this.pm = { kind: 'annotate', draft, pts: [], need: kind === 'dim' ? 2 : 1 };
+    this.showBanner(kind === 'dim' ? 'Click the first point of the dimension on the model' : 'Click the point on the model for the annotation');
+    this.ui.renderPM();
+  }
+
+  annotateClick(e) {
+    const fh = this.faceAt(e), pm = this.pm;
+    if (!fh) { this.toast('Click on the model'); return; }
+    pm.pts.push(fh.hit.point.toArray());
+    if (pm.pts.length < pm.need) { this.showBanner('Click the second point of the dimension'); return; }
+    const d = pm.draft, [p, q] = pm.pts, list = (this.doc.annotations ||= []);
+    const a = { id: 'an' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1), ...d, p, ...(q ? { q } : {}) };
+    if (a.kind === 'dim') { const m = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); a.value = String(d.value).trim() ? this.result.ev(String(d.value)) : +m.toFixed(4); }
+    a.at = this.annot3d.labelAt(p, q);
+    list.push(a);
+    this.pm = null;
+    this.showBanner(null);
+    this.commit();
+    this.ui.renderPM();
+    this.annot3d.refresh();
+    this.status(`${annotationText(a)} added. Tools ▸ 3D Annotations… lists them (to delete or hide them); a STEP export of the part carries them.`);
+    return a;
+  }
+
+  manageAnnotations() {
+    const ui = this.ui, list = this.doc.annotations || [];
+    if (!list.length) { this.toast('No 3D annotations yet: Evaluate ▸ 3D Annotation adds them', true); return; }
+    const box = document.createElement('div');
+    const render = () => {
+      box.innerHTML = '';
+      for (const a of [...(this.doc.annotations || [])]) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0';
+        const t = document.createElement('span'); t.style.flex = '1'; t.textContent = `${a.kind}: ${annotationText(a)}`;
+        const x = document.createElement('button'); x.textContent = 'Delete';
+        x.onclick = () => { this.doc.annotations = this.doc.annotations.filter((y) => y !== a); if (!this.doc.annotations.length) delete this.doc.annotations; this.commit(); this.annot3d.refresh(); render(); };
+        row.append(t, x);
+        box.appendChild(row);
+      }
+      const hide = document.createElement('label');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!this.doc.annotationsHidden;
+      cb.onchange = () => { if (cb.checked) this.doc.annotationsHidden = true; else delete this.doc.annotationsHidden; this.commit(); this.annot3d.refresh(); };
+      hide.append(cb, document.createTextNode(' Hide the annotations in the view'));
+      box.appendChild(hide);
+    };
+    render();
+    ui.modal('3D Annotations', 'measure', box, [{ label: 'Close', primary: true }]);
+  }
+
+  // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
+  async stepBytes(bodyId = null) {
+    const ann = this.doc.annotations || [];
+    const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo());
+    if (!ann.length) return bytes;
+    return new TextEncoder().encode(stepWithAnnotations(new TextDecoder().decode(bytes), ann));
+  }
+
+  // ------------------------------------------------------------ library features (libfeatures.js), kept in the settings
+  async saveLibraryFeature(ids, name0) {
+    const frameOf = (id) => { const fr = this.result.sketches.get(id)?.frame; return fr ? G.frameToJSON(fr) : null; };
+    const prefs = this.ui.prefs, list = prefs.libraryFeatures || [];
+    const name = (await this.ui.promptText('Save as Library Feature', 'folder', 'Name of the library feature (it is kept with your settings, for any part):', name0 || `Library Feature ${list.length + 1}`))?.trim();
+    if (!name) return null;
+    let lib;
+    try { lib = LF.makeLibraryFeature(this.doc, ids, frameOf, name); } catch (e) { this.toast(e.message, true); return null; }
+    prefs.libraryFeatures = [...list.filter((x) => x.name !== name), lib];
+    this.ui.savePrefs();
+    this.status(`Library feature "${name}" saved (${lib.items.length} feature${lib.items.length === 1 ? '' : 's'}${lib.equations.length ? `, variables ${lib.equations.map((e) => e.name).join(', ')}` : ''}). Insert it from Features ▸ Library Feature.`);
+    return lib;
+  }
+
+  async insertLibraryFeature() {
+    const ui = this.ui, list = ui.prefs.libraryFeatures || [];
+    if (!list.length) { this.toast('No library features yet: right-click a feature or a folder in the tree and Save as Library Feature', true); return; }
+    let lib = list[list.length - 1];
+    {
+      const v = await ui.promptFields('Library Feature', 'folder', [
+        { key: 'name', label: 'Library feature', type: 'select', options: list.map((b) => [b.name, b.name]), value: lib.name },
+        { key: 'del', label: 'Delete it from the library instead', type: 'check', value: false },
+      ]);
+      if (!v) return;
+      lib = list.find((x) => x.name === v.name);
+      if (!lib) return;
+      if (v.del) { ui.prefs.libraryFeatures = list.filter((x) => x !== lib); ui.savePrefs(); this.status(`Library feature "${lib.name}" deleted.`); return; }
+    }
+    const v = await ui.promptFields(`Insert ${lib.name}`, 'folder', [
+      ...lib.equations.map((e) => ({ key: 'var:' + e.name, label: e.name, type: 'expr', value: e.expr })),
+      { key: 'angle', label: 'Turned about the face’s normal (°)', type: 'expr', value: '0' },
+    ], 'Then click the plane or flat face to put it on (its first sketch goes there).');
+    if (!v) return;
+    const values = Object.fromEntries(lib.equations.map((e) => [e.name, v['var:' + e.name]]));
+    if (this.pm) this.cancelPM();
+    this.pm = { kind: 'selectPlane', forLibrary: { lib, values, angle: +this.result.ev(v.angle) || 0 } };
+    this.status(`Select the plane or flat face for ${lib.name}.`);
+    this.updatePlanes();
+    this.ui.renderPM();
+    this.ui.refreshCommandStates();
+    this.showBanner(`Select the plane or flat face for ${lib.name}`);
+  }
+
+  placeLibraryFeature({ lib, values, angle }, plane) {
+    const fr = plane.ref === 'face' ? plane.frame : G.STD_PLANES[plane.ref] ? G.frameToJSON(G.stdFrame(plane.ref)) : this.result.planes.get(plane.ref) ? G.frameToJSON(this.result.planes.get(plane.ref)) : null;
+    this.pm = null;
+    this.showBanner(null);
+    this.setHoverPlane?.(null);
+    if (!fr) { this.toast('That plane could not be found', true); return; }
+    const out = LF.insertLibraryFeature(this.doc, lib, fr, { values, angle });
+    this.commit();
+    this.ui.renderPM();
+    this.ui.refreshCommandStates();
+    this.refresh?.();
+    this.rebuild();
+    const ren = Object.entries(out.renamed);
+    this.status(`${lib.name} inserted (${out.ids.length} feature${out.ids.length === 1 ? '' : 's'}).${ren.length ? ` Its variables are ${ren.map(([a, b]) => `${b} (for ${a})`).join(', ')}, as the part has those names already.` : ''}`);
+    return out;
   }
 
   newBodyFolder(kind, name = null, bodyIds = []) {
@@ -4777,7 +5099,7 @@ class App {
     if (!this.result?.body) { this.toast('There is no solid body to export', true); return; }
     try {
       this.status(`Exporting ${format.toUpperCase()}…`);
-      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => this.kernel.exportBody(format, null, this.exportInfo()));
+      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
       const ext = format === 'step' ? 'step' : format;
       const path = await platform.saveBinary(`${this.safeName()}.${ext}`, bytes, format);
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');

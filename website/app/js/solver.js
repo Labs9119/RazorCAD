@@ -27,6 +27,8 @@ export const RELATION_INFO = {
   tangent: { label: 'Tangent', glyph: 'T' },
   splineTangent: { label: 'Tangent (spline)', glyph: 'T' },
   fix: { label: 'Fixed', glyph: '⚓' },
+  block: { label: 'Block (rigid)', glyph: '▣' },
+  equation: { label: 'Equation', glyph: 'ƒ' },
   projected: { label: 'On Edge (projected)', glyph: '⇲' },
   sketchPattern: { label: 'Sketch Pattern', glyph: '⋮' },
   offset: { label: 'Offset', glyph: '⇉' },
@@ -303,6 +305,23 @@ export function makeSystem(sk, ev) {
           }, [...T.deps, ...H.deps, ...Cc.deps], k);
           break;
         }
+        case 'block': {
+          // a block instance moves and turns as one: B at d0 from A, the others at their places along and across AB
+          const A = pt(R[0]), B = R[1] ? pt(R[1]) : null, rest = R.slice(2).map((id) => [pt(id), k.loc[id]]);
+          const sizes = [...Object.entries(k.radii || {}).map(([id, v]) => [idx.get('r:' + id), v]), ...Object.entries(k.minors || {}).map(([id, v]) => [idx.get('b:' + id), v])].filter(([i]) => i !== undefined);
+          push((Xa) => {
+            const a = A.get(Xa), out = [];
+            if (B) {
+              const b = B.get(Xa), dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1e-12, ex = dx / L, ey = dy / L;
+              out.push(L - k.d0);
+              for (const [P, [l1, l2]] of rest) { const q = P.get(Xa); out.push(q[0] - (a[0] + l1 * ex - l2 * ey), q[1] - (a[1] + l1 * ey + l2 * ex)); }
+            }
+            for (const [i, v] of sizes) out.push(Xa[i] - v);
+            return out;
+          }, [...A.deps, ...(B ? B.deps : []), ...rest.flatMap(([P]) => P.deps), ...sizes.map(([i]) => i)], k);
+          break;
+        }
+        case 'equation':
         case 'sketchPattern':
         case 'projected': {
           // linked geometry: points (and radius) follow their source

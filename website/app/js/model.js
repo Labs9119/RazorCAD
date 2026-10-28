@@ -103,9 +103,17 @@ export const TYPE_INFO = {
   loft: { base: 'Loft', cutBase: 'Loft Cut', icon: 'loft', cutIcon: 'cutLoft' },
   helix: { base: 'Helix', icon: 'helix' },
   hole: { base: 'Hole', icon: 'hole' },
+  boss: { base: 'Mounting Boss', icon: 'hole' },
+  snapHook: { base: 'Snap Hook', icon: 'rib' },
+  lipGroove: { base: 'Lip-Groove', icon: 'shell' },
+  vent: { base: 'Vent', icon: 'fillPattern' },
+  mold: { base: 'Core-Cavity', icon: 'split' },
   draft: { base: 'Draft', icon: 'draft' },
   spattern: { base: 'Sketch Driven Pattern', icon: 'spattern' },
   curvePattern: { base: 'Curve Driven Pattern', icon: 'curvePattern' },
+  tablePattern: { base: 'Table Driven Pattern', icon: 'spattern' },
+  pipeRoute: { base: 'Pipe Route', icon: 'sweep' },
+  cable: { base: 'Cable', icon: 'sweep' },
   fillPattern: { base: 'Fill Pattern', icon: 'fillPattern' },
   rib: { base: 'Rib', icon: 'rib' },
   dome: { base: 'Dome', icon: 'dome' },
@@ -126,6 +134,8 @@ export const TYPE_INFO = {
   surfTrim: { base: 'Surface-Trim', icon: 'surfTrim' },
   surfExtend: { base: 'Surface-Extend', icon: 'surfExtend' },
   deleteFace: { base: 'Delete-Face', icon: 'deleteFace' },
+  editFillet: { base: 'Edit-Fillet', icon: 'fillet' },
+  defeature: { base: 'Defeature', icon: 'deleteFace' },
   replaceFace: { base: 'Replace-Face', icon: 'replaceFace' },
   ruledSurface: { base: 'Ruled-Surface', icon: 'ruledSurface' },
   untrim: { base: 'Untrim-Surface', icon: 'untrim' },
@@ -169,7 +179,7 @@ export const SHEET_TYPES = new Set(['smBase', 'smFlange', 'smCornerRelief', 'smC
 
 // Features that need a sketch (the first unused one is offered by default).
 // features a pattern or mirror can copy (anything that changes the bodies at a place)
-export const PATTERN_SKIP = new Set(['structMember', 'weldTrim', 'weldBead', 'sketch', 'plane', 'axis', 'point', 'helix', 'sketch3d', 'projCurve', 'compCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'fillPattern', 'combine', 'deleteBody', 'deleteSurface', 'moveBody', 'scale', 'import', 'knit', 'surfSolid', 'meshRepair', 'smConvert', 'smUnfold', 'smFold', 'split']);
+export const PATTERN_SKIP = new Set(['structMember', 'weldTrim', 'weldBead', 'sketch', 'plane', 'axis', 'point', 'helix', 'sketch3d', 'projCurve', 'compCurve', 'lpattern', 'cpattern', 'mirror', 'spattern', 'tablePattern', 'curvePattern', 'fillPattern', 'combine', 'deleteBody', 'deleteSurface', 'moveBody', 'scale', 'import', 'knit', 'surfSolid', 'meshRepair', 'smConvert', 'smUnfold', 'smFold', 'split']);
 export const SKETCH_FEATURES = new Set(['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'surfPlanar', 'helix', 'wrap', 'smBase', 'smExtrude', 'smSketchBend', 'smJog', 'smEtch', 'rib']);
 
 // Sketches a feature uses (they are hidden and shown under it in the tree once used).
@@ -228,6 +238,9 @@ export function createFeature(doc, type, props = {}) {
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
+    pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18 },
+    cable: { path: null, sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
+    tablePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', plane: null, table: '20, 0; 0, 20; 20, 20, 45' },
     curvePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', path: null, count: 4, spacing: 'equal', distance: 20, reverse: false, align: 'translate' },
     // Fill: copies on a 'square' | 'staggered' grid over a flat face, margin from its edges
     fillPattern: { feature: null, features: [], face: null, spacing: 15, layout: 'square', angle: 0, margin: 3 },
@@ -277,6 +290,8 @@ export function createFeature(doc, type, props = {}) {
     surfExtend: { edges: [], distance: 10 },
     // mode 'delete' (leave the hole) | 'patch' (fill each hole; tangent: G1 to the faces round it)
     deleteFace: { faces: [], mode: 'delete', tangent: false },
+    editFillet: { faces: [], mode: 'delete', radius: 1 },
+    defeature: { body: null, fillets: true, filletR: 2, holes: true, holeD: 6 },
     // flat faces of a solid moved onto surface body `tool`
     replaceFace: { faces: [], tool: null },
     // ruleType 'normal' (square to the face) | 'direction' (along an axis, tilted by angle); both: both sides
@@ -323,6 +338,11 @@ export function createFeature(doc, type, props = {}) {
     // Hole: holeType 'simple' | 'cbore' | 'csink' | 'tapped'; size a standard screw size (or
     // 'custom': diameter / cboreD / cboreDepth / csinkD / csinkAngle), fit 'close' | 'normal' | 'loose';
     // tapped: system + thread (cosmetic, threadDepth for the callout); end 'blind' (depth, drill point) | 'through'
+    boss: { faces: [], sketch: null, outerD: 8, height: 10, holeD: 3, holeDepth: '', draft: 0.5, ribs: 0, ribWidth: 1.2, ribLength: 4, ribHeight: 7, reverse: false },
+    snapHook: { faces: [], sketch: null, length: 12, thickness: 1.5, width: 6, overhang: 1, insertAngle: 30, retainAngle: 90, angle: 0, reverse: false },
+    lipGroove: { face: null, kind: 'lip', side: 'inner', width: 1, height: 1 },
+    mold: { body: null, dir: 'y', parting: 'auto', partingAt: 5, margin: 10, shrink: 0, keepPart: true },
+    vent: { sketch: null, slotWidth: 2, barWidth: 2, angle: 0, margin: 1, end: 'through', depth: 2, reverse: false },
     hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'
     sketch3d: { pts: [], segs: [], rels: [], nextId: 1, kind: 'lines', radius: 0 },

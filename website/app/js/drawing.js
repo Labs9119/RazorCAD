@@ -14,6 +14,7 @@ import { bomRows, bomCell, bomTotals } from './bom.js';
 export const DRAWING_EXT = '.rdrw';
 const DASH_HIDDEN = [2.4, 1.2];
 const DASH_CENTER = [8, 1.5, 1.2, 1.5];
+const DASH_PHANTOM = [10, 1.5, 1.2, 1.5, 1.2, 1.5]; // (long, short, short: an alternate position)
 
 export const ORIENTATIONS = {
   front: { label: 'Front', dir: [0, 0, 1], up: [0, 1, 0] },
@@ -346,6 +347,9 @@ function viewPrims(dwg, v, ctx) {
       if (X.brk) geomPrims.push(...brokenEdgePrims(e, X, w, dash));
       else geomPrims.push(edgePrim(e, X, w, dash));
     }
+    // an alternate position of an assembly: its visible (and tangent) edges in thin phantom lines
+    const ga = v.altPos ? ctx.geos.get(v.id + '~alt') : null;
+    if (ga?.edges) for (const { k, g: e } of ga.edges) if (k === 'v' || (k === 't' && tangent)) geomPrims.push(...(X.brk ? brokenEdgePrims(e, X, LW.thin, DASH_PHANTOM) : [edgePrim(e, X, LW.thin, DASH_PHANTOM)]));
     // break lines across the gap
     if (X.brk && g.box) {
       const B = X.brk, ix = B.axis === 'y' ? 1 : 0, jx = 1 - ix, lo = g.box.min[jx] - 2 / X.s, hi = g.box.max[jx] + 2 / X.s;
@@ -613,6 +617,7 @@ export function annPrims(dwg, a, ctx) {
   if (a.type === 'bom') return bomTablePrims(dwg, a);
   if (a.type === 'dxf') return dxfAnnPrims(dwg, a);
   if (a.type === 'revtable') return revTablePrims(dwg, a);
+  if (a.type === 'table') return generalTablePrims(dwg, a);
   if (a.type === 'cutlist') return cutListPrims(dwg, a, ctx);
   if (a.type === 'holetable') return holeTablePrims(dwg, a, ctx);
   if (a.type === 'datum' || a.type === 'fcf' || a.type === 'sfin' || a.type === 'weld') return symbolPrims(dwg, a, X);
@@ -991,6 +996,34 @@ export function bomHit(dwg, a, P) {
   bomColumns(a).forEach((c, i) => { const w = Math.max(4, Number(c.w) || 20); if (P[0] >= x && P[0] < x + w) col = i; x += w; });
   const k = Math.floor((P[1] - O[1]) / rh), row = k >= 0 && k <= rows.length ? k : -1;
   return { col, row, r: row > 0 ? rows[row - 1] : null };
+}
+
+// A general table (a.title, a.rows: [[cell…]…], the first row its header when a.header), its top-left corner at the
+// annotation's position: each column as wide as its widest cell. Cells may hold variables in {braces}: the drawing's
+// properties ({title}, {material}…).
+export function parseTable(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
+  return lines.map((l) => (l.includes('\t') ? l.split('\t') : l.split('|')).map((c) => c.trim()));
+}
+export function generalTablePrims(dwg, a) {
+  const th = (dwg.settings?.textH || 3.5) * 0.85, P = annPos(dwg, a), rh = th * 2.2, out = [];
+  const props = dwg.props || {}, fill = (t) => String(t ?? '').replace(/\{(\w+)\}/g, (m, k) => (k in props ? String(props[k] ?? '') : m));
+  const rows = (a.rows || []).map((r) => r.map(fill));
+  const nc = Math.max(1, ...rows.map((r) => r.length));
+  const widths = Array.from({ length: nc }, (_, c) => Math.max(10, ...rows.map((r, i) => textWidth(r[c] || '', th, !!a.header && i === 0) + 3)));
+  const W = widths.reduce((s2, w) => s2 + w, 0), top = a.title ? 1 : 0, N = rows.length + top;
+  if (a.title) out.push({ t: 'text', p: [P[0] + W / 2, P[1] + rh * 0.7], text: fill(a.title), h: th, anchor: 'middle', base: 'bottom', bold: true });
+  for (let r = 0; r <= N; r++) out.push({ t: 'line', a: [P[0], P[1] + r * rh], b: [P[0] + W, P[1] + r * rh], w: r === top + 1 && a.header ? LW.visible * 0.7 : LW.thin });
+  let x = P[0];
+  for (let c = 0; c <= nc; c++) {
+    out.push({ t: 'line', a: [x, P[1] + (c === 0 || c === nc ? 0 : top * rh)], b: [x, P[1] + N * rh], w: LW.thin });
+    if (c < nc) x += widths[c];
+  }
+  rows.forEach((row, i) => {
+    let cx = P[0];
+    for (let c = 0; c < nc; c++) { out.push({ t: 'text', p: [cx + widths[c] / 2, P[1] + (i + top) * rh + rh * 0.7], text: row[c] || '', h: th, anchor: 'middle', base: 'bottom', bold: !!a.header && i === 0 }); cx += widths[c]; }
+  });
+  return out;
 }
 
 // The revision table (rows from dwg.revisions), its top-left corner at the annotation's position.

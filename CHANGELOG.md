@@ -6,6 +6,28 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-28 22:34 — Plastic parts and moulds, direct editing, library features, routing, in-context design, MBD, rendering, nesting, DFM and more
+- **Patterns** with spacing and angle growing from copy to copy; **Table Driven Pattern** (x, y, angle rows, pasted
+  from a spreadsheet). **Hole**: counterdrills. **Sheet metal**: bend tables by angle; **Nest Flat Patterns** on
+  stock sheets (sets, turning, utilisation, one DXF).
+- **Surface Extrude** drafts open contours; **Surface Revolve** goes up to a plane beside its axis.
+- **Assemblies**: slot and path mates; component patterns and mirrored components; **Fasten All Holes**;
+  **Edit in Context** (other parts as transparent reference bodies, left out where the part is used);
+  **Positions**; **Collect Files** (the assembly and all its parts copied into one folder); a tolerance stack-up.
+- **Plastic parts**: mounting bosses (draft, hole, ribs), snap hooks, lips and grooves, vents; **Core and Cavity**
+  (parting at the largest section or a height, shrinkage); Thickness Analysis and Undercut Check.
+- **Direct editing**: **Delete / Resize Fillet** (rounds, ring rounds, chamfers, convex or concave) and
+  **Defeature** (fillets and holes up to a size, exactly).
+- **Library features** (features with their sketches and variables, inserted on any plane or face); **linked sketch
+  blocks** (rigid, follow the block, Explode Block); **sketch pictures** to trace over; **equation driven curves**.
+- **Pipe Route** (DN15–DN300 or tubes, elbows or bends, flanges, pipes on the cut list) and **Cable** (bundles from
+  their wires, cut length with slack).
+- **3D annotations** (notes, toleranced dimensions, GD&T frames, datums, surface finish) on the model, carried in
+  STEP as properties; **Tolerance Stack-Up** (worst case and RSS); **DFM Check** for machining.
+- **Drawings**: alternate position views in phantom lines; general tables.
+- **Render** (physically based looks per body, studio or sky light, floor shadow, PNG) and **decals**.
+- **Revisions** of parts and assemblies, each keeping a copy to open again.
+
 ## 2026-10-28 20:48 — Face profiles, Revolve Up To, Surface Extrude ends and draft, Sweep scale, Loft and Patch by hand; Fillet, Shell, Hole, Pattern, sheet metal, mate and drawing options
 - **Extrude / Revolve**: a flat model face can be a profile (holes and all, no sketch needed); the second side
   (or Two sides' second depth) can have a draft of its own; Revolve goes **Up To Vertex** or **Up To Surface** (a

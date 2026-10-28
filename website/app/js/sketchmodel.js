@@ -182,12 +182,12 @@ export function blockData(sk, ids) {
     if (o.handles) o.handles = o.handles.map(fixO);
     return o;
   });
-  const ks = sk.constraints.filter((k) => k.type !== 'fix' && k.type !== 'projected' && k.type !== 'offset' && k.type !== 'offsetGeometry' && !k.offsetGroup && k.type !== 'sketchPattern' && !k.driven && k.refs.every((r) => all.has(fixO(r))))
+  const ks = sk.constraints.filter((k) => k.type !== 'fix' && k.type !== 'block' && k.type !== 'equation' && k.type !== 'projected' && k.type !== 'offset' && k.type !== 'offsetGeometry' && !k.offsetGroup && k.type !== 'sketchPattern' && !k.driven && k.refs.every((r) => all.has(fixO(r))))
     .map((k) => ({ ...JSON.parse(JSON.stringify(k)), refs: k.refs.map(fixO) }));
   return { points: P.map((q) => ({ ...q, x: +(q.x - cx).toFixed(6), y: +(q.y - cy).toFixed(6) })), curves: cs, constraints: ks };
 }
-export function pasteItems(sk, data, x, y) {
-  const map = new Map(), out = [];
+export function pasteItems(sk, data, x, y, map = new Map()) {
+  const out = [];
   for (const q of data.points) { const id = addPoint(sk, q.x + x, q.y + y); if (q.keep) getPoint(sk, id).keep = true; map.set(q.id, id); }
   for (const c of data.curves) {
     const o = JSON.parse(JSON.stringify(c));
@@ -214,6 +214,142 @@ export function pasteItems(sk, data, x, y) {
   }
   return out;
 }
+// Equation driven curves: a spline through n + 1 points of y = f(x), x from t1 to t2 (kind 'explicit'), or of x(t),
+// y(t), t from t1 to t2 ('parametric'), held there by an 'equation' relation ({ eq: { kind, x, y, t1, t2, n }, pts:
+// the points' places }). The places are worked out again from the variables each time the sketch is solved
+// (updateEquationCurves). Trig functions take degrees. A parametric curve ending where it starts is closed.
+export function equationPoints(eq, vars = {}) {
+  const t1 = evaluate(eq.t1, vars), t2 = evaluate(eq.t2, vars), n = Math.round(evaluate(eq.n ?? 40, vars));
+  if (!(n >= 2 && n <= 2000)) throw new Error('An equation curve needs 2 to 2000 pieces');
+  if (!(Math.abs(t2 - t1) > 1e-12)) throw new Error('The curve’s start and end must differ');
+  const name = eq.kind === 'explicit' ? 'x' : 't', out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = t1 + ((t2 - t1) * i) / n, at = { ...vars, [name]: t };
+    let p;
+    try { p = eq.kind === 'explicit' ? [t, evaluate(eq.y, at)] : [evaluate(eq.x, at), evaluate(eq.y, at)]; } catch (e) { throw new Error(`The equation gives no number at ${name} = ${+t.toFixed(6)} (${e.message})`); }
+    out.push(p);
+  }
+  return out;
+}
+const loopsBack = (P) => P.length > 3 && Math.hypot(P[0][0] - P.at(-1)[0], P[0][1] - P.at(-1)[1]) < 1e-9;
+export function addEquationCurve(sk, eq, vars = {}, construction = false) {
+  let P = equationPoints(eq, vars);
+  const closed = eq.kind !== 'explicit' && loopsBack(P);
+  if (closed) P = P.slice(0, -1);
+  const ids = P.map(([x, y]) => addPoint(sk, x, y)), id = addSpline(sk, ids, closed, construction);
+  addRel(sk, 'equation', [id], { eq: { ...eq }, pts: Object.fromEntries(ids.map((pid, i) => [pid, P[i]])) });
+  return id;
+}
+// The equation curves' points where their equations put them now (a variable changed). An equation that fails here
+// leaves its curve as it was.
+export function updateEquationCurves(sk, vars = {}) {
+  for (const k of sk.constraints) {
+    if (k.type !== 'equation') continue;
+    const c = getCurve(sk, k.refs[0]);
+    if (!c?.pts) continue;
+    let P;
+    try { P = equationPoints(k.eq, vars); } catch { continue; }
+    if (c.closed && loopsBack(P)) P = P.slice(0, -1);
+    if (P.length !== c.pts.length) continue;
+    k.pts = Object.fromEntries(c.pts.map((pid, i) => [pid, P[i]]));
+    c.pts.forEach((pid, i) => { const q = getPoint(sk, pid); if (q) { q.x = P[i][0]; q.y = P[i][1]; } });
+  }
+}
+
+// Sketch pictures (sk.pictures: [{ id, name, src (data URL), x, y (its centre), w, h, angle (°), opacity }]), to trace
+// over. Scaled about point a so the line a–b on it is trueLen long.
+export function scalePicture(pic, a, b, trueLen) {
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(L > 1e-9) || !(trueLen > 0)) return pic;
+  const k = trueLen / L;
+  return { ...pic, x: a.x + (pic.x - a.x) * k, y: a.y + (pic.y - a.y) * k, w: pic.w * k, h: pic.h * k };
+}
+// A picture's corners in the sketch (for its outline, and for checking where it is).
+export function pictureCorners(pic) {
+  const a = ((pic.angle || 0) * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, j]) => { const x = (i * pic.w) / 2, y = (j * pic.h) / 2; return [pic.x + x * c - y * s, pic.y + x * s + y * c]; });
+}
+
+// Linked block instances. sk.blocks: [{ id, name, def (the block's data as inserted), map: { block id: sketch id },
+// at: [x, y], angle }]: the block's geometry put at x, y turned angle°, held rigid by one 'block' relation (its first
+// point A, the point farthest from it B, every other point at its place along and across AB; circle radii and ellipse
+// minor radii kept), so the copy moves and turns as one. Relations to its points from outside it stay.
+const turned = (data, angle) => {
+  const a = (angle * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+  return { ...data, points: data.points.map((q) => ({ ...q, x: q.x * c - q.y * s, y: q.x * s + q.y * c })), curves: data.curves.map((cv) => (cv.rot != null ? { ...cv, rot: cv.rot + a } : cv)), constraints: [] };
+};
+export function insertBlockInstance(sk, block, x, y, angle = 0) {
+  const map = new Map(), curves = pasteItems(sk, turned(block.data, angle), x, y, map);
+  const pids = block.data.points.map((q) => map.get(q.id)).filter(Boolean);
+  const id = nid(sk, 'b');
+  if (pids.length) {
+    const P = pids.map((pid) => getPoint(sk, pid)), A = P[0];
+    let bi = 0, bd = 0;
+    P.forEach((q, i) => { const d = Math.hypot(q.x - A.x, q.y - A.y); if (d > bd) { bd = d; bi = i; } });
+    const refs = bi ? [pids[0], pids[bi], ...pids.filter((_, i) => i && i !== bi)] : [pids[0]];
+    const loc = {};
+    if (bi) {
+      const B = P[bi], ex = (B.x - A.x) / bd, ey = (B.y - A.y) / bd;
+      for (const pid of refs.slice(2)) { const q = getPoint(sk, pid), dx = q.x - A.x, dy = q.y - A.y; loc[pid] = [dx * ex + dy * ey, -dx * ey + dy * ex]; }
+    }
+    const radii = {}, minors = {};
+    for (const cid of curves) { const c = getCurve(sk, cid); if (c.type === 'circle') radii[cid] = c.r; if (c.type === 'ellipse' || c.type === 'earc') minors[cid] = Math.abs(c.r2); }
+    addRel(sk, 'block', refs, { block: id, d0: bd, loc, radii, minors });
+  }
+  (sk.blocks ||= []).push({ id, name: block.name, def: JSON.parse(JSON.stringify(block.data)), map: Object.fromEntries(map), at: [x, y], angle });
+  return { id, curves };
+}
+// The block instance an entity belongs to.
+export const blockOf = (sk, eid) => (sk.blocks || []).find((b) => Object.values(b.map).includes(eid)) || null;
+// The instance's geometry made plain: its rigid relation goes, the block's own relations and dimensions come back.
+export function explodeBlock(sk, bid) {
+  const b = (sk.blocks || []).find((x) => x.id === bid);
+  if (!b) return false;
+  sk.constraints = sk.constraints.filter((k) => !(k.type === 'block' && k.block === bid));
+  for (const k of b.def.constraints || []) {
+    if (!k.refs.every((r) => b.map[r])) continue;
+    const { id: _id, refs, type, ...rest } = k;
+    addRel(sk, type, refs.map((r) => b.map[r]), rest);
+  }
+  sk.blocks = sk.blocks.filter((x) => x !== b);
+  if (!sk.blocks.length) delete sk.blocks;
+  return true;
+}
+// Every instance of block `block.name` in the sketch replaced by the block as it is now, where the instance is (its
+// first two points' places now against the block's when inserted). Returns how many were updated.
+export function updateBlockInstances(sk, block) {
+  let n = 0;
+  for (const b of [...(sk.blocks || [])].filter((x) => x.name === block.name)) {
+    const pts = b.def.points.filter((q) => b.map[q.id]);
+    let x = b.at[0], y = b.at[1], angle = b.angle || 0;
+    if (pts.length) {
+      const a0 = (angle * Math.PI) / 180, rot = (q) => [q.x * Math.cos(a0) - q.y * Math.sin(a0), q.x * Math.sin(a0) + q.y * Math.cos(a0)];
+      const far = pts.reduce((m, q) => (Math.hypot(q.x - pts[0].x, q.y - pts[0].y) > Math.hypot(m.x - pts[0].x, m.y - pts[0].y) ? q : m), pts[0]);
+      const A = getPoint(sk, b.map[pts[0].id]), B = getPoint(sk, b.map[far.id]);
+      let da = 0;
+      if (far !== pts[0]) da = Math.atan2(B.y - A.y, B.x - A.x) - Math.atan2(far.y - pts[0].y, far.x - pts[0].x);
+      angle = b.angle + (da * 180) / Math.PI;
+      const ap = rot(pts[0]), c = Math.cos(da), s = Math.sin(da);
+      x = A.x - (ap[0] * c - ap[1] * s); y = A.y - (ap[0] * s + ap[1] * c);
+    }
+    // (the relations from outside to the instance, by the block's own ids)
+    const back = new Map(Object.entries(b.map).map(([k, v]) => [v, k])), own = new Set(back.keys());
+    const outside = sk.constraints.filter((k) => !(k.type === 'block' && k.block === b.id) && k.refs.some((r) => own.has(r)) && !k.refs.every((r) => own.has(r)));
+    sk.constraints = sk.constraints.filter((k) => !(k.type === 'block' && k.block === b.id) && !outside.includes(k));
+    deleteItems(sk, [...own]);
+    sk.blocks = (sk.blocks || []).filter((z) => z !== b);
+    const nb = insertBlockInstance(sk, block, x, y, angle), inst = sk.blocks.find((z) => z.id === nb.id);
+    inst.id = b.id;
+    for (const k of sk.constraints) if (k.type === 'block' && k.block === nb.id) k.block = b.id;
+    for (const k of outside) {
+      const refs = k.refs.map((r) => (own.has(r) ? inst.map[back.get(r)] : r));
+      if (refs.every(Boolean)) sk.constraints.push({ ...k, refs });
+    }
+    n++;
+  }
+  return n;
+}
+
 // Linear pattern: n1 copies along dir1 (spacing d1) × n2 along dir2 (spacing d2; angles in degrees).
 export function linearPattern(sk, ids, { n1 = 2, d1 = 10, a1 = 0, n2 = 1, d2 = 10, a2 = 90 }) {
   const u = [Math.cos((a1 * Math.PI) / 180), Math.sin((a1 * Math.PI) / 180)], v = [Math.cos((a2 * Math.PI) / 180), Math.sin((a2 * Math.PI) / 180)];
@@ -2837,6 +2973,8 @@ export function cleanup(sk) {
     sk.curves = sk.curves.filter((c) => c.type === 'circle' || c.type === 'ellipse' || c.p1 !== c.p2 || c.type === 'arc' || c.type === 'earc' || (c.type === 'spline' && new Set(c.pts).size >= 2));
     if (sk.points.length + sk.constraints.length === before) break;
   }
+  // (block copies whose rigid relation went with their geometry)
+  if (sk.blocks) { sk.blocks = sk.blocks.filter((b) => sk.constraints.some((k) => k.type === 'block' && k.block === b.id)); if (!sk.blocks.length) delete sk.blocks; }
 }
 
 // Automatic references (projected geometry made when a relation, dimension or snap uses a model

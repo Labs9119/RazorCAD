@@ -321,6 +321,19 @@ export class DrawingEditor {
       const g = byModel.get(gk);
       g.reqs.push(req); g.keys.set(v.id, key);
     }
+    // (alternate positions: the view again with the assembly's components where a kept position has them)
+    for (const v of this.doc.views) {
+      const m = v.altPos && !v.section && this.viewModel(v), pos = m?.doc?.kind === 'assembly' && (m.doc.positions || []).find((p) => p.id === v.altPos);
+      const req = pos && D.viewRequest(this.doc, v);
+      if (!req) { this.geos.delete(v.id + '~alt'); continue; }
+      const doc = { ...m.doc, components: m.doc.components.map((c) => (pos.comps[c.id] ? { ...c, pos: pos.comps[c.id].pos, rot: pos.comps[c.id].rot } : c)) };
+      const docJson = JSON.stringify(doc), id = v.id + '~alt', key = docJson.length + ':' + hash(docJson) + JSON.stringify(req);
+      if (this.geoKeys.get(id) === key) continue;
+      const gk = m.id + '|alt:' + pos.id + '|' + (this.explodeOf(v) || '');
+      if (!byModel.has(gk)) byModel.set(gk, { m: { ...m, doc }, docJson, reqs: [], keys: new Map() });
+      const g = byModel.get(gk);
+      g.reqs.push({ ...req, id }); g.keys.set(id, key);
+    }
     if (!byModel.size) return;
     const run = ++this._geoRun;
     for (const [, { m: model, docJson, reqs, keys }] of byModel) {
@@ -334,6 +347,7 @@ export class DrawingEditor {
         if (run !== this._geoRun && this._geoRun) { /* a newer update follows; keep what arrived */ }
         let moved = false;
         for (const r of res) {
+          if (String(r.id).endsWith('~alt')) { this.geos.set(r.id, r); this.geoKeys.set(r.id, keys.get(r.id)); continue; }
           if (r.error) this.errors.set(r.id, r.error); else this.errors.delete(r.id);
           const old = this.geos.get(r.id);
           this.geos.set(r.id, r);
@@ -646,7 +660,7 @@ export class DrawingEditor {
     if (ann) {
       this.selected.clear(); this.selected.add(ann.id);
       if (ann.type === 'dim' || ann.type === 'note') items.push({ label: ann.type === 'dim' ? 'Edit Dimension Text…' : 'Edit Note…', icon: 'note', action: () => this.editAnn(ann) });
-      if (['datum', 'fcf', 'sfin', 'weld', 'revtable'].includes(ann.type)) items.push({ label: 'Edit…', icon: 'note', action: () => this.editAnn(ann) });
+      if (['datum', 'fcf', 'sfin', 'weld', 'revtable', 'table'].includes(ann.type)) items.push({ label: 'Edit…', icon: 'note', action: () => this.editAnn(ann) });
       if (ann.type === 'dxf') items.push({ label: `Scale (now ${ann.scale >= 1 ? `${+ann.scale.toFixed(3)}:1` : `1:${+(1 / ann.scale).toFixed(3)}`})…`, icon: 'dxf', action: async () => {
         const t = await this.app.ui.promptText('DXF Scale', 'dxf', 'Scale (e.g. 1:2, 2:1 or 0.5)', ann.scale >= 1 ? `${+ann.scale.toFixed(3)}:1` : `1:${+(1 / ann.scale).toFixed(3)}`);
         if (t == null) return;
@@ -1679,6 +1693,33 @@ export class DrawingEditor {
     this.app.status('Cut list table added: drag it where you want it.');
   }
 
+  // A general table: a title, rows (one per line, cells split by | or tabs, so rows pasted from a spreadsheet work),
+  // the first row a header if ticked. New: placed at the top left of the sheet's frame.
+  async generalTable(a = null) {
+    if (this.tool) this.cancelTool(false);
+    const text = a ? (a.rows || []).map((r) => r.join(' | ')).join('\n') : 'ITEM | VALUE\nMaterial | {material}\nFinish | ';
+    const v = await this.app.ui.promptFields(a ? 'Edit Table' : 'Table', 'revTable', [
+      { key: 'title', label: 'Title (empty: none)', type: 'text', value: a ? a.title || '' : 'NOTES' },
+      { key: 'header', label: 'The first row is a header', type: 'check', value: a ? !!a.header : true },
+      { key: 'del', label: 'Delete the table', type: 'check', value: false },
+    ], 'Next: the rows.');
+    if (!v) return null;
+    if (v.del && a) { this.doc.anns = this.doc.anns.filter((x) => x !== a); this.changed(); return null; }
+    const rowsText = await this.app.ui.promptText(a ? 'Edit Table' : 'Table', 'revTable', 'One row per line, cells split by | (or paste cells from a spreadsheet). {title}, {material} and the drawing’s other properties fill in.', text, true);
+    if (rowsText === null || rowsText === undefined) return null;
+    const rows = D.parseTable(rowsText);
+    if (!rows.length) { this.app.toast('The table needs a row', true); return null; }
+    if (!a) {
+      const f = frameRect(this.sheet, this.doc.format);
+      a = { id: D.newId(this.doc, 'a'), type: 'table', sheet: this.sheetId, pos: [f.x0 + 8, f.y0 + 8] };
+      this.doc.anns.push(a);
+    }
+    Object.assign(a, { title: v.title.trim(), header: !!v.header, rows });
+    this.changed();
+    this.app.status('Table placed: drag it where you want it; double-click it to change it.');
+    return a;
+  }
+
   // The revision table: edit its rows (one per line: REV | DESCRIPTION | DATE | APPROVED); placed at the
   // top right of the sheet the first time.
   async revisionTable() {
@@ -1879,6 +1920,7 @@ export class DrawingEditor {
       return this.bomColumnsDialog(a);
     }
     if (a.type === 'revtable') { this.revisionTable(); return; }
+    if (a.type === 'table') { this.generalTable(a); return; }
     if (['datum', 'fcf', 'sfin', 'weld'].includes(a.type)) {
       const copy = JSON.parse(JSON.stringify(a));
       if (await this.symbolDialog(copy)) { Object.assign(a, copy); this.changed(); }
@@ -2356,6 +2398,10 @@ export class DrawingEditor {
         d.appendChild(th);
         // (an assembly with exploded views: show this view exploded)
         const md = this.doc.models.find((x) => x.id === v.model)?.doc;
+        if (md?.kind === 'assembly' && v.type !== 'section') {
+          if (md.positions?.length) row(d, 'Alternate position', select([['', 'None'], ...md.positions.map((x) => [x.id, x.name])], v.altPos || '', (s) => { if (s) v.altPos = s; else delete v.altPos; this.changed(); this.updateGeometry(); }));
+          else d.appendChild(el('div', { class: 'pm-hint' }, 'Positions kept in the assembly (Assembly ▸ Positions) can be shown here as alternate positions, in phantom lines.'));
+        }
         if (md?.kind === 'assembly' && md.explodes?.length && (v.type === 'model' || v.explode)) {
           row(d, 'Exploded', select([['', 'Not exploded'], ...md.explodes.map((x) => [x.id, x.name])], v.explode || '', (s) => { (this.pendingCentre ||= new Map()).set(v.id, this.viewCentre(v)); if (s) v.explode = s; else delete v.explode; this.changed(); this.updateGeometry(); }));
         } else if (md?.kind === 'assembly' && v.type === 'model') d.appendChild(el('div', { class: 'pm-hint' }, 'Exploded views made in the assembly (Exploded View) can be shown here.'));
@@ -2441,6 +2487,7 @@ export class DrawingEditor {
         { icon: 'centerMark', label: 'Center Mark', action: () => this.startTool('cmark'), active: this.tool?.kind === 'cmark' },
         { icon: 'centerline', label: 'Centerline', action: () => this.startTool('cline'), active: this.tool?.kind === 'cline' },
         { icon: 'revTable', label: 'Revision Table', action: () => this.revisionTable() },
+        { icon: 'revTable', label: 'Table', action: () => this.generalTable() },
         { icon: 'cutList', label: 'Cut List Table', action: () => this.addCutList() },
         { icon: 'holeCallout', label: 'Hole Table', action: () => this.addHoleTable() },
         'sep',

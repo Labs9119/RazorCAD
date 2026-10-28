@@ -23,6 +23,9 @@ import { platform } from './platform.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
+import { PIPE_SIZES, pipeLabel } from './routing.js';
+import { stackUp } from './stackup.js';
+import { revisionsDialog } from './revisions.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
@@ -325,7 +328,9 @@ const patternSources = (title, model = 'pick') => ({ title, fields: [
 ] });
 // (how a bend's flat length is worked out: kernel.worker.js sheetKFactor)
 const SM_BEND_CALC = [
-  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)']] },
+  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)'], ['table', 'Bend table (by angle)']] },
+  { key: 'bendTable', type: 'text', label: 'Allowances', placeholder: '30: 1.5; 45: 2.0; 90: 4.2', show: (f) => f.bendCalc === 'table' },
+  { key: 'btHint', type: 'hint', show: (f) => f.bendCalc === 'table', text: 'The bend allowance (mm) for each angle (°), from your bend table for this thickness and the default radius, separated by semicolons. Angles between rows are interpolated, angles past the ends in proportion; bends of another radius use the K-factor the 90° allowance gives.' },
   { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '', show: (f) => (f.bendCalc || 'k') === 'k' },
   { key: 'bendAllowance', type: 'expr', label: 'Bend allowance', unit: 'mm', default: 4.2, show: (f) => f.bendCalc === 'ba' },
   { key: 'bendDeduction', type: 'expr', label: 'Bend deduction', unit: 'mm', default: 3.8, show: (f) => f.bendCalc === 'bd' },
@@ -734,7 +739,7 @@ const PM_SCHEMAS = {
   ],
   hole: [
     { title: 'Hole Type', fields: [
-      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['slot', 'Slot']] },
+      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['cdrill', 'Counterdrill'], ['slot', 'Slot']] },
       { key: 'system', type: 'select', label: 'Standard', options: [['metric', 'ISO metric'], ['imperial', 'Unified (inch)']], show: (f) => f.holeType === 'tapped' },
       { key: 'thread', type: 'select', label: 'Thread', options: (f) => threadList(f.system || 'metric').map((t) => [t.id, t.label]), show: (f) => f.holeType === 'tapped' },
       { key: 'threadDepth', type: 'expr', label: 'Thread depth (for the callout; empty: the hole)', unit: 'mm', optional: true, show: (f) => f.holeType === 'tapped' },
@@ -746,6 +751,9 @@ const PM_SCHEMAS = {
       { key: 'cboreD', type: 'expr', label: 'Counterbore diameter', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'cboreDepth', type: 'expr', label: 'Counterbore depth', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'csinkD', type: 'expr', label: 'Countersink diameter', unit: 'mm', show: (f) => f.holeType === 'csink' && f.size === 'custom' },
+      { key: 'cdrillD', type: 'expr', label: 'Counterdrill diameter', unit: 'mm', default: 11, show: (f) => f.holeType === 'cdrill' && f.size === 'custom' },
+      { key: 'cdrillDepth', type: 'expr', label: 'Counterdrill depth', unit: 'mm', default: 6, show: (f) => f.holeType === 'cdrill' && f.size === 'custom' },
+      { key: 'cdrillAngle', type: 'expr', label: 'Counterdrill point angle', unit: '°', default: 118, show: (f) => f.holeType === 'cdrill' },
       { key: 'csinkAngle', type: 'expr', label: 'Countersink angle', unit: '°', show: (f) => f.holeType === 'csink' && f.size === 'custom' },
       { key: 'tHint', type: 'hint', text: (f) => (f.holeType === 'tapped' ? 'Drilled at the tap drill size (major diameter − pitch), with the thread kept for callouts. For a modelled thread, add Thread Cut on the hole afterwards.' : f.size === 'custom' ? 'Your own sizes.' : 'Sizes for the screw: clearance hole by ISO 273, counterbore for socket head cap screws (ISO 4762), countersink for countersunk screws (ISO 10642, 90°).') },
     ] },
@@ -767,6 +775,75 @@ const PM_SCHEMAS = {
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
       { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+    ] },
+  ],
+  boss: [
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the bosses, or select a sketch on the face with points or circles: each gets one.', itemLabel: 'Boss' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+    { title: 'Boss', fields: [
+      { key: 'outerD', type: 'expr', label: 'Outer diameter', unit: 'mm' },
+      { key: 'height', type: 'expr', label: 'Height', unit: 'mm' },
+      { key: 'draft', type: 'expr', label: 'Draft on the outside', unit: '°' },
+      { key: 'holeD', type: 'expr', label: 'Hole diameter (0: none)', unit: 'mm' },
+      { key: 'holeDepth', type: 'expr', label: 'Hole depth (empty: the height)', unit: 'mm', optional: true },
+    ] },
+    { title: 'Ribs', fields: [
+      { key: 'ribs', type: 'expr', label: 'Ribs (0: none)', unit: '#' },
+      { key: 'ribWidth', type: 'expr', label: 'Rib width', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+      { key: 'ribLength', type: 'expr', label: 'Rib length (out from the boss)', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+      { key: 'ribHeight', type: 'expr', label: 'Rib height', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+    ] },
+  ],
+  snapHook: [
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the snap hooks, or select a sketch on the face with points.', itemLabel: 'Hook' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points)' },
+      { key: 'angle', type: 'expr', label: 'Hook faces (° from the face’s X)', unit: '°' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+    { title: 'Beam and Hook', fields: [
+      { key: 'length', type: 'expr', label: 'Beam length', unit: 'mm' },
+      { key: 'thickness', type: 'expr', label: 'Beam thickness', unit: 'mm' },
+      { key: 'width', type: 'expr', label: 'Width', unit: 'mm' },
+      { key: 'overhang', type: 'expr', label: 'Hook overhang', unit: 'mm' },
+      { key: 'insertAngle', type: 'expr', label: 'Lead-in angle (from the beam)', unit: '°' },
+      { key: 'retainAngle', type: 'expr', label: 'Catch angle (90: square)', unit: '°' },
+    ] },
+  ],
+  lipGroove: [
+    { title: 'Rim Face', fields: [{ key: 'face', type: 'pick', label: 'Face', what: 'flatface' }, { key: 'lgHint', type: 'hint', text: 'The flat face along the open edge of a shelled part, where its two halves meet.' }] },
+    { title: 'Lip / Groove', fields: [
+      { key: 'kind', type: 'select', label: 'Type', options: [['lip', 'Lip (raised)'], ['groove', 'Groove (sunk)']] },
+      { key: 'side', type: 'select', label: 'Along', options: [['inner', 'The inner edge'], ['outer', 'The outer edge']] },
+      { key: 'width', type: 'expr', label: 'Width', unit: 'mm' },
+      { key: 'height', type: 'expr', label: (f) => (f.kind === 'groove' ? 'Depth' : 'Height'), unit: 'mm' },
+      { key: 'lg2Hint', type: 'hint', text: 'For a matching pair: a lip on one half, and on the other a groove a little wider and deeper (the clearance).' },
+    ] },
+  ],
+  mold: [
+    { title: 'Mould', fields: [
+      { key: 'dir', type: 'select', label: 'Pull direction (the cavity side)', options: [['y', '+Y'], ['-y', '−Y'], ['x', '+X'], ['-x', '−X'], ['z', '+Z'], ['-z', '−Z']] },
+      { key: 'parting', type: 'select', label: 'Parting plane', options: [['auto', 'At the largest section'], ['at', 'At a height up the part']] },
+      { key: 'partingAt', type: 'expr', label: 'Height (from the part’s lowest point)', unit: 'mm', show: (f) => f.parting === 'at' },
+      { key: 'margin', type: 'expr', label: 'Block margin (round the part)', unit: 'mm' },
+      { key: 'shrink', type: 'expr', label: 'Shrinkage', unit: '%' },
+      { key: 'keepPart', type: 'check', default: true, label: 'Keep the part as a body too' },
+      { key: 'mHint', type: 'hint', text: 'A block round the part is split into a core and a cavity at a parting plane square to the pull direction, the part (grown by the shrinkage) taken out of both. Check the part first with Draft Analysis and Undercut Check: undercuts need side actions this does not make.' },
+    ] },
+  ],
+  vent: [
+    { title: 'Boundary', fields: [{ key: 'sketch', type: 'sketch', label: 'Sketch (a closed outline on the face)' }] },
+    { title: 'Slots', fields: [
+      { key: 'slotWidth', type: 'expr', label: 'Slot width', unit: 'mm' },
+      { key: 'barWidth', type: 'expr', label: 'Bar width (between slots)', unit: 'mm' },
+      { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
+      { key: 'margin', type: 'expr', label: 'Margin from the outline', unit: 'mm' },
+      { key: 'end', type: 'select', label: 'Depth', options: [['through', 'Through all'], ['blind', 'Blind']] },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.end === 'blind' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
   ],
   sketch3d: [
@@ -932,6 +1009,7 @@ const PM_SCHEMAS = {
         { key: 'spacing1', type: 'select', label: 'Distance', default: 'spacing', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
         { key: 'dist1', type: 'expr', label: (f) => (f.spacing1 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm' },
         { key: 'count1', type: 'expr', label: 'Instances', unit: '#' },
+        { key: 'inc1', type: 'expr', label: 'Spacing grows by', unit: 'mm', default: 0, show: (f) => f.spacing1 !== 'total' },
         { key: 'sym1', type: 'check', label: 'Symmetric (as many again the other way)' },
       ],
     },
@@ -942,6 +1020,7 @@ const PM_SCHEMAS = {
         { key: 'spacing2', type: 'select', label: 'Distance', default: 'spacing', show: (f) => f.dir2 !== 'none', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
         { key: 'dist2', type: 'expr', label: (f) => (f.spacing2 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm', show: (f) => f.dir2 !== 'none' },
         { key: 'count2', type: 'expr', label: 'Instances', unit: '#', show: (f) => f.dir2 !== 'none' },
+        { key: 'inc2', type: 'expr', label: 'Spacing grows by', unit: 'mm', default: 0, show: (f) => f.dir2 !== 'none' && f.spacing2 !== 'total' },
         { key: 'sym2', type: 'check', label: 'Symmetric (as many again the other way)', show: (f) => f.dir2 !== 'none' },
         { key: 'seedOnly2', type: 'check', label: 'Pattern the feature only (not the first row)', show: (f) => f.dir2 !== 'none' },
       ],
@@ -956,6 +1035,7 @@ const PM_SCHEMAS = {
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
         { key: 'count', type: 'expr', label: 'Instances', unit: '#' },
         { key: 'equal', type: 'check', label: 'Equal spacing (angle is total)' },
+        { key: 'angleInc', type: 'expr', label: 'Angle grows by', unit: '°', default: 0, show: (f) => !f.equal },
         { key: 'sym', type: 'check', label: 'Symmetric (as many again the other way round)' },
         { key: 'rings', type: 'expr', label: 'Rings (out from the axis)', unit: '#', default: 1 },
         { key: 'ringStep', type: 'expr', label: 'Ring spacing', unit: 'mm', default: 10, show: (f) => Number(f.rings) > 1 || (typeof f.rings === 'string' && f.rings.trim() !== '1') },
@@ -984,6 +1064,39 @@ const PM_SCHEMAS = {
       { key: 'reverse', type: 'check', label: 'Reverse direction', show: (f) => f.spacing === 'distance' },
       { key: 'align', type: 'select', label: 'Alignment', options: [['translate', 'Moved (same orientation)'], ['tangent', 'Turned with the curve']] },
       { key: 'cpHint', type: 'hint', text: 'The copies start at the point of the curve nearest the feature (a sketch, 3D sketch or helix).' },
+    ] },
+  ],
+  pipeRoute: [
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch (straight lines)' }] },
+    { title: 'Pipe', fields: [
+      { key: 'size', type: 'select', label: 'Size (Schedule 40)', options: [...PIPE_SIZES.map((s) => [String(s.dn), pipeLabel(s)]), ['custom', 'Tube: outside diameter and wall']] },
+      { key: 'od', type: 'expr', label: 'Outside diameter', unit: 'mm', show: (f) => f.size === 'custom' },
+      { key: 'wall', type: 'expr', label: 'Wall', unit: 'mm', show: (f) => f.size === 'custom' },
+      { key: 'corner', type: 'select', label: 'Corners', options: [['elbow', 'Elbows (fittings)'], ['bend', 'Bends (one bent tube)']] },
+      { key: 'radius', type: 'expr', label: 'Bend radius (auto: 1.5 × the size for elbows, 3 × OD for bends)', unit: 'mm' },
+      { key: 'flanges', type: 'check', label: 'Flanges at the ends' },
+      { key: 'flangeD', type: 'expr', label: 'Flange outside diameter', unit: 'mm', show: (f) => !!f.flanges },
+      { key: 'flangeT', type: 'expr', label: 'Flange thickness', unit: 'mm', show: (f) => !!f.flanges },
+      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the corners of the route, each corner an elbow (or a bend of one tube). The pipes are on the weldment Cut List with their lengths; the elbows and flanges are bodies of their own.' },
+    ] },
+  ],
+  cable: [
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch' }] },
+    { title: 'Cable', fields: [
+      { key: 'sizeBy', type: 'select', label: 'Size', options: [['diameter', 'Diameter'], ['wires', 'From its wires']] },
+      { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.sizeBy !== 'wires' },
+      { key: 'wires', type: 'expr', label: 'Wires', unit: '#', show: (f) => f.sizeBy === 'wires' },
+      { key: 'wireD', type: 'expr', label: 'Wire diameter (with insulation)', unit: 'mm', show: (f) => f.sizeBy === 'wires' },
+      { key: 'slack', type: 'expr', label: 'Slack (added to the cut length)', unit: '%' },
+      { key: 'cHint', type: 'hint', text: 'A round cable or bundle along the route (a 3D sketch spline through the points it must pass is best). The message gives its cut length.' },
+    ] },
+  ],
+  tablePattern: [
+    patternSources('Features to Pattern'),
+    { title: 'Table', fields: [
+      { key: 'plane', type: 'plane', label: 'Plane (empty: the feature’s sketch plane)' },
+      { key: 'table', type: 'text', label: 'Rows: x, y, angle', placeholder: '20, 0; 0, 20; 20, 20, 45' },
+      { key: 'tpHint', type: 'hint', text: 'Each row puts a copy x and y from the feature, along the plane’s directions; a third number turns it (°) about the plane’s normal through the feature. Rows can be pasted from a spreadsheet (commas, tabs or spaces; a header row is skipped) and can use variables.' },
     ] },
   ],
   fillPattern: [
@@ -1133,7 +1246,7 @@ const PM_SCHEMAS = {
     {title:'Draft',fields:[
       {key:'draft',type:'expr',label:'Draft angle',unit:'°',default:0},
       {key:'draftOutward',type:'check',label:'Draft outward (wider away from the contour)',show:f=>!!f.draft&&String(f.draft).trim()!=='0'},
-      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'Closed contours only: each narrows away from where it starts (or widens).'},
+      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'A closed contour narrows away from where it starts (or widens drafted outward); an open one leans towards the side its surface faces away from (drafted outward: towards the side it faces).'},
     ]},
   ],
   surfRevolve: [
@@ -1210,6 +1323,24 @@ const PM_SCHEMAS = {
       { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Leave the hole (a solid becomes a surface body)'], ['patch', 'Patch each hole (the solid stays a solid)']] },
       { key: 'tangent', type: 'check', label: 'Patch tangent to the faces round the hole', show: (f) => f.mode === 'patch' },
       { key: 'dHint', type: 'hint', text: (f) => (f.mode === 'patch' ? 'Each hole left by the deleted faces gets a smooth patch: good for taking out fillets, small features and bad faces of imported parts.' : 'The faces are taken out; the rest stays as a surface body (e.g. to rebuild them with other surface tools).') },
+    ] },
+  ],
+  editFillet: [
+    { title: 'Fillet / Chamfer Faces', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the fillet or chamfer faces of a solid (e.g. an imported part).' }] },
+    { title: 'Options', fields: [
+      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Delete (back to a sharp edge)'], ['resize', 'Resize (round or chamfer it again)']] },
+      { key: 'radius', type: 'expr', label: 'New radius / chamfer distance', unit: 'mm', show: (f) => f.mode === 'resize' },
+      { key: 'eHint', type: 'hint', text: 'Rounds along straight edges between flat faces, full rounds on circular edges (between a flat face and a round one) and chamfers. The faces either side are carried on to meet exactly; the ends must meet flat faces.' },
+    ] },
+  ],
+  defeature: [
+    { title: 'Body', fields: [{ key: 'body', type: 'bodySel', label: 'Body (none: every solid)', kinds: ['solid'] }] },
+    { title: 'Take Out', fields: [
+      { key: 'fillets', type: 'check', default: true, label: 'Fillets' },
+      { key: 'filletR', type: 'expr', label: 'Up to radius', unit: 'mm', show: (f) => f.fillets !== false },
+      { key: 'holes', type: 'check', default: true, label: 'Holes' },
+      { key: 'holeD', type: 'expr', label: 'Up to diameter', unit: 'mm', show: (f) => f.holes !== false },
+      { key: 'dHint', type: 'hint', text: 'Small fillets and holes (with their counterbores, countersinks and drill points) are taken out exactly, for a simpler part to send to a supplier or to analyse. Fillets whose ends do not meet flat faces, and holes that break out of the side, stay.' },
     ] },
   ],
   replaceFace: [
@@ -1506,6 +1637,7 @@ export class UI {
         'sep',
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
+        { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, a.doc, () => a.commit()) },
         'sep',
         { label: 'Import STEP / STL…', icon: 'import', key: 'Ctrl+I', action: () => a.importFile() },
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
@@ -1597,6 +1729,10 @@ export class UI {
         { label: 'Measure…', icon: 'measure', action: () => a.startMeasure() },
         { label: 'Equations…', icon: 'equations', action: () => this.showEquations() },
         { label: 'Mass Properties…', icon: 'mass', action: () => this.showMassProps() },
+        { label: 'Tolerance Stack-Up…', icon: 'measure', action: () => this.showStackUp() },
+        { label: '3D Annotations…', icon: 'measure', action: () => a.manageAnnotations() },
+        { label: 'Render…', icon: 'camera', action: () => a.renderView() },
+        { label: 'Decals…', icon: 'sketchPicture', action: () => a.manageDecals() },
         { label: 'Section View…', icon: 'section', action: () => a.startSection() },
         { label: 'Edit Material…', icon: 'material', action: () => this.showMaterial() },
         { label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences() },
@@ -1716,6 +1852,7 @@ export class UI {
         { icon: 'cutSweep', label: 'Sweep Cut', action: () => a.startFeature('sweep', 'cut') },
         { icon: 'cutLoft', label: 'Loft Cut', action: () => a.startFeature('loft', 'cut') },
         { icon: 'hole', label: 'Hole', action: () => a.startFeature('hole') },
+        { icon: 'folder', label: 'Library Feature', action: () => a.insertLibraryFeature() },
         'sep',
         { icon: 'helix', label: 'Helix', action: () => a.startFeature('helix') },
         { icon: 'threadCut', label: 'Thread Cut', action: () => a.startFeature('thread', 'cut') },
@@ -1728,6 +1865,7 @@ export class UI {
         { icon: 'mirror', label: 'Mirror', action: () => a.startFeature('mirror') },
         { icon: 'spattern', label: 'Sketch Driven Pattern', action: () => a.startFeature('spattern') },
         { icon: 'curvePattern', label: 'Curve Driven Pattern', action: () => a.startFeature('curvePattern') },
+        { icon: 'spattern', label: 'Table Driven Pattern', action: () => a.startFeature('tablePattern') },
         { icon: 'fillPattern', label: 'Fill Pattern', action: () => a.startFeature('fillPattern') },
         'sep',
         { icon: 'fillet', label: 'Fillet', action: () => a.startFeature('fillet') },
@@ -1736,6 +1874,11 @@ export class UI {
         { icon: 'draft', label: 'Draft', action: () => a.startFeature('draft') },
         { icon: 'rib', label: 'Rib', action: () => a.startFeature('rib') },
         { icon: 'dome', label: 'Dome', action: () => a.startFeature('dome') },
+        { icon: 'hole', label: 'Mounting Boss', action: () => a.startFeature('boss') },
+        { icon: 'rib', label: 'Snap Hook', action: () => a.startFeature('snapHook') },
+        { icon: 'shell', label: 'Lip / Groove', action: () => a.startFeature('lipGroove') },
+        { icon: 'fillPattern', label: 'Vent', action: () => a.startFeature('vent') },
+        { icon: 'split', label: 'Core and Cavity', action: () => a.startFeature('mold') },
         { icon: 'moveFace', label: 'Move Face', action: () => a.startFeature('moveFace') },
         { icon: 'scale', label: 'Scale', action: () => a.startFeature('scale') },
         'sep',
@@ -1787,10 +1930,13 @@ export class UI {
         tool('offset', 'offset', 'Offset'),
         only2d({ icon: 'sketchMirror', label: 'Mirror', action: () => (sk ? a.sketcher.mirrorSelected() : a.startSketch()) }),
         only2d({ icon: 'dxfImport', label: 'Import DXF', action: () => (sk ? a.sketcher.importDXF() : a.startSketch()) }),
+        only2d({ icon: 'sketchPicture', label: 'Sketch Picture', action: () => (sk ? a.sketcher.sketchPicture() : a.startSketch()) }),
+        only2d({ icon: 'spline', label: 'Equation Curve', action: () => (sk ? a.sketcher.equationCurve() : a.startSketch()) }),
         only2d({ icon: 'skLinPattern', label: 'Linear Sketch Pattern', action: () => (sk ? a.sketcher.linearPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skCirPattern', label: 'Circular Sketch Pattern', action: () => (sk ? a.sketcher.circularPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skBlock', label: 'Make Block', action: () => (sk ? a.sketcher.makeBlock() : a.startSketch()) }),
         only2d({ id: 'tool-block', icon: 'skInsertBlock', label: 'Insert Block', action: () => (sk ? a.sketcher.insertBlock() : a.startSketch()), active: sk && a.sketcher.tool === 'block' }),
+        only2d({ icon: 'skBlock', label: 'Explode Block', action: () => (sk ? a.sketcher.explodeBlocks() : a.startSketch()) }),
         tool('text', 'text', 'Text'),
         only2d({ icon: 'gear', label: 'Gears', action: () => a.startGears() }),
         only2d({ icon: 'airfoil', label: 'Airfoil', action: () => a.startAirfoil() }),
@@ -1825,6 +1971,8 @@ export class UI {
         { icon: 'knit', label: 'Knit Surface', action: () => a.startFeature('knit') },
         { icon: 'surfSolid', label: 'Convert to Solid', action: () => a.startFeature('surfSolid') },
         { icon: 'deleteFace', label: 'Delete Face', action: () => a.startFeature('deleteFace') },
+        { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
+        { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
         { icon: 'replaceFace', label: 'Replace Face', action: () => a.startFeature('replaceFace') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
@@ -1837,6 +1985,8 @@ export class UI {
       weldments: [
         { icon: 'sketch3d', label: '3D Sketch', action: () => a.startFeature('sketch3d') },
         { icon: 'structMember', label: 'Structural Member', action: () => a.startFeature('structMember') },
+        { icon: 'sweep', label: 'Pipe Route', action: () => a.startFeature('pipeRoute') },
+        { icon: 'sweep', label: 'Cable', action: () => a.startFeature('cable') },
         { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },
@@ -1872,6 +2022,7 @@ export class UI {
         'sep',
         { icon: 'dxf', label: 'Export DXF (flat pattern)', action: () => a.exportSheetDXF() },
         { icon: 'dxfAll', label: 'Export All DXF', action: () => a.exportSheetDXF(null, true) },
+        { icon: 'dxfAll', label: 'Nest Flat Patterns', action: () => a.nestFlatPatterns() },
         { icon: 'gear', label: 'DXF Settings', action: () => this.showDxfSettings() },
       ],
       claude: [
@@ -1883,14 +2034,21 @@ export class UI {
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
+        { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.showStackUp() },
+        { icon: 'measure', label: '3D Annotation', action: () => a.startAnnotation(), active: a.pm?.kind === 'annotate' },
         { icon: 'section', label: 'Section View', action: () => a.startSection(), active: !!a.viewport.section },
         { icon: 'equations', label: 'Equations', action: () => this.showEquations() },
         { icon: 'material', label: 'Edit Material', action: () => this.showMaterial() },
         'sep',
         { icon: 'interference', label: 'Interference Check', action: () => a.checkInterference() },
         { icon: 'zebra', label: 'Zebra Stripes', action: () => a.setAnalysis({ kind: 'zebra', density: 10 }), active: a.analysis?.kind === 'zebra' },
+        { icon: 'camera', label: 'Render', action: () => a.renderView() },
+        { icon: 'measure', label: 'DFM Check', action: () => a.dfmCheck() },
+        { icon: 'sketchPicture', label: 'Decal', action: () => a.addDecal() },
         { icon: 'curvature', label: 'Curvature', action: () => a.setAnalysis({ kind: 'curvature' }), active: a.analysis?.kind === 'curvature' },
         { icon: 'draftAnalysis', label: 'Draft Analysis', action: () => (a.analysis?.kind === 'draft' ? a.setAnalysis(null) : this.showDraftAnalysis()), active: a.analysis?.kind === 'draft' },
+        { icon: 'measure', label: 'Thickness Analysis', action: () => (a.analysis?.kind === 'thickness' ? a.setAnalysis(null) : this.showThicknessAnalysis()), active: a.analysis?.kind === 'thickness' },
+        { icon: 'draftAnalysis', label: 'Undercut Check', action: () => (a.analysis?.kind === 'undercut' ? a.setAnalysis(null) : this.showDraftAnalysis('undercut')), active: a.analysis?.kind === 'undercut' },
         { icon: 'configs', label: 'Configurations', action: () => this.showConfigurations() },
         'sep',
         { icon: 'step', label: 'Export STEP', action: () => a.exportFile('step') },
@@ -2665,6 +2823,7 @@ export class UI {
         menu: () => [
           { label: 'Linear Pattern of the Folder…', icon: 'lpattern', action: () => a.patternFolder(g.id, 'lpattern') },
           { label: 'Circular Pattern of the Folder…', icon: 'cpattern', action: () => a.patternFolder(g.id, 'cpattern') },
+          { label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature(g.ids, g.name) },
           'sep',
           { label: 'Rename', icon: 'rename', action: () => this.promptText('Rename Folder', 'folder', 'Name', g.name).then((v) => { if (v?.trim()) { g.name = v.trim(); a.commit(); this.renderTree(); } }) },
           { label: 'Delete Folder (keep its features)', icon: 'trash', action: () => { doc.featureFolders = doc.featureFolders.filter((x) => x !== g); if (!doc.featureFolders.length) delete doc.featureFolders; a.commit(); this.renderTree(); } },
@@ -3377,6 +3536,7 @@ export class UI {
     items.push({ label: 'Rename', icon: 'rename', action: () => this.renameFeature(f.id) });
     // (feature folders)
     const inFolder = folderOfFeature(a.doc, f.id);
+    if (f.type !== 'sketch3d') items.push({ label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature([f.id], f.name) });
     items.push({ label: 'Add to New Folder…', icon: 'folder', action: () => this.promptText('New Folder', 'folder', 'Name', 'Folder').then((v) => { if (v?.trim()) { newFeatureFolder(a.doc, v.trim(), [f.id]); a.commit(); this.renderTree(); } }) });
     for (const g of (a.doc.featureFolders || []).filter((x) => x !== inFolder)) items.push({ label: `Move to ${g.name}`, icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, g.id); a.commit(); this.renderTree(); } });
     if (inFolder) items.push({ label: 'Remove from Folder', icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, null); a.commit(); this.renderTree(); } });
@@ -3421,6 +3581,8 @@ export class UI {
     if (pm.kind === 'sketch') return this.renderSketchPM(root);
     if (pm.kind === 'sketch3d') return a.sketch3d.renderPM(root, { el, esc, icon, pmGroup: (...x) => this.pmGroup(...x), exprInput: (...x) => this.exprInput(...x) });
     if (pm.kind === 'selectPlane') return this.renderSelectPlanePM(root);
+    if (pm.kind === 'decal') { root.appendChild(el('div', { class: 'pm-hint', style: 'margin:10px' }, esc(`Decal ${pm.draft.name}: click the flat face for it. Esc cancels.`))); return; }
+    if (pm.kind === 'annotate') { root.appendChild(el('div', { class: 'pm-hint', style: 'margin:10px' }, esc(`3D annotation (${pm.draft.kind}): click ${pm.need - pm.pts.length === 2 ? 'the two points' : 'the point'} on the model. Esc cancels.`))); return; }
     if (pm.kind === 'section') return this.renderSectionPM(root);
     if (pm.kind === 'measure') return this.renderMeasurePM(root);
     if (pm.kind === 'feature') return this.renderFeaturePM(root);
@@ -4703,6 +4865,62 @@ export class UI {
   }
 
   // ------------------------------------------------------------ dialogs
+  // Tolerance Stack-Up: the stack-ups kept in a part or an assembly (doc.stackups), edited in a table with the results
+  // worked out as you type. commit: saves the change in that document.
+  showStackUp(doc = this.app.doc, commit = () => this.app.commit()) {
+    const list = (doc.stackups ||= []);
+    if (!list.length) list.push({ name: 'Stack-Up 1', req: { min: '', max: '' }, rows: [{ name: 'A', nominal: 10, plus: 0.1, minus: 0.1, dir: 1 }] });
+    let cur = list[0];
+    const box = el('div', { class: 'dw-form', style: 'min-width:640px' });
+    const num = (v) => { const n = this.app.result?.ev ? (() => { try { return this.app.result.ev(String(v)); } catch { return NaN; } })() : +v; return Number.isFinite(n) ? n : NaN; };
+    const f4 = (x) => (Number.isFinite(x) ? fmt(x, 4) : '—');
+    const render = () => {
+      box.innerHTML = '';
+      const top = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:6px' });
+      const pick = el('select');
+      list.forEach((s, i) => { const o = el('option', { value: i }, esc(s.name)); if (s === cur) o.selected = true; pick.appendChild(o); });
+      pick.onchange = () => { cur = list[+pick.value]; render(); };
+      const name = el('input', { type: 'text', style: 'width:140px' }); name.value = cur.name; name.onchange = () => { cur.name = name.value.trim() || cur.name; commit(); render(); };
+      const add = el('button', {}, 'New stack-up'); add.onclick = () => { list.push((cur = { name: `Stack-Up ${list.length + 1}`, req: { min: '', max: '' }, rows: [] })); commit(); render(); };
+      const del = el('button', {}, 'Delete'); del.onclick = () => { list.splice(list.indexOf(cur), 1); if (!list.length) list.push({ name: 'Stack-Up 1', req: { min: '', max: '' }, rows: [] }); cur = list[0]; commit(); render(); };
+      top.append(pick, name, add, del);
+      box.appendChild(top);
+      const t = el('table', { class: 'bom-table', style: 'width:100%' });
+      t.innerHTML = '<tr><th>Dimension</th><th>Nominal</th><th>+ Tol.</th><th>− Tol.</th><th>Sense</th><th>Share (RSS)</th><th></th></tr>';
+      let res = null;
+      try { res = stackUp(cur.rows.map((r) => ({ ...r, nominal: num(r.nominal), plus: num(r.plus), minus: num(r.minus) })), { min: cur.req?.min === '' ? '' : num(cur.req?.min), max: cur.req?.max === '' ? '' : num(cur.req?.max) }); } catch { res = null; }
+      cur.rows.forEach((r, i) => {
+        const tr = el('tr');
+        const cell = (key, w) => { const inp = el('input', { type: 'text', style: `width:${w}px` }); inp.value = r[key]; inp.onchange = () => { r[key] = key === 'name' ? inp.value : inp.value.trim(); commit(); render(); }; const td = el('td'); td.appendChild(inp); return td; };
+        const sense = el('select'); for (const [v, l] of [[1, '+ adds to the gap'], [-1, '− takes from it']]) { const o = el('option', { value: v }, l); if (+r.dir === v) o.selected = true; sense.appendChild(o); }
+        sense.onchange = () => { r.dir = +sense.value; commit(); render(); };
+        const sd = el('td'); sd.appendChild(sense);
+        const share = el('td', {}, res ? `${(res.shares[i].share * 100).toFixed(1)} %` : '—');
+        const x = el('button', { title: 'Remove' }, '✕'); x.onclick = () => { cur.rows.splice(i, 1); commit(); render(); };
+        const xd = el('td'); xd.appendChild(x);
+        tr.append(cell('name', 120), cell('nominal', 80), cell('plus', 60), cell('minus', 60), sd, share, xd);
+        t.appendChild(tr);
+      });
+      box.appendChild(t);
+      const addRow = el('button', { style: 'margin:6px 0' }, 'Add dimension');
+      addRow.onclick = () => { cur.rows.push({ name: String.fromCharCode(65 + (cur.rows.length % 26)), nominal: 0, plus: 0.1, minus: 0.1, dir: 1 }); commit(); render(); };
+      box.appendChild(addRow);
+      const req = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:4px 0' });
+      const rq = (key, label) => { const inp = el('input', { type: 'text', style: 'width:70px' }); inp.value = cur.req?.[key] ?? ''; inp.onchange = () => { (cur.req ||= {})[key] = inp.value.trim(); commit(); render(); }; req.append(el('span', {}, label), inp); };
+      rq('min', 'Gap required: at least'); rq('max', 'at most');
+      box.appendChild(req);
+      const out = el('div', { class: 'pm-hint', style: 'margin-top:6px;line-height:1.5' });
+      out.innerHTML = res
+        ? `Gap: nominal <b>${f4(res.nominal)}</b>, mean ${f4(res.mean)}<br>Worst case: ${f4(res.worst.min)} to ${f4(res.worst.max)} ${cur.req?.min !== '' || cur.req?.max !== '' ? (res.pass.worst ? '✔ within the requirement' : '✘ outside the requirement') : ''}<br>Statistical (RSS): ${f4(res.rss.min)} to ${f4(res.rss.max)} ${cur.req?.min !== '' || cur.req?.max !== '' ? (res.pass.rss ? '✔' : '✘') : ''}`
+        : 'Give each dimension a nominal size (numbers or expressions).';
+      box.appendChild(out);
+      box.appendChild(el('div', { class: 'pm-hint', style: 'margin-top:4px' }, 'One direction: each dimension adds to or takes from the gap. Worst case adds up every tolerance; statistical (root sum of squares) is what most assemblies see when the parts vary independently. The share shows which tolerances matter most.'));
+    };
+    render();
+    this.modal('Tolerance Stack-Up', 'measure', box, [{ label: 'Close', primary: true }]);
+    return { box, render, get current() { return cur; } };
+  }
+
   modal(title, ic, body, buttons) {
     const back = el('div', { class: 'modal-back' });
     const m = el('div', { class: 'modal' });
@@ -4979,17 +5197,29 @@ export class UI {
   }
 
   // Draft analysis: the pull direction and the draft needed.
-  async showDraftAnalysis() {
+  async showThicknessAnalysis() {
+    const v = await this.promptFields('Thickness Analysis', 'measure', [
+      { key: 'min', label: 'Thinnest wall allowed (mm)', value: 1 },
+      { key: 'max', label: 'Thickest wall allowed (mm)', value: 4 },
+    ], 'The model is coloured by its wall thickness, measured from each point straight in through the material: red thinner than allowed, blue thicker (sinks and voids when moulded), green to yellow between.');
+    if (!v) return;
+    const lo = parseFloat(v.min), hi = parseFloat(v.max);
+    if (!(lo >= 0 && hi > lo)) { this.app.toast('Give a thinnest wall and a thicker thickest one', true); return; }
+    this.app.setAnalysis({ kind: 'thickness', min: lo, max: hi, force: true });
+  }
+
+  async showDraftAnalysis(kind = 'draft') {
     const a = this.app, sel = a.selection;
     const opts = [['y', 'Y (up)'], ['-y', '−Y'], ['x', 'X'], ['-x', '−X'], ['z', 'Z'], ['-z', '−Z']];
     if (sel?.kind === 'face' && sel.face.planar) opts.unshift(['face', 'Normal of the selected face']);
-    const v = await this.promptFields('Draft Analysis', 'draftAnalysis', [
+    const v = await this.promptFields(kind === 'undercut' ? 'Undercut Check' : 'Draft Analysis', 'draftAnalysis', [
       { key: 'dir', label: 'Pull direction', type: 'select', options: opts, value: opts[0][0] },
-      { key: 'angle', label: 'Draft needed (°)', value: 1 },
-    ], 'Faces are coloured by their angle to the pull direction: green has the draft, red has it the other way (the other mould half), yellow needs more.');
+      ...(kind === 'undercut' ? [] : [{ key: 'angle', label: 'Draft needed (°)', value: 1 }]),
+    ], kind === 'undercut' ? 'Each point is looked at along the pull direction and against it: green can be pulled out one way (one mould half), blue the other, red neither (an undercut: it needs a side action or a change).' : 'Faces are coloured by their angle to the pull direction: green has the draft, red has it the other way (the other mould half), yellow needs more.');
     if (!v) return;
     const ax = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
     const dir = v.dir === 'face' ? sel.face.normal.toArray() : v.dir.startsWith('-') ? ax[v.dir[1]].map((q) => -q) : ax[v.dir];
+    if (kind === 'undercut') { a.setAnalysis({ kind: 'undercut', dir, force: true }); return; }
     const ang = parseFloat(v.angle);
     a.setAnalysis({ kind: 'draft', dir, angle: Number.isFinite(ang) ? Math.max(0, ang) : 1, force: true });
   }

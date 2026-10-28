@@ -294,6 +294,26 @@ export const platform = {
     });
   },
 
+  // A picture: { name, url (a data URL) } or null.
+  async openImage() {
+    if (desktop) { const r = await api().open_image(); return r ? { name: r.name, url: `data:${r.mime};base64,${r.data}` } : null; }
+    return new Promise((resolve) => {
+      const input = document.getElementById('file-input');
+      input.value = '';
+      input.accept = 'image/png,image/jpeg,image/bmp,image/gif,image/webp';
+      input.onchange = () => {
+        const f = input.files[0];
+        input.accept = '.rcad,.rasm,.rdrw';
+        if (!f) return resolve(null);
+        const rd = new FileReader();
+        rd.onload = () => resolve({ name: f.name, url: rd.result });
+        rd.onerror = () => resolve(null);
+        rd.readAsDataURL(f);
+      };
+      input.click();
+    });
+  },
+
   // A macro file (.js): { name, content } or null.
   async openMacro() {
     if (desktop) return api().open_macro();

@@ -138,7 +138,9 @@ export class Sketcher {
     grid.material.depthWrite = false;
     grid.renderOrder = 1;
     this.drawGroup = new THREE.Group();
-    this.group.add(grid, this.drawGroup);
+    this.picGroup = new THREE.Group();
+    this.group.add(grid, this.picGroup, this.drawGroup);
+    this.refreshPictures();
 
     this.snapEl = document.createElement('div');
     this.snapEl.className = 'snapmark';
@@ -563,6 +565,7 @@ export class Sketcher {
 
   // ------------------------------------------------------------ solving
   solve(opts) {
+    if (this.f.constraints.some((k) => k.type === 'equation')) S.updateEquationCurves(this.f, this.app.result?.vars || {});
     const r = solveSketch(this.f, this.ev, opts);
     this.solveOk = r.ok && !r.bad.length;
     this.solveMsg = r.bad[0] || (r.ok ? '' : 'Cannot solve: conflicting relations or dimensions');
@@ -582,8 +585,11 @@ export class Sketcher {
   }
 
   snapshotData() {
-    const { points, curves, constraints, nextSid, plane, texts, gearTrains, airfoils, patterns } = this.f;
-    return JSON.stringify({ points, curves, constraints, nextSid, plane, texts: texts || [], gearTrains: gearTrains || [], airfoils: airfoils || [], patterns: patterns || [] });
+    const { points, curves, constraints, nextSid, plane, texts, gearTrains, airfoils, patterns, blocks, pictures } = this.f;
+    // (pictures by their ids: their data is kept once, in _picSrc)
+    this._picSrc ||= new Map();
+    for (const p of pictures || []) this._picSrc.set(p.id, p.src);
+    return JSON.stringify({ points, curves, constraints, nextSid, plane, texts: texts || [], gearTrains: gearTrains || [], airfoils: airfoils || [], patterns: patterns || [], blocks: blocks || [], pictures: (pictures || []).map(({ src: _s, ...p }) => p) });
   }
 
   undo() {
@@ -608,6 +614,9 @@ export class Sketcher {
     this.closeModify();
     const oldRot = this.f.plane?.rot, oldFlip = !!this.f.plane?.viewFlip;
     Object.assign(this.f, JSON.parse(s));
+    for (const k of ['blocks', 'pictures']) if (!this.f[k]?.length) delete this.f[k];
+    if (this.f.pictures) this.f.pictures = this.f.pictures.map((p) => ({ ...p, src: this._picSrc?.get(p.id) || '' }));
+    this.refreshPictures();
     this.syncFrameRotation(oldRot);
     if (!!this.f.plane?.viewFlip !== oldFlip) this.normalTo();
     this.refreshTexts();
@@ -924,7 +933,11 @@ export class Sketcher {
         else if (!this.sel.has(hit.id)) { this.sel.clear(); this.sel.add(hit.id); }
         if (!multi && !external) {
           if (S.patternEntities(this.f).has(hit.id)) this.app.status('Linked pattern copy: edit the original geometry or use Edit Pattern in the Property panel.');
-          else this.startDrag(hit, raw);
+          else {
+            const blk = S.blockOf(this.f, hit.id);
+            if (blk) this.app.status(`Block "${blk.name}": it moves and turns as one (Explode Block to change its geometry here, or change the block and Make Block again under its name).`);
+            this.startDrag(hit, raw);
+          }
         }
       } else {
         if (!multi) this.sel.clear();
@@ -973,10 +986,10 @@ export class Sketcher {
     if (t === 'block') {
       if (!this.blockIns) { this.setTool('select'); return; }
       const s = this.snap(raw);
-      const ids = S.pasteItems(this.f, this.blockIns.data, s.x, s.y);
+      const ids = this.blockIns.linked === false ? S.pasteItems(this.f, this.blockIns.data, s.x, s.y) : S.insertBlockInstance(this.f, this.blockIns, s.x, s.y, this.blockIns.angle || 0).curves;
       this.sel = new Set(ids);
       this.changed();
-      this.app.status(`Block "${this.blockIns.name}" inserted. Click for another copy; Esc ends.`);
+      this.app.status(`Block "${this.blockIns.name}" inserted${this.blockIns.linked === false ? ' (plain geometry)' : ': it moves as one, and follows the block when it is saved again (Explode Block makes it plain geometry)'}. Click for another copy; Esc ends.`);
       return;
     }
     if (t === 'tarc') {
@@ -1911,7 +1924,9 @@ export class Sketcher {
     list.push({ name, data });
     ui.prefs.blocks = list;
     ui.savePrefs();
-    this.app.status(`Block "${name}" saved: Insert Block puts copies of it in any sketch.`);
+    const n = S.updateBlockInstances(this.f, { name, data });
+    if (n) this.changed();
+    this.app.status(`Block "${name}" saved: Insert Block puts copies of it in any sketch.${n ? ` ${n} cop${n === 1 ? 'y' : 'ies'} of it in this sketch updated.` : ''}`);
   }
 
   async insertBlock() {
@@ -1919,21 +1934,131 @@ export class Sketcher {
     if (!list.length) { this.app.toast('No blocks yet: select entities and use Make Block first', true); return; }
     const v = await ui.promptFields('Insert Block', 'skBlock', [
       { key: 'name', label: 'Block', type: 'select', options: list.map((b) => [b.name, b.name]), value: this.blockIns?.name || list[list.length - 1].name },
+      { key: 'angle', label: 'Turned (°)', type: 'expr', value: this.blockIns?.angle || 0 },
+      { key: 'linked', label: 'Linked (moves as one, follows the block)', type: 'check', value: this.blockIns?.linked !== false },
       { key: 'del', label: 'Delete this block from the library instead', type: 'check', value: false },
     ]);
     if (!v || !this.active) return;
     const b = list.find((x) => x.name === v.name);
     if (!b) return;
     if (v.del) { ui.prefs.blocks = list.filter((x) => x !== b); ui.savePrefs(); this.app.status(`Block "${b.name}" deleted.`); return; }
-    this.blockIns = b;
+    this.blockIns = { ...b, angle: +this.app.result.ev(v.angle) || 0, linked: !!v.linked };
     this.setTool('block');
+  }
+
+  // Equation Curve: a new one, or the selected one set again
+  async equationCurve() {
+    const sk = this.f, selId = this.sel.size === 1 ? [...this.sel][0] : null;
+    const old = selId ? sk.constraints.find((k) => k.type === 'equation' && k.refs[0] === selId) : null;
+    const eq = old?.eq || { kind: 'explicit', x: 't', y: '10*sin(x*9)', t1: 0, t2: 40, n: 40 };
+    const v = await this.app.ui.promptFields(old ? 'Edit Equation Curve' : 'Equation Curve', 'spline', [
+      { key: 'kind', label: 'Form', type: 'select', options: [['explicit', 'y = f(x)'], ['parametric', 'x = f(t), y = g(t)']], value: eq.kind },
+      { key: 'x', label: 'x(t) (parametric)', type: 'expr', value: eq.x },
+      { key: 'y', label: 'y(x), or y(t)', type: 'expr', value: eq.y },
+      { key: 't1', label: 'From (x or t)', type: 'expr', value: eq.t1 },
+      { key: 't2', label: 'To', type: 'expr', value: eq.t2 },
+      { key: 'n', label: 'Pieces', type: 'expr', value: eq.n },
+      ...(old ? [] : [{ key: 'construction', label: 'Construction geometry', type: 'check', value: false }]),
+    ], 'Sketch coordinates in mm; part variables can be used, and the curve follows them. sin, cos and tan take degrees (e.g. y = 5*sin(x*360/40)). A parametric curve ending where it starts is closed.');
+    if (!v || !this.active) return;
+    const next = { kind: v.kind, x: String(v.x), y: String(v.y), t1: String(v.t1), t2: String(v.t2), n: String(v.n) };
+    const vars = this.app.result?.vars || {};
+    try {
+      if (old) {
+        const c = S.getCurve(sk, selId);
+        let P = S.equationPoints(next, vars);
+        if (c.closed && P.length > 1) P = P.slice(0, -1);
+        if (P.length === c.pts.length) { old.eq = next; S.updateEquationCurves(sk, vars); }
+        else { S.deleteItems(sk, [selId]); this.sel = new Set([S.addEquationCurve(sk, next, vars, c.construction)]); }
+      } else this.sel = new Set([S.addEquationCurve(sk, next, vars, !!v.construction)]);
+    } catch (e) { this.app.toast(e.message, true); return; }
+    this.changed();
+    this.app.status('Equation curve: a spline through the equation’s points, held there by an Equation relation (select it and use Equation Curve again to change it).');
+  }
+
+  // ------------------------------------------------------------ sketch pictures (sk.pictures), to trace over
+  refreshPictures() {
+    const g = this.picGroup;
+    if (!g) return;
+    for (const c of [...g.children]) { g.remove(c); c.geometry?.dispose(); c.material?.map?.dispose(); c.material?.dispose(); }
+    for (const pic of this.f.pictures || []) {
+      if (pic.show === false) continue;
+      const img = new Image(), tex = new THREE.Texture(img);
+      img.onload = () => { tex.needsUpdate = true; this.vp.requestRender?.(); };
+      img.src = pic.src;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(pic.w, pic.h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: pic.opacity ?? 0.6, depthWrite: false, side: THREE.DoubleSide }));
+      m.position.set(pic.x, pic.y, -0.01);
+      m.rotation.z = ((pic.angle || 0) * Math.PI) / 180;
+      m.renderOrder = 0;
+      m.userData.picture = pic.id;
+      g.add(m);
+    }
+    this.vp.requestRender?.();
+  }
+
+  // Sketch Picture: a new picture (opened, shrunk to 2000 pixels at most), or one already there set again
+  async sketchPicture() {
+    const ui = this.app.ui, sk = this.f, list = sk.pictures || [];
+    let pic = null;
+    if (list.length) {
+      const v = await ui.promptFields('Sketch Picture', 'sketchPicture', [{ key: 'which', label: 'Picture', type: 'select', options: [['new', 'A new picture…'], ...list.map((p) => [p.id, p.name])], value: list.at(-1).id }]);
+      if (!v || !this.active) return;
+      pic = list.find((p) => p.id === v.which) || null;
+    }
+    if (!pic) {
+      let file;
+      try { file = await platform.openImage(); } catch (e) { this.app.toast('Could not open the picture: ' + e.message, true); return; }
+      if (!file || !this.active) return;
+      const img = await new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = file.url; });
+      if (!img?.naturalWidth) { this.app.toast('That picture could not be read', true); return; }
+      const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      const png = /^data:image\/(png|gif|webp)/.test(file.url);
+      const w = 100;
+      pic = { id: 'pic' + (sk.nextSid++), name: file.name, src: cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.9), x: 0, y: 0, w, h: (w * cv.height) / cv.width, angle: 0, opacity: 0.6 };
+      (sk.pictures ||= []).push(pic);
+    }
+    const line = this.sel.size === 1 ? S.getCurve(sk, [...this.sel][0]) : null, isLine = line?.type === 'line';
+    const v = await ui.promptFields(`Sketch Picture — ${pic.name}`, 'sketchPicture', [
+      { key: 'w', label: 'Width (the height follows)', type: 'expr', value: +pic.w.toFixed(4) },
+      ...(isLine ? [{ key: 'trueLen', label: 'Or: the selected line’s true length', type: 'expr', value: '' }] : []),
+      { key: 'x', label: 'Centre X', type: 'expr', value: +pic.x.toFixed(4) },
+      { key: 'y', label: 'Centre Y', type: 'expr', value: +pic.y.toFixed(4) },
+      { key: 'angle', label: 'Turned (°)', type: 'expr', value: pic.angle || 0 },
+      { key: 'opacity', label: 'Opacity (%)', type: 'expr', value: Math.round((pic.opacity ?? 0.6) * 100) },
+      { key: 'show', label: 'Shown', type: 'check', value: pic.show !== false },
+      { key: 'del', label: 'Delete the picture', type: 'check', value: false },
+    ], isLine ? 'A line drawn along something of known size in the picture scales it: give its true length.' : 'To scale it by something of known size in it, draw a line along that, select the line and open this again.');
+    if (!v || !this.active) { this.refreshPictures(); return; }
+    if (v.del) { sk.pictures = sk.pictures.filter((p) => p !== pic); if (!sk.pictures.length) delete sk.pictures; this.refreshPictures(); this.changed(); return; }
+    const num = (x, d) => { const n = this.ev(String(x)); return Number.isFinite(n) ? n : d; };
+    let next = { ...pic, x: num(v.x, pic.x), y: num(v.y, pic.y), angle: num(v.angle, 0), opacity: Math.min(1, Math.max(0.05, num(v.opacity, 60) / 100)), show: !!v.show };
+    const w = num(v.w, pic.w);
+    if (w > 0 && Math.abs(w - pic.w) > 1e-12) next = { ...next, w, h: (pic.h * w) / pic.w };
+    if (isLine && String(v.trueLen).trim()) next = S.scalePicture(next, S.getPoint(sk, line.p1), S.getPoint(sk, line.p2), num(v.trueLen, 0));
+    sk.pictures[sk.pictures.indexOf(pic)] = next;
+    this.refreshPictures();
+    this.changed();
+    this.app.status(`${pic.name}: ${fmt(next.w, 3)} × ${fmt(next.h, 3)} mm.`);
+  }
+
+  // Explode Block: the selected block copies made plain geometry (their own relations and dimensions back)
+  explodeBlocks() {
+    const ids = new Set([...this.sel].map((id) => S.blockOf(this.f, id)?.id).filter(Boolean));
+    if (!ids.size) { this.app.toast('Select an entity of a block copy first', true); return; }
+    for (const id of ids) S.explodeBlock(this.f, id);
+    this.changed();
+    this.app.status(`${ids.size} block cop${ids.size === 1 ? 'y' : 'ies'} exploded into plain geometry.`);
   }
 
   // the block at the cursor
   blockPreview() {
     const b = this.blockIns, c = this.cursor;
     if (!b || !c) return [];
-    const tmp = { points: b.data.points.map((q) => ({ ...q, x: q.x + c.p.x, y: q.y + c.p.y })), curves: b.data.curves, constraints: [] };
+    const a = ((b.angle || 0) * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const tmp = { points: b.data.points.map((q) => ({ ...q, x: q.x * ca - q.y * sa + c.p.x, y: q.x * sa + q.y * ca + c.p.y })), curves: b.data.curves, constraints: [] };
     return b.data.curves.map((cv) => S.curvePoints(tmp, cv));
   }
 
