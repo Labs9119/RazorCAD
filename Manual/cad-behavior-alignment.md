@@ -40,7 +40,8 @@ instead of changing the resulting geometry.
 | Loft / Surface Loft | Canvas profiles, guides, endpoint conditions through G2, manual sketch-profile connectors (start vertex, a point inside a curve without splitting it, circular seam and traversal), holes paired and started by hand, Thin connectors, CAD guide constraints with holes | Manual correspondence for 3D curve profiles; CAD guide constraints with endpoint conditions, more than two profiles or Thin |
 | Patch | Per-edge G0/G1/G2, connected model-edge selection, a tangent reach per G1 edge, curves and points inside the opening it passes through | Sketch inputs as boundaries need an explicit product decision (planar sketch creation currently belongs to Planar Surface) |
 | Reference geometry | Constraint definitions listed above | Arbitrary curved-surface constraints/intersections and broader combinations with tangent/midplane constructions |
-| Fillet/Chamfer, Shell, Hole, patterns, sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
+| Fillet / Chamfer | Constant, variable (ends, vertices, points along edges), face fillets, full round, chord width, an edge's own size, setback corners, a face's edges at once; chamfers by distance, distance and angle, two distances, an edge's own distance, vertex chamfers | Conic and curvature-continuous fillet profiles (not offered by the geometry kernel) |
+| Shell, Hole, patterns, sheet metal, assemblies and drawings | Existing RazorCAD commands | Dedicated command-by-command comparison and interaction tests are still required |
 
 ## Validation
 

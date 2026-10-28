@@ -934,10 +934,16 @@ Open the feature and click edges on the model. The model is rolled back to just 
 - **Points along the edges** (with radii at the vertices): **Add Point**, then choose the edge, where along it (the share of its length from its start in %, or a distance from its start in mm) and the radius there; or **Add by Clicking** and click on the edge where the point goes. The radius runs smoothly from the edge's start through its points to its end. While the fillet is edited each point is marked on its edge, so you can see which end the % counts from; **drag a mark** along its edge to move the point (its % or mm follows, and the fillet rebuilds when you let go). {idx:fillet, variable radius}
 - **Setback at corners**: where three or more fillets meet, the corner is blended smoothly from this distance out, instead of the usual small corner patch. A little more than the radius works well; 0 keeps the usual corner. The fillet's note says how many corners were blended. {idx:fillet, setback}
 - **Face fillet**: pick faces instead of edges; the edges where they meet are rounded.
+- **Full round** {idx:fillet, full round}: click a side face, the face to round off, then the other side face (flat and parallel: a wall of even thickness). The middle face is replaced by one round meeting both sides, its radius half the wall's thickness.
+- **Size by → Chord width** (constant size) {idx:fillet, chord width}: the value is the width across each fillet, from edge to edge; each edge's radius follows from how far its two faces turn (measured at its middle: exact between flat faces).
+- **An edge's own size** {idx:fillet, edge radius}: each edge in the list has a box for a radius of its own (expressions allowed); blank uses the fillet's. One feature can so round edges with different radii in one go, corners and all.
+- **Add a face's edges**: then click a face, and all its edges are added (clicked again, removed).
 
 ## Chamfer
 
-Click edges as for a fillet. Chamfer types: **equal distance**, **distance + angle** or **two distances**. **Flip direction** swaps the sides. {idx:chamfer}
+Click edges as for a fillet. Chamfer types: **equal distance**, **distance + angle** or **two distances**. **Flip direction** swaps the sides. With equal distances each edge can have a distance of its own, and **Add a face's edges** works as for Fillet. {idx:chamfer}
+
+**Vertex (cut off a corner)** {idx:chamfer, vertex}: click corners of the model where three straight edges meet; each is cut off by the plane through the points the distance along each of its edges. **Different distances along X, Y and Z** gives the edges running most along X, Y and Z their own distances. A distance as long as its edge, or a corner in a recess (where the cut would add material), is refused.
 
 ## Shell
 

@@ -236,7 +236,7 @@ export function createFeature(doc, type, props = {}) {
     // radiusMode (variable): 'ends' (start → end of each edge) | 'vertices' (vertexRadii: [{ p, r }], the others: radius);
     // setback: corners where three or more fillets meet blended from this distance (0: the kernel's own corner)
     // edgePoints (radiusMode 'vertices'): [{ edge (its place in edges), t (% of its length from its start), r }]
-    fillet: { radius: 2, edges: [], filletType: 'constant', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
+    fillet: { radius: 2, edges: [], filletType: 'constant', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
     // Draft: face (neutral plane, flat) + faces to tilt by angle; reverse: pull the other way
     draft: { face: null, faces: [], angle: 3, reverse: false },
     // Rib: an open sketch, thickness, ribDir 'parallel' (in the sketch plane) | 'normal'; flip: the other side
@@ -249,7 +249,7 @@ export function createFeature(doc, type, props = {}) {
     moveFace: { faces: [], mode: 'offset', distance: 5, angle: 5, edge: null, reverse: false },
     // chamferType: 'distance' (equal distances), 'angleDist' (distance + angle) or 'twoDist';
     // flip swaps which face the distance (or first distance) is measured on
-    chamfer: { chamferType: 'distance', distance: 1, distance2: 1, angle: 45, flip: false, edges: [] },
+    chamfer: { chamferType: 'distance', distance: 1, distance2: 1, distance3: 1, vertexDistances: false, angle: 45, flip: false, edges: [], vertices: [] },
     // imported bodies stay separate (mergeBodies: fuse touching ones into one body)
     // maxTris: meshes (STL / OBJ / 3MF) with more triangles are simplified to that many (0: never)
     import: { format: 'step', fileName: '', data: '', mergeBodies: false, maxTris: 80000 },

@@ -2223,6 +2223,22 @@ class App {
     } catch (e) { this.toast(e.message, true); }
   }
 
+  // A fillet's or chamfer's edges: all of a clicked face's added (removed when they are all in already)
+  async addFaceEdges(fh) {
+    const f = this.pm.feature, pm = this.pm, body = this.result.bodies?.[this.viewport.faceBody[fh.hit.face]]?.id, face = this.viewport.faceInfo(fh.hit.face);
+    try {
+      const refs = await this.kernel.request('faceEdges', { ref: { p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) } });
+      if (this.pm !== pm) return;
+      const same = (a, b) => Math.hypot(...a.p.map((x, k) => x - b.p[k])) < 1e-4;
+      f.edges ||= [];
+      const all = refs.every((r) => f.edges.some((e) => same(e, r)));
+      if (all) f.edges = f.edges.filter((e) => !refs.some((r) => same(e, r)));
+      else for (const r of refs) if (!f.edges.some((e) => same(e, r))) f.edges.push(r);
+      this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
+      this.status(`${refs.length} edge${refs.length === 1 ? '' : 's'} ${all ? 'removed' : 'added'}.`);
+    } catch (e) { if (this.pm === pm) this.toast(e.message, true); }
+  }
+
   // Extrude and Revolve take flat model faces as profiles too (where no sketch profile is clicked)
   faceProfilePicking() {
     const f = this.pm?.feature;
@@ -2279,7 +2295,9 @@ class App {
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot) return 'entity';
     if (f.type === 'split' && !f.tool) return 'face';
     if (['combine', 'knit', 'surfSolid', 'meshRepair', 'thicken', 'moveBody', 'split'].includes(f.type)) return 'body';
-    if (f.type === 'fillet' && f.filletType === 'face') return 'faces';
+    if (f.type === 'fillet' && ['face', 'fullRound'].includes(f.filletType)) return 'faces';
+    if (f.type === 'chamfer' && f.chamferType === 'vertex') return 'vertex';
+    if ((f.type === 'fillet' || f.type === 'chamfer') && this.pm.faceEdgesPick) return 'faces';
     if (f.type === 'fillet' || f.type === 'chamfer') return 'edge';
     if (f.type === 'draft') return f.face ? 'faces' : 'flatface'; // (the neutral plane first, then the faces)
     if (f.type === 'dome') return 'faces';
@@ -2353,6 +2371,7 @@ class App {
       if (f.type === 'extrude' && this.pm.extrudeSurfaceSlot === 'end2' && f.side2) { f.toVertex2 = { p: hit.point.toArray() }; f.toPoint2 = null; }
       else if (['extrude', 'surfExtrude', 'revolve', 'surfRevolve'].includes(f.type)) { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
       else if (f.type === 'sketch3d') { const q = hit.point.toArray().map((x) => +x.toFixed(6)); (f.pts ||= []).push({ x: q[0], y: q[1], z: q[2] }); }
+      else if (f.type === 'chamfer' && f.chamferType === 'vertex') { const p = hit.point.toArray(), L = (f.vertices ||= []), i = L.findIndex((v) => Math.hypot(...v.p.map((x, k) => x - p[k])) < 1e-4); if (i >= 0) L.splice(i, 1); else L.push({ p }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
       if (f.type === 'split') f.toolFace = { p: hit.p, n: hit.n };
@@ -2447,6 +2466,7 @@ class App {
       vp.setVertexMarkers(pts?.length ? { selected: pts, hover: this._fpDrag ? pts[this._fpDrag.i] ?? null : null } : null);
     } else if (mode === 'vertex') {
       const two = f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2';
+      if (f.type === 'chamfer' && f.chamferType === 'vertex') { vp.setVertexMarkers({ selected: (f.vertices || []).map((v) => v.p), hover: this.hoverVertex ?? null }); return; }
       const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : ['surfExtrude', 'revolve', 'surfRevolve'].includes(f.type) ? f.toVertex : f.type === 'sketch3d' ? null : f.vertex;
       vp.setVertexMarkers({ selected: ref && !(two ? f.toPoint2 : f.toPoint) ? ref.p : null, hover: this.hoverVertex ?? null });
     }
@@ -3269,6 +3289,7 @@ class App {
       }
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
+      if (['fillet', 'chamfer'].includes(f.type) && this.pm.faceEdgesPick) { this.addFaceEdges(fh); return; }
       const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];

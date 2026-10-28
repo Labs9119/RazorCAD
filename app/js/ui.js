@@ -955,10 +955,12 @@ const PM_SCHEMAS = {
     ] },
   ],
   fillet: [
-    { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet']] }] },
-    { title: 'Fillet Parameters', fields: [
+    { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet'], ['fullRound', 'Full round']] }] },
+    { title: 'Fillet Parameters', show: (f) => f.filletType !== 'fullRound', fields: [
+      { key: 'sizeBy', type: 'select', label: 'Size by', default: 'radius', show: (f) => (f.filletType || 'constant') === 'constant', options: [['radius', 'Radius'], ['chord', 'Chord width']] },
       { key: 'radiusMode', type: 'select', label: 'Radius', show: (f) => f.filletType === 'variable', options: [['ends', 'From the start to the end of each edge'], ['vertices', 'At vertices and points along edges']] },
-      { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : 'Radius'), unit: 'mm' },
+      { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : f.sizeBy === 'chord' && (f.filletType || 'constant') === 'constant' ? 'Chord width' : 'Radius'), unit: 'mm' },
+      { key: 'chHint', type: 'hint', show: (f) => (f.filletType || 'constant') === 'constant' && f.sizeBy === 'chord', text: 'The width across each fillet, edge to edge: each edge’s radius follows from how far its faces turn (at its middle).' },
       { key: 'radius2', type: 'expr', label: 'Radius at the end', unit: 'mm', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices' },
       { key: 'flipRadii', type: 'check', label: 'Swap the ends', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices' },
       { key: 'vHint', type: 'hint', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices', text: 'The radius changes smoothly from the start to the end of each edge (the ends follow the edge direction: Swap the ends turns it round).' },
@@ -968,8 +970,9 @@ const PM_SCHEMAS = {
       { key: 'sHint', type: 'hint', show: (f) => f.filletType !== 'face', text: 'Where three or more fillets meet: 0 keeps the usual corner; a distance blends the corner smoothly from that far out (a little more than the radius).' },
     ] },
     { title: 'Items To Fillet', fields: [
-      { key: 'edges', type: 'edges', show: (f) => f.filletType !== 'face' },
+      { key: 'edges', type: 'edges', show: (f) => f.filletType !== 'face' && f.filletType !== 'fullRound' },
       { key: 'faces', type: 'faceList', show: (f) => f.filletType === 'face', hint: 'Click the faces to blend (two or more): every edge where two of them meet is rounded.' },
+      { key: 'faces', type: 'faceList', show: (f) => f.filletType === 'fullRound', hint: 'Click three faces in order: a side face, the face to round off, then the other side face (flat and parallel: a wall). The middle face becomes one round meeting both sides.', itemLabel: 'Face' },
     ] },
   ],
   draft: [
@@ -1015,14 +1018,19 @@ const PM_SCHEMAS = {
   chamfer: [
     {
       title: 'Chamfer Parameters', fields: [
-        { key: 'chamferType', type: 'select', label: 'Chamfer type', options: [['distance', 'Equal distances'], ['angleDist', 'Distance and angle'], ['twoDist', 'Two distances']] },
-        { key: 'distance', type: 'expr', label: (f) => (f.chamferType === 'twoDist' ? 'Distance 1' : 'Distance'), unit: 'mm' },
-        { key: 'distance2', type: 'expr', label: 'Distance 2', unit: 'mm', show: (f) => f.chamferType === 'twoDist' },
+        { key: 'chamferType', type: 'select', label: 'Chamfer type', options: [['distance', 'Equal distances'], ['angleDist', 'Distance and angle'], ['twoDist', 'Two distances'], ['vertex', 'Vertex (cut off a corner)']] },
+        { key: 'vertexDistances', type: 'check', label: 'Different distances along X, Y and Z', show: (f) => f.chamferType === 'vertex' },
+        { key: 'distance', type: 'expr', label: (f) => (f.chamferType === 'twoDist' ? 'Distance 1' : f.chamferType === 'vertex' && f.vertexDistances ? 'Along X' : 'Distance'), unit: 'mm' },
+        { key: 'distance2', type: 'expr', label: (f) => (f.chamferType === 'vertex' ? 'Along Y' : 'Distance 2'), unit: 'mm', show: (f) => f.chamferType === 'twoDist' || (f.chamferType === 'vertex' && f.vertexDistances) },
+        { key: 'distance3', type: 'expr', label: 'Along Z', unit: 'mm', default: 1, show: (f) => f.chamferType === 'vertex' && f.vertexDistances },
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°', show: (f) => f.chamferType === 'angleDist' },
         { key: 'flip', type: 'check', label: (f) => (f.chamferType === 'angleDist' ? 'Flip direction (distance on the other face)' : 'Flip direction (swap the distances)'), show: (f) => f.chamferType === 'angleDist' || f.chamferType === 'twoDist' },
       ],
     },
-    { title: 'Items To Chamfer', fields: [{ key: 'edges', type: 'edges' }] },
+    { title: 'Items To Chamfer', fields: [
+      { key: 'edges', type: 'edges', show: (f) => f.chamferType !== 'vertex' },
+      { key: 'vertices', type: 'vertexList', show: (f) => f.chamferType === 'vertex', hint: 'Click corners of the model where three straight edges meet: each is cut off by the plane through the points the distances along its edges.' },
+    ] },
   ],
   shell: [
     { title: 'Parameters', fields: [{ key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' }, { key: 'outward', type: 'check', label: 'Shell outward' }] },
@@ -3608,6 +3616,13 @@ export class UI {
           this.renderLoftSelection(body, f, before, fd);
         } else if (fd.type === 'sketchList') {
           this.renderSketchList(body, f, before, fd);
+        } else if (fd.type === 'vertexList') {
+          if (!Array.isArray(f[fd.key])) f[fd.key] = [];
+          const L = f[fd.key], ul = el('div', { class: 'pm-list', 'data-vertex-list': fd.key });
+          body.appendChild(el('div', { class: 'pm-hint' }, esc(fd.hint || 'Click vertices on the model.')));
+          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No corners selected'));
+          L.forEach((v, i) => { const li = el('div', { class: 'li sel' }, `${icon('point')}<span>Corner&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`); li.querySelector('.x').onclick = () => { L.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); }; ul.appendChild(li); });
+          body.appendChild(ul);
         } else if (fd.type === 'vertexRadii') {
           this.renderVertexRadii(body, f);
         } else if (fd.type === 'edgePoints') {
@@ -5625,12 +5640,15 @@ export class UI {
     if(['sweep','surfSweep'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Instead of a sketch or curve, the path can be model edges joined end to end into one chain (it starts at the end in the profile’s plane).'));
     if(['surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Model edges join end to end into open or closed chains (without branches); they are extruded or revolved with the contours.'));
     if (f.type === 'surfFill') body.appendChild(el('button', { class: 'pm-btn' + (!a.pm.patchSupportPick ? ' on' : ''), 'data-patch-edges': '', onclick: () => { a.pm.patchSupportPick = false; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select boundary edges'));
-    body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.'));
+    const sized = (f.type === 'fillet' && (f.filletType || 'constant') === 'constant') || (f.type === 'chamfer' && (f.chamferType || 'distance') === 'distance');
+    if (f.type === 'fillet' || f.type === 'chamfer') body.appendChild(el('button', { class: 'pm-btn' + (a.pm.faceEdgesPick ? ' on' : ''), 'data-face-edges': '', onclick: () => { a.pm.faceEdgesPick = !a.pm.faceEdgesPick; this.renderPM(); a.status(a.pm.faceEdgesPick ? 'Click a face: all its edges are added (or removed when they are all in already).' : 'Click edges on the model.'); } }, 'Add a face’s edges'));
+    body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.' + (sized ? ' An edge can have a size of its own (leave it blank for the feature’s).' : '')));
     const ul = el('div', { class: 'pm-list' });
     if (!n) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No edges selected'));
     f.edges.forEach((e, i) => {
       const li = el('div', { class: 'li' }, `${icon('edge')}<span>Edge&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`);
       if(f.type==='surfFill')li.dataset.patchEdgeRow=i;
+      if(sized){const own=this.exprInput(e.size??'','mm',value=>{if(value===''||value==null)delete e.size;else e.size=value;a.preview();});own.dataset.edgeSize=i;own.title='Own size (blank: the feature’s)';li.insertBefore(own,li.querySelector('.x'));}
       if(f.type==='surfFill'){
         const select=el('select',{'data-patch-edge':i,'aria-label':`Edge ${i+1} continuity`});
         for(const [value,label] of [['','Use boundary setting'],['G0','G0 Contact'],['G1','G1 Tangent'],['G2','G2 Curvature']]){

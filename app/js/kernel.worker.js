@@ -1409,7 +1409,7 @@ function combinedBlend(base, items, type) {
     for (const ref of it.refs) {
       const e = findEdge(base, ref);
       if (!e) return null; // never silently drop an edge
-      sel.push({ e, value: it.value });
+      sel.push({ e, value: ref.value ?? it.value });
     }
   }
   if (!sel.length) return null;
@@ -4303,13 +4303,32 @@ async function rebuild(doc, previewId = null, opts = {}) {
         case 'chamfer': {
           if (!body) throw new Error('There is no body');
           needEdges(f.type === 'fillet' ? 'Fillet' : 'Chamfer');
-          if (f.type === 'fillet' && (f.filletType === 'variable' || f.filletType === 'face')) {
-            // variable radius (start → end along each edge) or a fillet between two picked faces
-            const r1 = ev(f.radius), r2 = f.filletType === 'variable' ? ev(f.radius2) : r1;
+          if (f.type === 'fillet' && (f.filletType === 'variable' || f.filletType === 'face' || f.filletType === 'fullRound')) {
+            // variable radius (start → end along each edge), a fillet between two picked faces, or a full round: the
+            // middle of three faces (faces: side, middle, side) rounded off into one round meeting both sides
+            const full = f.filletType === 'fullRound';
+            let r1 = full ? 1 : ev(f.radius);
+            const r2 = f.filletType === 'variable' ? ev(f.radius2) : r1;
             if (!(r1 > 0) || !(r2 > 0)) throw new Error('The radii must be greater than zero');
             const picked = [], pickedAt = new Map(); // (the edges found, and by their place in f.edges)
             let rec = null;
-            if (f.filletType === 'face') {
+            if (full) {
+              if ((f.faces || []).length !== 3) throw new Error('Click three faces: a side face, the face to round off, then the other side face');
+              const hits = f.faces.map((r) => findFaceAny(solids, r));
+              if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
+              rec = hits[0].body;
+              if (hits.some((h) => h.body !== rec)) throw new Error('The faces must be on the same body');
+              const [a, mid, b] = hits.map((h) => h.face);
+              if (a.geomType !== 'PLANE' || b.geomType !== 'PLANE') throw new Error('A full round needs flat side faces');
+              const na = unit(vec(a.normalAt())), nb = unit(vec(b.normalAt()));
+              if (dot(na, nb) > -1 + 1e-9) throw new Error('A full round needs side faces facing away from each other, parallel (a wall of even thickness)');
+              const w = Math.abs(dot(sub(flatCentre(b), flatCentre(a)), na));
+              if (!(w > 1e-9)) throw new Error('The side faces of a full round must be apart');
+              r1 = w / 2;
+              for (const side of [a, b]) for (const e of mid.edges) if (side.edges.some((x) => x.isSame(e)) && !picked.some((x) => x.isSame(e))) picked.push(e);
+              if (picked.length < 2) throw new Error('The face to round off must meet both side faces at edges');
+              res.notes[f.id] = `Full round R${+r1.toFixed(4)} (half the ${+w.toFixed(4)} mm wall)`;
+            } else if (f.filletType === 'face') {
               if ((f.faces || []).length < 2) throw new Error('Click the faces to blend: two (or more) faces that meet at edges');
               const hits = f.faces.map((r) => findFaceAny(solids, r));
               if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
@@ -4352,7 +4371,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
               out = r.shape;
               (res.info ||= {})[f.id] = { vertices: r.vertices.map((q) => q.map((x) => +x.toFixed(6))), points: r.points };
             }
-            if (!out) for (const shrink of [0, 2e-5, 2e-4]) {
+            // (a full round's two fillets meet exactly: a hair smaller leaves the same round with a sliver of flat,
+            // as thin as can be made)
+            if (!out) for (const shrink of full ? [1e-8, 1e-7, 1e-6, 1e-5, 1e-4] : [0, 2e-5, 2e-4]) {
               try {
                 const k = 1 - shrink;
                 out = input.fillet((e) => (picked.some((x) => x.isSame(e)) ? (Array.isArray(rad) ? [rad[0] * k, rad[1] * k] : rad * k) : null));
@@ -4368,26 +4389,81 @@ async function rebuild(doc, previewId = null, opts = {}) {
             else remapSolids(unify(out), picked.map((e) => e.pointAt(0.5)));
             blendChain = null;
             const nPts = res.info?.[f.id]?.points?.length || 0;
-            res.notes[f.id] = f.filletType === 'variable' && f.radiusMode === 'vertices' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: radii at the vertices${nPts ? ` and ${nPts} point${nPts === 1 ? '' : 's'} along the edges` : ''}` : f.filletType === 'variable' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: R${+rad[0].toFixed(3)} → R${+rad[1].toFixed(3)}` : `${picked.length} edge${picked.length === 1 ? '' : 's'} where the faces meet, R${+r1.toFixed(3)}`;
+            if (!full) res.notes[f.id] = f.filletType === 'variable' && f.radiusMode === 'vertices' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: radii at the vertices${nPts ? ` and ${nPts} point${nPts === 1 ? '' : 's'} along the edges` : ''}` : f.filletType === 'variable' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: R${+rad[0].toFixed(3)} → R${+rad[1].toFixed(3)}` : `${picked.length} edge${picked.length === 1 ? '' : 's'} where the faces meet, R${+r1.toFixed(3)}`;
+            break;
+          }
+          if (f.type === 'chamfer' && f.chamferType === 'vertex') {
+            // (a corner cut off: at each picked vertex where three straight edges meet, the plane through the points the
+            // distances along them; distance for all three, or distance, distance2, distance3 for the edges running
+            // most along X, Y and Z)
+            if (!f.vertices?.length) throw new Error('Click the corners (vertices) to chamfer');
+            const d0 = ev(f.distance), ds = f.vertexDistances ? [d0, ev(f.distance2), ev(f.distance3)] : [d0, d0, d0];
+            if (ds.some((d) => !(d > 0))) throw new Error('The distances must be greater than zero');
+            let out = null, recOf = null;
+            for (const ref of f.vertices) {
+              const p = findVertex(body, ref);
+              if (!p) throw new Error('A selected corner could not be found in the model');
+              ref.p = p;
+              const rec = solids.find((s) => edgeInfos(s.shape).some(({ e }) => [vec(e.startPoint), vec(e.endPoint)].some((q) => len(sub(q, p)) < 1e-6)));
+              if (!rec) throw new Error('A selected corner is not on a solid body');
+              if (recOf && rec !== recOf) throw new Error('The corners of one vertex chamfer must be on the same body');
+              recOf = rec;
+              const shape = out || rec.shape, at = [];
+              for (const { e } of edgeInfos(shape)) {
+                const s = vec(e.startPoint), t = vec(e.endPoint);
+                if (len(sub(s, p)) < 1e-6) at.push({ e, d: sub(t, s) }); else if (len(sub(t, p)) < 1e-6) at.push({ e, d: sub(s, t) });
+              }
+              if (at.length !== 3 || at.some(({ e }) => e.geomType !== 'LINE')) throw new Error('A vertex chamfer needs a corner where three straight edges meet');
+              const axisOf = (d) => [0, 1, 2].reduce((m, k) => (Math.abs(d[k]) > Math.abs(d[m]) ? k : m), 0);
+              const order = f.vertexDistances ? [...at].sort((x, y) => axisOf(x.d) - axisOf(y.d)) : at;
+              const q = order.map(({ d }, k) => { if (!(ds[k] < len(d) - 1e-9)) throw new Error('A chamfer distance is as long as its edge, or longer'); return add(p, mul(unit(d), ds[k])); });
+              const faces = [[p, q[0], q[1]], [p, q[1], q[2]], [p, q[2], q[0]], [q[0], q[1], q[2]]].map((t) => R.makePolygon(t));
+              const tetra = R.makeSolid(faces), vol = Math.abs(R.measureVolume(tetra));
+              // (only a corner that sticks out: all of the cut-off piece must be in the body)
+              const inside = shape.intersect(tetra);
+              if (Math.abs(Math.abs(R.measureVolume(inside)) - vol) > vol * 1e-7) throw new Error('A vertex chamfer cuts off a corner that sticks out (not one in a recess)');
+              out = shape.cut(tetra);
+            }
+            res.features[f.id] = { vertices: f.vertices };
+            replaceSolid(recOf, unify(out), f.id);
+            blendChain = null;
+            res.notes[f.id] = `${f.vertices.length} corner${f.vertices.length === 1 ? '' : 's'} cut off`;
             break;
           }
           if (!f.edges?.length) throw new Error('Select edges on the model');
           const v = ev(f.type === 'fillet' ? f.radius : f.distance);
           if (v <= 0) throw new Error('Value must be greater than zero');
+          // (an edge's own size, edges[i].size: its radius or distance instead of the feature's; or, sizeBy 'chord', the
+          // feature's value a chord width: each edge's radius from the angle its faces turn through at its middle)
+          const chord = f.type === 'fillet' && f.sizeBy === 'chord';
+          const sizeOf = (ref, edge) => {
+            let s = v;
+            if (ref.size != null && ref.size !== '') { s = ev(ref.size); if (!(s > 0)) throw new Error('An edge’s own size must be greater than zero'); }
+            if (!chord) return s;
+            const m = vec(edge.pointAt(0.5)), fs = adjacentFaces(body, edge);
+            if (fs.length !== 2) throw new Error('A fillet by chord width needs edges between two faces');
+            const turn = Math.acos(Math.max(-1, Math.min(1, dot(unit(vec(fs[0].normalAt(m))), unit(vec(fs[1].normalAt(m)))))));
+            if (!(turn > 1e-6)) throw new Error('The faces at an edge meet smoothly: it has no chord to fillet');
+            return s / (2 * Math.sin(turn / 2));
+          };
           const pts = [];
           const found = [];
           const edgeShapes = [];
           const owners = new Set();
           let missing = 0;
+          const sizes = [];
           for (const e of f.edges) {
             const hit = findEdgeInfo(body, e);
             if (!hit) { missing++; continue; }
             updateEdgeRef(e, hit.e, body);
             pts.push(e.p);
-            found.push({ ...e });
+            const size = sizeOf(e, hit.e);
+            found.push({ ...e, value: size });
+            sizes.push(size);
             edgeShapes.push(hit.e);
             owners.add(hit.part);
           }
+          const uneven = sizes.some((s) => Math.abs(s - v) > 1e-12);
           res.features[f.id] = { edges: f.edges };
           if (!pts.length) throw new Error('The selected edges no longer exist — an earlier fillet may already have rounded them (fillets continue along smoothly connected edges)');
           const filter = (fd) => fd.either(pts.map((p) => (x) => x.near(p, 1e-4)));
@@ -4398,6 +4474,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (rec && !whole) { const recs = replaceSolid(rec, shape, f.id); blendPair = { before: rec.shape, after: compoundOf(recs) }; }
             else remapSolids(shape, pts);
           };
+          if (f.type === 'chamfer' && (f.chamferType === 'angleDist' || f.chamferType === 'twoDist') && uneven) throw new Error('Edges of their own size take equal-distance chamfers');
           if (f.type === 'chamfer' && (f.chamferType === 'angleDist' || f.chamferType === 'twoDist')) {
             // distance + angle, or two distances: measured from one of the two faces at each edge
             const x = ev(f.chamferType === 'twoDist' ? f.distance2 : f.angle);
@@ -4413,14 +4490,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           const item = { refs: found, value: v };
           let result = null;
+          // (edges of different sizes: each edge's own, by the edge)
+          const blend = (k) => {
+            if (!uneven) return f.type === 'fillet' ? input.fillet(v * k, filter) : input.chamfer(v * k, filter);
+            const size = (edge) => { const i = edgeShapes.findIndex((x) => x.isSame(edge)); return i < 0 ? null : sizes[i] * k; };
+            return f.type === 'fillet' ? input.fillet(size) : input.chamfer(size);
+          };
           try {
-            result = f.type === 'fillet' ? input.fillet(v, filter) : input.chamfer(v, filter);
+            result = blend(1);
           } catch (e) { if (isFatal(e)) throw e; /* try a combined blend below */ }
           // Blends that exactly meet (e.g. R2 on both edges of a 4 mm wall: a full round) would leave
           // a face of zero width, which the kernel rejects; a hair smaller value gives the same shape.
           for (const shrink of [2e-5, 2e-4, 2e-3]) {
             if (result) break;
-            try { result = f.type === 'fillet' ? input.fillet(v * (1 - shrink), filter) : input.chamfer(v * (1 - shrink), filter); } catch (e) { if (isFatal(e)) throw e; }
+            try { result = blend(1 - shrink); } catch (e) { if (isFatal(e)) throw e; }
           }
           // Edges that end on earlier fillets (e.g. a corner where three blends meet) can't be
           // filleted afterwards. Fallbacks, each computing the corner blend in one kernel call:
@@ -10096,6 +10179,11 @@ async function handleMessage(e) {
     } else if (type === 'exportFaceDXF') {
       result = exportFaceDXF(data.ref);
       transfer = [result.buffer];
+    } else if (type === 'faceEdges') {
+      // (a face's edges, for picking them all at once: their middles and bodies)
+      const hit = findFaceAny(lastSolids, data.ref);
+      if (!hit) throw new Error('The face could not be found');
+      result = hit.face.edges.map((e) => { const r = { p: vec(e.pointAt(0.5)), body: hit.body.id }; updateEdgeRef(r, e, hit.body.shape); return r; });
     } else if (type === 'patchChain') {
       result = patchChainSelection(data);
     } else if (type === 'featureFaces') {
