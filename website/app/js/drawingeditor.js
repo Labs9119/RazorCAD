@@ -722,7 +722,7 @@ export class DrawingEditor {
     let grew = true;
     while (grew) { grew = false; for (const v of this.doc.views) if (v.parent && kill.has(v.parent) && !kill.has(v.id)) { kill.add(v.id); grew = true; } }
     this.doc.views = this.doc.views.filter((v) => !kill.has(v.id));
-    this.doc.anns = this.doc.anns.filter((a) => !kill.has(a.id) && !(a.view && kill.has(a.view)));
+    this.doc.anns = this.doc.anns.filter((a) => !kill.has(a.id) && !(a.view && kill.has(a.view)) && !(a.of && kill.has(a.of)));
     for (const id of kill) { this.geos.delete(id); this.geoKeys.delete(id); }
   }
 
@@ -954,7 +954,7 @@ export class DrawingEditor {
         const p = D.findView(this.doc, t.parent);
         const X = D.viewXform(this.doc, p);
         const q = X.toView(P);
-        const side = t.horizontal ? (q[1] < t.a[1] ? 'neg' : 'pos') : (q[0] < t.a[0] ? 'neg' : 'pos');
+        const side = t.angled ? (((q[0] - t.a[0]) * -Math.sin((t.angle * Math.PI) / 180) + (q[1] - t.a[1]) * Math.cos((t.angle * Math.PI) / 180)) < 0 ? 'neg' : 'pos') : t.horizontal ? (q[1] < t.a[1] ? 'neg' : 'pos') : (q[0] < t.a[0] ? 'neg' : 'pos');
         if (side !== t.side) { t.side = side; this.loadSectionGeom(t, p, side); }
       }
       this.render();
@@ -1000,12 +1000,23 @@ export class DrawingEditor {
     const g = D.viewGeom(this.doc, p, this.geos);
     const b = g?.box || { min: [q[0] - 10, q[1] - 10], max: [q[0] + 10, q[1] + 10] };
     const m = 4 / X.s;
+    if (this.tool.angled) {
+      // (at an angle: through the point, across the whole view)
+      const t = (this.tool.angle * Math.PI) / 180, d = [Math.cos(t), Math.sin(t)];
+      const ts = [[b.min[0], b.min[1]], [b.max[0], b.min[1]], [b.min[0], b.max[1]], [b.max[0], b.max[1]]].map((c) => (c[0] - q[0]) * d[0] + (c[1] - q[1]) * d[1]);
+      const t0 = Math.min(...ts) - m, t1 = Math.max(...ts) + m;
+      return { q, la: [q[0] + d[0] * t0, q[1] + d[1] * t0], lb: [q[0] + d[0] * t1, q[1] + d[1] * t1] };
+    }
     const la = this.tool.horizontal ? [b.min[0] - m, q[1]] : [q[0], b.min[1] - m];
     const lb = this.tool.horizontal ? [b.max[0] + m, q[1]] : [q[0], b.max[1] + m];
     return { q, la, lb };
   }
   sectionSpec(t, side) {
     // the arrows point to where the view is placed
+    if (t.angled) {
+      const a = (t.angle * Math.PI) / 180, k = side === 'pos' ? 1 : -1;
+      return { a: t.la, b: t.lb, arrow: [-Math.sin(a) * k, Math.cos(a) * k], horizontal: Math.abs(Math.cos(a)) >= Math.abs(Math.sin(a)), angle: t.angle, letter: t.letter };
+    }
     const arrow = t.horizontal ? [0, side === 'pos' ? 1 : -1] : [side === 'pos' ? 1 : -1, 0];
     return { a: t.la, b: t.lb, arrow, horizontal: t.horizontal, letter: t.letter };
   }
@@ -1020,6 +1031,7 @@ export class DrawingEditor {
   }
   sectionPlace(p, t, box, P, s) {
     const cx = (box.min[0] + box.max[0]) / 2, cy = (box.min[1] + box.max[1]) / 2;
+    if (t.angled) return { x: P[0] - cx * s, y: P[1] + cy * s };
     if (t.horizontal) return { x: p.x, y: P[1] + cy * s };
     return { x: P[0] - cx * s, y: p.y };
   }
@@ -1638,6 +1650,21 @@ export class DrawingEditor {
     this.app.status(`Bill of materials added (${bomRows(this.doc.models.find((x) => x.id === mid).doc).filter((r) => !r.depth).length} items): drag it where you want it. Right-click it to show the sub-assemblies' parts.`);
   }
 
+  // A hole table for the selected view (else the first part view): its holes tagged, their positions from the view's
+  // lower-left corner, placed at the bottom left of the sheet's frame
+  addHoleTable() {
+    if (this.tool) this.cancelTool(false);
+    const v = [...this.selected].map((id) => D.findView(this.doc, id)).find((x) => x && x.type !== 'detail') || this.doc.views.find((x) => x.sheet === this.sheetId && ['model', 'projected', 'flat'].includes(x.type));
+    if (!v) { this.app.toast('Select the view whose holes go in the table', true); return; }
+    const f = frameRect(this.sheet, this.doc.format);
+    const a = { id: D.newId(this.doc, 'a'), type: 'holetable', sheet: this.sheetId, of: v.id, pos: [f.x0 + 8, f.y0 + 12] };
+    this.doc.anns.push(a);
+    this.changed();
+    const n = D.holeTableRows(this.doc, a, this.geos)?.length || 0;
+    this.app.status(`Hole table added (${n} hole${n === 1 ? '' : 's'} in ${v.name}): drag it where you want it.`);
+    return a;
+  }
+
   // A weldment cut list table for a part of the drawing (the part of the selected view, else the first),
   // placed at the top left of the sheet's frame.
   addCutList() {
@@ -2242,12 +2269,18 @@ export class DrawingEditor {
       if (t.kind === 'section') {
         const c = group('Cutting Line');
         const grid = el('div', { class: 'dw-orients' });
-        for (const [h, label] of [[true, 'Horizontal'], [false, 'Vertical']]) {
-          const b = el('button', { class: 'pm-btn' + (t.horizontal === h ? ' on' : '') }, label);
-          b.onclick = () => { t.horizontal = h; t.a = null; t.geoms = {}; t.side = null; this.renderPM(); this.toolHint(); this.render(); };
+        for (const [h, label] of [[true, 'Horizontal'], [false, 'Vertical'], ['angle', 'At an angle']]) {
+          const on = h === 'angle' ? !!t.angled : !t.angled && t.horizontal === h;
+          const b = el('button', { class: 'pm-btn' + (on ? ' on' : ''), 'data-section-line': String(h) }, label);
+          b.onclick = () => { if (h === 'angle') { t.angled = true; t.angle ??= 45; } else { t.angled = false; t.horizontal = h; } t.a = null; t.geoms = {}; t.side = null; this.renderPM(); this.toolHint(); this.render(); };
           grid.appendChild(b);
         }
         c.appendChild(grid);
+        if (t.angled) {
+          const inp = el('input', { type: 'number', value: t.angle, step: '1', 'data-section-angle': '' });
+          inp.onchange = () => { const x = Number(inp.value); if (Number.isFinite(x)) { t.angle = x; t.a = null; t.geoms = {}; t.side = null; this.toolHint(); this.render(); } };
+          const row = el('label', { class: 'pm-label' }, 'Angle from horizontal (°, counter-clockwise) '); row.appendChild(inp); c.appendChild(row);
+        }
       }
       return;
     }
@@ -2409,6 +2442,7 @@ export class DrawingEditor {
         { icon: 'centerline', label: 'Centerline', action: () => this.startTool('cline'), active: this.tool?.kind === 'cline' },
         { icon: 'revTable', label: 'Revision Table', action: () => this.revisionTable() },
         { icon: 'cutList', label: 'Cut List Table', action: () => this.addCutList() },
+        { icon: 'holeCallout', label: 'Hole Table', action: () => this.addHoleTable() },
         'sep',
         { icon: 'balloon', label: 'Balloon', action: () => this.startTool('balloon'), active: this.tool?.kind === 'balloon' },
         { icon: 'bom', label: 'BOM Table', action: () => this.addBOM() },

@@ -71,7 +71,10 @@ export function verifyPatch(R,shape,entries,reference=null){
     return {contact,angle,curvature};
   }finally{faces.forEach(f=>f.delete());}
 }
-export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.message||String(e),stack=null}={}){
+// interior: { edges: [Edge], points: [[x, y, z]] } the patch must pass through (not boundaries); an entry's reach
+// (G1 edges, mm): the patch also passes through points that far in from the edge along the support's tangent plane,
+// so it keeps to it further before turning. Both go to MakeFilling as constraints and are checked on the result
+export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.message||String(e),stack=null,interior=null}={}){
   const oc=R.getOC();
   if(typeof oc.RazorCADSurfacePatch?.UV!=='function')throw new Error('Patch continuity verification requires the updated kernel; reload RazorCAD');
   for(let i=0;i<entries.length;i++)for(let j=i+1;j<entries.length;j++){
@@ -84,11 +87,38 @@ export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.messag
     }
   }
   const wire=patchBoundary(R,entries);let last='';
+  // (the reach's points: along the support's tangent plane, square to the edge, into the opening)
+  const size=(()=>{const b=wire.boundingBox;try{return Math.hypot(...[0,1,2].map(k=>b.bounds[1][k]-b.bounds[0][k]));}finally{b.delete?.();}})();
+  const reachPoints=[];
+  for(const e of entries){
+    const r=e.reach||0;if(!(r>0))continue;
+    if(e.continuity!=='G1')throw new Error('Tangent reach applies to tangent (G1) edges');
+    for(const t of [1/6,2/6,3/6,4/6,5/6]){
+      const p=read(e.edge.pointAt(t)),d=read(e.edge.tangentAt(t)),n=read(e.support.normalAt(p));
+      let w=[n[1]*d[2]-n[2]*d[1],n[2]*d[0]-n[0]*d[2],n[0]*d[1]-n[1]*d[0]];const l=Math.hypot(...w);w=w.map(x=>x/l);
+      // (into the opening: the side away from the support face)
+      const probe=p.map((x,k)=>x+w[k]*size*1e-3),v=R.makeVertex(probe),q=new R.DistanceQuery(v);
+      try{if(q.distanceTo(e.support)<size*1e-4)w=w.map(x=>-x);}finally{q.delete();v.delete();}
+      reachPoints.push(p.map((x,k)=>x+w[k]*r));
+    }
+  }
+  const throughPoints=[...(interior?.points||[]),...reachPoints],throughEdges=interior?.edges||[],through=throughPoints.length||throughEdges.length;
   const accept=shape=>{
     try{
       const analyzer=new oc.BRepCheck_Analyzer(shape.wrapped,true);
       try{if(!analyzer.IsValid())throw new Error('The patch produced an invalid CAD face');}finally{analyzer.delete();}
-      return {shape,...verifyPatch(R,shape,entries)};
+      const quality=verifyPatch(R,shape,entries);
+      if(through){
+        // (every point, and points along every curve, on the patch to 0.0001 mm)
+        const q=new R.DistanceQuery(shape);let worst=0;
+        try{
+          for(const p of throughPoints){const v=R.makeVertex(p);try{worst=Math.max(worst,q.distanceTo(v));}finally{v.delete();}}
+          for(const e of throughEdges)for(let k=0;k<=16;k++){const v=R.makeVertex(read(e.pointAt(k/16)));try{worst=Math.max(worst,q.distanceTo(v));}finally{v.delete();}}
+        }finally{q.delete();}
+        if(!(worst<=1e-4))throw new Error(`The patch passes ${worst.toExponential(2)} mm from a point or curve it must pass through`);
+        quality.through=worst;
+      }
+      return {shape,...quality};
     }catch(e){shape.delete();throw e;}
   };
   const attempt=fn=>{
@@ -98,7 +128,7 @@ export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.messag
   try{
     // A circular opening in a spherical support has an exact continuation.
     // Keep its CAD surface instead of approximating it with a plate.
-    if(entries.length===1&&entries[0].continuity!=='G0'&&entries[0].support.geomType==='SPHERE'){
+    if(!through&&entries.length===1&&entries[0].continuity!=='G0'&&entries[0].support.geomType==='SPHERE'){
       const result=attempt(()=>{
         const {edge,support}=entries[0],sample=t=>{const p=oc.RazorCADSurfacePatch.UV(edge.wrapped,support.wrapped,t);try{return p.Y();}finally{p.delete();}};
         const v=sample(.13),bounds=support.UVBounds;
@@ -115,7 +145,7 @@ export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.messag
       });
       if(result)return result;
     }
-    if(entries.length>=3&&oc.RazorCADSurfacePatch?.Build){
+    if(!through&&entries.length>=3&&oc.RazorCADSurfacePatch?.Build){
       const order=entries.some(e=>e.continuity==='G2')?2:entries.some(e=>e.continuity==='G1')?1:0;
       const references=R.makeCompound([...new Set(entries.filter(e=>e.continuity!=='G0').map(e=>e.support))].map(face=>face.clone()));
       try{
@@ -130,8 +160,10 @@ export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.messag
     }
     // Mixed per-edge conditions are supported directly by MakeFilling. A failed
     // G1/G2 request remains an error, never a contact-only replacement.
+    // (with curves or points inside: finer sampling of the constraints until the patch passes within 0.0001 mm)
+    for(const [points,iterations,segments,tol3d] of through?[[33,3,16,1e-5],[33,3,64,1e-6],[65,4,64,1e-7],[129,6,128,1e-7]]:[[33,3,16,1e-5]]){
     const result=attempt(()=>{
-      const mk=new oc.BRepOffsetAPI_MakeFilling(3,33,3,false,1e-6,1e-5,1e-4,1e-4,12,16);
+      const mk=new oc.BRepOffsetAPI_MakeFilling(3,points,iterations,false,1e-6,tol3d,1e-4,1e-4,12,segments);
       try{
         for(const {edge,support,continuity} of entries){
           if(continuity==='G0')mk.Add(edge.wrapped,oc.GeomAbs_Shape.GeomAbs_C0,true);
@@ -143,11 +175,15 @@ export function buildSurfacePatch(R,entries,{fatal=()=>false,message=e=>e.messag
             mk.Add(edge.wrapped,support.wrapped,order,true);
           }
         }
+        // (curves and points inside the opening the patch passes through)
+        for(const e of throughEdges)mk.Add(e.wrapped,oc.GeomAbs_Shape.GeomAbs_C0,false);
+        for(const p of throughPoints){const g=new oc.gp_Pnt(...p);try{mk.Add(g);}finally{g.delete();}}
         mk.Build();if(!mk.IsDone())throw new Error('The patch constraints did not converge');
         return accept(R.cast(mk.Shape()));
       }finally{mk.delete();}
     });
     if(result)return result;
+    }
     throw new Error(`Patch continuity could not be satisfied: ${last}`);
   }finally{wire.delete();}
 }

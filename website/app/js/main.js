@@ -1987,7 +1987,7 @@ class App {
   activateSweepSlot(slot) {
     const pm=this.pm;
     if(pm.loftDraft?.curves.length&&pm.sweepSlot!==slot){this.toast('Add or clear the current contour before switching sweep roles',true);return false;}
-    pm.sweepSlot=slot;pm.sweepCanvas=true;pm.scopePick=false;pm.loftHover=null;
+    pm.sweepSlot=slot;pm.sweepCanvas=true;pm.scopePick=false;pm.planarEdges=false;pm.sweepSupportPick=false;pm.loftHover=null;
     this.ui.renderPM();this.updateSketchDisplay();return true;
   }
 
@@ -2053,6 +2053,14 @@ class App {
     }
     let target=null,distance=12;
     for(const point of options.points){const p=G.toWorld(source.frame,point.x,point.y),screen=this.viewport.project(p),d=Math.hypot(screen.x-m.x,screen.y-m.y);if(d<distance){target={point,p:p.toArray()};distance=d;}}
+    if(!target&&options.curves.length){
+      // (inside a curve: the profile gains a point there, its start)
+      const hit=this.viewport.aimRay(e).ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(source.frame.n,source.frame.o),new THREE.Vector3());if(!hit)return null;
+      const q=G.toLocal(source.frame,hit),near=LC.nearestCurvePoint2D(options.segs,options.curves,[q.x,q.y]);if(!near)return null;
+      const p=G.toWorld(source.frame,near.q[0],near.q[1]),screen=this.viewport.project(p);if(Math.hypot(screen.x-m.x,screen.y-m.y)>12)return null;
+      const next={...control,curve:near.curve,at:+near.at.toFixed(4)};delete next.point;delete next.circle;delete next.angle;
+      return {ref,control:next,p:p.toArray(),points:null};
+    }
     if(!target)return null;
     let point=target.point,points=row?.points;
     if(row){
@@ -2061,7 +2069,7 @@ class App {
       point=options.points.find(p=>G.toWorld(source.frame,p.x,p.y).distanceTo(new THREE.Vector3(...start))<1e-5);if(!point)return null;
       points=[...row.points.slice(shift),...row.points.slice(0,shift)];
     }else if(pick.connector)return null;
-    const next={...control,point:point.id};delete next.circle;delete next.angle;if(!options.closed)next.reverse=false;
+    const next={...control,point:point.id};delete next.circle;delete next.angle;delete next.curve;delete next.at;if(!options.closed)next.reverse=false;
     return {ref,control:next,p:target.p,points};
   }
 
@@ -2097,7 +2105,7 @@ class App {
     return true;
   }
 
-  loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false)); }
+  loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false && !this.pm.planarEdges)); }
 
   loftCandidates() {
     if (!this.loftPicking()) return [];
@@ -2201,6 +2209,7 @@ class App {
   loftClick(e) {
     try {
       const ref = this.pickLoftContour(e);
+      if (!ref && this.faceProfilePicking()) { const fh = this.faceAt(e); if (fh) return this.addFaceProfile(fh); }
       if (!ref) { this.status('Click a sketch contour, or inside a closed profile.'); return; }
       const chain=this.sweepPicking()?this.pm.feature.selectionChains?.[this.pm.sweepSlot||'profile']!==false:this.pm.loftChain!==false;
       if (chain) return this.addLoftContour(ref);
@@ -2214,6 +2223,42 @@ class App {
     } catch (e) { this.toast(e.message, true); }
   }
 
+  // A fillet's or chamfer's edges: all of a clicked face's added (removed when they are all in already)
+  async addFaceEdges(fh) {
+    const f = this.pm.feature, pm = this.pm, body = this.result.bodies?.[this.viewport.faceBody[fh.hit.face]]?.id, face = this.viewport.faceInfo(fh.hit.face);
+    try {
+      const refs = await this.kernel.request('faceEdges', { ref: { p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) } });
+      if (this.pm !== pm) return;
+      const same = (a, b) => Math.hypot(...a.p.map((x, k) => x - b.p[k])) < 1e-4;
+      f.edges ||= [];
+      const all = refs.every((r) => f.edges.some((e) => same(e, r)));
+      if (all) f.edges = f.edges.filter((e) => !refs.some((r) => same(e, r)));
+      else for (const r of refs) if (!f.edges.some((e) => same(e, r))) f.edges.push(r);
+      this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
+      this.status(`${refs.length} edge${refs.length === 1 ? '' : 's'} ${all ? 'removed' : 'added'}.`);
+    } catch (e) { if (this.pm === pm) this.toast(e.message, true); }
+  }
+
+  // Extrude and Revolve take flat model faces as profiles too (where no sketch profile is clicked)
+  faceProfilePicking() {
+    const f = this.pm?.feature;
+    return !!f && ['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
+  }
+
+  // A flat model face added as a profile, or removed when it is picked again
+  addFaceProfile(fh) {
+    const f = this.pm.feature, vp = this.viewport, face = vp.faceInfo(fh.hit.face);
+    if (!face.planar) { this.toast('Click a flat face of the model, or a sketch profile', true); return; }
+    const body = this.result.bodies?.[vp.faceBody[fh.hit.face]]?.id;
+    f.profiles ||= [];
+    const i = f.profiles.findIndex((q) => q?.kind === 'modelFace' && vp.faceIndexNear(q.p) === fh.hit.face);
+    if (i >= 0) f.profiles.splice(i, 1);
+    else { f.profiles.push({ kind: 'modelFace', p: fh.hit.point.toArray(), n: face.normal.toArray(), ...(body ? { body } : {}) }); f.thin = false; }
+    this.pm.loftDraft = null; this.pm.loftHover = null;
+    this.preview(true); this.updateSketchDisplay(); this.updateEdgeHighlights();
+    this.status(i >= 0 ? 'Face profile removed.' : `Profile ${f.profiles.length} selected (a model face).`);
+  }
+
   pickMode() {
     if (this.pm?.kind === 'measure') return 'measure';
     if (this.pm?.kind === 'section') return 'section';
@@ -2221,10 +2266,13 @@ class App {
     if (!f) return null;
     if(['loft','surfLoft'].includes(f.type)&&this.pm.loftConnector&&!this.pm.loftEndSlot)return 'loftConnector';
     if(this.pm.scopePick&&['extrude','revolve','sweep'].includes(f.type)&&['cut','intersect'].includes(f.op)&&f.scopeAll===false)return 'body';
-    if (f.type === 'surfPlanar' && this.pm.planarEdges) return 'edge';
+    if (['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) return 'edge';
+    if (['sweep', 'surfSweep'].includes(f.type) && this.pm.sweepSupportPick) return 'faces';
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
+    if (f.type === 'hole' && this.pm.holeEndPick && f.end === 'upToVertex') return 'vertex';
+    if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
     if (f.type === 'shell' || f.type === 'surfOffset' || f.type === 'surfCopy' || f.type === 'hole' || f.type === 'smClosedCorner' || f.type === 'smCrossBreak' || f.type === 'smGusset' || (f.type === 'smForm' && f.formType !== 'louver')) return 'faces';
     const scoped = (f.type === 'extrude' || f.type === 'revolve') && (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false;
     if (f.type === 'deleteBody' || f.type === 'deleteSurface') return 'body';
@@ -2242,12 +2290,16 @@ class App {
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
+    if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
+    if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToSurface') return 'face';
     if (f.type === 'revolve' && scoped) return 'body';
     if (f.type === 'revolve' || f.type === 'surfRevolve') return 'revaxis';
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot) return 'entity';
     if (f.type === 'split' && !f.tool) return 'face';
     if (['combine', 'knit', 'surfSolid', 'meshRepair', 'thicken', 'moveBody', 'split'].includes(f.type)) return 'body';
-    if (f.type === 'fillet' && f.filletType === 'face') return 'faces';
+    if (f.type === 'fillet' && ['face', 'fullRound'].includes(f.filletType)) return 'faces';
+    if (f.type === 'chamfer' && f.chamferType === 'vertex') return 'vertex';
+    if ((f.type === 'fillet' || f.type === 'chamfer') && this.pm.faceEdgesPick) return 'faces';
     if (f.type === 'fillet' || f.type === 'chamfer') return 'edge';
     if (f.type === 'draft') return f.face ? 'faces' : 'flatface'; // (the neutral plane first, then the faces)
     if (f.type === 'dome') return 'faces';
@@ -2255,11 +2307,11 @@ class App {
     if (f.type === 'weldTrim' || f.type === 'weldBead') return 'body';
     if (f.type === 'endCap' || f.type === 'weldGusset') return 'faces';
     if (f.type === 'moveFace') return f.mode === 'rotate' && f.faces?.length && !f.edge ? 'edge' : 'faces';
-    if(f.type==='extrude'&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start')return 'face';
+    if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start')return 'face';
     if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&f.end2==='upToVertex')return 'vertex';
     if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&['upToSurface','offsetSurface'].includes(f.end2))return 'face';
-    if (f.type === 'extrude' && f.end === 'upToVertex') return 'vertex';
-    if (f.type === 'extrude' && (f.end === 'upToSurface' || f.end === 'offsetSurface')) return 'face';
+    if (['extrude', 'surfExtrude'].includes(f.type) && f.end === 'upToVertex') return 'vertex';
+    if (['extrude', 'surfExtrude'].includes(f.type) && (f.end === 'upToSurface' || f.end === 'offsetSurface')) return 'face';
     if (scoped) return 'body';
     if (f.type === 'axis' && f.axisType === 'edge') return 'edge';
     if (f.type === 'point' && f.pointType === 'vertex') return 'vertex';
@@ -2311,20 +2363,21 @@ class App {
       return;
     }
     if (mode === 'edge') {
-      if (['surfFill','surfPlanar'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
-      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
+      if (['surfFill','surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
+      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || (['surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
         const i = f.edges.findIndex((x) => this.viewport.edgeIndexForPoint(x.p) === hit.index);
         if (i >= 0) f.edges.splice(i, 1);
-        else f.edges.push({ p: hit.edge.mid, ...(f.type === 'surfPlanar' ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) });
+        else { f.edges ||= []; f.edges.push({ p: hit.edge.mid, ...(['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) }); }
       } else f.edge = { p: hit.edge.mid };
     } else if (mode === 'vertex') {
       if (f.type === 'extrude' && this.pm.extrudeSurfaceSlot === 'end2' && f.side2) { f.toVertex2 = { p: hit.point.toArray() }; f.toPoint2 = null; }
-      else if (f.type === 'extrude') { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
+      else if (['extrude', 'surfExtrude', 'revolve', 'surfRevolve', 'hole'].includes(f.type)) { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
       else if (f.type === 'sketch3d') { const q = hit.point.toArray().map((x) => +x.toFixed(6)); (f.pts ||= []).push({ x: q[0], y: q[1], z: q[2] }); }
+      else if (f.type === 'chamfer' && f.chamferType === 'vertex') { const p = hit.point.toArray(), L = (f.vertices ||= []), i = L.findIndex((v) => Math.hypot(...v.p.map((x, k) => x - p[k])) < 1e-4); if (i >= 0) L.splice(i, 1); else L.push({ p }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
       if (f.type === 'split') f.toolFace = { p: hit.p, n: hit.n };
-      else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
+      else if(['extrude','surfExtrude'].includes(f.type)&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
       else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='end2'&&f.side2){f.toFace2={p:hit.p,n:hit.n};f.toPlane2=null;}
       else { f.toFace = { p: hit.p, n: hit.n }; f.toPlane = null; }
     }
@@ -2415,7 +2468,8 @@ class App {
       vp.setVertexMarkers(pts?.length ? { selected: pts, hover: this._fpDrag ? pts[this._fpDrag.i] ?? null : null } : null);
     } else if (mode === 'vertex') {
       const two = f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2';
-      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : f.type === 'sketch3d' ? null : f.vertex;
+      if (f.type === 'chamfer' && f.chamferType === 'vertex') { vp.setVertexMarkers({ selected: (f.vertices || []).map((v) => v.p), hover: this.hoverVertex ?? null }); return; }
+      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : ['surfExtrude', 'revolve', 'surfRevolve', 'hole'].includes(f.type) ? f.toVertex : f.type === 'sketch3d' ? null : f.vertex;
       vp.setVertexMarkers({ selected: ref && !(two ? f.toPoint2 : f.toPoint) ? ref.p : null, hover: this.hoverVertex ?? null });
     }
   }
@@ -2438,11 +2492,14 @@ class App {
       }
     }
     if (f) {
-      if(f.type==='extrude'&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
+      if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
+      if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
+      if (['sweep', 'surfSweep'].includes(f.type) && f.orientation === 'surface') faceRefs.push(...(f.supportFaces || []));
+      if (f.type === 'shell') faceRefs.push(...(f.thickFaces || []));
       for (const r of faceRefs) { const i = vp.faceIndexNear(r.p); if (i >= 0) infos.push(vp.faceInfo(i)); }
       const ids = [...(f.bodies || []), f.main, f.body, ...(f.scopeAll === false ? f.scope || [] : [])].filter(Boolean);
       for (const id of new Set(ids)) { const bi = vp.bodyIndexOf(id); if (bi >= 0) infos.push(vp.bodyInfo(bi)); }
@@ -2975,13 +3032,17 @@ class App {
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';
-      else if(f.type==='extrude'&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start'){key='startPlane';f.startFace=null;}
+      else if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start'){key='startPlane';f.startFace=null;}
       else if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&['upToSurface','offsetSurface'].includes(f.end2)){key='toPlane2';f.toFace2=null;}
-      else if (f.type === 'extrude' && (f.end === 'upToSurface' || f.end === 'offsetSurface')) { key = 'toPlane'; f.toFace = null; }
+      else if (['extrude', 'surfExtrude'].includes(f.type) && (f.end === 'upToSurface' || f.end === 'offsetSurface')) { key = 'toPlane'; f.toFace = null; }
+      else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && this.pm.revolveEndPick) { key = 'toPlane'; f.toFace = null; }
+      else if (f.type === 'hole' && ['upToSurface', 'offsetSurface'].includes(f.end)) { key = 'toPlane'; f.toFace = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPlanes') key = slot('planeA', 'planeB');
     } else if (kind === 'point') {
       if (f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2' && f.end2 === 'upToVertex') { key = 'toPoint2'; f.toVertex2 = null; }
-      else if (f.type === 'extrude' && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
+      else if (['extrude', 'surfExtrude'].includes(f.type) && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
+      else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToVertex' && this.pm.revolveEndPick) { key = 'toPoint'; f.toVertex = null; }
+      else if (f.type === 'hole' && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPoints') key = slot('pointA', 'pointB');
     } else if (kind === 'axis') {
       if (['cpattern','revolve','surfRevolve'].includes(f.type)) { key = 'axis'; if(['revolve','surfRevolve'].includes(f.type))this.pm.profilePick=false; }
@@ -3233,12 +3294,13 @@ class App {
       }
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
-      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : f.type === 'surfFill' ? 'supportFaces' : 'faces';
+      if (['fillet', 'chamfer'].includes(f.type) && this.pm.faceEdgesPick) { this.addFaceEdges(fh); return; }
+      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
-      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}) });
+      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
       this.ui.renderPM();
       this.updateEdgeHighlights();
       this.preview();

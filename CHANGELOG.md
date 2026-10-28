@@ -6,6 +6,35 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-28 20:48 — Face profiles, Revolve Up To, Surface Extrude ends and draft, Sweep scale, Loft and Patch by hand; Fillet, Shell, Hole, Pattern, sheet metal, mate and drawing options
+- **Extrude / Revolve**: a flat model face can be a profile (holes and all, no sketch needed); the second side
+  (or Two sides' second depth) can have a draft of its own; Revolve goes **Up To Vertex** or **Up To Surface** (a
+  plane through the axis exactly, any other plane or face trimming the revolution).
+- **Surface Extrude**: starts from an offset or a plane / face, ends up to a vertex or surface or offset from it
+  (angled ones trim it), extrudes along an axis of its own, drafts closed contours, and takes model edges (open or
+  closed chains) and flat faces as contours; **Surface Revolve** takes model edges and faces, and goes up to a vertex
+  or a plane through its axis.
+- **Sweep**: the profile scaled along the path to an end scale (evenly or eased, by the length along the path:
+  checked to 1e-7 along a line and an arc, and on an unevenly parameterised spline), an eased twist, the profile
+  kept square to faces the path runs on, and model edges as the path.
+- **Loft**: a connector inside a curve (the profile gains a point there: a triangle lofted to a square without
+  splitting the sketch), holes paired and started by hand, Thin lofts with connectors, CAD guide constraints with
+  holes.
+- **Filled Surface**: curves and points inside the opening it passes through (checked to 0.0001 mm), and a tangent
+  reach for G1 edges.
+- **Fillet / Chamfer**: full round, size by chord width, a size of its own for any edge, a face's edges in one
+  click, vertex chamfers. **Shell**: walls of their own thickness, hollow bodies (no faces removed).
+- **Hole**: up to next / vertex / surface and offset ends, a drill point angle, far-side countersinks, holes on
+  curved faces (square to them), slots. **Patterns**: a total length, symmetric copies, the second direction for the
+  feature only, instances to skip, circular rings.
+- **Sheet metal**: bend allowance or bend deduction (for a 90° bend) as well as the K-factor; edge flanges along
+  part of their edge (a width in the middle, or offsets from its ends).
+- **Assemblies**: width, symmetric and screw mates; distance and angle mates with limits (free between a minimum
+  and a maximum, held exactly at the one dragged past).
+- **Drawings**: a hole table (tags, positions from the view's lower-left corner, sizes), section lines at an angle.
+- 13 new tests: 143 kernel cases, each against exact or integrated geometry, 8 mate solver cases and the drawing's
+  hole table and angled section, with the panels of each.
+
 ## 2026-10-28 16:43 — Extrude: a second side with its own end, drafts to and from angled planes, and Intersect
 - **Second Side**: an extrusion with a one-sided end can go the other way from its start as well, to an end of its
   own (Blind, Through All, Up To Vertex, Up To Surface or Offset From Surface, with its own picker). It always goes

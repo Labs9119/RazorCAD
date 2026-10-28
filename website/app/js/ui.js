@@ -209,6 +209,8 @@ const isSurfEnd = (f) => f.end === 'upToSurface' || f.end === 'offsetSurface';
 // An extrusion's second side: offered with a one-sided end condition
 const hasSide2 = (f) => ['blind', 'through', 'upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end || 'blind');
 const side2On = (f) => !!f.side2 && hasSide2(f);
+// ... and a draft of its own for it (or for Two sides' second depth)
+const hasDraft2 = (f) => side2On(f) || f.end === 'twoSides';
 // The picked model face or vertex a reference field stands for, and the pick slot it fills
 const REF_PICKED = { startPlane: 'startFace', toPlane: 'toFace', toPlane2: 'toFace2', toPoint: 'toVertex', toPoint2: 'toVertex2' };
 const REF_SLOT = { startPlane: 'start', toPlane: 'end', toPoint: 'end', toPlane2: 'end2', toPoint2: 'end2' };
@@ -258,13 +260,30 @@ const REVOLUTION_AXIS = {title:'Axis of Revolution',fields:[
   {key:'axisPick',type:'axisPick'},
   {key:'projectAxis',type:'check',label:'Project axis into profile plane'},
 ]};
+// (a revolve up to a vertex or a surface: kernel.worker.js revolveExtent)
+const revUpTo=f=>['upToVertex','upToSurface'].includes(f.extent),revAngle=f=>f.extent!=='full'&&!revUpTo(f);
 const REVOLUTION_DIRECTIONS = {title:'Revolution',fields:[
-  {key:'extent',type:'select',label:'Extent',options:[['full','Full (360°)'],['angle','Angle']]},
-  {key:'end',type:'select',label:'Direction',show:f=>f.extent!=='full',options:[['oneway','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
-  {key:'angle',type:'expr',label:'Angle',unit:'°',show:f=>f.extent!=='full'},
-  {key:'angle2',type:'expr',label:'Second angle',unit:'°',default:0,show:f=>f.extent!=='full'&&f.end==='twoSides'},
-  {key:'reverse',type:'check',label:'Reverse direction',show:f=>f.extent!=='full'&&f.end!=='midplane'},
+  {key:'extent',type:'select',label:'Extent',options:[['full','Full (360°)'],['angle','Angle'],['upToVertex','Up To Vertex'],['upToSurface','Up To Surface']]},
+  {key:'end',type:'select',label:'Direction',show:revAngle,options:[['oneway','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
+  {key:'angle',type:'expr',label:'Angle',unit:'°',show:revAngle},
+  {key:'angle2',type:'expr',label:'Second angle',unit:'°',default:0,show:f=>revAngle(f)&&f.end==='twoSides'},
+  {key:'toPoint',type:'pointRef',label:'Vertex',show:f=>f.extent==='upToVertex'},
+  {key:'toPlane',type:'surfaceRef',label:'Surface',show:f=>f.extent==='upToSurface'},
+  {key:'reverse',type:'check',label:'Reverse direction',show:f=>revUpTo(f)||revAngle(f)&&f.end!=='midplane'},
 ]};
+// (a sweep's orientation, its twist and the profile's scale along the path: kernel.worker.js sweepOptions)
+const twisted = (f) => !f.guide && (f.orientation || 'perpendicular') === 'perpendicular';
+const SWEEP_SHAPE = [
+  { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile'], ['surface', 'Square to faces it runs on']] },
+  { key: 'supportFaces', type: 'faceList', sweepSupport: true, show: (f) => !f.guide && f.orientation === 'surface', hint: 'Select the faces the path runs on: the profile keeps square to them all along it (its plane through their normal).' },
+  { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: twisted },
+  { key: 'twistLaw', type: 'select', label: 'Twist', default: 'linear', show: (f) => twisted(f) && !!f.twistAngle && String(f.twistAngle).trim() !== '0', options: [['linear', 'Evenly along the path'], ['smooth', 'Eased in and out']] },
+  { key: 'twistHint', type: 'hint', show: twisted, text: 'Total rotation distributed by distance along the path (evenly, or slowly at both ends). Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+  { key: 'scaleEnd', type: 'expr', default: 1, label: 'End scale', unit: '×', show: (f) => !f.guide },
+  { key: 'scaleLaw', type: 'select', label: 'Scale', default: 'linear', show: (f) => !f.guide && f.scaleEnd != null && String(f.scaleEnd).trim() !== '1', options: [['linear', 'Evenly along the path'], ['smooth', 'Eased in and out']] },
+  { key: 'scaleHint', type: 'hint', show: (f) => !f.guide && f.scaleEnd != null && String(f.scaleEnd).trim() !== '1', text: 'The profile grows or shrinks about the path, by the length along it, from its own size at the start to End scale times it at the end.' },
+];
+const SWEEP_EDGES = { title: 'Path from Model Edges', fields: [{ key: 'edges', type: 'edges' }] };
 const THIN_GROUP = {
   title: 'Thin Feature', fields: [
     { key: 'thin', type: 'check', label: 'Thin feature (a wall along the sketch curves)' },
@@ -290,6 +309,11 @@ const SM_GAUGE = { key: 'gauge', type: 'gauge' };
 const SM_BODY = { title: 'Sheet Metal Body', fields: [{ key: 'body', type: 'bodySel', label: 'Body', kinds: ['sheet'] }] };
 // What a pattern copies: its feature and more features; model: 'pick' (faces or bodies clicked on the model, or
 // ticked), 'list' (bodies ticked in the list or clicked), 'none' (features only)
+// Instances to leave out of a pattern, by number (1 is the feature)
+const PATTERN_SKIP_GROUP = (two) => ({ title: 'Instances to Skip', fields: [
+  { key: 'skip', type: 'text', label: 'Skip', placeholder: '3, 5', optional: true },
+  { key: 'skHint', type: 'hint', text: (f) => (two(f) ? 'Instance numbers to leave out, as row.column: 3.2 is the 3rd along the first direction (or round), 2nd along the second (or ring); 1 is the feature, -2 the first the other way.' : 'Instance numbers to leave out, separated by commas: 1 is the feature, 2 the first copy, -2 the first the other way.') },
+] });
 const patternSources = (title, model = 'pick') => ({ title, fields: [
   { key: 'feature', type: 'feature', label: 'Feature' },
   { key: 'features', type: 'featureList', label: 'More features' },
@@ -299,9 +323,17 @@ const patternSources = (title, model = 'pick') => ({ title, fields: [
   ] : []),
   ...(model !== 'none' ? [{ key: 'bodies', type: 'bodyList', kinds: ['solid', 'surface'], show: (f) => model === 'list' || f.pick === 'bodies', hint: 'Bodies copied whole to every place, as new bodies. Click them on the model or tick them here.' }] : []),
 ] });
+// (how a bend's flat length is worked out: kernel.worker.js sheetKFactor)
+const SM_BEND_CALC = [
+  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)']] },
+  { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '', show: (f) => (f.bendCalc || 'k') === 'k' },
+  { key: 'bendAllowance', type: 'expr', label: 'Bend allowance', unit: 'mm', default: 4.2, show: (f) => f.bendCalc === 'ba' },
+  { key: 'bendDeduction', type: 'expr', label: 'Bend deduction', unit: 'mm', default: 3.8, show: (f) => f.bendCalc === 'bd' },
+  { key: 'bcHint', type: 'hint', show: (f) => ['ba', 'bd'].includes(f.bendCalc), text: 'For a 90° bend at this radius and thickness (from your bend table): the length the bend takes flat (allowance), or how much shorter the flat is than the two outside lengths to the sharp (deduction). Other angles follow in proportion.' },
+];
 const SM_PARAMS = [
   { key: 'radius', type: 'expr', label: 'Bend radius (inside)', unit: 'mm' },
-  { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+  ...SM_BEND_CALC,
   { key: 'kHint', type: 'hint', text: 'The K-factor is where the neutral (unstretched) layer lies in the thickness: 0.5 is the middle. It sets how much material a bend takes when flattened; 0.3–0.45 is typical for steel bent on a press brake.' },
 ];
 
@@ -367,7 +399,7 @@ const PM_SCHEMAS = {
       title: 'Sheet Metal Parameters', fields: [
         { key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' },
         { key: 'flip', type: 'check', label: 'Material on the other side' },
-        { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+        ...SM_BEND_CALC,
       ],
     },
   ],
@@ -499,7 +531,7 @@ const PM_SCHEMAS = {
       { key: 'side', type: 'select', label: 'Material', options: (f, a) => (smCircle(f, a) ? [['one', 'Inside the circle'], ['other', 'Outside the circle'], ['mid', 'Both sides (the circle in the middle)']] : [['one', 'One side of the sketch'], ['other', 'Other side of the sketch'], ['mid', 'Both sides (the sketch in the middle)']]) },
       { key: 'radius', type: 'expr', label: 'Bend radius (inside, at sharp corners)', unit: 'mm', show: (f, a) => !smCircle(f, a) },
       { key: 'seamGap', type: 'expr', label: 'Seam gap', unit: 'mm', show: (f, a) => smCircle(f, a) },
-      { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+      ...SM_BEND_CALC,
     ] },
   ],
   smTransition: [
@@ -535,7 +567,7 @@ const PM_SCHEMAS = {
       SM_GAUGE,
       { key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' },
       { key: 'dims', type: 'select', label: 'Sizes are', options: [['inside', 'Inside sizes (material outward)'], ['outside', 'Outside sizes (material inward)'], ['mean', 'Mean (middle of the thickness)']] },
-      { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+      ...SM_BEND_CALC,
     ] },
   ],
   smHem: [
@@ -562,6 +594,15 @@ const PM_SCHEMAS = {
       title: 'Flange Length', fields: [
         { key: 'length', type: 'expr', label: 'Length', unit: 'mm' },
         { key: 'lengthRef', type: 'select', label: 'Measured to', options: [['outer', 'Outer virtual sharp'], ['inner', 'Inner virtual sharp'], ['tangent', 'Tangent (end of the bend)']] },
+      ],
+    },
+    {
+      title: 'Flange Width', fields: [
+        { key: 'widthType', type: 'select', label: 'Along the edge', default: 'full', options: [['full', 'The whole edge'], ['offsets', 'Offsets from its ends'], ['centered', 'A width in its middle']] },
+        { key: 'startOffset', type: 'expr', label: 'From the start', unit: 'mm', default: 0, show: (f) => f.widthType === 'offsets' },
+        { key: 'endOffset', type: 'expr', label: 'From the end', unit: 'mm', default: 0, show: (f) => f.widthType === 'offsets' },
+        { key: 'swapEnds', type: 'check', label: 'Swap the ends', show: (f) => f.widthType === 'offsets' },
+        { key: 'flangeWidth', type: 'expr', label: 'Width', unit: 'mm', default: 20, show: (f) => f.widthType === 'centered' },
       ],
     },
     {
@@ -649,7 +690,7 @@ const PM_SCHEMAS = {
         { key: 'radius', type: 'expr', unit: 'mm',
           label: (f, a) => (f.autoRadius === false ? 'Bend radius (inside, every bend)' : convertDet(f, a)?.kind === 'surface' ? 'Bend radius (inside)' : 'Bend radius for sharp edges (inside)'),
           show: (f, a) => { const d = convertDet(f, a); return f.autoRadius === false || !d || (d.kind === 'surface' && !d.curved) || d.sharp > 0; } },
-        ...SM_PARAMS.filter((x) => x.key !== 'radius'),
+        ...SM_PARAMS.filter((x) => !['radius', 'bendCalc', 'bendAllowance', 'bendDeduction', 'bcHint'].includes(x.key)),
       ],
     },
   ],
@@ -661,14 +702,13 @@ const PM_SCHEMAS = {
         { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.profileType === 'circle' },
         { key: 'path', type: 'sweepSelection', label: 'Path' },
         { key: 'guide', type: 'sweepSelection', label: 'Guide (optional)', optional: true },
-        { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile']] },
-        { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: (f) => !f.guide && f.orientation !== 'parallel' },
-        { key: 'twistHint', type: 'hint', show: (f) => !f.guide && f.orientation !== 'parallel', text: 'Total rotation distributed by distance along the path. Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+        ...SWEEP_SHAPE,
         { key: 'guideMode', type: 'select', label: 'Guide controls', show: (f) => !!f.guide, options: [['orientation', 'Orientation — keep profile size'], ['contact', 'Section size — keep guide on boundary']] },
         { key: 'guideHint', type: 'hint', show: (f) => !!f.guide, text: 'Use one closed profile without holes or Thin, with an open path and guide. Both curves must span the same normal sections. Orientation keeps the profile size; the guide need not touch its boundary. Section size uniformly scales the profile; the guide must start on its boundary. Contact is checked to 0.0001 mm.' },
         { key: 'sweepHint', type: 'hint', text: 'The path is a sketch (one chain of lines and arcs) or a helix. A sketch profile should sit at the start of the path, across it. For a spring: a helix path and a circular profile.' },
       ],
     },
+    SWEEP_EDGES,
     { title: 'Operation', fields: [{ key: 'operation', type: 'solidOperation' }] },
     { ...THIN_GROUP, fields: THIN_GROUP.fields.map((x) => ({ ...x, show: (f) => f.profileType !== 'circle' && (!x.show || x.show(f)) })) },
     ...SCOPE_GROUP,
@@ -681,7 +721,7 @@ const PM_SCHEMAS = {
       { key: 'guides', type: 'loftSelection', show: (f) => !f.ruled || f.guides?.length },
       { key: 'guideMethod', type: 'select', label: 'Guide construction', show: (f) => f.guides?.length && !f.ruled, options: (f) => [['adaptive', 'Adaptive approximation'], ['constrained', [f.startCondition, f.endCondition].some(x => x && x !== 'none') ? 'CAD constraints (requires free endpoints)' : 'CAD constraints (two profiles)']] },
       { key: 'guideContinuity', type: 'select', label: 'Across guide seams', show: (f) => f.guides?.length && f.guideMethod === 'constrained' && !f.ruled, options: [['C0', 'C0 — Contact'], ['G1', 'G1 — Tangent'], ['G2', 'G2 — Curvature']] },
-      { key: 'guideMethodHint', type: 'hint', show: (f) => f.guides?.length && f.guideMethod === 'constrained', text: 'Native guide edges constrain the CAD patches to 0.0001 mm. Requires two profiles without holes or Thin Feature. Across guide seams controls the joins along shared guides; original profile corners are not smoothed. Incompatible constraints report an error without lowering continuity.' },
+      { key: 'guideMethodHint', type: 'hint', show: (f) => f.guides?.length && f.guideMethod === 'constrained', text: 'Native guide edges constrain the CAD patches to 0.0001 mm. Requires two profiles without Thin Feature; holes are lofted straight between the profiles, without the guides. Across guide seams controls the joins along shared guides; original profile corners are not smoothed. Incompatible constraints report an error without lowering continuity.' },
     ] },
     { title: 'Options', fields: [
       { key: 'ruled', type: 'check', label: 'Straight (ruled) sides between profiles' },
@@ -694,13 +734,15 @@ const PM_SCHEMAS = {
   ],
   hole: [
     { title: 'Hole Type', fields: [
-      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole']] },
+      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['slot', 'Slot']] },
       { key: 'system', type: 'select', label: 'Standard', options: [['metric', 'ISO metric'], ['imperial', 'Unified (inch)']], show: (f) => f.holeType === 'tapped' },
       { key: 'thread', type: 'select', label: 'Thread', options: (f) => threadList(f.system || 'metric').map((t) => [t.id, t.label]), show: (f) => f.holeType === 'tapped' },
       { key: 'threadDepth', type: 'expr', label: 'Thread depth (for the callout; empty: the hole)', unit: 'mm', optional: true, show: (f) => f.holeType === 'tapped' },
       { key: 'size', type: 'select', label: 'Screw size', options: [...HOLE_SIZES.map((s) => [s, s]), ['custom', 'Custom sizes']], show: (f) => f.holeType !== 'tapped' },
       { key: 'fit', type: 'select', label: 'Fit (ISO 273)', options: [['close', 'Close'], ['normal', 'Normal'], ['loose', 'Loose']], show: (f) => f.holeType !== 'tapped' && f.size !== 'custom' },
-      { key: 'diameter', type: 'expr', label: 'Hole diameter', unit: 'mm', show: (f) => f.holeType !== 'tapped' && f.size === 'custom' },
+      { key: 'diameter', type: 'expr', label: (f) => (f.holeType === 'slot' ? 'Slot width' : 'Hole diameter'), unit: 'mm', show: (f) => f.holeType !== 'tapped' && f.size === 'custom' },
+      { key: 'slotLength', type: 'expr', label: 'Slot length (between the ends’ centres)', unit: 'mm', default: 10, show: (f) => f.holeType === 'slot' },
+      { key: 'slotAngle', type: 'expr', label: 'Slot angle', unit: '°', default: 0, show: (f) => f.holeType === 'slot' },
       { key: 'cboreD', type: 'expr', label: 'Counterbore diameter', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'cboreDepth', type: 'expr', label: 'Counterbore depth', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'csinkD', type: 'expr', label: 'Countersink diameter', unit: 'mm', show: (f) => f.holeType === 'csink' && f.size === 'custom' },
@@ -708,13 +750,22 @@ const PM_SCHEMAS = {
       { key: 'tHint', type: 'hint', text: (f) => (f.holeType === 'tapped' ? 'Drilled at the tap drill size (major diameter − pitch), with the thread kept for callouts. For a modelled thread, add Thread Cut on the hole afterwards.' : f.size === 'custom' ? 'Your own sizes.' : 'Sizes for the screw: clearance hole by ISO 273, counterbore for socket head cap screws (ISO 4762), countersink for countersunk screws (ISO 10642, 90°).') },
     ] },
     { title: 'End Condition', fields: [
-      { key: 'end', type: 'select', label: 'End', options: [['blind', 'Blind'], ['through', 'Through all']] },
-      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.end !== 'through' },
-      { key: 'drillPoint', type: 'check', default: true, label: 'Drill point (118°)', show: (f) => f.end !== 'through' },
+      { key: 'end', type: 'select', label: 'End', options: [['blind', 'Blind'], ['through', 'Through all'], ['upToNext', 'Up To Next'], ['upToVertex', 'Up To Vertex'], ['upToSurface', 'Up To Surface'], ['offsetSurface', 'Offset From Surface']] },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => (f.end || 'blind') === 'blind' },
+      { key: 'toPoint', type: 'pointRef', label: 'Vertex', show: (f) => f.end === 'upToVertex' },
+      { key: 'toPlane', type: 'surfaceRef', label: 'Surface', show: isSurfEnd },
+      { key: 'toOffset', type: 'expr', label: 'Offset', unit: 'mm', default: 2, show: (f) => f.end === 'offsetSurface' },
+      { key: 'toFlip', type: 'check', label: 'Reverse offset (past the surface)', show: (f) => f.end === 'offsetSurface' },
+      { key: 'drillPoint', type: 'check', default: true, label: 'Drill point', show: (f) => (f.end || 'blind') === 'blind' && f.holeType !== 'slot' },
+      { key: 'drillAngle', type: 'expr', label: 'Drill point angle', unit: '°', default: 118, show: (f) => (f.end || 'blind') === 'blind' && f.drillPoint !== false && f.holeType !== 'slot' },
+      { key: 'farCsink', type: 'check', label: 'Far-side countersink (where it comes out)', show: (f) => ['through', 'upToNext'].includes(f.end) && f.holeType !== 'slot' },
+      { key: 'farCsinkD', type: 'expr', label: 'Far-side countersink diameter', unit: 'mm', default: 12, show: (f) => ['through', 'upToNext'].includes(f.end) && f.farCsink && f.holeType !== 'slot' },
+      { key: 'farCsinkAngle', type: 'expr', label: 'Far-side countersink angle', unit: '°', default: 90, show: (f) => ['through', 'upToNext'].includes(f.end) && f.farCsink && f.holeType !== 'slot' },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
+      { key: 'eHint', type: 'hint', show: (f) => f.end === 'upToNext', text: 'Up To Next: each hole goes until its axis first comes out of the material (through the wall it starts in).' },
     ] },
     { title: 'Positions', fields: [
-      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the holes, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
       { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
     ] },
   ],
@@ -837,6 +888,9 @@ const PM_SCHEMAS = {
       title: 'Draft', fields: [
         { key: 'draft', type: 'expr', label: 'Draft angle', unit: '°', default: 0 },
         { key: 'draftOutward', type: 'check', label: 'Draft outward (wider away from the profile)', show: (f) => !!f.draft && String(f.draft).trim() !== '0' },
+        { key: 'draft2Own', type: 'check', label: 'Second side drafted on its own', show: hasDraft2 },
+        { key: 'draft2', type: 'expr', label: 'Second side draft angle', unit: '°', default: 0, show: (f) => hasDraft2(f) && f.draft2Own },
+        { key: 'draftOutward2', type: 'check', label: 'Second side drafted outward', show: (f) => hasDraft2(f) && f.draft2Own && !!f.draft2 && String(f.draft2).trim() !== '0' },
       ],
     },
     {
@@ -875,18 +929,24 @@ const PM_SCHEMAS = {
       title: 'Direction 1', fields: [
         { key: 'dir1', type: 'direction', label: 'Direction' },
         { key: 'rev1', type: 'check', label: 'Reverse direction' },
-        { key: 'dist1', type: 'expr', label: 'Spacing', unit: 'mm' },
+        { key: 'spacing1', type: 'select', label: 'Distance', default: 'spacing', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
+        { key: 'dist1', type: 'expr', label: (f) => (f.spacing1 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm' },
         { key: 'count1', type: 'expr', label: 'Instances', unit: '#' },
+        { key: 'sym1', type: 'check', label: 'Symmetric (as many again the other way)' },
       ],
     },
     {
       title: 'Direction 2', fields: [
         { key: 'dir2', type: 'direction', label: 'Direction', none: true },
         { key: 'rev2', type: 'check', label: 'Reverse direction', show: (f) => f.dir2 !== 'none' },
-        { key: 'dist2', type: 'expr', label: 'Spacing', unit: 'mm', show: (f) => f.dir2 !== 'none' },
+        { key: 'spacing2', type: 'select', label: 'Distance', default: 'spacing', show: (f) => f.dir2 !== 'none', options: [['spacing', 'Between each two'], ['total', 'From the first to the last']] },
+        { key: 'dist2', type: 'expr', label: (f) => (f.spacing2 === 'total' ? 'Total length' : 'Spacing'), unit: 'mm', show: (f) => f.dir2 !== 'none' },
         { key: 'count2', type: 'expr', label: 'Instances', unit: '#', show: (f) => f.dir2 !== 'none' },
+        { key: 'sym2', type: 'check', label: 'Symmetric (as many again the other way)', show: (f) => f.dir2 !== 'none' },
+        { key: 'seedOnly2', type: 'check', label: 'Pattern the feature only (not the first row)', show: (f) => f.dir2 !== 'none' },
       ],
     },
+    PATTERN_SKIP_GROUP((f) => f.dir2 && f.dir2 !== 'none'),
   ],
   cpattern: [
     patternSources('Features to Pattern'),
@@ -896,8 +956,12 @@ const PM_SCHEMAS = {
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
         { key: 'count', type: 'expr', label: 'Instances', unit: '#' },
         { key: 'equal', type: 'check', label: 'Equal spacing (angle is total)' },
+        { key: 'sym', type: 'check', label: 'Symmetric (as many again the other way round)' },
+        { key: 'rings', type: 'expr', label: 'Rings (out from the axis)', unit: '#', default: 1 },
+        { key: 'ringStep', type: 'expr', label: 'Ring spacing', unit: 'mm', default: 10, show: (f) => Number(f.rings) > 1 || (typeof f.rings === 'string' && f.rings.trim() !== '1') },
       ],
     },
+    PATTERN_SKIP_GROUP((f) => Number(f.rings) > 1),
   ],
   mirror: [
     { title: 'Mirror Face/Plane', fields: [{ key: 'plane', type: 'plane', label: 'Plane' }] },
@@ -934,10 +998,12 @@ const PM_SCHEMAS = {
     ] },
   ],
   fillet: [
-    { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet']] }] },
-    { title: 'Fillet Parameters', fields: [
+    { title: 'Fillet Type', fields: [{ key: 'filletType', type: 'select', label: 'Type', options: [['constant', 'Constant size'], ['variable', 'Variable size'], ['face', 'Face fillet'], ['fullRound', 'Full round']] }] },
+    { title: 'Fillet Parameters', show: (f) => f.filletType !== 'fullRound', fields: [
+      { key: 'sizeBy', type: 'select', label: 'Size by', default: 'radius', show: (f) => (f.filletType || 'constant') === 'constant', options: [['radius', 'Radius'], ['chord', 'Chord width']] },
       { key: 'radiusMode', type: 'select', label: 'Radius', show: (f) => f.filletType === 'variable', options: [['ends', 'From the start to the end of each edge'], ['vertices', 'At vertices and points along edges']] },
-      { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : 'Radius'), unit: 'mm' },
+      { key: 'radius', type: 'expr', label: (f) => (f.filletType === 'variable' ? (f.radiusMode === 'vertices' ? 'Radius (vertices not set)' : 'Radius at the start') : f.sizeBy === 'chord' && (f.filletType || 'constant') === 'constant' ? 'Chord width' : 'Radius'), unit: 'mm' },
+      { key: 'chHint', type: 'hint', show: (f) => (f.filletType || 'constant') === 'constant' && f.sizeBy === 'chord', text: 'The width across each fillet, edge to edge: each edge’s radius follows from how far its faces turn (at its middle).' },
       { key: 'radius2', type: 'expr', label: 'Radius at the end', unit: 'mm', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices' },
       { key: 'flipRadii', type: 'check', label: 'Swap the ends', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices' },
       { key: 'vHint', type: 'hint', show: (f) => f.filletType === 'variable' && f.radiusMode !== 'vertices', text: 'The radius changes smoothly from the start to the end of each edge (the ends follow the edge direction: Swap the ends turns it round).' },
@@ -947,8 +1013,9 @@ const PM_SCHEMAS = {
       { key: 'sHint', type: 'hint', show: (f) => f.filletType !== 'face', text: 'Where three or more fillets meet: 0 keeps the usual corner; a distance blends the corner smoothly from that far out (a little more than the radius).' },
     ] },
     { title: 'Items To Fillet', fields: [
-      { key: 'edges', type: 'edges', show: (f) => f.filletType !== 'face' },
+      { key: 'edges', type: 'edges', show: (f) => f.filletType !== 'face' && f.filletType !== 'fullRound' },
       { key: 'faces', type: 'faceList', show: (f) => f.filletType === 'face', hint: 'Click the faces to blend (two or more): every edge where two of them meet is rounded.' },
+      { key: 'faces', type: 'faceList', show: (f) => f.filletType === 'fullRound', hint: 'Click three faces in order: a side face, the face to round off, then the other side face (flat and parallel: a wall). The middle face becomes one round meeting both sides.', itemLabel: 'Face' },
     ] },
   ],
   draft: [
@@ -994,18 +1061,24 @@ const PM_SCHEMAS = {
   chamfer: [
     {
       title: 'Chamfer Parameters', fields: [
-        { key: 'chamferType', type: 'select', label: 'Chamfer type', options: [['distance', 'Equal distances'], ['angleDist', 'Distance and angle'], ['twoDist', 'Two distances']] },
-        { key: 'distance', type: 'expr', label: (f) => (f.chamferType === 'twoDist' ? 'Distance 1' : 'Distance'), unit: 'mm' },
-        { key: 'distance2', type: 'expr', label: 'Distance 2', unit: 'mm', show: (f) => f.chamferType === 'twoDist' },
+        { key: 'chamferType', type: 'select', label: 'Chamfer type', options: [['distance', 'Equal distances'], ['angleDist', 'Distance and angle'], ['twoDist', 'Two distances'], ['vertex', 'Vertex (cut off a corner)']] },
+        { key: 'vertexDistances', type: 'check', label: 'Different distances along X, Y and Z', show: (f) => f.chamferType === 'vertex' },
+        { key: 'distance', type: 'expr', label: (f) => (f.chamferType === 'twoDist' ? 'Distance 1' : f.chamferType === 'vertex' && f.vertexDistances ? 'Along X' : 'Distance'), unit: 'mm' },
+        { key: 'distance2', type: 'expr', label: (f) => (f.chamferType === 'vertex' ? 'Along Y' : 'Distance 2'), unit: 'mm', show: (f) => f.chamferType === 'twoDist' || (f.chamferType === 'vertex' && f.vertexDistances) },
+        { key: 'distance3', type: 'expr', label: 'Along Z', unit: 'mm', default: 1, show: (f) => f.chamferType === 'vertex' && f.vertexDistances },
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°', show: (f) => f.chamferType === 'angleDist' },
         { key: 'flip', type: 'check', label: (f) => (f.chamferType === 'angleDist' ? 'Flip direction (distance on the other face)' : 'Flip direction (swap the distances)'), show: (f) => f.chamferType === 'angleDist' || f.chamferType === 'twoDist' },
       ],
     },
-    { title: 'Items To Chamfer', fields: [{ key: 'edges', type: 'edges' }] },
+    { title: 'Items To Chamfer', fields: [
+      { key: 'edges', type: 'edges', show: (f) => f.chamferType !== 'vertex' },
+      { key: 'vertices', type: 'vertexList', show: (f) => f.chamferType === 'vertex', hint: 'Click corners of the model where three straight edges meet: each is cut off by the plane through the points the distances along its edges.' },
+    ] },
   ],
   shell: [
     { title: 'Parameters', fields: [{ key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' }, { key: 'outward', type: 'check', label: 'Shell outward' }] },
-    { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList' }] },
+    { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces to remove (open the shell there). With none, the body is hollowed: a closed void inside.' }] },
+    { title: 'Walls of Their Own Thickness', show: (f) => !f.outward, fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
   ],
   combine: [
     { title: 'Operation Type', fields: [{ key: 'op', type: 'select', label: 'Type', options: [['add', 'Add (union)'], ['subtract', 'Subtract'], ['common', 'Common (keep the overlap)']] }] },
@@ -1039,15 +1112,33 @@ const PM_SCHEMAS = {
   ],
   surfExtrude: [
     {title:'Contours',fields:[{key:'profiles',type:'loftSelection'}]},
+    {title:'Model Edges',fields:[{key:'edges',type:'edges'}]},
+    {title:'Start',fields:[
+      {key:'startFrom',type:'select',label:'Start from',default:'profile',options:[['profile','Contour plane'],['offset','Offset from the contours'],['surface','Plane / planar face']]},
+      {key:'startOffset',type:'expr',label:'Start offset',unit:'mm',show:f=>f.startFrom==='offset'},
+      {key:'startPlane',type:'surfaceRef',label:'Start surface',show:f=>f.startFrom==='surface'},
+    ]},
     {title:'Direction',fields:[
-      {key:'end',type:'select',label:'Direction',options:[['blind','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
-      {key:'depth',type:'expr',label:'Depth',unit:'mm'},
+      {key:'end',type:'select',label:'Direction',options:[['blind','One side'],['twoSides','Two sides'],['midplane','Symmetric'],['upToVertex','Up To Vertex'],['upToSurface','Up To Surface'],['offsetSurface','Offset From Surface']]},
+      {key:'depth',type:'expr',label:'Depth',unit:'mm',show:f=>['blind','twoSides','midplane'].includes(f.end||'blind')},
       {key:'depth2',type:'expr',label:'Second depth',unit:'mm',default:0,show:f=>f.end==='twoSides'},
-      {key:'reverse',type:'check',label:'Reverse direction',show:f=>f.end!=='midplane'},
+      {key:'toPoint',type:'pointRef',label:'Vertex',show:f=>f.end==='upToVertex'},
+      {key:'toPlane',type:'surfaceRef',label:'Surface',show:isSurfEnd},
+      {key:'toOffset',type:'expr',label:'Offset',unit:'mm',default:5,show:f=>f.end==='offsetSurface'},
+      {key:'toFlip',type:'check',label:'Reverse offset (past the surface)',show:f=>f.end==='offsetSurface'},
+      {key:'reverse',type:'check',label:'Reverse direction',show:f=>['blind','twoSides'].includes(f.end||'blind')},
+      {key:'direction',type:'direction',label:'Along',none:true},
+      {key:'dirHint',type:'hint',text:'Along None extrudes square to the contours’ plane; choose an axis to extrude along it instead (needed for model edges that do not lie in one plane).'},
+    ]},
+    {title:'Draft',fields:[
+      {key:'draft',type:'expr',label:'Draft angle',unit:'°',default:0},
+      {key:'draftOutward',type:'check',label:'Draft outward (wider away from the contour)',show:f=>!!f.draft&&String(f.draft).trim()!=='0'},
+      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'Closed contours only: each narrows away from where it starts (or widens).'},
     ]},
   ],
   surfRevolve: [
     {title:'Contours',fields:[{key:'profiles',type:'loftSelection'}]},
+    {title:'Model Edges',fields:[{key:'edges',type:'edges'}]},
     REVOLUTION_AXIS,REVOLUTION_DIRECTIONS,
   ],
   surfPlanar: [
@@ -1074,13 +1165,12 @@ const PM_SCHEMAS = {
       { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.profileType === 'circle' },
       { key: 'path', type: 'sweepSelection', label: 'Path' },
       { key: 'guide', type: 'sweepSelection', label: 'Guide (optional)', optional: true },
-        { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile']] },
-        { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: (f) => !f.guide && f.orientation !== 'parallel' },
-        { key: 'twistHint', type: 'hint', show: (f) => !f.guide && f.orientation !== 'parallel', text: 'Total rotation distributed by distance along the path. Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+        ...SWEEP_SHAPE,
       { key: 'guideMode', type: 'select', label: 'Guide controls', show: (f) => !!f.guide, options: [['orientation', 'Orientation — keep profile size'], ['contact', 'Section size — follow the guide']] },
       { key: 'guideHint', type: 'hint', show: (f) => !!f.guide, text: 'Use one open or closed profile chain and an open path and guide. Orientation keeps the profile size. Section size uniformly scales the profile; the guide must start on the profile curve. Contact with the surface is checked to 0.0001 mm. Closed profiles produce an uncapped surface.' },
       { key: 'ssHint', type: 'hint', text: 'The profile (one chain of curves, open or closed) is swept along the path as a surface. Place it at the start of the path, across it.' },
     ] },
+    SWEEP_EDGES,
   ],
   surfFill: [
     { title: 'Patch Boundary', fields: [
@@ -1089,7 +1179,12 @@ const PM_SCHEMAS = {
       { key: 'supportFaces', type: 'faceList', patchSupport: true, show: f => (f.continuity ?? (f.tangent ? 'G1' : 'G0')) !== 'G0' || f.edges.some(e => e.continuity && e.continuity !== 'G0'), hint: 'Open boundary edges infer their adjacent face. Select support faces explicitly when an edge has two adjacent faces. Each G1/G2 edge needs exactly one support.' },
       { key: 'merge', type: 'check', default: true, label: 'Knit into the surface (when the edges are all on one surface body)' },
       { key: 'solid', type: 'check', label: 'Make a solid when that closes it', show: (f) => f.merge !== false },
-      { key: 'fHint', type: 'hint', text: 'Select one closed loop. Set G0, G1 or G2 for the boundary, or override individual edges. Contact, tangency and curvature are checked on CAD surfaces; incompatible constraints report an error without lowering continuity.' },
+      { key: 'fHint', type: 'hint', text: 'Select one closed loop. Set G0, G1 or G2 for the boundary, or override individual edges. Contact, tangency and curvature are checked on CAD surfaces; incompatible constraints report an error without lowering continuity. A tangent edge’s reach (mm) keeps the patch to its support’s tangent plane further in before it turns.' },
+    ] },
+    { title: 'Pass Through', fields: [
+      { key: 'throughCurves', type: 'curveList', empty: 'No curves', add: '+ Add a curve it passes through…' },
+      { key: 'throughPoints', type: 'curveList', types: ['point', 'sketch'], empty: 'No points', add: '+ Add points it passes through…' },
+      { key: 'thHint', type: 'hint', text: 'Curves (sketches, 3D sketches, curves) and points (reference points, or a sketch’s own points) inside the opening that the patch passes through, checked to 0.0001 mm.' },
     ] },
   ],
   surfTrim: [
@@ -3565,6 +3660,19 @@ export class UI {
           this.renderLoftSelection(body, f, before, fd);
         } else if (fd.type === 'sketchList') {
           this.renderSketchList(body, f, before, fd);
+        } else if (fd.type === 'text') {
+          // (a line of text: a list such as a pattern's instances to skip)
+          const input = el('input', { type: 'text', value: f[fd.key] ?? '', placeholder: fd.placeholder || '', 'data-feature-text': fd.key, spellcheck: 'false' });
+          input.onchange = () => { f[fd.key] = input.value; a.preview(true); };
+          const w = el('div', { class: 'pm-input' }); w.appendChild(input);
+          body.appendChild(this.row(fd.label, w));
+        } else if (fd.type === 'vertexList') {
+          if (!Array.isArray(f[fd.key])) f[fd.key] = [];
+          const L = f[fd.key], ul = el('div', { class: 'pm-list', 'data-vertex-list': fd.key });
+          body.appendChild(el('div', { class: 'pm-hint' }, esc(fd.hint || 'Click vertices on the model.')));
+          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No corners selected'));
+          L.forEach((v, i) => { const li = el('div', { class: 'li sel' }, `${icon('point')}<span>Corner&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`); li.querySelector('.x').onclick = () => { L.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); }; ul.appendChild(li); });
+          body.appendChild(ul);
         } else if (fd.type === 'vertexRadii') {
           this.renderVertexRadii(body, f);
         } else if (fd.type === 'edgePoints') {
@@ -3576,7 +3684,7 @@ export class UI {
           select.onchange=()=>{f.op=['cut','intersect'].includes(select.value)?select.value:'add';f.merge=select.value!=='new';pm.scopePick=false;this.renderPM();a.preview(true);};
           body.appendChild(this.row('Operation',select));
         } else if(fd.type==='axisPick'){
-          body.appendChild(el('button',{class:'pm-btn'+(pm.profilePick===false&&!pm.scopePick?' on':''),'data-profile-axis':'',onclick:()=>{pm.profilePick=false;pm.scopePick=false;pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Select axis in canvas'));
+          body.appendChild(el('button',{class:'pm-btn'+(pm.profilePick===false&&!pm.scopePick&&!pm.revolveEndPick?' on':''),'data-profile-axis':'',onclick:()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Select axis in canvas'));
         } else if (fd.type === 'edges') {
           this.renderEdgeList(body, f);
         } else if (fd.type === 'points3d') {
@@ -3615,7 +3723,7 @@ export class UI {
           // an ordered list of curves (sketches, 3D sketches, composite / projected curves, helices)
           if (!Array.isArray(f[fd.key])) f[fd.key] = [];
           const L = f[fd.key], ul = el('div', { class: 'pm-list' });
-          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No curves yet'));
+          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, fd.empty || 'No curves yet'));
           L.forEach((id, i) => {
             const x = before.find((y) => y.id === id);
             const li = el('div', { class: 'li sel' }, `${icon(x ? TYPE_INFO[x.type]?.icon || 'sketch' : 'sketch')}<span>${i + 1}. ${esc(x?.name || '(missing)')}</span><span class="x" title="Move up">▲</span><span class="x" title="Remove">✕</span>`);
@@ -3626,8 +3734,8 @@ export class UI {
           });
           body.appendChild(ul);
           const sel = el('select');
-          sel.appendChild(el('option', { value: '' }, '+ Add a curve…'));
-          for (const x of before.filter((y) => ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix'].includes(y.type) && !y.suppressed && !L.includes(y.id))) sel.appendChild(el('option', { value: x.id }, esc(x.name)));
+          sel.appendChild(el('option', { value: '' }, fd.add || '+ Add a curve…'));
+          for (const x of before.filter((y) => (fd.types || ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix']).includes(y.type) && !y.suppressed && !L.includes(y.id))) sel.appendChild(el('option', { value: x.id }, esc(x.name)));
           sel.onchange = () => { if (sel.value) { L.push(sel.value); a.preview(true); } };
           const w = el('div', { class: 'pm-input' }); w.appendChild(sel);
           body.appendChild(w);
@@ -3739,23 +3847,30 @@ export class UI {
           }
           if (['sweep','surfSweep'].includes(f.type)) s.dataset.sweepField = fd.key;
           if (['loft', 'surfLoft'].includes(f.type) && /^(start|end)/.test(fd.key)) { s.dataset.loftEndField = fd.key; if (fd.type === 'direction') s.onfocus = () => { pm.loftEndAxis = fd.key; }; }
-          if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
           if(f.referenceDefinition)s.dataset.datumField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity') s.dataset.patchContinuity = '';
           if (['sweep','surfSweep'].includes(f.type) && ['profile','path','guide'].includes(fd.key)) s.onfocus = () => { pm.sweepSlot = fd.key; };
-          if(f.type==='extrude'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(['extrude','surfExtrude'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.profilePick=f.type==='surfExtrude'?false:pm.profilePick;pm.planarEdges=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(f.type==='hole'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.holeEndPick=true;a.updateSketchDisplay();};
+          if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
           s.onchange = () => {
             f[fd.key] = s.value || null;
-            if(f.type==='extrude'){
+            if(f.type==='surfExtrude'&&(['surfaceRef','pointRef'].includes(fd.type)||fd.key==='startFrom'&&f.startFrom==='surface'||fd.key==='end'&&['upToVertex','upToSurface','offsetSurface'].includes(f.end))){pm.profilePick=false;pm.planarEdges=false;}
+            if(['extrude','surfExtrude'].includes(f.type)){
               if(fd.key==='startFrom'&&f.startFrom==='surface'){pm.extrudeSurfaceSlot='start';pm.extrudePick=false;pm.scopePick=false;}
               if(['surfaceRef','pointRef'].includes(fd.type)){pm.extrudeSurfaceSlot=REF_SLOT[fd.key];f[REF_PICKED[fd.key]]=null;}
               if(fd.key==='end')pm.extrudeSurfaceSlot='end';
               if(fd.key==='end2')pm.extrudeSurfaceSlot='end2';
             }
+            if(['revolve','surfRevolve'].includes(f.type)){
+              if(['surfaceRef','pointRef'].includes(fd.type)){pm.revolveEndPick=true;f[REF_PICKED[fd.key]]=null;}
+              if(fd.key==='extent'&&revUpTo(f)){pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;}
+            }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
-            if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+            if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity' && s.value === 'G0' && !f.edges.some(e => e.continuity && e.continuity !== 'G0')) pm.patchSupportPick = false;
             if (['loft', 'surfLoft'].includes(f.type) && /^(start|end)Condition$/.test(fd.key)) { pm.loftConnector=null; pm.loftEndSlot = ['tangent', 'curvature'].includes(s.value) ? fd.key.replace('Condition', 'Faces') : null; pm.loftDraft = null; a.updateSketchDisplay(); }
@@ -3767,7 +3882,9 @@ export class UI {
           const wrap = el('div', { class: 'pm-input' });
           wrap.appendChild(s);
           body.appendChild(this.row(fd.label, wrap));
-          if(f.type==='extrude'&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
+          if(f.type==='hole'&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.holeEndPick?' on':''),'data-hole-end-pick':fd.key,onclick:()=>{pm.holeEndPick=!pm.holeEndPick;this.renderPM();a.updatePlanes();a.status(pm.holeEndPick?(fd.type==='pointRef'?'Click the vertex the holes go up to.':'Select the plane or flat face the holes go up to.'):'Click points on a face for the holes.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
+          if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.revolveEndPick?' on':''),'data-revolve-end-pick':fd.key,onclick:()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(fd.type==='pointRef'?'Click the vertex the revolution goes up to.':'Select the plane or flat face the revolution goes up to.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
+          if(['extrude','surfExtrude'].includes(f.type)&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]&&(f.type==='extrude'||pm.profilePick===false&&!pm.planarEdges)?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;if(f.type==='surfExtrude'){pm.profilePick=false;pm.planarEdges=false;}pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
         }
       }
     }
@@ -5152,6 +5269,8 @@ export class UI {
     const a = this.app;
     const key = fd.key || 'faces', pm = a.pm;
     if (!Array.isArray(f[key])) f[key] = [];
+    if (fd.sweepSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.sweepSupportPick ? ' on' : ''), 'data-sweep-support': '', onclick: () => { pm.sweepSupportPick = !pm.sweepSupportPick; pm.planarEdges = false; if (pm.sweepSupportPick) pm.sweepCanvas = false; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, 'Select faces in canvas'));
+    if (fd.shellThick) body.appendChild(el('button', { class: 'pm-btn' + (pm.shellThickPick ? ' on' : ''), 'data-shell-thick': '', onclick: () => { pm.shellThickPick = !pm.shellThickPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select walls in canvas'));
     if (fd.patchSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.patchSupportPick ? ' on' : ''), 'data-patch-support': '', onclick: () => { pm.patchSupportPick = !pm.patchSupportPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select support faces'));
     if (fd.loftEnd) body.appendChild(el('button', { class: 'pm-btn' + (pm.loftEndSlot === key ? ' on' : ''), 'data-loft-end-faces': key, onclick: () => { pm.loftEndSlot = pm.loftEndSlot === key ? null : key; pm.loftDraft = null; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, `Select ${fd.loftEnd} support faces`));
     body.appendChild(el('div', { class: 'pm-hint' }, esc(fd.hint || 'Click faces on the model to add or remove them.')));
@@ -5159,6 +5278,7 @@ export class UI {
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, esc(fd.empty || 'No faces selected')));
     f[key].forEach((r, i) => {
       const li = el('div', { class: 'li sel' }, `${icon('plane')}<span>${esc(fd.itemLabel || 'Face')}&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`);
+      if (fd.shellThick) { const own = this.exprInput(r.t ?? '', 'mm', (value) => { r.t = value; a.preview(); }); own.dataset.shellWallThickness = i; own.title = 'This wall’s thickness'; li.insertBefore(own, li.querySelector('.x')); }
       li.querySelector('.x').onclick = () => { f[key].splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
       ul.appendChild(li);
     });
@@ -5200,7 +5320,7 @@ export class UI {
     const a=this.app,pm=a.pm,active=LC.hasManualConnections(f),refs=f.profiles||[];
     body.classList.add('datum-definition');body.dataset.loftCorrespondence='';
     const graph=a.result?.info?.[f.id]?.loftConnections;body.dataset.graph=graph?.signature===JSON.stringify(f)?JSON.stringify(graph):'';
-    const blocked=f.thin?'Manual connectors are not yet supported for Thin lofts.':refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
+    const blocked=refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
     const enabled=el('input',{type:'checkbox','data-loft-manual':''});enabled.checked=active;enabled.disabled=!!blocked&&!active;
     enabled.onchange=()=>{
       if(pm.loftDraft?.curves.length){a.toast('Add or clear the current contour before editing connectors',true);this.renderPM();return;}
@@ -5209,7 +5329,7 @@ export class UI {
     const label=el('label');label.append(enabled,document.createTextNode(' Edit profile connectors'));body.appendChild(this.row(null,label,'check'));
     if(blocked)body.appendChild(el('div',{class:'pm-hint'},blocked+' Choose Automatic correspondence to continue.'));
     if(active&&!blocked){
-      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle.'));
+      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin?' Thin: each wall starts at its vertex nearest the start.':'')));
       refs.forEach((ref,i)=>{
         const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{};if(!source)return;
         const heading=el('div',{},`<b>${i+1}. ${esc(LR.describeRef(a.doc,ref))}</b>`);body.appendChild(heading);
@@ -5220,9 +5340,13 @@ export class UI {
             const input=this.exprInput(control.circle?control.angle??0:angle,'°',value=>{const next={...control,circle:options.circle.curve,angle:value};delete next.point;a.setLoftConnection(ref,next,false);});input.dataset.loftConnectorAngle=i;body.appendChild(this.row('Seam angle',input));
           }else{
             const select=el('select',{'data-loft-connector-point':i,'aria-label':'Profile start vertex'});select.appendChild(el('option',{value:''},'Automatic start'));
-            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));select.value=control.point||'';
-            select.onchange=()=>{const next={...control};if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}else delete next.point;a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
+            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+            if(options.curves.length&&!f.thin)select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+            select.value=control.curve?'@curve':control.point||'';
+            select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
+            if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
           }
+          if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;
           reverse.onchange=()=>{const next={...control,reverse:reverse.checked};if(!options.closed)delete next.point;a.setLoftConnection(ref,next);};
           const label=el('label');label.append(reverse,document.createTextNode(' Reverse traversal'));body.appendChild(this.row(null,label,'check'));
@@ -5233,16 +5357,46 @@ export class UI {
     if(active||Object.keys(f.loftCorrespondence||{}).length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-reset':'',onclick:()=>{f.loftCorrespondence={};f.correspondenceMode='auto';pm.loftConnector=null;a.preview(true);a.updateSketchDisplay();}},'Reset all to Automatic'));
   }
 
+  // A start inside a curve: which curve, and how far along it (percent, in the curve's own direction)
+  loftCurveStart(body,options,source,control,set,i,label='Start'){
+    const curve=el('select',{'data-loft-connector-curve':i,'aria-label':`${label} curve`});
+    for(const id of options.curves)curve.appendChild(el('option',{value:id},esc(SM.itemName(source.sketch,id))));
+    curve.value=control.curve;curve.onchange=()=>set({...control,curve:curve.value});body.appendChild(this.row(`${label} on`,curve));
+    const at=this.exprInput(control.at??50,'%',value=>set({...control,at:value}));at.dataset.loftConnectorAt=i;body.appendChild(this.row('Along it',at));
+  }
+
+  // A profile's holes: which of its holes goes with each hole of the others (slot by slot), and where each starts
+  loftHoleControls(body,f,ref,i,options,source,control){
+    const a=this.app,keys=options.holes.map(h=>h.key),set=next=>a.setLoftConnection(ref,next);
+    let order;try{order=LC.holeOrder(control,keys);}catch{order=keys.map((_,k)=>k);}
+    const name=h=>esc(h.curves.length?SM.itemName(source.sketch,h.curves[0]):h.circle?SM.itemName(source.sketch,h.circle.curve):'Hole');
+    order.forEach((hi,slot)=>{
+      const sel=el('select',{'data-loft-hole-order':`${i}:${slot}`,'aria-label':`Hole ${slot+1}`});
+      options.holes.forEach((h,k)=>sel.appendChild(el('option',{value:String(k)},`${name(h)}`)));sel.value=String(hi);
+      sel.onchange=()=>{const next=[...order],k=+sel.value,j=next.indexOf(k);[next[slot],next[j]]=[next[j],next[slot]];set({...control,holeOrder:next.map(x=>keys[x])});};
+      body.appendChild(this.row(`Hole ${slot+1}`,sel));
+      const h=options.holes[hi],hc=control.holeStarts?.[h.key]||{},put=v=>{const starts={...(control.holeStarts||{})};if(v)starts[h.key]=v;else delete starts[h.key];set({...control,holeStarts:starts});};
+      if(h.circle){const input=this.exprInput(hc.angle??0,'°',value=>put({circle:h.circle.curve,angle:value}));input.dataset.loftHoleAngle=`${i}:${slot}`;body.appendChild(this.row(`Hole ${slot+1} seam`,input));return;}
+      const start=el('select',{'data-loft-hole-start':`${i}:${slot}`,'aria-label':`Hole ${slot+1} start`});start.appendChild(el('option',{value:''},'Automatic start'));
+      for(const p of h.points)start.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+      if(h.curves.length)start.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+      start.value=hc.curve?'@curve':hc.point||'';
+      start.onchange=()=>put(start.value==='@curve'?{curve:h.curves[0],at:50}:start.value?{point:start.value}:null);
+      body.appendChild(this.row(`Hole ${slot+1} start`,start));
+      if(hc.curve)this.loftCurveStart(body,h,source,hc,v=>put(v),`${i}:${slot}`,`Hole ${slot+1} start`);
+    });
+  }
+
   renderLoftSelection(body, f, before, fd) {
     const a = this.app, pm = a.pm, key = fd.key, guide = key === 'guides';
     const extrude = f.type === 'extrude', planar = f.type === 'surfPlanar', common=['revolve','surfExtrude','surfRevolve'].includes(f.type), surface=['surfExtrude','surfRevolve'].includes(f.type);
     pm.loftSlot ||= 'profiles'; f[key] ||= [];
-    const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false);
+    const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false && !pm.planarEdges);
     body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'aria-pressed': String(active), disabled: guide && f.ruled, 'data-loft-slot': key, onclick: () => {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
       if (extrude) pm.extrudePick = !active;
       if (planar) pm.planarEdges = active;
-      if (common) pm.profilePick=!active;
+      if (common) { pm.profilePick=!active; pm.revolveEndPick=false; pm.planarEdges=false; pm.extrudeSurfaceSlot=null; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
     if (!guide) {
@@ -5251,7 +5405,7 @@ export class UI {
       const label = el('label'); label.append(cb, document.createTextNode(' Chain selection'));
       body.appendChild(this.row(null, label, 'check'));
     }
-    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
+    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
     const ul = el('div', { class: 'pm-list', 'data-loft-list': key });
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, guide ? 'No guides selected' : 'No profiles selected'));
     f[key].forEach((ref, i) => {
@@ -5528,21 +5682,27 @@ export class UI {
   renderEdgeList(body, f) {
 
     const a = this.app;
+    f.edges ||= [];
     const n = f.edges.length;
-    if(['surfFill','surfPlanar'].includes(f.type)){
+    if(['surfFill','surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type)){
       const label=el('label'),checkbox=el('input',{type:'checkbox','data-patch-chain':''});checkbox.checked=!!f.chainSelection;
       checkbox.onchange=()=>{f.chainSelection=checkbox.checked;this.renderPM();};
       label.append(checkbox,document.createTextNode(' Chain selection'));body.appendChild(this.row(null,label,'check'));
       body.appendChild(el('div',{class:'pm-hint'},'Chain selection follows connected boundary edges on the clicked body and stops at branches. Turn it off to pick individual edges. Existing edge continuity settings are preserved.'));
     }
-    if(f.type==='surfPlanar')body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;this.renderPM();a.updateSketchDisplay();}},'Select model edges'));
+    if(['surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type))body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;a.pm.revolveEndPick=false;a.pm.extrudeSurfaceSlot=null;a.pm.sweepSupportPick=false;if(['sweep','surfSweep'].includes(f.type))a.pm.sweepCanvas=false;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();}},'Select model edges'));
+    if(['sweep','surfSweep'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Instead of a sketch or curve, the path can be model edges joined end to end into one chain (it starts at the end in the profile’s plane).'));
+    if(['surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Model edges join end to end into open or closed chains (without branches); they are extruded or revolved with the contours.'));
     if (f.type === 'surfFill') body.appendChild(el('button', { class: 'pm-btn' + (!a.pm.patchSupportPick ? ' on' : ''), 'data-patch-edges': '', onclick: () => { a.pm.patchSupportPick = false; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select boundary edges'));
-    body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.'));
+    const sized = (f.type === 'fillet' && (f.filletType || 'constant') === 'constant') || (f.type === 'chamfer' && (f.chamferType || 'distance') === 'distance');
+    if (f.type === 'fillet' || f.type === 'chamfer') body.appendChild(el('button', { class: 'pm-btn' + (a.pm.faceEdgesPick ? ' on' : ''), 'data-face-edges': '', onclick: () => { a.pm.faceEdgesPick = !a.pm.faceEdgesPick; this.renderPM(); a.status(a.pm.faceEdgesPick ? 'Click a face: all its edges are added (or removed when they are all in already).' : 'Click edges on the model.'); } }, 'Add a face’s edges'));
+    body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.' + (sized ? ' An edge can have a size of its own (leave it blank for the feature’s).' : '')));
     const ul = el('div', { class: 'pm-list' });
     if (!n) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No edges selected'));
     f.edges.forEach((e, i) => {
       const li = el('div', { class: 'li' }, `${icon('edge')}<span>Edge&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`);
       if(f.type==='surfFill')li.dataset.patchEdgeRow=i;
+      if(sized){const own=this.exprInput(e.size??'','mm',value=>{if(value===''||value==null)delete e.size;else e.size=value;a.preview();});own.dataset.edgeSize=i;own.title='Own size (blank: the feature’s)';li.insertBefore(own,li.querySelector('.x'));}
       if(f.type==='surfFill'){
         const select=el('select',{'data-patch-edge':i,'aria-label':`Edge ${i+1} continuity`});
         for(const [value,label] of [['','Use boundary setting'],['G0','G0 Contact'],['G1','G1 Tangent'],['G2','G2 Curvature']]){
@@ -5550,6 +5710,7 @@ export class UI {
         }
         select.onchange=()=>{if(select.value)e.continuity=select.value;else delete e.continuity;this.renderPM();a.preview();};
         li.insertBefore(select,li.querySelector('.x'));
+        if((e.continuity||f.continuity||(f.tangent?'G1':'G0'))==='G1'){const reach=this.exprInput(e.reach??0,'mm',value=>{e.reach=value;a.preview();});reach.dataset.patchEdgeReach=i;reach.title='Tangent reach';li.insertBefore(reach,li.querySelector('.x'));}
       }
       li.querySelector('.x').onclick = () => { f.edges.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
       li.onpointerenter = () => { a.hoverEdge = a.viewport.edgeIndexForPoint(e.p); a.updateEdgeHighlights(); };

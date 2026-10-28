@@ -30,7 +30,52 @@ function interpolate(R,points){
     curve=builder.Curve();return curve;
   }finally{builder?.delete();pnts?.delete();params?.delete();array.delete();parameters.delete();}
 }
-function twistFrame(R,spine,angle,radius){
+// How much of a twist or a scale change has happened a share t of the way along the path: evenly ('linear') or
+// eased in and out ('smooth': 3t²-2t³, flat at both ends)
+export const easeOf=(kind)=>kind==='smooth'?(t=>t*t*(3-2*t)):(t=>t);
+// A scale law for BRepOffsetAPI_MakePipeShell::SetLaw: 1 at the start of the path to `end` at its end, evenly or
+// eased, by the length along the path. The pipe maps the law's domain [0, 1] onto its own parameter: the length at
+// each edge's ends, and in between the edge's curve parameter evenly (measured: a line and an arc, the volume to
+// 1e-7 of the integral by length; an unevenly parameterised spline 29% off). That is the length on lines and
+// circles, so one law does there; with other curves the law is interpolated (Law_Interpol) through points that
+// give, at each place's pipe parameter, the scale for its length. Returns { law (a Handle(Law_Function)), at(t) }
+// (at: the scale a share t of the way along)
+export function scaleLaw(R,spine,end,kind='linear'){
+  if(!(Number.isFinite(end)&&end>0))throw new Error('The end scale must be greater than zero');
+  const oc=R.getOC(),g=easeOf(kind),at=t=>1+(end-1)*g(t);
+  const edges=spine.edges;let samples=null;
+  try{
+    if(edges.some(e=>!['LINE','CIRCLE'].includes(e.geomType))){
+      // (for each edge: [pipe parameter, length] at points along it, both from the path's start)
+      const GX=[0.1834346424956498,0.5255324099163290,0.7966664774136267,0.9602898564975363],GW=[0.3626837833783620,0.3137066458778873,0.2223810344533745,0.1012285362903763];
+      const pts=[[0,0]];let S0=0;
+      for(const e of edges){
+        const c=new oc.BRepAdaptor_Curve(e.wrapped);
+        try{
+          const a=c.FirstParameter(),b=c.LastParameter(),back=e.orientation==='backward',n=['LINE','CIRCLE'].includes(e.geomType)?8:96;
+          const speed=u=>length(read(c.DN(u,1)));
+          const piece=(u,v)=>{const m=(u+v)/2,r=(v-u)/2;let sum=0;GX.forEach((x,k)=>{sum+=GW[k]*(speed(m-r*x)+speed(m+r*x));});return Math.abs(sum*r);};
+          const run=[0];for(let k=1;k<=n;k++){const u=back?b-(b-a)*(k-1)/n:a+(b-a)*(k-1)/n,v=back?b-(b-a)*k/n:a+(b-a)*k/n;run.push(run[k-1]+piece(Math.min(u,v),Math.max(u,v)));}
+          const Le=run[n];
+          for(let k=1;k<=n;k++)pts.push([S0+Le*k/n,S0+run[k]]);
+          S0+=Le;
+        }finally{c.delete();}
+      }
+      samples=pts.map(([p,s])=>[p/S0,at(s/S0)]);
+    }
+  }finally{edges.forEach(e=>e.delete());}
+  if(!samples){
+    const law=kind==='smooth'?new oc.Law_S():new oc.Law_Linear();
+    try{law.Set(0,1,1,end);return {law:law.Trim(0,1,1e-12),at};}finally{law.delete();}
+  }
+  const arr=new oc.NCollection_Array1_gp_Pnt2d(1,samples.length),law=new oc.Law_Interpol();
+  try{
+    samples.forEach(([x,y],i)=>{const q=new oc.gp_Pnt2d(x,y);try{arr.SetValue(i+1,q);}finally{q.delete();}});
+    law.Set(arr,false);
+    return {law:law.Trim(0,1,1e-12),at};
+  }finally{arr.delete();law.delete();}
+}
+function twistFrame(R,spine,angle,radius,twistLaw='linear'){
   if(spine.isClosed)throw new Error('Twist currently requires an open path');
   const oc=R.getOC(),path=new oc.BRepAdaptor_CompCurve(spine.wrapped,false),first=path.FirstParameter(),span=path.LastParameter()-first;
   const point=t=>read(path.Value(first+span*t));
@@ -59,7 +104,8 @@ function twistFrame(R,spine,angle,radius){
       }
       const measured=distances[count];
       if(!(measured>0)||Math.abs(measured-total)>Math.max(1e-6,total*1e-7)){previous=null;continue;}
-      frames.forEach((f,i)=>{f.x=turn(f.x,f.n,radians*distances[i]/measured);f.y=cross(f.n,f.x);f.q=add(f.p,mul(f.x,railRadius));});
+      const ease=easeOf(twistLaw);
+      frames.forEach((f,i)=>{f.t=distances[i]/measured;f.x=turn(f.x,f.n,radians*ease(f.t));f.y=cross(f.n,f.x);f.q=add(f.p,mul(f.x,railRadius));});
       let error=Infinity;
       if(previous){
         curve?.delete();curve=interpolate(R,previous.map(f=>f.q));error=0;
@@ -75,7 +121,8 @@ function twistFrame(R,spine,angle,radius){
     throw new Error('The twist orientation exceeds its refinement limit; simplify the path or reduce the angle');
   }finally{curve?.delete();path.delete();}
 }
-export function sweepWithOrientation(R,profile,spine,orientation,angle,surface=false,nearFacePoint){
+// options: { scale: scaleLaw's { law, at }, twistLaw: 'linear' | 'smooth' }
+export function sweepWithOrientation(R,profile,spine,orientation,angle,surface=false,nearFacePoint,options={}){
   if(!['perpendicular','parallel'].includes(orientation))throw new Error('Select Perpendicular or Parallel sweep orientation');
   if(!Number.isFinite(angle))throw new Error('The twist angle must be finite');
   const oc=R.getOC(),start=readVector(spine.startPoint),normal=unit(readVector(spine.tangentAt(0)));
@@ -89,8 +136,8 @@ export function sweepWithOrientation(R,profile,spine,orientation,angle,surface=f
   try{
     builder.SetTolerance(1e-6,1e-6,1e-3);builder.SetMaxDegree(12);builder.SetMaxSegments(512);
     if(orientation==='parallel'){axis=R.makeAx2(start,normal);builder.SetMode(axis);}
-    else{frame=twistFrame(R,spine,angle,radius);builder.SetMode(frame.wire.wrapped,false,oc.BRepFill_TypeOfContact.BRepFill_NoContact);}
-    builder.Add(profile.wrapped,false,false);builder.Build();
+    else{frame=twistFrame(R,spine,angle,radius,options.twistLaw);builder.SetMode(frame.wire.wrapped,false,oc.BRepFill_TypeOfContact.BRepFill_NoContact);}
+    if(options.scale)builder.SetLaw(profile.wrapped,options.scale.law,false,false);else builder.Add(profile.wrapped,false,false);builder.Build();
     if(!builder.IsDone()||!surface&&!builder.MakeSolid())throw new Error('The selected orientation could not produce a sweep; check the path and profile');
     if(!Number.isFinite(builder.ErrorOnSurface())||builder.ErrorOnSurface()>1e-4)throw new Error('The oriented sweep exceeds the 0.0001 mm construction tolerance');
     const raw=builder.Shape();try{shape=R.cast(raw);}finally{raw.delete();}
@@ -105,7 +152,7 @@ export function sweepWithOrientation(R,profile,spine,orientation,angle,surface=f
         const index=i===0?0:i===16?frame.frames.length-1:Math.min(frame.frames.length-2,Math.round((i+0.37)*(frame.frames.length-1)/17)|1);
         const f=frame.frames[index];
         for(const p of samples.filter((_,j)=>j%5===1)){
-          const d=sub(p,frame.origin),q=add(f.p,add(mul(f.x,dot(d,frame.x0)),mul(f.y,dot(d,frame.y0))));
+          const d=sub(p,frame.origin),k=options.scale?options.scale.at(f.t):1,q=add(f.p,mul(add(mul(f.x,dot(d,frame.x0)),mul(f.y,dot(d,frame.y0))),k));
           const v=R.makeVertex(q),query=new R.DistanceQuery(v);let distance=Infinity;
           try{for(const face of faces){const hit=nearFacePoint?.(face,q);distance=Math.min(distance,hit?length(sub(hit,q)):query.distanceTo(face));if(distance<1e-7)break;}}
           finally{query.delete();v.delete();}

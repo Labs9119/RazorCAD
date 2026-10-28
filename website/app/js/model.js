@@ -209,8 +209,8 @@ export function createFeature(doc, type, props = {}) {
     // thin: a wall of thickness thinT along the sketch curves (open sketches are always thin);
     // thinDir: 'one' (outside a closed profile / left of an open one), 'other' or 'mid'.
     // scopeAll: a cut acts on every body it reaches (off: only the bodies in scope)
-    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, side2: false, end2: 'blind', toPoint2: null, toVertex2: null, toPlane2: null, toFace2: null, toOffset2: 5, toFlip2: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
-    revolve: { sketch: null, profiles: null, extent: 'angle', angle2: 0, projectAxis: false, axisSketch: null, thin: false, thinT: 2, thinDir: 'one', op: 'add', merge: true, axis: 'v', end: 'oneway', angle: 360, reverse: false, axisEdge: null, axisFace: null, scopeAll: true, scope: [] },
+    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, side2: false, end2: 'blind', toPoint2: null, toVertex2: null, toPlane2: null, toFace2: null, toOffset2: 5, toFlip2: false, draft2Own: false, draft2: 0, draftOutward2: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
+    revolve: { sketch: null, profiles: null, extent: 'angle', angle2: 0, projectAxis: false, axisSketch: null, thin: false, thinT: 2, thinDir: 'one', op: 'add', merge: true, axis: 'v', end: 'oneway', angle: 360, reverse: false, axisEdge: null, axisFace: null, toPoint: null, toVertex: null, toPlane: null, toFace: null, scopeAll: true, scope: [] },
     // axis: 'v' (sketch vertical), 'u' (sketch horizontal), the id of a line in the sketch, an axis
     // feature, or 'edge' / 'face' (a straight model edge / cylindrical face picked on the model)
     // refs: up to three references (see refgeom.js); the plane type is inferred from them
@@ -222,8 +222,8 @@ export function createFeature(doc, type, props = {}) {
     point: { pointType: 'coords', x: 0, y: 0, z: 0, vertex: null, edge: null },
     // (patterns: feature, plus features, faces (each brings the feature that made it) and bodies (copied whole);
     // pick: what a click on the model picks, 'faces' | 'bodies')
-    lpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', dir1: 'x', rev1: false, dist1: 20, count1: 3, dir2: 'none', rev2: false, dist2: 20, count2: 2 },
-    cpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', axis: 'y', angle: 360, count: 6, equal: true },
+    lpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', dir1: 'x', rev1: false, spacing1: 'spacing', dist1: 20, count1: 3, sym1: false, dir2: 'none', rev2: false, spacing2: 'spacing', dist2: 20, count2: 2, sym2: false, seedOnly2: false, skip: '' },
+    cpattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', axis: 'y', angle: 360, count: 6, equal: true, sym: false, rings: 1, ringStep: 10, skip: '' },
     mirror: { feature: null, features: [], bodies: [], plane: 'right' },
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
@@ -236,7 +236,7 @@ export function createFeature(doc, type, props = {}) {
     // radiusMode (variable): 'ends' (start → end of each edge) | 'vertices' (vertexRadii: [{ p, r }], the others: radius);
     // setback: corners where three or more fillets meet blended from this distance (0: the kernel's own corner)
     // edgePoints (radiusMode 'vertices'): [{ edge (its place in edges), t (% of its length from its start), r }]
-    fillet: { radius: 2, edges: [], filletType: 'constant', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
+    fillet: { radius: 2, edges: [], filletType: 'constant', sizeBy: 'radius', radius2: 4, flipRadii: false, faces: [], radiusMode: 'ends', vertexRadii: [], edgePoints: [], setback: 0 },
     // Draft: face (neutral plane, flat) + faces to tilt by angle; reverse: pull the other way
     draft: { face: null, faces: [], angle: 3, reverse: false },
     // Rib: an open sketch, thickness, ribDir 'parallel' (in the sketch plane) | 'normal'; flip: the other side
@@ -249,12 +249,12 @@ export function createFeature(doc, type, props = {}) {
     moveFace: { faces: [], mode: 'offset', distance: 5, angle: 5, edge: null, reverse: false },
     // chamferType: 'distance' (equal distances), 'angleDist' (distance + angle) or 'twoDist';
     // flip swaps which face the distance (or first distance) is measured on
-    chamfer: { chamferType: 'distance', distance: 1, distance2: 1, angle: 45, flip: false, edges: [] },
+    chamfer: { chamferType: 'distance', distance: 1, distance2: 1, distance3: 1, vertexDistances: false, angle: 45, flip: false, edges: [], vertices: [] },
     // imported bodies stay separate (mergeBodies: fuse touching ones into one body)
     // maxTris: meshes (STL / OBJ / 3MF) with more triangles are simplified to that many (0: never)
     import: { format: 'step', fileName: '', data: '', mergeBodies: false, maxTris: 80000 },
     // faces: picked face references { p, n }; bodies / main / body: body ids
-    shell: { faces: [], thickness: 2, outward: false },
+    shell: { thickFaces: [], faces: [], thickness: 2, outward: false },
     // consume: the tool bodies are used up (off: they are kept)
     combine: { op: 'add', main: null, bodies: [], consume: true },
     // tool: a plane id or a surface body id ('' + toolFace: a picked flat face); keep: all | positive | negative
@@ -262,16 +262,16 @@ export function createFeature(doc, type, props = {}) {
     // mode 'translate': rotate about rotAxis by angle (about the origin or the bodies' center), then move dx/dy/dz;
     // mode 'mates': mates [{ type, a, b, value, flip }] between the moving bodies and fixed geometry
     moveBody: { bodies: [], copy: false, copies: 1, mode: 'translate', dx: 0, dy: 0, dz: 0, rotAxis: 'none', angle: 0, rotCenter: 'origin', mates: [] },
-    surfExtrude: { sketch: null, profiles: null, depth2: 0, end: 'blind', depth: 10, reverse: false },
-    surfRevolve: { sketch: null, profiles: null, end: 'oneway', extent: 'angle', angle2: 0, reverse: false, projectAxis: false, axisSketch: null, axis: 'v', angle: 360 },
+    surfExtrude: { sketch: null, profiles: null, edges: [], chainSelection: false, startFrom: 'profile', startOffset: 0, startPlane: null, startFace: null, depth2: 0, end: 'blind', depth: 10, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, direction: 'none', draft: 0, draftOutward: false },
+    surfRevolve: { sketch: null, profiles: null, edges: [], chainSelection: false, end: 'oneway', extent: 'angle', angle2: 0, reverse: false, projectAxis: false, axisSketch: null, axis: 'v', angle: 360, toPoint: null, toVertex: null, toPlane: null, toFace: null },
     surfPlanar: { sketch: null, profiles: null, edges: [], chainSelection: true },
     surfOffset: { faces: [], distance: 5, flip: false },
     // profiles: sketches / 3D sketches (one chain each, all open or all closed), in order; guides: guide curves
     // (sketches or curves) the surface follows, each through every profile
     surfLoft: { profiles: [], guides: [], ruled: false, startCondition: 'none', endCondition: 'none', startDirection: 'y', endDirection: 'y', startStrength: 1, endStrength: 1, startReverse: false, endReverse: false, startFaces: [], endFaces: [] },
-    surfSweep: { profileType: 'sketch', profile: null, diameter: 10, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0 },
+    surfSweep: { profileType: 'sketch', profile: null, diameter: 10, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, twistLaw: 'linear', scaleEnd: 1, scaleLaw: 'linear', supportFaces: [], edges: [], chainSelection: false },
     // Patch continuity: G0/G1/G2, with optional per-edge overrides and support faces. Legacy tangent means G1.
-    surfFill: { edges: [], chainSelection: true, continuity: null, supportFaces: [], merge: true, solid: false },
+    surfFill: { edges: [], chainSelection: true, continuity: null, supportFaces: [], merge: true, solid: false, throughCurves: [], throughPoints: [] },
     // tool: a plane, surface body or sketch; faces: points on the pieces; mode 'keep' | 'remove'
     surfTrim: { tool: '', faces: [], mode: 'keep', mutual: false },
     surfExtend: { edges: [], distance: 10 },
@@ -315,7 +315,7 @@ export function createFeature(doc, type, props = {}) {
     deleteBody: { bodies: [] },
     deleteSurface: { bodies: [] },
     // profileType 'circle': a round profile of `diameter` made across the start of the path (springs)
-    sweep: { op: 'add', profileType: 'sketch', profile: null, diameter: 2, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, merge: true, thin: false, thinT: 1, thinDir: 'one', scopeAll: true, scope: [] },
+    sweep: { op: 'add', profileType: 'sketch', profile: null, diameter: 2, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, twistLaw: 'linear', scaleEnd: 1, scaleLaw: 'linear', supportFaces: [], edges: [], chainSelection: false, merge: true, thin: false, thinT: 1, thinDir: 'one', scopeAll: true, scope: [] },
     // profiles: sketch ids in order; circles are split to match the other profiles' points
     // continuity: 'C2' (curvature-continuous through the profiles) | 'C1' (tangent-continuous); smoothing: evened out
     // guides: guide curves (sketches or curves) the loft's outline follows, each from the first profile to the last
@@ -323,7 +323,7 @@ export function createFeature(doc, type, props = {}) {
     // Hole: holeType 'simple' | 'cbore' | 'csink' | 'tapped'; size a standard screw size (or
     // 'custom': diameter / cboreD / cboreDepth / csinkD / csinkAngle), fit 'close' | 'normal' | 'loose';
     // tapped: system + thread (cosmetic, threadDepth for the callout); end 'blind' (depth, drill point) | 'through'
-    hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, reverse: false, sketch: null, faces: [] },
+    hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'
     sketch3d: { pts: [], segs: [], rels: [], nextId: 1, kind: 'lines', radius: 0 },
     helix: { sketch: null, definedBy: 'pitchRev', pitch: 5, revolutions: 5, height: 25, startAngle: 0, clockwise: false, reverse: false },
@@ -421,8 +421,10 @@ export function referencesOf(doc, f) {
   const addId = (v) => { if (typeof v === 'string' && ids.has(v)) out.add(v); };
   const addBody = (v) => { if (typeof v === 'string' && v) addId(bodyOwner(v)); };
   for (const k of ['sketch', 'feature', 'base', 'toPoint', 'toPlane', 'toPoint2', 'toPlane2', 'planeA', 'planeB', 'pointA', 'pointB', 'axis', 'dir1', 'dir2', 'rotAxis', 'parent', 'profile', 'path', 'guide', 'startDirection', 'endDirection']) addId(f[k]);
-  if(f.type==='extrude'&&f.startFrom==='surface')addId(f.startPlane);
+  if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface')addId(f.startPlane);
+  if (f.type === 'surfExtrude' && f.direction && f.direction !== 'none') addId(f.direction);
   for (const ref of [f.profile,f.path,f.guide,...(f.profiles || []), ...(f.guides || [])]) addId(typeof ref === 'string' ? ref : ref?.sketch);
+  if (f.type === 'surfFill') for (const id of [...(f.throughCurves || []), ...(f.throughPoints || [])]) addId(id);
   for (const id of expandFeatureRefs(doc, f.features)) addId(id);
   if (f.type !== 'sketch' && typeof f.plane === 'string') addId(f.plane);
   if (f.plane?.ref) addId(f.plane.ref);

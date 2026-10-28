@@ -33,15 +33,16 @@ export function holeSpec(f, ev) {
   if (type === 'cbore') { out.cbD = custom ? ev(f.cboreD) : row[4]; out.cbDepth = custom ? ev(f.cboreDepth) : row[5]; }
   if (type === 'csink') { out.csD = custom ? ev(f.csinkD) : row[6]; out.csAng = custom ? ev(f.csinkAngle ?? 90) : 90; }
   const what = custom ? '' : `${f.size} ${f.fit || 'normal'} `;
-  out.label = type === 'cbore' ? `${what}Ø${+d.toFixed(3)} counterbore Ø${+out.cbD.toFixed(3)} × ${+out.cbDepth.toFixed(3)}`
+  out.label = type === 'slot' ? `${what}slot ${+d.toFixed(3)} wide` : type === 'cbore' ? `${what}Ø${+d.toFixed(3)} counterbore Ø${+out.cbD.toFixed(3)} × ${+out.cbDepth.toFixed(3)}`
     : type === 'csink' ? `${what}Ø${+d.toFixed(3)} countersink Ø${+out.csD.toFixed(3)} × ${+out.csAng.toFixed(1)}°`
       : `${what}Ø${+d.toFixed(3)}`;
   return out;
 }
 
 // The hole's revolved profile, (r, z) with z down into the material from the face (z = 0), closed on the axis.
-// depth: the hole's depth (to the start of the drill point); point: a 118° drill point at a blind hole's end.
-export function holeProfile(spec, depth, point) {
+// depth: the hole's depth (to the start of the drill point); point: a drill point at a blind hole's end, of angle
+// pointAngle (118° unless given).
+export function holeProfile(spec, depth, point, pointAngle = 118) {
   const r = spec.d / 2, pts = [[0, -0.05]];
   if (spec.type === 'cbore') { pts.push([spec.cbD / 2, -0.05], [spec.cbD / 2, spec.cbDepth], [r, spec.cbDepth]); }
   else if (spec.type === 'csink') {
@@ -49,7 +50,7 @@ export function holeProfile(spec, depth, point) {
     pts.push([rc + 0.05 * Math.tan(((spec.csAng || 90) * Math.PI) / 360), -0.05], [r, h]);
   } else pts.push([r, -0.05]);
   pts.push([r, depth]);
-  if (point) pts.push([0, depth + r / Math.tan((59 * Math.PI) / 180)]);
+  if (point) pts.push([0, depth + r / Math.tan(((pointAngle / 2) * Math.PI) / 180)]);
   else pts.push([0, depth]);
   return pts;
 }

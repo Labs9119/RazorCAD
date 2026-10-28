@@ -24,7 +24,7 @@ import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
 import { compareSurfaceContinuity, surfaceNormalAtUV } from './surfacecontinuity.js';
 import { guideScaleLaw } from './sweepguides.js';
-import { sweepWithOrientation } from './sweepoptions.js';
+import { sweepWithOrientation, scaleLaw } from './sweepoptions.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
@@ -1409,7 +1409,7 @@ function combinedBlend(base, items, type) {
     for (const ref of it.refs) {
       const e = findEdge(base, ref);
       if (!e) return null; // never silently drop an edge
-      sel.push({ e, value: it.value });
+      sel.push({ e, value: ref.value ?? it.value });
     }
   }
   if (!sel.length) return null;
@@ -2705,6 +2705,162 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (!regions.length && !text && !gears.length) throw new Error(s.sk.curves.some((c) => !c.construction) ? 'The sketch has no closed profile — tick Thin Feature to use open curves' : 'The sketch has no closed profile');
     return { ...s, sourceSketch, regions, drawing: regions.length ? regionsDrawing(regions) : null, text, gears };
   };
+  // A flat model face as a profile (a profiles entry { kind: 'modelFace', p, n, body }): the face itself, holes and
+  // all, in place of a sketch's regions. Its plane is the profile plane, facing out of its body; `drawing` stands in
+  // for a sketch drawing (sketchOnPlane(plane).extrude(d) / .revolve(axis, { origin, angle })), the face moved to
+  // the plane's origin along its normal
+  const faceSection = (ref, thin) => {
+    if (thin) throw new Error('Thin Feature works on sketch curves: a model face cannot be a thin profile');
+    needEdges('Picking a model face');
+    const hit = findFaceAny(solids, ref);
+    if (!hit) throw new Error('A profile face could not be found in the model');
+    if (hit.face.geomType !== 'PLANE') throw new Error('A profile face must be flat');
+    const face = hit.face, n = unit(vec(face.normalAt())), frame = frameOnPlane(vec(face.center), n);
+    ref.n = n; if (hit.body?.id) ref.body = hit.body.id;
+    const drawing = {
+      sketchOnPlane: (pl) => {
+        const shift = sub([pl.origin.x, pl.origin.y, pl.origin.z], frame.o), at = len(shift) > 1e-12 ? face.clone().translate(shift) : face.clone();
+        return {
+          extrude: (d) => { const v = new R.Vector(mul([pl.zDir.x, pl.zDir.y, pl.zDir.z], d)); try { return R.basicFaceExtrusion(at, v); } finally { v.delete(); at.delete(); } },
+          revolve: (axis, { origin, angle } = {}) => { try { return R.revolution(at, origin, axis, angle ?? 360); } finally { at.delete(); } },
+        };
+      },
+    };
+    // (how far it reaches from the plane's origin, and points round its edges: for the revolve axis check)
+    const b = bbox(face);
+    let reach = 0;
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) reach = Math.max(reach, len(sub([x, y, z], frame.o)));
+    const pts = face.edges.flatMap((e) => Array.from({ length: 17 }, (_, i) => vec(e.pointAt(i / 16))));
+    return { frame, faceProfile: true, regions: [], drawing, text: null, gears: [], reach, pts };
+  };
+  const isFaceProfile = (ref) => !!ref && typeof ref === 'object' && ref.kind === 'modelFace';
+  const sectionOf = (ref, thin) => (isFaceProfile(ref) ? faceSection(ref, thin) : getSketch(ref, thin));
+  // A surface extrusion's or revolution's contours: { frame, planar, wires: [{ wire, closed }], pts? } for each sketch
+  // contour, flat model face (its outer and inner edges) and the chains of the picked model edges (f.edges)
+  const surfaceSections = (f, revolve = false) => {
+    const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [], out = [];
+    if (!refs.length && !f.edges?.length) throw new Error('Select one or more surface contours, or model edges');
+    for (const ref of refs) {
+      if (isFaceProfile(ref)) {
+        needEdges('Picking a model face');
+        const hit = findFaceAny([...solids, ...surfaces], ref);
+        if (!hit) throw new Error('A contour face could not be found in the model');
+        if (hit.face.geomType !== 'PLANE') throw new Error('A contour face must be flat');
+        const n = unit(vec(hit.face.normalAt())), frame = frameOnPlane(vec(hit.face.center), n);
+        ref.n = n; if (hit.body?.id) ref.body = hit.body.id;
+        const wires = [hit.face.clone().outerWire(), ...hit.face.clone().innerWires()];
+        const pts = hit.face.edges.flatMap((e) => Array.from({ length: 17 }, (_, i) => vec(e.pointAt(i / 16))));
+        out.push({ frame, planar: true, wires: wires.map((wire) => ({ wire, closed: true })), pts });
+        continue;
+      }
+      const source = sketches.get(LR.sourceId(ref));
+      if (!source) throw new Error('A surface profile sketch is missing');
+      const subset = typeof ref === 'string' ? source.sk : LR.resolveContour(source.sk, ref).sketch;
+      // (a revolve's axis line, when it is in the sketch, is not part of the surface)
+      const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
+      const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
+      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
+      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
+    }
+    if (f.edges?.length) out.push(edgeSection(f));
+    return out;
+  };
+  // The picked model edges (f.edges: { p, body }) joined end to end into chains, open or closed, without branches; their
+  // plane when they lie in one (facing out of the face it is, when it is one; else none: planar false)
+  const edgeSection = (f) => {
+    needEdges('Picking a model edge');
+    const all = [...solids, ...surfaces], edges = [];
+    for (const ref of f.edges) {
+      const owners = ref.body ? all.filter((b) => b.id === ref.body) : all;
+      const found = owners.map((b) => ({ body: b, hit: findEdgeInfo(b.shape, ref) })).filter((x) => x.hit);
+      if (found.length !== 1) throw new Error('A selected model edge is missing or ambiguous');
+      const { body, hit } = found[0];
+      if (edges.some((x) => x.edge.isSame(hit.e))) throw new Error('A model edge is selected more than once');
+      ref.body = body.id; updateEdgeRef(ref, hit.e, body.shape); edges.push({ edge: hit.e, body });
+    }
+    res.features[f.id] = { ...(res.features[f.id] || {}), edges: f.edges };
+    const near = (p, q) => len(sub(p, q)) < 1e-5, ends = (e) => [vec(e.startPoint), vec(e.endPoint)];
+    // (each chain's edges in order, each with reverse: whether it is followed from its curve's end to its start)
+    const left = [...edges], chains = [];
+    while (left.length) {
+      const chain = [{ ...left.shift(), reverse: false }];
+      let [head, tail] = ends(chain[0].edge);
+      while (!near(head, tail)) {
+        const at = (q) => left.flatMap((x, i) => (ends(x.edge).some((p) => near(p, q)) ? [i] : []));
+        const t = at(tail), h = at(head);
+        if (t.length > 1 || h.length > 1) throw new Error('The selected model edges branch: pick chains without branches');
+        if (t.length) { const [x] = left.splice(t[0], 1), [s, e] = ends(x.edge), reverse = !near(s, tail); chain.push({ ...x, reverse }); tail = reverse ? s : e; }
+        else if (h.length) { const [x] = left.splice(h[0], 1), [s, e] = ends(x.edge), reverse = !near(e, head); chain.unshift({ ...x, reverse }); head = reverse ? e : s; }
+        else break;
+      }
+      chains.push({ edges: chain, closed: near(head, tail), start: head, end: tail });
+    }
+    const pts = edges.flatMap(({ edge }) => Array.from({ length: 17 }, (_, i) => vec(edge.pointAt(i / 16))));
+    const c = mul(pts.reduce((s, p) => add(s, p), [0, 0, 0]), 1 / pts.length), b = bbox(asShape(edges.map((x) => x.edge))), scale = b.diag || 1;
+    const p1 = pts.reduce((best, p) => (len(sub(p, c)) > len(sub(best, c)) ? p : best), pts[0]);
+    const p2 = pts.reduce((best, p) => (len(cross(sub(p1, c), sub(p, c))) > len(cross(sub(p1, c), sub(best, c))) ? p : best), pts[0]);
+    let n = cross(sub(p1, c), sub(p2, c));
+    const planar = len(n) > 1e-9 * scale * scale && pts.every((p) => Math.abs(dot(sub(p, c), unit(n))) < 1e-6 * (1 + scale));
+    let frame = null;
+    if (planar) {
+      n = unit(n);
+      // (facing out of a flat face of the body that the first edge borders, in the edges' plane; else up)
+      const face = adjacentFaces(edges[0].body.shape, edges[0].edge).find((fc) => fc.geomType === 'PLANE' && Math.abs(dot(unit(vec(fc.normalAt())), n)) > 1 - 1e-9);
+      if (face) n = unit(vec(face.normalAt()));
+      else { const k = [0, 1, 2].reduce((m, i) => (Math.abs(n[i]) > Math.abs(n[m]) ? i : m), 0); if (n[k] < 0) n = mul(n, -1); }
+      frame = frameOnPlane(c, n);
+    }
+    return { frame, planar, centre: c, pts, chains, wires: chains.map((ch) => ({ wire: chainWire(ch), closed: ch.closed })) };
+  };
+  // A chain of model edges as a wire, followed from its start (or, backwards, from its end)
+  const chainWire = (chain, backwards = false) => {
+    const list = backwards ? [...chain.edges].reverse().map((x) => ({ ...x, reverse: !x.reverse })) : chain.edges, flipped = [];
+    try {
+      return R.assembleWire(list.map(({ edge, reverse }) => { if ((edge.orientation === 'backward') === reverse) return edge; const e = edge.flipOrientation(); flipped.push(e); return e; }));
+    } finally { flipped.forEach((e) => e.delete()); }
+  };
+  // A sweep's path: its sketch or curve, or the picked model edges (f.edges) joined into one chain, followed from the end
+  // in the profile's plane (frame) when only that one is
+  const sweepPath = (f, owned, frame = null) => {
+    if (!f.edges?.length) return sweepWire(f.path, 'path', owned);
+    if (f.path) throw new Error('Choose one path: a sketch or curve, or model edges');
+    const sec = edgeSection(f);
+    sec.wires.forEach((w) => w.wire.delete());
+    if (sec.chains.length !== 1) throw new Error('The path’s model edges must join into one chain');
+    const ch = sec.chains[0], off = (p) => (frame ? Math.abs(dot(sub(p, frame.o), frame.n)) : 0);
+    const wire = chainWire(ch, !ch.closed && off(ch.end) < 1e-6 && off(ch.start) > 1e-6);
+    owned.push(wire);
+    return { wire, helical: false };
+  };
+  // A Sweep's or Surface Sweep's options: orientation 'perpendicular' (twistAngle, twistLaw), 'parallel' or 'surface' (the
+  // profile kept square to the picked supportFaces), and the profile scaled along the path to scaleEnd (scaleLaw)
+  const sweepOptions = (f, spine, guide) => {
+    const orientation = guide ? 'perpendicular' : f.orientation || 'perpendicular';
+    if (!['perpendicular', 'parallel', 'surface'].includes(orientation)) throw new Error('Select Perpendicular, Parallel or Square to faces as the sweep orientation');
+    const twist = guide || orientation !== 'perpendicular' ? 0 : ev(f.twistAngle ?? 0), end = ev(f.scaleEnd ?? 1);
+    if (!Number.isFinite(twist)) throw new Error('The twist angle must be finite');
+    if (!(Number.isFinite(end) && end > 0)) throw new Error('The end scale must be greater than zero');
+    const scaled = Math.abs(end - 1) > 1e-12;
+    if (scaled && guide) throw new Error('A guide sets the section’s size: leave the end scale at 1 with a guide');
+    let support = null;
+    if (orientation === 'surface') {
+      const refs = f.supportFaces || [];
+      if (!refs.length) throw new Error('Select the faces the profile follows');
+      needEdges('Picking a model face');
+      const hits = refs.map((r) => findFaceAny([...solids, ...surfaces], r));
+      if (hits.some((h) => !h)) throw new Error('A face the profile follows could not be found');
+      support = hits.length > 1 ? asShape(hits.map((h) => h.face)) : hits[0].face;
+      res.features[f.id] = { ...(res.features[f.id] || {}), supportFaces: refs };
+    }
+    return { orientation, twist, twistLaw: f.twistLaw || 'linear', support, scale: scaled ? scaleLaw(R, spine, end, f.scaleLaw || 'linear') : null };
+  };
+  const sweepAlong = (w, spine, o, { surface = false, helical = false } = {}) => {
+    if (o.orientation === 'parallel' || o.twist !== 0) return sweepWithOrientation(R, w, spine, o.orientation, o.twist, surface, nearFacePoint, { scale: o.scale, twistLaw: o.twistLaw });
+    for (const transitionMode of ['right', 'round', 'transformed']) {
+      try { const r = R.genericSweep(w, spine, { frenet: helical && !o.support, transitionMode, law: o.scale?.law || null, support: o.support?.wrapped }, surface); return surface ? r[0] : r; } catch (e) { if (isFatal(e)) throw e; }
+    }
+    throw new Error(o.support ? 'The profile could not be swept along the path following those faces (the path should lie on them)' : 'The profile could not be swept along the path (place the profile at the start of the path, across it)');
+  };
   // The solid a feature makes from a sketch profile: make(drawing) for the outlines and for the text,
   // combined so text inside an outline is cut out of it (and text outside it is added).
   const profileSolid = (sk, make) => {
@@ -2944,11 +3100,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
   };
   const loftConnectionControls=(f,ids)=>{
     if(!LC.hasManualConnections(f))return null;
-    if(f.thin)throw new Error('Manual connectors are not yet supported for Thin lofts; use Automatic correspondence');
     return ids.map(ref=>{
       const source=sketches.get(LR.sourceId(ref));if(!source||curves.has(ref))throw new Error('Manual connectors require sketch profile contours; use Automatic for 3D curve profiles');
       const control=LC.connectionFor(f,ref);
-      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),reverse:!!control?.reverse};
+      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),reverse:!!control?.reverse,control,source,ref};
     });
   };
   const loftConnectionInfo=(f,ids,sections,closed)=>{
@@ -3119,6 +3274,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       if (!ax) throw new Error('The axis face could not be found (use a cylindrical or conical face)');
       return ax;
     }
+    if (sk.faceProfile || !sk.sk) throw new Error('To revolve a model face or model edges, choose a reference axis, a model edge or face, or a sketch line as the axis');
     const fr = sk.frame, ax = S.revolveAxis(f, sk.sourceSketch || sk.sk);
     return { o: S.fromFrame2D(fr, ax.a[0], ax.a[1]), d: add(mul(fr.u, ax.d[0]), mul(fr.v, ax.d[1])) };
   };
@@ -3134,8 +3290,89 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const n=sk.frame.n;
     if(Math.abs(dot(axis.d,n))>1e-7||Math.abs(dot(sub(axis.o,sk.frame.o),n))>1e-5)return;
     const across=unit(cross(axis.d,n));
-    const polygons=sk.regions?.length?sk.regions.map(r=>r.outer.poly):sk.sk.curves.filter(c=>!c.construction&&!c.ctrlOf).map(c=>S.curvePoints(sk.sk,c));
-    for(const polygon of polygons){const distances=polygon.map(p=>dot(sub(S.fromFrame2D(sk.frame,...p),axis.o),across));if(Math.min(...distances)<-1e-6&&Math.max(...distances)>1e-6)throw new Error('A revolution profile must not cross its axis');}
+    const polygons=sk.pts?[sk.pts]:(sk.regions?.length?sk.regions.map(r=>r.outer.poly):sk.sk.curves.filter(c=>!c.construction&&!c.ctrlOf).map(c=>S.curvePoints(sk.sk,c))).map(poly=>poly.map(p=>S.fromFrame2D(sk.frame,...p)));
+    for(const polygon of polygons){const distances=polygon.map(p=>dot(sub(p,axis.o),across));if(Math.min(...distances)<-1e-6&&Math.max(...distances)>1e-6)throw new Error('A revolution profile must not cross its axis');}
+  };
+
+  // A revolve's extent up to a vertex or a surface (extent 'upToVertex' / 'upToSurface', toPoint / toVertex,
+  // toPlane / toFace): the angle round the axis from the profile to it (the other way round with reverse). An end
+  // plane through the axis stops it at the half of the plane it reaches first; any other plane trims it instead
+  // (clip: the plane, the revolution taken nearly all the way round and cut there, see clipRevolution)
+  // (a profile's middle: its box's, of a thin slab of it, or of its curves' points for a surface's open contours)
+  const profileCentre = (sk) => {
+    if (sk.drawing || sk.text || sk.gears?.length) {
+      const probe = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(sk.frame)).extrude(1e-3));
+      try { return sub(bbox(probe).center, mul(sk.frame.n, 5e-4)); } finally { probe.delete(); }
+    }
+    if (sk.pts) { const b = bbox(asShape(sk.wires.map((w) => w.wire))); return b.center; }
+    const pts = sk.sk.curves.filter((c) => !c.construction).flatMap((c) => S.curvePoints(sk.sk, c));
+    if (!pts.length) throw new Error('The profile has no curves');
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return S.fromFrame2D(sk.frame, (Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2);
+  };
+  const revolveExtent = (f, sk, axis) => {
+    if (!['upToVertex', 'upToSurface'].includes(f.extent)) return revolutionInterval(f, ev);
+    const s = f.reverse ? -1 : 1, perp = (q) => { const r = sub(q, axis.o); return sub(r, mul(axis.d, dot(r, axis.d))); };
+    const r0 = perp(profileCentre(sk));
+    if (len(r0) < 1e-9) throw new Error('The profile lies on the revolution axis');
+    const angleTo = (q) => {
+      const r = perp(q);
+      if (len(r) < 1e-9) return Infinity;
+      let t = (s * Math.atan2(dot(cross(r0, r), axis.d), dot(r0, r)) * 180) / Math.PI;
+      if (t <= 1e-7) t += 360;
+      return t;
+    };
+    const span = (t) => ({ start: s < 0 ? -t : 0, angle: t });
+    if (f.extent === 'upToVertex') {
+      const p = resolvePoint(f.toPoint, f.toVertex);
+      if (f.toVertex) res.features[f.id] = { ...(res.features[f.id] || {}), toVertex: f.toVertex };
+      const t = angleTo(p);
+      if (!Number.isFinite(t)) throw new Error('The vertex lies on the revolution axis');
+      if (t >= 360 - 1e-7) throw new Error('The vertex lies on the profile’s side of the axis in its plane: it does not stop the revolution');
+      return span(t);
+    }
+    const pl = resolveSurface(f.toPlane, f.toFace);
+    if (f.toFace) res.features[f.id] = { ...(res.features[f.id] || {}), toFace: f.toFace };
+    if (Math.abs(dot(pl.n, axis.d)) < 1e-9 && Math.abs(dot(sub(axis.o, pl.p), pl.n)) < 1e-6) {
+      const w = unit(cross(pl.n, axis.d)), ts = [angleTo(add(axis.o, w)), angleTo(sub(axis.o, w))];
+      if (ts.some((t) => t >= 360 - 1e-7)) throw new Error('The end surface passes through the profile');
+      return span(Math.min(...ts));
+    }
+    return { ...span(359), clip: pl };
+  };
+  // The revolution (359° from the profile) cut by the end plane: of what lies on the profile's side of it, the pieces
+  // that start at the profile; a piece that also reaches the far end goes all the way round without meeting the plane
+  const clipRevolution = (tool, sections, axis, pl, reverse) => {
+    const s = reverse ? -1 : 1, c = profileCentre(sections[0]), side = Math.sign(dot(sub(c, pl.p), pl.n));
+    if (!side) throw new Error('The end surface passes through the profile');
+    const nIn = mul(unit(pl.n), side), b = bbox(tool), big = b.diag + len(sub(b.center, pl.p)) + 100;
+    const u = unit(cross(nIn, Math.abs(nIn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    const kept = solidsOf(tool.intersect(R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(pl.p, u, nIn)).extrude(2 * big)));
+    // (thin slabs on each profile, just outside where the revolution starts, and the same where it ends)
+    const r = sub(c, axis.o), sweep = mul(cross(axis.d, sub(r, mul(axis.d, dot(r, axis.d)))), s);
+    const slabs = sections.map((sk) => profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(sk.frame)).extrude(-1e-4 * (Math.sign(dot(sweep, sk.frame.n)) || 1))));
+    const start = slabs.length > 1 ? compoundOf(slabs.map((shape) => ({ shape }))) : slabs[0], end = start.clone().rotate(s * 359, axis.o, axis.d);
+    const touches = (piece, slab) => { const q = new R.DistanceQuery(piece); try { return q.distanceTo(slab) < 1e-7; } finally { q.delete(); } };
+    const pieces = kept.filter((piece) => touches(piece, start));
+    if (!pieces.length) throw new Error('The end surface leaves nothing of the revolution');
+    if (pieces.some((piece) => touches(piece, end))) throw new Error('The end surface does not stop the revolution all the way round (a profile on the axis needs an end plane through it)');
+    return pieces.length > 1 ? compoundOf(pieces.map((shape) => ({ shape }))) : pieces[0];
+  };
+
+  // A sheet's K-factor: given (bendCalc 'k'), or the one that a bend allowance or a bend deduction for a 90° bend
+  // (bendCalc 'ba' / 'bd': bendAllowance / bendDeduction, mm) gives with this radius and thickness, so that every flat
+  // length agrees with it at 90° (and other angles in proportion). A deduction with the outside setbacks: BA = 2(R + t) − BD
+  const sheetKFactor = (f, R0, t) => {
+    const m = f.bendCalc || 'k';
+    if (!['k', 'ba', 'bd'].includes(m)) throw new Error('Select a supported bend calculation');
+    let K;
+    if (m === 'k') K = ev(f.kFactor);
+    else {
+      const BA = m === 'ba' ? ev(f.bendAllowance) : 2 * (R0 + t) - ev(f.bendDeduction);
+      K = (BA / (Math.PI / 2) - R0) / t;
+    }
+    if (!(K >= 0 && K <= 1)) throw new Error(m === 'k' ? 'The K-factor must be between 0 and 1' : `That bend ${m === 'ba' ? 'allowance' : 'deduction'} gives a K-factor of ${Number.isFinite(K) ? +K.toFixed(4) : K}: it must give one between 0 and 1`);
+    return K;
   };
 
   // consecutive fillets (or chamfers) applied since the last other solid feature
@@ -3637,6 +3874,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
         const b = bbox(bodyRecs[0].shape);
         return mul(add(b.min, b.max), 0.5);
       };
+      // A pattern's instances left out (f.skip: '3, 5' or, with a second direction or rings, '3.2'; numbered from 1 at the
+      // feature, -2 the first the other way): as index keys ('i' or 'i.j', the feature 0)
+      const patternSkips = (pf, two) => {
+        const out = new Set();
+        for (const raw of String(pf.skip || '').split(/[,;\s]+/).filter(Boolean)) {
+          const parts = raw.split('.').map(Number);
+          if (parts.length !== (two ? 2 : 1) || parts.some((x) => !Number.isInteger(x) || x === 0)) throw new Error(`“${raw}” is not an instance number to skip (${two ? 'such as 3.2' : 'such as 3'})`);
+          out.add(parts.map((x) => (x > 0 ? x - 1 : x + 1)).join('.'));
+        }
+        return out;
+      };
       const patternAll = async (pf, xs) => {
         const { ids, bodyRecs } = patternSources(pf);
         for (const id of ids) await instances(pf, id, xs);
@@ -3784,7 +4032,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if(f.op==='cut'&&!solids.length)throw new Error('A cut requires an existing solid body');
           const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [];
           if (!refs.length) throw new Error('Select one or more sketch profiles');
-          const sections = refs.map((ref) => getSketch(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
+          const sections = refs.map((ref) => sectionOf(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
+          if (refs.some(isFaceProfile)) res.features[f.id] = { ...(res.features[f.id] || {}), profiles: refs };
           const firstFrame = sections[0].frame;
           for (const sk of sections) {
             if (Math.abs(dot(sk.frame.n, firstFrame.n)) < 1 - 1e-7 || Math.abs(dot(sub(sk.frame.o, firstFrame.o), firstFrame.n)) > 1e-5) throw new Error('Extrude profiles must lie in the same plane');
@@ -3794,9 +4043,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const extrusions = [];
           // (draft: the side walls tilted about the profile's plane by the angle, narrowing away from it, or widening
           // with draftOutward; the walls of holes tilt with them. Each side of the profile drafted away from it)
-          const draftAng = ev(f.draft ?? 0);
-          if (!Number.isFinite(draftAng) || Math.abs(draftAng) >= 89) throw new Error('The draft angle must be between 0° and 89°');
-          const drafted = Math.abs(draftAng) > 1e-9, ang = f.draftOutward ? -draftAng : draftAng;
+          // (draft2Own: the second side — side2, or Two sides' second depth — drafted by draft2 / draftOutward2 instead)
+          const draftOf = (g) => {
+            const a = ev(g.draft ?? 0);
+            if (!Number.isFinite(a) || Math.abs(a) >= 89) throw new Error('The draft angle must be between 0° and 89°');
+            return { drafted: Math.abs(a) > 1e-9, ang: g.draftOutward ? -a : a };
+          };
+          const draft2 = f.draft2Own ? { draft: f.draft2 ?? 0, draftOutward: !!f.draftOutward2 } : { draft: f.draft, draftOutward: f.draftOutward };
+          draftOf(f); draftOf(draft2);
           const startMode=f.startFrom||'profile';
           if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
           const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null;
@@ -3809,7 +4063,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const SIDE_ENDS=['blind','through','upToVertex','upToSurface','offsetSurface'];
           const twoEnds=!!f.side2&&SIDE_ENDS.includes(f.end||'blind');
           if(twoEnds&&!SIDE_ENDS.includes(f.end2||'blind'))throw new Error('Select a supported end for the second side');
-          const second=twoEnds?{...f,end:f.end2||'blind',depth:f.depth2,toPlane:f.toPlane2,toFace:f.toFace2,toPoint:f.toPoint2,toVertex:f.toVertex2,toOffset:f.toOffset2,toFlip:f.toFlip2,refKey:'2'}:null;
+          const second=twoEnds?{...f,...draft2,end:f.end2||'blind',depth:f.depth2,toPlane:f.toPlane2,toFace:f.toFace2,toPoint:f.toPoint2,toVertex:f.toVertex2,toOffset:f.toOffset2,toFlip:f.toFlip2,refKey:'2'}:null;
           // which way along `axis` a side goes from o: +1 or -1
           const sideDir=(g,axis,o)=>{
             if(g.end==='upToVertex'){const d=dot(sub(resolvePoint(g.toPoint,g.toVertex),o),axis);if(Math.abs(d)<1e-6)throw new Error('The vertex lies in the sketch plane');return Math.sign(d);}
@@ -3840,6 +4094,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const height=(surface,p)=>dot(sub(surface.p,p),surface.n)/dot(axis,surface.n);
               const atStart=height(startSurface,fr.o),startCenter=add(fr.o,mul(axis,atStart));
               for(const g of sidesOf(axis,startCenter)){
+                const {drafted,ang}=draftOf(g);
                 let lower,upper;
                 if(['blind','midplane','twoSides'].includes(g.end||'blind')){
                   const interval=extrusionInterval(g,ev);lower={p:add(startSurface.p,mul(axis,interval.start)),n:startSurface.n};upper={p:add(startSurface.p,mul(axis,interval.end)),n:startSurface.n};
@@ -3869,6 +4124,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               continue;
             }
             for (const g of sidesOf(axis, sk.frame.o)) {
+              const { drafted, ang } = draftOf(g);
               let z0 = 0, z1 = 0;
               if(['blind','midplane','twoSides'].includes(g.end||'blind'))({start:z0,end:z1}=extrusionInterval(g,ev));
               else if(g.end==='through'||g.end==='through2'){
@@ -3902,7 +4158,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 } else {
                   // angled surface: extrude past it, then keep the part on the sketch's side
                   const dir = Math.sign(t) || 1;
-                  let rProf = 0;
+                  let rProf = sk.reach || 0;
                   for (const r of sk.regions) for (const q of r.outer.poly) rProf = Math.max(rProf, Math.hypot(q[0], q[1]));
                   const tan = Math.sqrt(1 - cosA * cosA) / Math.abs(cosA);
                   const L = Math.abs(t) + rProf * tan + 10;
@@ -3921,10 +4177,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
               }
               if (!tool) {
                 if (z1 - z0 <= 1e-9) throw new Error('Depth must be greater than zero');
-                if (drafted && z0 < -1e-9 && z1 > 1e-9) {
+                // (Two sides: the second depth drafted as the second side; the first depth lies along the extrusion)
+                const other = g.end === 'twoSides' ? draftOf({ ...f, ...draft2 }) : { drafted, ang };
+                const [dUp, dDown] = sk.extrudeSign < 0 !== !!(g.reverse && g.end !== 'midplane') ? [other, { drafted, ang }] : [{ drafted, ang }, other];
+                if ((dUp.drafted || dDown.drafted) && z0 < -1e-9 && z1 > 1e-9) {
                   // (both sides of the profile: each drafted away from it, then joined)
-                  const up = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1)), fr.o, fr.n, ang);
-                  const down = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0)), fr.o, mul(fr.n, -1), ang);
+                  let up = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1));
+                  let down = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0));
+                  if (dUp.drafted) up = draftPrism(up, fr.o, fr.n, dUp.ang);
+                  if (dDown.drafted) down = draftPrism(down, fr.o, mul(fr.n, -1), dDown.ang);
                   tool = up.fuse(down);
                 } else {
                   tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
@@ -3946,13 +4207,16 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if(f.op==='cut'&&!solids.length)throw new Error('A cut requires an existing solid body');
           const refs=Array.isArray(f.profiles)?f.profiles:f.sketch?[f.sketch]:[];
           if(!refs.length)throw new Error('Select one or more revolution profiles');
-          const sections=refs.map(ref=>getSketch(ref,f.thin?{t:ev(f.thinT),dir:f.thinDir||'one'}:null)),first=sections[0];
+          const sections=refs.map(ref=>sectionOf(ref,f.thin?{t:ev(f.thinT),dir:f.thinDir||'one'}:null)),first=sections[0];
+          if(refs.some(isFaceProfile))res.features[f.id]={...(res.features[f.id]||{}),profiles:refs};
           for(const sk of sections)if(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Revolve profiles must lie in the same plane');
-          const {angle,start}=revolutionInterval(f,ev),{o:origin,d:dir}=revolveAxisOf(f,first);
-          sections.forEach(sk=>checkRevolveAxis(sk,{o:origin,d:dir}));
+          const revAxis=revolveAxisOf(f,first),{o:origin,d:dir}=revAxis;
+          sections.forEach(sk=>checkRevolveAxis(sk,revAxis));
+          const extent=revolveExtent(f,first,revAxis),{angle,start}=extent;
           const revolutions=sections.map(sk=>profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(sk.frame)).revolve(dir,{origin,angle})));
           let tool=revolutions[0];for(const next of revolutions.slice(1))tool=tool.fuse(next);
           if(start)tool=tool.rotate(start,origin,dir);
+          if(extent.clip)tool=clipRevolution(tool,sections,revAxis,extent.clip,f.reverse);
           tool = unify(tool);
           const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
@@ -3960,25 +4224,52 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'lpattern': {
-          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * ev(f.dist1));
+          // (spacing1 / spacing2 'total': the distance is from the first instance to the last; sym1 / sym2: as many again
+          // the other way; seedOnly2: the second direction copies only the feature, not the first direction's row;
+          // skip: instances left out, by number: 3, or 3.2 with two directions, -2 the other way)
           const c1 = Math.max(1, Math.round(ev(f.count1)));
           const two = f.dir2 && f.dir2 !== 'none';
-          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * ev(f.dist2)) : [0, 0, 0];
           const c2 = two ? Math.max(1, Math.round(ev(f.count2))) : 1;
-          if (c1 * c2 > 400) throw new Error('Too many instances (max 400)');
+          const step = (k, c) => { const d = ev(f['dist' + k]); return f['spacing' + k] === 'total' ? (c > 1 ? d / (c - 1) : 0) : d; };
+          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * step(1, c1));
+          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * step(2, c2)) : [0, 0, 0];
+          const range = (c, sym) => Array.from({ length: sym ? 2 * c - 1 : c }, (_, k) => (sym ? k - (c - 1) : k));
+          const skip = patternSkips(f, two);
           const xs = [];
-          for (let i = 0; i < c1; i++) for (let j = 0; j < c2; j++) if (i || j) xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+          for (const i of range(c1, f.sym1)) for (const j of range(c2, two && f.sym2)) {
+            if (!i && !j) continue;
+            if (two && f.seedOnly2 && i && j) continue;
+            if (skip.has(two ? `${i}.${j}` : `${i}`)) continue;
+            xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+          }
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
           break;
         }
         case 'cpattern': {
+          // (sym: as many again the other way round; rings / ringStep: rings of copies further out from the axis, each
+          // ringStep further, out through the feature's middle; skip: instances left out, by number, 3.2 with rings)
           const n = Math.max(1, Math.round(ev(f.count)));
-          if (n > 400) throw new Error('Too many instances (max 400)');
           const total = ev(f.angle);
           const step = f.equal ? (Math.abs(total) >= 360 ? total / n : total / Math.max(1, n - 1)) : total;
           const ax = resolveAxis(f.axis);
-          const xs = [];
-          for (let i = 1; i < n; i++) xs.push(xTurn(step * i, ax.o, ax.d));
+          const rings = Math.max(1, Math.round(ev(f.rings ?? 1)));
+          let out = [0, 0, 0];
+          if (rings > 1) {
+            const c = sub(patternCentre(f), ax.o), r = sub(c, mul(ax.d, dot(c, ax.d)));
+            if (len(r) < 1e-9) throw new Error('Rings go out from the axis through the feature: the feature is on the axis');
+            out = mul(unit(r), ev(f.ringStep));
+          }
+          const skip = patternSkips(f, rings > 1), xs = [];
+          // (a whole turn has no other way round: symmetric only with less)
+          const sym = f.sym && Math.abs(step * (n - 1) * 2) < 360 + 1e-9;
+          for (let k = 0; k < rings; k++) for (let i = sym ? -(n - 1) : 0; i < n; i++) {
+            if (!i && !k) continue;
+            if (skip.has(rings > 1 ? `${i}.${k}` : `${i}`)) continue;
+            const turn = xTurn(step * i, ax.o, ax.d);
+            xs.push(k ? (i ? xChain(xMove(mul(out, k)), turn) : xMove(mul(out, k))) : turn);
+          }
+          if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
           break;
         }
@@ -4066,13 +4357,32 @@ async function rebuild(doc, previewId = null, opts = {}) {
         case 'chamfer': {
           if (!body) throw new Error('There is no body');
           needEdges(f.type === 'fillet' ? 'Fillet' : 'Chamfer');
-          if (f.type === 'fillet' && (f.filletType === 'variable' || f.filletType === 'face')) {
-            // variable radius (start → end along each edge) or a fillet between two picked faces
-            const r1 = ev(f.radius), r2 = f.filletType === 'variable' ? ev(f.radius2) : r1;
+          if (f.type === 'fillet' && (f.filletType === 'variable' || f.filletType === 'face' || f.filletType === 'fullRound')) {
+            // variable radius (start → end along each edge), a fillet between two picked faces, or a full round: the
+            // middle of three faces (faces: side, middle, side) rounded off into one round meeting both sides
+            const full = f.filletType === 'fullRound';
+            let r1 = full ? 1 : ev(f.radius);
+            const r2 = f.filletType === 'variable' ? ev(f.radius2) : r1;
             if (!(r1 > 0) || !(r2 > 0)) throw new Error('The radii must be greater than zero');
             const picked = [], pickedAt = new Map(); // (the edges found, and by their place in f.edges)
             let rec = null;
-            if (f.filletType === 'face') {
+            if (full) {
+              if ((f.faces || []).length !== 3) throw new Error('Click three faces: a side face, the face to round off, then the other side face');
+              const hits = f.faces.map((r) => findFaceAny(solids, r));
+              if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
+              rec = hits[0].body;
+              if (hits.some((h) => h.body !== rec)) throw new Error('The faces must be on the same body');
+              const [a, mid, b] = hits.map((h) => h.face);
+              if (a.geomType !== 'PLANE' || b.geomType !== 'PLANE') throw new Error('A full round needs flat side faces');
+              const na = unit(vec(a.normalAt())), nb = unit(vec(b.normalAt()));
+              if (dot(na, nb) > -1 + 1e-9) throw new Error('A full round needs side faces facing away from each other, parallel (a wall of even thickness)');
+              const w = Math.abs(dot(sub(flatCentre(b), flatCentre(a)), na));
+              if (!(w > 1e-9)) throw new Error('The side faces of a full round must be apart');
+              r1 = w / 2;
+              for (const side of [a, b]) for (const e of mid.edges) if (side.edges.some((x) => x.isSame(e)) && !picked.some((x) => x.isSame(e))) picked.push(e);
+              if (picked.length < 2) throw new Error('The face to round off must meet both side faces at edges');
+              res.notes[f.id] = `Full round R${+r1.toFixed(4)} (half the ${+w.toFixed(4)} mm wall)`;
+            } else if (f.filletType === 'face') {
               if ((f.faces || []).length < 2) throw new Error('Click the faces to blend: two (or more) faces that meet at edges');
               const hits = f.faces.map((r) => findFaceAny(solids, r));
               if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
@@ -4115,7 +4425,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
               out = r.shape;
               (res.info ||= {})[f.id] = { vertices: r.vertices.map((q) => q.map((x) => +x.toFixed(6))), points: r.points };
             }
-            if (!out) for (const shrink of [0, 2e-5, 2e-4]) {
+            // (a full round's two fillets meet exactly: a hair smaller leaves the same round with a sliver of flat,
+            // as thin as can be made)
+            if (!out) for (const shrink of full ? [1e-8, 1e-7, 1e-6, 1e-5, 1e-4] : [0, 2e-5, 2e-4]) {
               try {
                 const k = 1 - shrink;
                 out = input.fillet((e) => (picked.some((x) => x.isSame(e)) ? (Array.isArray(rad) ? [rad[0] * k, rad[1] * k] : rad * k) : null));
@@ -4131,26 +4443,81 @@ async function rebuild(doc, previewId = null, opts = {}) {
             else remapSolids(unify(out), picked.map((e) => e.pointAt(0.5)));
             blendChain = null;
             const nPts = res.info?.[f.id]?.points?.length || 0;
-            res.notes[f.id] = f.filletType === 'variable' && f.radiusMode === 'vertices' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: radii at the vertices${nPts ? ` and ${nPts} point${nPts === 1 ? '' : 's'} along the edges` : ''}` : f.filletType === 'variable' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: R${+rad[0].toFixed(3)} → R${+rad[1].toFixed(3)}` : `${picked.length} edge${picked.length === 1 ? '' : 's'} where the faces meet, R${+r1.toFixed(3)}`;
+            if (!full) res.notes[f.id] = f.filletType === 'variable' && f.radiusMode === 'vertices' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: radii at the vertices${nPts ? ` and ${nPts} point${nPts === 1 ? '' : 's'} along the edges` : ''}` : f.filletType === 'variable' ? `${picked.length} edge${picked.length === 1 ? '' : 's'}: R${+rad[0].toFixed(3)} → R${+rad[1].toFixed(3)}` : `${picked.length} edge${picked.length === 1 ? '' : 's'} where the faces meet, R${+r1.toFixed(3)}`;
+            break;
+          }
+          if (f.type === 'chamfer' && f.chamferType === 'vertex') {
+            // (a corner cut off: at each picked vertex where three straight edges meet, the plane through the points the
+            // distances along them; distance for all three, or distance, distance2, distance3 for the edges running
+            // most along X, Y and Z)
+            if (!f.vertices?.length) throw new Error('Click the corners (vertices) to chamfer');
+            const d0 = ev(f.distance), ds = f.vertexDistances ? [d0, ev(f.distance2), ev(f.distance3)] : [d0, d0, d0];
+            if (ds.some((d) => !(d > 0))) throw new Error('The distances must be greater than zero');
+            let out = null, recOf = null;
+            for (const ref of f.vertices) {
+              const p = findVertex(body, ref);
+              if (!p) throw new Error('A selected corner could not be found in the model');
+              ref.p = p;
+              const rec = solids.find((s) => edgeInfos(s.shape).some(({ e }) => [vec(e.startPoint), vec(e.endPoint)].some((q) => len(sub(q, p)) < 1e-6)));
+              if (!rec) throw new Error('A selected corner is not on a solid body');
+              if (recOf && rec !== recOf) throw new Error('The corners of one vertex chamfer must be on the same body');
+              recOf = rec;
+              const shape = out || rec.shape, at = [];
+              for (const { e } of edgeInfos(shape)) {
+                const s = vec(e.startPoint), t = vec(e.endPoint);
+                if (len(sub(s, p)) < 1e-6) at.push({ e, d: sub(t, s) }); else if (len(sub(t, p)) < 1e-6) at.push({ e, d: sub(s, t) });
+              }
+              if (at.length !== 3 || at.some(({ e }) => e.geomType !== 'LINE')) throw new Error('A vertex chamfer needs a corner where three straight edges meet');
+              const axisOf = (d) => [0, 1, 2].reduce((m, k) => (Math.abs(d[k]) > Math.abs(d[m]) ? k : m), 0);
+              const order = f.vertexDistances ? [...at].sort((x, y) => axisOf(x.d) - axisOf(y.d)) : at;
+              const q = order.map(({ d }, k) => { if (!(ds[k] < len(d) - 1e-9)) throw new Error('A chamfer distance is as long as its edge, or longer'); return add(p, mul(unit(d), ds[k])); });
+              const faces = [[p, q[0], q[1]], [p, q[1], q[2]], [p, q[2], q[0]], [q[0], q[1], q[2]]].map((t) => R.makePolygon(t));
+              const tetra = R.makeSolid(faces), vol = Math.abs(R.measureVolume(tetra));
+              // (only a corner that sticks out: all of the cut-off piece must be in the body)
+              const inside = shape.intersect(tetra);
+              if (Math.abs(Math.abs(R.measureVolume(inside)) - vol) > vol * 1e-7) throw new Error('A vertex chamfer cuts off a corner that sticks out (not one in a recess)');
+              out = shape.cut(tetra);
+            }
+            res.features[f.id] = { vertices: f.vertices };
+            replaceSolid(recOf, unify(out), f.id);
+            blendChain = null;
+            res.notes[f.id] = `${f.vertices.length} corner${f.vertices.length === 1 ? '' : 's'} cut off`;
             break;
           }
           if (!f.edges?.length) throw new Error('Select edges on the model');
           const v = ev(f.type === 'fillet' ? f.radius : f.distance);
           if (v <= 0) throw new Error('Value must be greater than zero');
+          // (an edge's own size, edges[i].size: its radius or distance instead of the feature's; or, sizeBy 'chord', the
+          // feature's value a chord width: each edge's radius from the angle its faces turn through at its middle)
+          const chord = f.type === 'fillet' && f.sizeBy === 'chord';
+          const sizeOf = (ref, edge) => {
+            let s = v;
+            if (ref.size != null && ref.size !== '') { s = ev(ref.size); if (!(s > 0)) throw new Error('An edge’s own size must be greater than zero'); }
+            if (!chord) return s;
+            const m = vec(edge.pointAt(0.5)), fs = adjacentFaces(body, edge);
+            if (fs.length !== 2) throw new Error('A fillet by chord width needs edges between two faces');
+            const turn = Math.acos(Math.max(-1, Math.min(1, dot(unit(vec(fs[0].normalAt(m))), unit(vec(fs[1].normalAt(m)))))));
+            if (!(turn > 1e-6)) throw new Error('The faces at an edge meet smoothly: it has no chord to fillet');
+            return s / (2 * Math.sin(turn / 2));
+          };
           const pts = [];
           const found = [];
           const edgeShapes = [];
           const owners = new Set();
           let missing = 0;
+          const sizes = [];
           for (const e of f.edges) {
             const hit = findEdgeInfo(body, e);
             if (!hit) { missing++; continue; }
             updateEdgeRef(e, hit.e, body);
             pts.push(e.p);
-            found.push({ ...e });
+            const size = sizeOf(e, hit.e);
+            found.push({ ...e, value: size });
+            sizes.push(size);
             edgeShapes.push(hit.e);
             owners.add(hit.part);
           }
+          const uneven = sizes.some((s) => Math.abs(s - v) > 1e-12);
           res.features[f.id] = { edges: f.edges };
           if (!pts.length) throw new Error('The selected edges no longer exist — an earlier fillet may already have rounded them (fillets continue along smoothly connected edges)');
           const filter = (fd) => fd.either(pts.map((p) => (x) => x.near(p, 1e-4)));
@@ -4161,6 +4528,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (rec && !whole) { const recs = replaceSolid(rec, shape, f.id); blendPair = { before: rec.shape, after: compoundOf(recs) }; }
             else remapSolids(shape, pts);
           };
+          if (f.type === 'chamfer' && (f.chamferType === 'angleDist' || f.chamferType === 'twoDist') && uneven) throw new Error('Edges of their own size take equal-distance chamfers');
           if (f.type === 'chamfer' && (f.chamferType === 'angleDist' || f.chamferType === 'twoDist')) {
             // distance + angle, or two distances: measured from one of the two faces at each edge
             const x = ev(f.chamferType === 'twoDist' ? f.distance2 : f.angle);
@@ -4176,14 +4544,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           const item = { refs: found, value: v };
           let result = null;
+          // (edges of different sizes: each edge's own, by the edge)
+          const blend = (k) => {
+            if (!uneven) return f.type === 'fillet' ? input.fillet(v * k, filter) : input.chamfer(v * k, filter);
+            const size = (edge) => { const i = edgeShapes.findIndex((x) => x.isSame(edge)); return i < 0 ? null : sizes[i] * k; };
+            return f.type === 'fillet' ? input.fillet(size) : input.chamfer(size);
+          };
           try {
-            result = f.type === 'fillet' ? input.fillet(v, filter) : input.chamfer(v, filter);
+            result = blend(1);
           } catch (e) { if (isFatal(e)) throw e; /* try a combined blend below */ }
           // Blends that exactly meet (e.g. R2 on both edges of a 4 mm wall: a full round) would leave
           // a face of zero width, which the kernel rejects; a hair smaller value gives the same shape.
           for (const shrink of [2e-5, 2e-4, 2e-3]) {
             if (result) break;
-            try { result = f.type === 'fillet' ? input.fillet(v * (1 - shrink), filter) : input.chamfer(v * (1 - shrink), filter); } catch (e) { if (isFatal(e)) throw e; }
+            try { result = blend(1 - shrink); } catch (e) { if (isFatal(e)) throw e; }
           }
           // Edges that end on earlier fillets (e.g. a corner where three blends meet) can't be
           // filleted afterwards. Fallbacks, each computing the corner blend in one kernel call:
@@ -4262,9 +4636,56 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'shell': {
           needEdges('Shell');
-          if (!f.faces?.length) throw new Error('Select the faces to remove on the model');
           const t = ev(f.thickness);
           if (!Number.isFinite(t) || t <= 0) throw new Error('Thickness must be a finite number greater than zero');
+          // (thickFaces: walls of a thickness of their own, { p, n, t }: inward, the material behind each flat face down
+          // to its own depth is kept, the piece of it that touches the face)
+          const own = (f.thickFaces || []).map((r) => ({ r, t: ev(r.t) }));
+          if (own.some((x) => !(Number.isFinite(x.t) && x.t > 0))) throw new Error('A wall’s own thickness must be greater than zero');
+          if (own.length && f.outward) throw new Error('Walls of their own thickness need an inward shell');
+          const thicken = (rec, shape, removed) => {
+            let out = shape;
+            for (const { r, t: ti } of own) {
+              if (ti <= t + 1e-12) throw new Error('A wall’s own thickness must be more than the shell’s (it adds to the wall)');
+              const hit = findFaceAny([rec], r);
+              if (!hit || hit.face.geomType !== 'PLANE') throw new Error('A wall of its own thickness must be a flat face of the body');
+              if (removed.some((x) => x.isSame(hit.face))) throw new Error('A removed face cannot have a thickness of its own');
+              const n = unit(vec(hit.face.normalAt())), c = flatCentre(hit.face), b = bbox(rec.shape), big = b.diag + len(sub(b.center, c)) + 100;
+              const nn = mul(n, -1), u = unit(cross(nn, Math.abs(nn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+              const slab = R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(c, u, nn)).extrude(ti);
+              const behind = solidsOf(rec.shape.intersect(slab)).filter((piece) => { const q = new R.DistanceQuery(piece); try { return q.distanceTo(hit.face) < 1e-7; } finally { q.delete(); } });
+              for (const piece of behind) out = out.fuse(piece);
+            }
+            return out;
+          };
+          if (!f.faces?.length) {
+            // (no faces removed: hollow, the body offset inward by the thickness cut out of it, a closed void inside)
+            if (f.outward) throw new Error('A hollow shell (no faces removed) goes inward');
+            const rec0 = solids.length === 1 ? solids[0] : solids.find((s) => s.id === f.body);
+            if (!rec0) throw new Error(solids.length ? 'Hollowing (no faces removed) works on a part of one body: select faces to remove' : 'There is no body to shell');
+            const oc = R.getOC();let inner = null;
+            for (const join of [oc.GeomAbs_JoinType.GeomAbs_Arc, oc.GeomAbs_JoinType.GeomAbs_Intersection]) {
+              const mk = new oc.BRepOffsetAPI_MakeOffsetShape();
+              try {
+                mk.PerformByJoin(rec0.shape.wrapped, -t, Math.max(1e-7, Math.min(1e-4, t * 1e-3)), oc.BRepOffset_Mode.BRepOffset_Skin, false, false, join, false);
+                if (!mk.IsDone()) continue;
+                const raw = mk.Shape(); let s; try { s = R.cast(raw); } finally { raw.delete(); }
+                const solid = solidsOf(s).length ? s : (() => { try { return R.makeSolid([s]); } catch (e) { if (isFatal(e)) throw e; return null; } })();
+                const v = solid ? Math.abs(preciseVolume(solid)) : 0, v0 = preciseVolume(rec0.shape);
+                // (and a full thickness in from the outside everywhere: an offset through itself is not a void)
+                if (solid && v > 0 && v < v0 - 1e-9) {
+                  const q = new R.DistanceQuery(solid);let gap = 0;
+                  try { gap = Math.min(...rec0.shape.faces.map((fc) => q.distanceTo(fc))); } finally { q.delete(); }
+                  if (gap > t * (1 - 1e-6) && Math.abs(preciseVolume(solid.cut(rec0.shape))) < v0 * 1e-9) { inner = solid; break; }
+                }
+              } catch (e) { if (isFatal(e)) throw e; } finally { mk.delete(); }
+            }
+            if (!inner) throw new Error('The body could not be hollowed at this thickness (its walls would run into each other)');
+            const out = thicken(rec0, rec0.shape.cut(inner), []);
+            replaceSolid(rec0, unify(out), f.id);
+            res.notes[f.id] = 'Hollow: a closed void inside';
+            break;
+          }
           const pickedHits=f.faces.map((r)=>findFaceAny(solids,r));
           if(pickedHits.some((h)=>!h))throw new Error('A selected face could not be found in the model');
           const hits=pickedHits.filter((hit,i)=>pickedHits.findIndex((other)=>other.body===hit.body&&other.face.isSame(hit.face))===i);
@@ -4335,6 +4756,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           if (!out) throw new Error('The shell could not be built with a valid cavity — try a smaller thickness, remove different faces, or place Shell before fillets and chamfers');
           if(sharpJoins&&!res.notes[f.id])res.notes[f.id]='Sharp joins used between offset faces';
+          if (own.length) out = thicken(rec, out, hits.map((h) => h.face));
           replaceSolid(rec, unify(out), f.id);
           break;
         }
@@ -4373,35 +4795,105 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }finally{owned.forEach(face=>face.delete());}
           break;
         }
-        case 'surfExtrude':
+        case 'surfExtrude': {
+          // (sketch contours, flat model faces' edges and chains of picked model edges, extruded along their plane's
+          // normal or along Direction; a start and an end as for a solid extrusion, angled ones trimming it; a draft
+          // for closed contours, each drafted as a solid by draftAway and its walls kept)
+          const sections=surfaceSections(f),parts=[],oc=R.getOC();
+          try{
+            const along=f.direction&&f.direction!=='none'?unit(resolveAxis(f.direction).d):null;
+            if(!along&&sections.some(s=>!s.planar))throw new Error('Model edges that do not lie in one plane need a Direction');
+            const first=sections.find(s=>s.planar)||sections[0];
+            if(!along)for(const s of sections)if(Math.abs(dot(s.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(s.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Surface profiles must lie in the same plane');
+            const a=along||first.frame.n;
+            const draftAng=ev(f.draft??0);
+            if(!Number.isFinite(draftAng)||Math.abs(draftAng)>=89)throw new Error('The draft angle must be between 0° and 89°');
+            const drafted=Math.abs(draftAng)>1e-9,ang=f.draftOutward?-draftAng:draftAng;
+            const startMode=f.startFrom||'profile';
+            if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
+            const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null,startOffset=startMode==='offset'?ev(f.startOffset??0):0;
+            if(!Number.isFinite(startOffset))throw new Error('Start offset must be finite');
+            if(startSurface&&Math.abs(dot(startSurface.n,a))<1e-7)throw new Error('The start surface is parallel to the extrusion direction');
+            if(f.startFace&&startSurface)res.features[f.id]={...(res.features[f.id]||{}),startFace:f.startFace};
+            const end=f.end||'blind';
+            if(!['blind','midplane','twoSides','upToVertex','upToSurface','offsetSurface'].includes(end))throw new Error('Select a supported extrusion end');
+            for(const s of sections){
+              const fr=s.frame||frameOnPlane(s.centre,a),n=fr.n;
+              if(Math.abs(dot(a,n))<1e-7)throw new Error('The extrusion direction lies in the contours’ plane');
+              // (heights along a from p to a plane; planes parallel to the contours' plane at a height above its origin)
+              const height=(pl,p)=>dot(sub(pl.p,p),pl.n)/dot(a,pl.n),at=(h)=>({p:add(fr.o,mul(a,h)),n});
+              const start=startSurface||at(startOffset);
+              let lower,upper;
+              if(['blind','midplane','twoSides'].includes(end)){
+                const iv=extrusionInterval(f,ev);lower={p:add(start.p,mul(a,iv.start)),n:start.n};upper={p:add(start.p,mul(a,iv.end)),n:start.n};
+              }else{
+                let E;
+                if(end==='upToVertex'){E={p:resolvePoint(f.toPoint,f.toVertex),n};if(f.toVertex)res.features[f.id]={...(res.features[f.id]||{}),toVertex:f.toVertex};}
+                else{
+                  E=resolveSurface(f.toPlane,f.toFace);if(f.toFace)res.features[f.id]={...(res.features[f.id]||{}),toFace:f.toFace};
+                  if(Math.abs(dot(E.n,a))<1e-7)throw new Error('The end surface is parallel to the extrusion direction');
+                  if(end==='offsetSurface'){const offset=ev(f.toOffset)*(f.toFlip?-1:1),side=Math.sign(dot(sub(start.p,E.p),E.n))||1;E={...E,p:add(E.p,mul(E.n,side*offset))};}
+                }
+                const hs=height(start,fr.o),he=height(E,fr.o);
+                if(Math.abs(he-hs)<1e-6)throw new Error('The end lies on the start');
+                [lower,upper]=he>hs?[start,E]:[E,start];
+              }
+              const flat=(pl)=>Math.abs(dot(unit(pl.n),n))>1-1e-12;
+              for(const {wire,closed} of s.wires){
+                const b=bbox(wire),corners=[];
+                for(const x of [b.min[0],b.max[0]])for(const y of [b.min[1],b.max[1]])for(const z of [b.min[2],b.max[2]]){const p=[x,y,z];corners.push(sub(p,mul(a,dot(sub(p,fr.o),n)/dot(a,n))));}
+                for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end cross or leave no extrusion height over the contour');
+                const parallel=flat(lower)&&flat(upper),low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p)));
+                const [h0,h1]=parallel?[height(lower,fr.o),height(upper,fr.o)]:[low-5,high+5];
+                // (the wire's plane: its contour's, at height 0; moved to h0 and swept to h1)
+                const sweep=(shape)=>{const v=new R.Vector(mul(a,h1-h0)),moved=shape.clone().translate(mul(a,h0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
+                const big=b.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
+                const trim=(shape)=>{
+                  if(parallel)return shape;
+                  for(const [pl,sign] of [[lower,1],[upper,-1]]){
+                    const nn=mul(pl.n,(dot(pl.n,a)>0?1:-1)*sign),u=unit(cross(nn,Math.abs(nn[0])<.9?[1,0,0]:[0,1,0]));
+                    const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(add(fr.o,mul(a,height(pl,fr.o))),u,nn)).extrude(2*big);
+                    try{shape=boolByList('common',shape,[block]);}finally{block.delete();}
+                  }
+                  return shape;
+                };
+                if(!drafted){parts.push(trim(sweep(wire)));continue;}
+                if(!closed)throw new Error('A draft needs closed contours (an open one has no inside to narrow towards)');
+                const face=R.makeFace(wire);let solid;
+                try{solid=trim(sweep(face));}finally{face.delete();}
+                if(!solidsOf(solid).length)throw new Error('The start and end leave no extrusion');
+                const out=draftAway(solid,start,a,ang,[lower,upper]);
+                const onEnd=(fc)=>fc.geomType==='PLANE'&&[lower,upper].some(pl=>Math.abs(dot(unit(vec(fc.normalAt())),unit(pl.n)))>1-1e-9&&Math.abs(dot(sub(flatCentre(fc),pl.p),unit(pl.n)))<1e-6);
+                const walls=out.faces.filter(fc=>!onEnd(fc));
+                if(!walls.length)throw new Error('The draft could not be made');
+                parts.push(asShape(walls));
+              }
+            }
+          }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}
+          for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this direction and these ends');}finally{check.delete();}}
+          const shape=asShape(parts);
+          if(!shape.faces.length)throw new Error('The start and end leave no surface');
+          surfaces.push(bodyRec(newId(f.id),shape,f.id));
+          applied.push({op:'add',tool:shape});
+          break;
+        }
         case 'surfRevolve': {
-          const refs=Array.isArray(f.profiles)?f.profiles:f.sketch?[f.sketch]:[];
-          if(!refs.length)throw new Error('Select one or more surface contours');
-          const sections=refs.map(ref=>{
-            const source=sketches.get(LR.sourceId(ref));if(!source)throw new Error('A surface profile sketch is missing');
-            const subset=typeof ref==='string'?source.sk:LR.resolveContour(source.sk,ref).sketch;
-            return {...source,sk:subset,sourceSketch:source.sk,id:LR.sourceId(ref)};
-          });
-          const first=sections[0];for(const sk of sections)if(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Surface profiles must lie in the same plane');
-          const oc=R.getOC(),parts=[],extrusion=f.type==='surfExtrude'?extrusionInterval(f,ev):null,revolution=f.type==='surfRevolve'?revolutionInterval(f,ev):null,axis=revolution?revolveAxisOf(f,first):null;
-          for(const sk of sections){
-            if(axis)checkRevolveAxis(sk,axis);
-            const axisLine=f.axis==='sketchLine'?(f.axisSketch?.sketch===sk.id?f.axisSketch.curve:null):f.axis;
-            const subset=revolution?{...sk.sk,curves:sk.sk.curves.filter(c=>c.id!==axisLine)}:sk.sk;
-            const wires=sketchWires(subset,sk.frame);
-            if(!wires.length)throw new Error('The selected surface contour contains no usable curves');
-            try{for(let wi=0;wi<wires.length;wi++){let wire=wires[wi],maker,vector,ax;
-              try{
-                if(extrusion){
-                  const sign=dot(sk.frame.n,first.frame.n)<0?-1:1,start=sign<0?-extrusion.end:extrusion.start,end=sign<0?-extrusion.start:extrusion.end;
-                  if(start)wires[wi]=wire=wire.translate(mul(sk.frame.n,start));vector=new R.Vector(mul(sk.frame.n,end-start));
-                  maker=new oc.BRepPrimAPI_MakePrism(wire.wrapped,vector.wrapped,false,true);
-                }else{ax=R.makeAx1(axis.o,axis.d);maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);}
-                let shape=R.cast(maker.Shape());if(revolution?.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);
-              }finally{maker?.delete();vector?.delete();ax?.delete();}
-            }}finally{wires.forEach(w=>w.delete());}
-          }
-          for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
+          const sections=surfaceSections(f,true),parts=[];
+          try{
+            const first=sections.find(s=>s.planar)||sections[0];
+            for(const sk of sections)if(sk.planar&&first.planar&&(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5))throw new Error('Surface profiles must lie in the same plane');
+            if(!first.planar&&f.projectAxis)throw new Error('Model edges that do not lie in one plane cannot have the axis projected into their plane');
+            const oc=R.getOC(),axis=revolveAxisOf(f,first),revolution=revolveExtent(f,first,axis);
+            if(revolution.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
+            for(const sk of sections){
+              if(sk.planar)checkRevolveAxis(sk,axis);
+              for(const {wire} of sk.wires){
+                const ax=R.makeAx1(axis.o,axis.d),maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);
+                try{let shape=R.cast(maker.Shape());if(revolution.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);}finally{maker.delete();ax.delete();}
+              }
+            }
+            for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
+          }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}
           const shape = asShape(parts);
           surfaces.push(bodyRec(newId(f.id), shape, f.id));
           applied.push({ op: 'add', tool: shape });
@@ -4449,6 +4941,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               return loftSection(sk.frame, S.chainSegs(subset, ch));
             });
             if (secs.every(Boolean)) {
+              if (connectorControls) secs.forEach((s, i) => { secs[i] = LC.splitSectionAt(s, connectorControls[i].anchor); });
               closedSecs = matchLoftSections(secs, ids.map((id) => sketches.get(LR.sourceId(id)).sk.name));
               if(connectorControls)closedSecs=LC.applySectionConnections(closedSecs,secs,connectorControls,true);
               list = closedSecs.map(sectionWire);
@@ -4515,7 +5008,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const owned=[];
           try{
           checkSweepRefs(f);
-          const {wire:spine,helical}=sweepWire(f.path,'path',owned);
+          const ps=f.profileType==='circle'||!f.profile?null:sketches.get(LR.sourceId(f.profile));
+          const {wire:spine,helical}=sweepPath(f,owned,ps?.frame);
           let profile;
           if (f.profileType === 'circle') {
             const dia = ev(f.diameter);
@@ -4523,7 +5017,6 @@ async function rebuild(doc, previewId = null, opts = {}) {
             profile = R.assembleWire([R.makeCircle(dia / 2, vec(spine.startPoint), unit(vec(spine.tangentAt(0))))]);owned.push(profile);
           } else {
             if(!f.profile)throw new Error('Select a surface sweep profile');
-            const ps=sketches.get(LR.sourceId(f.profile));
             if(!ps)throw new Error('The profile sketch is missing, suppressed or has errors');
             const subset=typeof f.profile==='string'?ps.sk:LR.resolveContour(ps.sk,f.profile).sketch;
             const ws=sketchWires(subset,ps.frame);owned.push(...ws);
@@ -4531,12 +5024,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
             profile=ws[0];
           }
           const guide=f.guide?sweepWire(f.guide,'guide',owned).wire:null;
-          const orientation = f.orientation || 'perpendicular', twist = guide || orientation === 'parallel' ? 0 : ev(f.twistAngle ?? 0);
-          const oriented = !guide && (orientation !== 'perpendicular' || twist !== 0);
-          let shape = guide ? sweepWithGuide(profile, spine, guide, f.guideMode || 'orientation', true) : oriented ? sweepWithOrientation(R, profile, spine, orientation, twist, true, nearFacePoint) : null;
-          for (const transitionMode of guide || oriented ? [] : ['right', 'round', 'transformed']) {
-            try { shape = R.genericSweep(profile, spine, { frenet: helical, transitionMode }, true)[0]; break; } catch (e) { if (isFatal(e)) throw e; }
-          }
+          const options = sweepOptions(f, spine, guide);
+          let shape = guide ? sweepWithGuide(profile, spine, guide, f.guideMode || 'orientation', true) : sweepAlong(profile, spine, options, { surface: true, helical });
           if (guide) res.notes[f.id] = `Path and one guide · ${f.guideMode === 'contact' ? 'Section size; CAD guide contact ≤ 0.0001 mm' : 'Orientation; constant profile size'} · Uncapped surface`;
           if (!shape) throw new Error('The profile could not be swept along the path (place it at the start of the path, across it)');
           surfaces.push(bodyRec(newId(f.id), shape, f.id));
@@ -4580,10 +5069,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
               support=choices[0];used.add(support);
             }
             if(owners.length===1){ref.body=owners[0].id;updateEdgeRef(ref,edge,owners[0].shape);}
-            entries.push({edge,support,continuity});
+            const reach=ref.reach==null||ref.reach===''?0:ev(ref.reach);
+            if(!(Number.isFinite(reach)&&reach>=0))throw new Error('The tangent reach must be zero or more');
+            entries.push({edge,support,continuity,reach});
+          }
+          // (curves and points inside the opening that the patch passes through: sketches, 3D sketches and curves;
+          // reference points and the standalone points of sketches)
+          const interior={edges:[],points:[]};
+          for(const id of f.throughCurves||[]){
+            if(curves.has(id)){interior.edges.push(...curves.get(id).wire.edges);continue;}
+            const s=sketches.get(id);if(!s)throw new Error('A curve the patch passes through is missing, suppressed or has errors');
+            for(const w of sketchWires(s.sk,s.frame))interior.edges.push(...w.edges);
+          }
+          for(const id of f.throughPoints||[]){
+            if(points.has(id)){interior.points.push(points.get(id));continue;}
+            const s=sketches.get(id);if(!s)throw new Error('A point the patch passes through is missing, suppressed or has errors');
+            const used=new Set(s.sk.curves.flatMap(c=>[c.p1,c.p2,c.c,c.a,...(c.pts||[])]).filter(Boolean)),pts=s.sk.points.filter(q=>q.id!=='O'&&!used.has(q.id));
+            if(!pts.length)throw new Error(`${s.sk.name} has no points of its own (points not on its curves) for the patch to pass through`);
+            interior.points.push(...pts.map(q=>S.fromFrame2D(s.frame,q.x,q.y)));
           }
           if(entries.some(e=>e.continuity!=='G0')&&selected.some(face=>![...used].some(f=>f.isSame(face))))throw new Error('A selected patch support face is not adjacent to a constrained boundary edge');
-          const result=buildSurfacePatch(R,entries,{fatal:isFatal,message:e=>e instanceof WebAssembly.Exception?R.getOC().getExceptionMessage(e).join(': '):e.message||String(e),stack});
+          const result=buildSurfacePatch(R,entries,{fatal:isFatal,message:e=>e instanceof WebAssembly.Exception?R.getOC().getExceptionMessage(e).join(': '):e.message||String(e),stack,interior:interior.edges.length||interior.points.length?interior:null});
           const patch=result.shape,surfRec=recs.size===1&&surfaces.includes([...recs][0])?[...recs][0]:null;
           let note='';
           try{
@@ -5658,7 +6164,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const owned=[];
           try{
           checkSweepRefs(f);
-          const {wire:spine,helical}=sweepWire(f.path,'path',owned);
+          const sk = f.profileType === 'circle' ? null : getSketch(f.profile, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null);
+          const {wire:spine,helical}=sweepPath(f,owned,sk?.frame);
           const start = vec(spine.startPoint), tan0 = unit(vec(spine.tangentAt(0)));
           let profiles;
           if (f.profileType === 'circle') {
@@ -5666,21 +6173,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (!(dia > 0)) throw new Error('The diameter must be greater than zero');
             profiles = [{ outer: R.assembleWire([R.makeCircle(dia / 2, start, tan0)]), holes: [] }];
           } else {
-            const sk = getSketch(f.profile, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null);
             profiles = sk.regions.map((rg) => ({ outer: loopWire(sk.frame, rg.outer.segs), holes: rg.holes.map((h) => loopWire(sk.frame, h.segs)) }));
           }
           profiles.forEach(p=>owned.push(p.outer,...p.holes));
           const guide=f.guide?sweepWire(f.guide,'guide',owned).wire:null;
           if(guide&&(f.profileType!=='circle'&&f.thin||profiles.length!==1||profiles[0].holes.length))throw new Error('A guided sweep requires one closed profile without holes or Thin Feature');
-          const orientation = f.orientation || 'perpendicular', twist = guide || orientation === 'parallel' ? 0 : ev(f.twistAngle ?? 0);
-          const sweepOne = (w) => {
-            if (guide) return sweepWithGuide(w, spine, guide, f.guideMode || 'orientation');
-            if (orientation !== 'perpendicular' || twist !== 0) return sweepWithOrientation(R, w, spine, orientation, twist, false, nearFacePoint);
-            for (const transitionMode of ['right', 'round', 'transformed']) {
-              try { return R.genericSweep(w, spine, { frenet: helical, transitionMode }); } catch (e) { if (isFatal(e)) throw e; }
-            }
-            throw new Error('The profile could not be swept along the path (place the profile at the start of the path, across it)');
-          };
+          const options = sweepOptions(f, spine, guide);
+          const sweepOne = (w) => (guide ? sweepWithGuide(w, spine, guide, f.guideMode || 'orientation') : sweepAlong(w, spine, options, { helical }));
           let tool = null;
           for (const pr of profiles) {
             let s = sweepOne(pr.outer);
@@ -5707,7 +6206,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const resolved = typeof id === 'string' ? { sketch: s.sk } : LR.resolveContour(s.sk, id);
             const regions = thin ? S.thinRegions(resolved.sketch, thin.t, thin.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
             if (regions.length !== 1) throw new Error(`${s.sk.name} must have exactly one closed profile (it has ${regions.length})`);
-            return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)) };
+            return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)), holeKeys: regions[0].holes.map(LC.holeKey) };
+          });
+          // (manual connectors: a connector inside a curve splits it there, so the profile gains a point; holes paired
+          // and started by hand; a Thin loft's walls each start at their vertex nearest the connector)
+          const holeControls = profs.map(() => []);
+          if (connectorControls) profs.forEach((p, i) => {
+            const c = connectorControls[i];
+            if (thin) {
+              const nearest = (sec, q) => (q && sec.segs ? sec.segs.reduce((b, g) => (len(sub(g.a, q)) < len(sub(b, q)) ? g.a : b), sec.segs[0].a) : null);
+              if (c.anchor) { holeControls[i] = p.holes.map((h) => ({ anchor: nearest(h, c.anchor), reverse: c.reverse })); connectorControls[i] = { ...c, anchor: nearest(p.outer, c.anchor) }; }
+              return;
+            }
+            p.outer = LC.splitSectionAt(p.outer, c.anchor);
+            const order = LC.holeOrder(c.control, p.holeKeys);
+            p.holes = order.map((k) => p.holes[k]); p.holeKeys = order.map((k) => p.holeKeys[k]);
+            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
           });
           // (continuity C2: curvature-continuous through the profiles, the kernel's usual; C1: tangent-continuous;
           // smoothing: the surface evened out, with its own builder when either is asked for)
@@ -5743,7 +6257,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (profs.some((p) => p.holes.length !== nh)) throw new Error('Every profile needs the same number of holes (inner loops)');
           let outerM = matchLoftSections(profs.map((p) => p.outer), names);
           if(connectorControls){outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
-          const holesM = Array.from({ length: nh }, (_, i) => matchLoftSections(profs.map((p) => p.holes[i]), names));
+          const holesM = Array.from({ length: nh }, (_, i) => {
+            const m = matchLoftSections(profs.map((p) => p.holes[i]), names), cs = holeControls.map((h) => h[i] || { anchor: null, reverse: false });
+            return cs.some((c) => c.anchor) ? LC.applySectionConnections(m, profs.map((p) => p.holes[i]), cs.map((c) => ({ ...c, reverse: cs[0].reverse })), true) : m;
+          });
           if (hasLoftEnds(f)) {
             const endWires = outerM.map(sectionWire);
             const tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thin ? thin.t : 0 });
@@ -6100,7 +6617,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'smBase': {
           const sk = getSketch(f.sketch);
-          const t = ev(f.thickness), R0 = ev(f.radius), K = ev(f.kFactor);
+          const t = ev(f.thickness), R0 = ev(f.radius), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
           if (!(R0 > 0)) throw new Error('The bend radius must be greater than zero');
           if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
@@ -6117,9 +6634,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // a sheet between two open profiles (one sketch each), bent from flat facets or formed smooth
           if (!f.profileA || !f.profileB) throw new Error('Select the two open profile sketches');
           if (f.profileA === f.profileB) throw new Error('Select two different sketches');
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius ?? 0);
+          const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
           const bent = f.method !== 'formed';
           // formed: the surface finer, a whole number of strips per forming line in the flat pattern
           const nDiv = Math.round(ev(f.bends ?? 12));
@@ -6441,26 +6957,97 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const dir = mul(s.frame.n, f.reverse ? 1 : -1);
             for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: P3(pt.id), dir });
           }
-          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) });
-          if (!locs.length) throw new Error('Click points on a flat face for the holes, or select a sketch with points (or circles) on the face');
-          if (!body) throw new Error('There is no body to put holes in');
-          const through = f.end === 'through';
-          // (through: past the far side, from points on the body or, for an assembly's hole, away from it)
-          const bb = bbox(body), depth = through ? 2 * bb.diag + 1 + Math.max(0, ...locs.map((l) => len(sub(l.p, bb.center)))) : ev(f.depth);
-          if (!(depth > 0)) throw new Error('The hole depth must be greater than zero');
-          if (spec.type === 'cbore' && depth <= spec.cbDepth) throw new Error('The hole must be deeper than its counterbore');
-          const prof = holeProfile(spec, depth, !through && f.drillPoint !== false);
-          let tool = null;
-          for (const { p, dir } of locs) {
-            const u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-            const face = R.makePolygon(prof.map(([r, z]) => add(add(p, mul(u, r)), mul(dir, z))));
-            const one = R.revolution(face, p, dir, 360);
-            tool = tool ? tool.fuse(one) : one;
+          for (const fc of f.faces || []) {
+            if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+            // (a point on a curved face: moved onto it, the hole square to it there)
+            if (!body) break;
+            const hit = findFaceAny(solids, fc);
+            if (!hit) throw new Error('A hole’s face could not be found in the model');
+            const oc = R.getOC(), g = new oc.gp_Pnt(...fc.p), mv = new oc.BRepBuilderAPI_MakeVertex(g), dq = new oc.BRepExtrema_DistShapeShape();
+            let q = fc.p;
+            try { dq.LoadS1(mv.Vertex()); dq.LoadS2(hit.face.wrapped); dq.Perform(); if (dq.IsDone() && dq.NbSolution() > 0) { const t = dq.PointOnShape2(1); q = [t.X(), t.Y(), t.Z()]; t.delete?.(); } } finally { dq.delete(); mv.delete(); g.delete(); }
+            locs.push({ p: q, dir: mul(unit(vec(hit.face.normalAt(q))), f.reverse ? 1 : -1) });
           }
+          if (!locs.length) throw new Error('Click points on a face for the holes, or select a sketch with points (or circles) on the face');
+          if (!body) throw new Error('There is no body to put holes in');
+          // ends: blind, through (all), upToNext (where the axis first leaves the material), upToSurface /
+          // offsetSurface (toPlane / toFace, toOffset, toFlip) and upToVertex (toPoint / toVertex): a depth for each hole
+          const end = f.end || 'blind';
+          if (!['blind', 'through', 'upToNext', 'upToSurface', 'offsetSurface', 'upToVertex'].includes(end)) throw new Error('Select a supported hole end');
+          const through = end === 'through';
+          const bb = bbox(body), far = 2 * bb.diag + 1 + Math.max(0, ...locs.map((l) => len(sub(l.p, bb.center))));
+          // (where the axis runs in the material: the pieces of it inside the body, [from, to] along it)
+          const runs = ({ p, dir }) => {
+            const e = R.makeLine(add(p, mul(dir, -1e-3)), add(p, mul(dir, far))), parts = [];
+            try {
+              const inside = boolByList('common', e, [body]);
+              for (const piece of inside.edges) { const a = dot(sub(vec(piece.startPoint), p), dir), b = dot(sub(vec(piece.endPoint), p), dir); parts.push([Math.min(a, b), Math.max(a, b)]); }
+            } finally { e.delete(); }
+            return parts.sort((x, y) => x[0] - y[0]);
+          };
+          let endPlane = null;
+          if (end === 'upToSurface' || end === 'offsetSurface') {
+            endPlane = resolveSurface(f.toPlane, f.toFace);
+            if (f.toFace) res.features[f.id] = { ...(res.features[f.id] || {}), toFace: f.toFace };
+          }
+          const depthOf = (loc) => {
+            if (through) return far;
+            if (end === 'blind') return ev(f.depth);
+            if (end === 'upToNext') {
+              const r = runs(loc).filter(([, b]) => b > 1e-6);
+              if (!r.length) throw new Error('A hole does not go into the material (Up To Next: reverse it?)');
+              return r[0][1];
+            }
+            if (end === 'upToVertex') return dot(sub(resolvePoint(f.toPoint, f.toVertex), loc.p), loc.dir);
+            const c = dot(loc.dir, endPlane.n);
+            if (Math.abs(c) < 1e-9) throw new Error('The end surface is parallel to the hole');
+            let d = dot(sub(endPlane.p, loc.p), endPlane.n) / c;
+            if (end === 'offsetSurface') d -= ev(f.toOffset ?? 0) * (f.toFlip ? -1 : 1);
+            return d;
+          };
+          const depths = locs.map(depthOf);
+          if (depths.some((d) => !(d > 0))) throw new Error(end === 'blind' ? 'The hole depth must be greater than zero' : 'A hole’s end lies behind where it starts (reverse it, or choose another end)');
+          const depth = depths[0];
+          if (spec.type === 'cbore' && depths.some((d) => d <= spec.cbDepth)) throw new Error('The hole must be deeper than its counterbore');
+          // (a drill point at a blind hole's end, of drillAngle; open ends go a hair past where they leave the material,
+          // less than half way to where it starts again)
+          const point = end === 'blind' && f.drillPoint !== false, pointAngle = ev(f.drillAngle ?? 118);
+          if (point && !(pointAngle > 0 && pointAngle < 180)) throw new Error('The drill point angle must be between 0° and 180°');
+          const over = (loc, d) => { if (end !== 'upToNext') return 0; const next = runs(loc).find(([a]) => a > d + 1e-6); return Math.min(0.05, next ? (next[0] - d) / 2 : 0.05); };
+          // (far-side countersink: a cone at the far side, where the hole leaves the material: the first wall for Up To
+          // Next, the last for Through All)
+          const farSink = f.farCsink && (through || end === 'upToNext') ? { D: ev(f.farCsinkD), ang: ev(f.farCsinkAngle ?? 90) } : null;
+          if (farSink && !(farSink.D > spec.d && farSink.ang > 0 && farSink.ang < 180)) throw new Error('The far-side countersink must be wider than the hole, at an angle between 0° and 180°');
+          const slot = spec.type === 'slot';
+          let tool = null;
+          locs.forEach((loc, i) => {
+            const { p, dir } = loc, u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), d = depths[i] + over(loc, depths[i]);
+            let one;
+            if (slot) {
+              // (a slot: two half circles of the hole's diameter joined, slotLength between their centres, turned slotAngle
+              // about the hole's axis from the face's X direction, as a sketch on it has it)
+              const L = ev(f.slotLength), w = spec.d / 2, a = (ev(f.slotAngle ?? 0) * Math.PI) / 180, fr = frameOnPlane(p, mul(dir, -1)), x = add(mul(fr.u, Math.cos(a)), mul(fr.v, Math.sin(a)));
+              if (!(L >= 0)) throw new Error('The slot length must be zero or more');
+              const outline = L > 1e-9 ? R.draw([-L / 2, -w]).lineTo([L / 2, -w]).threePointsArcTo([L / 2, w], [L / 2 + w, 0]).lineTo([-L / 2, w]).threePointsArcTo([-L / 2, -w], [-L / 2 - w, 0]).close() : R.drawCircle(w);
+              one = outline.sketchOnPlane(new R.Plane(add(p, mul(dir, -0.05)), x, dir)).extrude(d + 0.05);
+            } else {
+              const prof = holeProfile(spec, d, point, pointAngle);
+              one = R.revolution(R.makePolygon(prof.map(([r, z]) => add(add(p, mul(u, r)), mul(dir, z)))), p, dir, 360);
+            }
+            if (farSink) {
+              const r = runs(loc).filter(([, b]) => b > 1e-6), exit = (end === 'upToNext' ? r[0] : r.at(-1))?.[1];
+              if (exit != null) {
+                const rc = farSink.D / 2, rr = spec.d / 2, h = (rc - rr) / Math.tan((farSink.ang * Math.PI) / 360);
+                const cone = [[0, exit - h], [rr, exit - h], [rc + 0.05 * Math.tan((farSink.ang * Math.PI) / 360), exit + 0.05], [0, exit + 0.05]];
+                one = one.fuse(R.revolution(R.makePolygon(cone.map(([r2, z]) => add(add(p, mul(u, r2)), mul(dir, z)))), p, dir, 360));
+              }
+            }
+            tool = tool ? tool.fuse(one) : one;
+          });
           tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
           apply('cut', tool, true, null);
-          res.features[f.id] = { faces: f.faces || [], holes: locs.map((l) => ({ p: l.p, dir: l.dir })), spec: spec.label, sizes: { type: spec.type, d: spec.d, cbD: spec.cbD, cbDepth: spec.cbDepth, csD: spec.csD, csAng: spec.csAng }, through, depth: through ? null : depth, thread: spec.thread ? { label: spec.thread.label, depth: f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth) } : null };
-          res.notes[f.id] = `${locs.length} hole${locs.length === 1 ? '' : 's'}: ${spec.label}${through ? ', through all' : `, ${+depth.toFixed(3)} deep`}${spec.thread ? ' (cosmetic thread: add Thread Cut on the hole for a modelled one)' : ''}`;
+          res.features[f.id] = { ...(res.features[f.id] || {}), faces: f.faces || [], holes: locs.map((l) => ({ p: l.p, dir: l.dir })), spec: spec.label, sizes: { type: spec.type, d: spec.d, cbD: spec.cbD, cbDepth: spec.cbDepth, csD: spec.csD, csAng: spec.csAng }, through, depth: through ? null : depth, thread: spec.thread ? { label: spec.thread.label, depth: f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth) } : null };
+          res.notes[f.id] = `${locs.length} ${slot ? 'slot' : 'hole'}${locs.length === 1 ? '' : 's'}: ${spec.label}${through ? ', through all' : end === 'upToNext' ? ', up to the next face' : `, ${+depth.toFixed(3)} deep`}${farSink ? `, far-side countersink Ø${+farSink.D.toFixed(3)}` : ''}${spec.thread ? ' (cosmetic thread: add Thread Cut on the hole for a modelled one)' : ''}`;
           // a tapped hole's thread, shown like a cosmetic thread: as deep as asked, else the bore in the material
           if (spec.thread) {
             const th = spec.thread, D1 = minorDiameter(th.D, th.P), tDepth = f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth);
@@ -6637,8 +7224,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (chains.length !== 1) throw new Error(`The sketch must hold one chain of lines / arcs joined end to end, or one circle (it has ${chains.length || 'none'})`);
           const segs = S.chainSegs(s.sk, chains[0]);
           if (chains[0].closed && !(segs.length === 1 && segs[0].type === 'circle')) throw new Error('The profile is closed: leave a gap where the seam goes (only a lone circle is rolled closed, with its seam gap)');
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius), depth = ev(f.depth);
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
+          const t = ev(f.thickness), R0 = ev(f.radius), K = sheetKFactor(f, R0, t), depth = ev(f.depth);
           if (!(R0 >= 0)) throw new Error('The bend radius can\'t be negative');
           if (!(depth > 0)) throw new Error('The depth must be greater than zero');
           const [z0, z1] = f.direction === 'mid' ? [-depth / 2, depth / 2] : f.direction === 'reverse' ? [-depth, 0] : [0, depth];
@@ -6672,9 +7258,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // X: in the sketch plane, square to the line; turned about the axis by the rotation
           const X0 = unit(cross(d, fr.n)), Y0 = cross(d, X0), rot = (ev(f.rotation ?? 0) * Math.PI) / 180;
           const X = add(mul(X0, Math.cos(rot)), mul(Y0, Math.sin(rot))), Y = cross(d, X);
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius ?? 0);
+          const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
           const spec = (k) => ({ shape: f[k + 'Shape'], d: ev(f[k + 'D']), w: ev(f[k + 'W']), l: ev(f[k + 'L']), size: ev(f[k + 'Size']), basis: f[k + 'Basis'] });
           const raw = [SM.transitionEnd(spec('b')), SM.transitionEnd(spec('t'))];
           // the sizes are of the inside (material outward), the outside (material inward) or the middle of
@@ -6734,6 +7319,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           let out = SM.addFlanges(sheet, edges, {
             length: ev(f.length), lengthRef: f.lengthRef, angle: ev(f.angle), position: f.position, offset: ev(f.offset || 0),
             R: R0, flip: !!f.flip, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
+            extent: { type: f.widthType || 'full', a: ev(f.startOffset ?? 0), b: ev(f.endOffset ?? 0), width: ev(f.flangeWidth ?? 0), swap: !!f.swapEnds },
           });
           // corners between these flanges: closed with the gap (older parts: open)
           if ((f.corner === 'closed' || f.corner === 'butt' || f.corner === 'square') && edges.length > 1) {
@@ -7793,7 +8379,7 @@ function matchLoftSections(secs, names) {
   if (N === 0) return secs.map((s) => ({ circle: s.circle }));
   const ref = counts.findIndex((n) => n > 0);
   secs.forEach((s, i) => {
-    if (s.segs && s.segs.length !== N) throw new Error(`${names[i]} has ${s.segs.length} segments but ${names[counts.indexOf(N)]} has ${N}. A loft needs the same number of points on every profile (circles are split automatically) — split the curves so the counts match.`);
+    if (s.segs && s.segs.length !== N) throw new Error(`${names[i]} has ${s.segs.length} segments but ${names[counts.indexOf(N)]} has ${N}. A loft needs the same number of points on every profile (circles are split automatically) — split the curves so the counts match, or attach a connector inside a curve (Edit profile connectors) to add a point there.`);
   });
   const centroid = (pts) => mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
   const newell = (pts) => { let n = [0, 0, 0]; pts.forEach((p, i) => { n = add(n, cross(p, pts[(i + 1) % pts.length])); }); return n; };
@@ -8070,6 +8656,12 @@ function guidedLoftWires(matched, guides, names, holeSets = [], slack = 0, { ope
 // Refine the intermediate sections until independent points on the native guide edges are within 0.01 mm
 // of the resulting CAD faces. Never silently accept a fit that fails this sampled tolerance check.
 function buildGuidedLoft(matched, guides, names, holeSets, slack, options) {
+  if (options.constrained && holeSets.length && !slack && matched.length === 2) {
+    // (holes with CAD guide constraints: the outline made from the guides, each hole lofted between the two profiles
+    // without them, for the caller to cut out)
+    const g = constrainedGuideLoft(matched, guides, names, [], 0, options);
+    return { ...g, holes: holeSets.map((set) => R.loft(set.map(sectionWire), { ruled: false })) };
+  }
   if (options.constrained) return constrainedGuideLoft(matched, guides, names, holeSets, slack, options);
   let worst = 0, worstName = '';
   for (const stations of [16, 32, 64, 128]) {
@@ -8199,7 +8791,7 @@ function sweepWithGuide(profile, spine, originalGuide, mode, surface = false) {
   }catch(e){shape?.delete();throw e;}finally{reversed?.delete();}
 }
 function constrainedGuideLoft(matched, guides, names, holeSets, slack, options) {
-  if (matched.length !== 2 || holeSets.length || slack) throw new Error('CAD guide constraints currently require two profiles without holes or Thin Feature. Select Adaptive approximation for this loft');
+  if (matched.length !== 2 || holeSets.length || slack) throw new Error('CAD guide constraints currently require two profiles, without Thin Feature. Select Adaptive approximation for this loft');
   const continuity = options.guideContinuity || 'C0', seams = [];
   if (continuity === 'G2' && (typeof R.getOC().RazorCADSurfacePatch?.BuildNetwork !== 'function' || typeof R.getOC().RazorCADSurfacePatch?.BuildNetworkOnSurface !== 'function')) throw new Error('G2 guide continuity is not available in the loaded kernel. Reload RazorCAD to load the updated kernel');
   if (!['C0', 'G1', 'G2'].includes(continuity)) throw new Error('Select C0, G1 or G2 guide continuity');
@@ -9758,6 +10350,11 @@ async function handleMessage(e) {
     } else if (type === 'exportFaceDXF') {
       result = exportFaceDXF(data.ref);
       transfer = [result.buffer];
+    } else if (type === 'faceEdges') {
+      // (a face's edges, for picking them all at once: their middles and bodies)
+      const hit = findFaceAny(lastSolids, data.ref);
+      if (!hit) throw new Error('The face could not be found');
+      result = hit.face.edges.map((e) => { const r = { p: vec(e.pointAt(0.5)), body: hit.body.id }; updateEdgeRef(r, e, hit.body.shape); return r; });
     } else if (type === 'patchChain') {
       result = patchChainSelection(data);
     } else if (type === 'featureFaces') {

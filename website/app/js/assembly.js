@@ -69,6 +69,10 @@ export const MATE_TYPES = {
   // mechanical: how one component turns (or slides) as another turns, from where they are now
   gear: { label: 'Gear', icon: 'mateGear', value: 'ratio' },
   rack: { label: 'Rack Pinion', icon: 'mateRack', value: 'mm/rev' },
+  screw: { label: 'Screw', icon: 'mateConcentric', value: 'mm/rev' },
+  // (with more entities: width, a second face on each component; symmetric, the plane between them)
+  width: { label: 'Width', icon: 'mateDistance', extra: 2 },
+  symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
 };
 
 // A component's turn about a direction d since orientation q0 (radians, between −π and π).
@@ -88,6 +92,8 @@ export function mechRef(m, poseOf, worldRef) {
     const da = unit(A.d), db = dot(A.d, B.d) < 0 ? mul(unit(B.d), -1) : unit(B.d);
     return { qa, qb, da, db };
   }
+  // (a screw: the second component's turn about the shared axis and its slide along it, both relative to the first's)
+  if (m.type === 'screw') return { qa, qb, da: unit(A.d), pa: pa.p.slice(), pb: pb.p.slice() };
   const pin = A.kind === 'axis' && A.r > 0 ? 'a' : 'b', P = pin === 'a' ? A : B, Rk = pin === 'a' ? B : A;
   const dp = unit(P.d), dr = Rk.kind === 'plane' ? unit(cross(dp, Rk.n)) : unit(Rk.d);
   const rk = pin === 'a' ? pb : pa;
@@ -126,10 +132,40 @@ const dirWorld = (pose, d) => applyQ(pose.q, d);
 // a small rotation (rotation vector w) applied before q
 const turned = (q, w) => { const a = len(w); if (a < 1e-15) return q.clone(); return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...mul(w, 1 / a)), a).multiply(q); };
 
-// The equations of one mate: functions of world geometry A, B (refs placed by the trial poses).
-function mateEquations(m, A, B) {
+// The equations of one mate: functions of world geometry A, B (refs placed by the trial poses); C, D the extra refs of a
+// width mate (A's other face, B's other face) or C a symmetric mate's plane.
+function mateEquations(m, A, B, C = null, D = null) {
   const t = m.type, ka = m.a.kind, kb = m.b.kind, s = m.align || -1, side = m.side || 1, v = Number(m.value) || 0;
   const eqs = [];
+  // (a distance or angle mate with limits: nothing to meet between min and max, else the nearer of them; x the measured
+  // value, in the mate's units)
+  // (solveAssembly holds a limit as it found it, m._lim: 'free' (nothing to meet), 'lo' / 'hi' (the limit met exactly))
+  const lim = (x, scale = 1) => {
+    if (!m.limit) return x - v * scale;
+    const lo = m.min === '' || m.min == null ? -Infinity : Number(m.min) * scale, hi = m.max === '' || m.max == null ? Infinity : Number(m.max) * scale;
+    if (m._lim === 'free') return 0;
+    if (m._lim === 'lo') return x - lo;
+    if (m._lim === 'hi') return x - hi;
+    return x < lo ? x - lo : x > hi ? x - hi : 0;
+  };
+  if (t === 'width') {
+    // (B's two faces parallel to A's, their middle plane on A's)
+    if (!C || !D) return eqs;
+    const vecW = (f) => { for (const k of [0, 1, 2]) eqs.push(() => f()[k]); };
+    vecW(() => cross(A().n, B().n));
+    eqs.push(() => dot(A().n, sub(mul(add(B().p, D().p), 0.5), mul(add(A().p, C().p), 0.5))));
+    return eqs;
+  }
+  if (t === 'symmetric') {
+    // (B where A's mirror image in the plane C is)
+    if (!C) return eqs;
+    const mir = (p) => { const c = C(); return sub(p, mul(c.n, 2 * dot(sub(p, c.p), c.n))); }, mirD = (d) => { const c = C(); return sub(d, mul(c.n, 2 * dot(d, c.n))); };
+    const vecS = (f) => { for (const k of [0, 1, 2]) eqs.push(() => f()[k]); };
+    if (ka === 'plane' && kb === 'plane') { vecS(() => sub(mirD(A().n), mul(B().n, s))); eqs.push(() => dot(B().n, sub(B().p, mir(A().p)))); }
+    else if (ka === 'point' && kb === 'point') vecS(() => sub(mir(A().p), B().p));
+    else if (ka === 'axis' && kb === 'axis') { vecS(() => cross(mirD(A().d), B().d)); vecS(() => cross(sub(B().p, mir(A().p)), B().d)); }
+    return eqs;
+  }
   const vec3 = (f) => { for (const k of [0, 1, 2]) eqs.push(() => f()[k]); };
   const swap = (x, y) => [x, y];
   const pair = (k1, k2) => (ka === k1 && kb === k2 ? swap(A, B) : ka === k2 && kb === k1 ? swap(B, A) : null);
@@ -164,18 +200,17 @@ function mateEquations(m, A, B) {
   }
   if (t === 'distance') {
     let q;
-    if ((q = pair('plane', 'plane'))) { const [a, b] = q; vec3(() => sub(a().n, mul(b().n, s))); eqs.push(() => dot(a().n, sub(b().p, a().p)) - side * v); }
-    else if ((q = pair('plane', 'point'))) { const [a, b] = q; eqs.push(() => dot(a().n, sub(b().p, a().p)) - side * v); }
-    else if ((q = pair('point', 'point'))) { const [a, b] = q; eqs.push(() => len(sub(a().p, b().p)) - v); }
-    else if ((q = pair('axis', 'axis'))) { const [a, b] = q; vec3(() => cross(a().d, b().d)); eqs.push(() => len(cross(sub(b().p, a().p), unit(a().d))) - v); }
-    else if ((q = pair('axis', 'point'))) { const [a, b] = q; eqs.push(() => len(cross(sub(b().p, a().p), unit(a().d))) - v); }
-    else if ((q = pair('plane', 'axis'))) { const [a, b] = q; eqs.push(() => dot(a().n, b().d)); eqs.push(() => dot(a().n, sub(b().p, a().p)) - side * v); }
+    if ((q = pair('plane', 'plane'))) { const [a, b] = q; vec3(() => sub(a().n, mul(b().n, s))); eqs.push(() => lim(side * dot(a().n, sub(b().p, a().p)))); }
+    else if ((q = pair('plane', 'point'))) { const [a, b] = q; eqs.push(() => lim(side * dot(a().n, sub(b().p, a().p)))); }
+    else if ((q = pair('point', 'point'))) { const [a, b] = q; eqs.push(() => lim(len(sub(a().p, b().p)))); }
+    else if ((q = pair('axis', 'axis'))) { const [a, b] = q; vec3(() => cross(a().d, b().d)); eqs.push(() => lim(len(cross(sub(b().p, a().p), unit(a().d))))); }
+    else if ((q = pair('axis', 'point'))) { const [a, b] = q; eqs.push(() => lim(len(cross(sub(b().p, a().p), unit(a().d))))); }
+    else if ((q = pair('plane', 'axis'))) { const [a, b] = q; eqs.push(() => dot(a().n, b().d)); eqs.push(() => lim(side * dot(a().n, sub(b().p, a().p)))); }
     return eqs;
   }
   if (t === 'angle') {
-    const th = (v * Math.PI) / 180;
     const dir = (o) => (o.kind === 'plane' ? o.n : o.d);
-    eqs.push(() => { const x = dir(A()), y = dir(B()); return Math.atan2(len(cross(x, y)), dot(x, y)) - th; });
+    eqs.push(() => { const x = dir(A()), y = dir(B()); return lim(Math.atan2(len(cross(x, y)), dot(x, y)), Math.PI / 180); });
     void ka; void kb;
     return eqs;
   }
@@ -196,12 +231,12 @@ export function mateChoices(A, B) {
   const k = [A.kind, B.kind].sort().join(',');
   const cyl = (o) => o.kind === 'axis' && o.r > 0;
   switch (k) {
-    case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
-    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
+    case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
+    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
     case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
     case 'axis,point': return ['coincident', 'distance', 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
-    case 'point,point': return ['coincident', 'distance', 'lock'];
+    case 'point,point': return ['coincident', 'distance', 'symmetric', 'lock'];
     default: return ['lock'];
   }
 }
@@ -214,11 +249,38 @@ export const originRef = (key) => (key === 'origin'
 const ORIGIN_POSE = { p: [0, 0, 0], q: new THREE.Quaternion() };
 
 // Solve the mates: components not fixed (and not pinned) move as little as they must. Returns { ok, residual }.
-export function solveAssembly(doc, { pinned = new Set(), only = null } = {}) {
+// Limited distance and angle mates by active sets: each held free inside its limits or exactly at the one it is
+// past, the assembly solved, then each checked again where it ended up (a free one now past a limit held there)
+export function solveAssembly(doc, opts = {}) {
+  const limited = (opts.only || doc.mates).filter((m) => m.limit && !m.suppressed);
+  if (!limited.length) return solveMates(doc, opts);
+  const comps = new Map(doc.components.map((c) => [c.id, c]));
+  const pose = (id) => (id === ORIGIN ? ORIGIN_POSE : comps.get(id) ? poseOf(comps.get(id)) : null);
+  // (where a limit stands: the value equation's band residual with the poses as they are)
+  const where = (m) => {
+    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); return o; };
+    const eqs = mateEquations({ ...m, _lim: undefined }, ref(m.a), ref(m.b));
+    const x = eqs.length ? eqs[eqs.length - 1]() : 0;
+    return Math.abs(x) < 1e-12 ? 'free' : x < 0 ? 'lo' : 'hi';
+  };
+  let r = null;
+  try {
+    for (const m of limited) m._lim = where(m);
+    for (let pass = 0; pass < 4; pass++) {
+      r = solveMates(doc, opts);
+      if (!r.ok) break;
+      const moved = limited.filter((m) => m._lim === 'free' && where(m) !== 'free');
+      if (!moved.length) break;
+      for (const m of moved) m._lim = where(m);
+    }
+  } finally { for (const m of limited) delete m._lim; }
+  return r;
+}
+function solveMates(doc, { pinned = new Set(), only = null } = {}) {
   const comps = doc.components, byId = new Map(comps.map((c) => [c.id, c]));
   const has = (id) => id === ORIGIN || byId.has(id);
-  const mates = (only || doc.mates).filter((m) => !m.suppressed && has(m.a?.comp) && has(m.b?.comp));
-  const free = comps.filter((c) => !c.fixed && !pinned.has(c.id) && mates.some((m) => m.a.comp === c.id || m.b.comp === c.id));
+  const mates = (only || doc.mates).filter((m) => !m.suppressed && has(m.a?.comp) && has(m.b?.comp) && (!MATE_TYPES[m.type]?.extra || [m.a2, m.b2, m.s].filter(Boolean).every((r) => has(r.comp))));
+  const free = comps.filter((c) => !c.fixed && !pinned.has(c.id) && mates.some((m) => m.a.comp === c.id || m.b.comp === c.id || m.s?.comp === c.id));
   const col = new Map(free.map((c, i) => [c.id, 6 * i]));
   const N = 6 * free.length;
   if (!mates.length) return { ok: true, residual: 0, dofs: new Map() };
@@ -254,6 +316,17 @@ export function solveAssembly(doc, { pinned = new Set(), only = null } = {}) {
       for (let k = 0; k < 6; k++) eqs.push(lockEq(k));
       continue;
     }
+    if (m.type === 'screw' && m.ref) {
+      // (on the one axis, and the second slides along it the pitch per turn it makes relative to the first)
+      for (const f of mateEquations({ ...m, type: 'concentric' }, world(m.a), world(m.b))) eqs.push(f);
+      const R = m.ref, sgn = (m.side || 1) > 0 ? 1 : -1, v = Number(m.value) || 0;
+      eqs.push(() => {
+        const pa = poseAt(m.a.comp, cur), pb = poseAt(m.b.comp, cur);
+        const slide = dot(sub(pb.p, R.pb), R.da) - dot(sub(pa.p, R.pa), R.da), turn = twistOf(pb.q, R.qb, R.da) - twistOf(pa.q, R.qa, R.da);
+        return slide - sgn * (v / (2 * Math.PI)) * turn;
+      });
+      continue;
+    }
     if ((m.type === 'gear' || m.type === 'rack') && m.ref) {
       // turns (and a rack's slide) since the reference poses, in the ratio the mate asks for
       const R = m.ref, sgn = (m.side || 1) > 0 ? 1 : -1, v = Number(m.value) || 0;
@@ -264,7 +337,7 @@ export function solveAssembly(doc, { pinned = new Set(), only = null } = {}) {
       }
       continue;
     }
-    for (const f of mateEquations(m, world(m.a), world(m.b))) eqs.push(f);
+    for (const f of mateEquations(m, world(m.a), world(m.b), m.type === 'symmetric' ? (m.s ? world(m.s) : null) : m.a2 ? world(m.a2) : null, m.b2 ? world(m.b2) : null)) eqs.push(f);
   }
   const M = eqs.length;
   const F = new Float64Array(M);
@@ -315,7 +388,7 @@ export function solveAssembly(doc, { pinned = new Set(), only = null } = {}) {
   if (ok) {
     const poseNow = (id) => (id === ORIGIN ? ORIGIN_POSE : byId.get(id) ? poseOf(byId.get(id)) : null);
     const worldNow = (r) => { const ps = poseNow(r.comp); return ps && { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r }; };
-    for (const m of mates) if ((m.type === 'gear' || m.type === 'rack') && m.ref) { const r = mechRef(m, poseNow, worldNow); if (r) m.ref = r; }
+    for (const m of mates) if ((m.type === 'gear' || m.type === 'rack' || m.type === 'screw') && m.ref) { const r = mechRef(m, poseNow, worldNow); if (r) m.ref = r; }
   }
   // degrees of freedom left: per free component 6 less the rank of its columns (others held)
   const dofs = new Map();
@@ -1886,7 +1959,7 @@ export class AssemblyEditor {
     this.pmBefore = JSON.stringify(this.doc.components);
     if (edit) {
       const m = this.doc.mates.find((x) => x.id === edit);
-      this.pm = { picks: [m.a, m.b], type: m.type, value: this.effMate(m).value, align: m.align, side: m.side, edit: m.id };
+      this.pm = { picks: [m.a, m.b], type: m.type, value: this.effMate(m).value, align: m.align, side: m.side, edit: m.id, extra: [m.a2, m.b2, m.s].filter(Boolean), limit: !!m.limit, min: m.min, max: m.max };
     } else this.pm = { picks: [], type: null, value: null, align: null, side: 1 };
     // (faces, edges, vertices or planes selected first are the mate's: the first two a mate can use)
     const pre = !edit && this.sel?.kind === 'refs' ? this.sel.refs.filter((r) => ['plane', 'axis', 'point'].includes(r.kind)) : [];
@@ -1898,7 +1971,16 @@ export class AssemblyEditor {
   }
   pmPick(r) {
     const pm = this.pm;
-    if (pm.picks.length >= 2) pm.picks = [];
+    // (a width or symmetric mate's further entities, after its first two)
+    const extra = MATE_TYPES[pm.type]?.extra || 0;
+    if (pm.picks.length === 2 && extra && (pm.extra ||= []).length < extra) {
+      if (pm.type === 'width') {
+        const want = pm.picks[pm.extra.length].comp;
+        if (r.comp !== want || r.kind !== 'plane') { this.app.toast(pm.extra.length ? 'Now the second component’s other face' : 'Now the first component’s other face (parallel to its first)'); return; }
+      } else if (r.kind !== 'plane') { this.app.toast('Pick the plane (or flat face) between them'); return; }
+      pm.extra.push(r); this.previewMate(); this.renderPM(); this.highlight(); return;
+    }
+    if (pm.picks.length >= 2) { pm.picks = []; pm.extra = []; }
     if (pm.picks.length === 1 && pm.picks[0].comp === r.comp) { this.app.toast('Pick the second entity on another component'); return; }
     pm.picks.push(r);
     if (pm.picks.length === 2) {
@@ -1934,7 +2016,8 @@ export class AssemblyEditor {
     // circumference per turn of its pinion
     if (pm.type === 'gear') pm.value ??= A.r > 0 && B.r > 0 ? r6(A.r / B.r) : 1;
     if (pm.type === 'rack') { const r = A.kind === 'axis' && A.r > 0 ? A.r : B.r; pm.value ??= r6(2 * Math.PI * (r || 10)); }
-    if (pm.type === 'gear' || pm.type === 'rack') pm.side ??= 1;
+    if (pm.type === 'screw') pm.value ??= 1;
+    if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') pm.side ??= 1;
     if (pm.type === 'tangent') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
       if (plane) pm.side = dot(plane.n, sub(other.p, plane.p)) >= 0 ? 1 : -1;
@@ -1944,8 +2027,19 @@ export class AssemblyEditor {
   pmMate() {
     const pm = this.pm;
     if (!pm || pm.picks.length < 2 || !pm.type) return null;
-    const m = { id: pm.edit || '__new', name: '', type: pm.type, a: pm.picks[0], b: pm.picks[1], align: pm.align, side: pm.side, value: pm.value };
-    if (pm.type === 'gear' || pm.type === 'rack') {
+    const m = { id: pm.edit || '__new', name: '', type: pm.type, a: pm.picks[0], b: pm.picks[1], align: pm.align, side: pm.side, value: pm.value, ...(pm.limit && ['distance', 'angle'].includes(pm.type) ? { limit: true, min: pm.min ?? '', max: pm.max ?? '' } : {}) };
+    const extra = MATE_TYPES[pm.type]?.extra || 0;
+    if (extra) {
+      if ((pm.extra || []).length < extra) return null;
+      if (pm.type === 'width') { m.a2 = pm.extra[0]; m.b2 = pm.extra[1]; }
+      else {
+        m.s = pm.extra[0];
+        // (aligned as the mirror image of the first faces the second now)
+        const A = this.worldRef(m.a), B = this.worldRef(m.b), S = this.worldRef(m.s), d = A.n || A.d, e = B.n || B.d;
+        if (d && e && S?.n && !pm.flipped) { const md = sub(d, mul(S.n, 2 * dot(d, S.n))); m.align = dot(md, e) >= 0 ? 1 : -1; }
+      }
+    }
+    if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') {
       // (the poses before this mate was shown applied)
       const now = JSON.stringify(this.doc.components);
       if (this.pmBefore) Object.assign(this.doc.components, JSON.parse(this.pmBefore).map((x, i) => Object.assign(this.doc.components[i], x)));
@@ -1982,6 +2076,8 @@ export class AssemblyEditor {
     this.renderPM();
   }
   okMate() {
+    const need = MATE_TYPES[this.pm?.type]?.extra || 0;
+    if (this.pm?.picks.length === 2 && need && (this.pm.extra || []).length < need) { this.app.toast(this.pm.type === 'width' ? 'A width mate needs the other face of each component too' : 'A symmetric mate needs the plane between them', true); return; }
     const m = this.pmMate();
     if (!m) { this.cancelMate(); return; }
     if (this.pm.error) { this.app.toast(this.pm.error, true); return; }
@@ -2570,6 +2666,11 @@ export class AssemblyEditor {
       li.querySelector('.x').onclick = () => { pm.picks.splice(i, 1); this.cancelPreview(); this.renderPM(); this.highlight(); };
       list.appendChild(li);
     });
+    (MATE_TYPES[pm.type]?.extra ? pm.extra || [] : []).forEach((r, i) => {
+      const li = el('div', { class: 'li sel' }, `<span>${i + 3}. ${esc(this.refLabel(r))} (${pm.type === 'width' ? 'other face' : 'mirror plane'})</span><span class="x" title="Remove">✕</span>`);
+      li.querySelector('.x').onclick = () => { pm.extra.splice(i); this.cancelPreview(); this.renderPM(); this.highlight(); };
+      list.appendChild(li);
+    });
     if (pm.picks.length < 2) list.appendChild(el('div', { class: 'pm-hint', style: 'padding:4px 6px' }, pm.picks.length ? 'Click the entity on the other component.' : 'Click a face, edge or vertex of one component, then one of another.'));
     g1.appendChild(list);
     if (pm.picks.length === 2) {
@@ -2578,19 +2679,36 @@ export class AssemblyEditor {
       const bar = el('div', { class: 's3-tools' });
       for (const t of mateChoices(A, B)) {
         const b = el('button', { class: 's3-tool' + (pm.type === t ? ' active' : '') }, `${icon(MATE_TYPES[t].icon)}<span>${MATE_TYPES[t].label}</span>`);
-        b.onclick = () => { pm.type = t; pm.value = null; this.setDefaultValue(); this.previewMate(); };
+        b.onclick = () => { pm.type = t; pm.value = null; pm.extra = []; this.setDefaultValue(); this.previewMate(); };
         bar.appendChild(b);
       }
       g2.appendChild(bar);
       const info = MATE_TYPES[pm.type];
       if (info?.value) {
-        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn' }[pm.type] || 'Distance'));
+        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)' }[pm.type] || 'Distance'));
         const vu = info.value === '°' ? '°' : info.value === 'ratio' ? '' : 'mm';
         g2.appendChild(ui.exprInput(pm.value ?? 0, vu, (v) => { const x = Number(v); if (Number.isFinite(x) && x > 0 || (vu !== '' && Number.isFinite(x))) { pm.value = x; this.previewMate(); } }, { min: 0 }));
         if (pm.type === 'gear') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two gears\' cylinders (their pitch circles): the ratio starts as their radii\'s. Turn one gear and the other follows. Use Reverse for an internal gear (both turn the same way).'));
         if (pm.type === 'rack') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the pinion\'s cylinder and a straight edge (or the flat face) of the rack along which it runs: the travel starts as the pinion\'s circumference (π × diameter).'));
       }
-      const mech = pm.type === 'gear' || pm.type === 'rack';
+      if (info?.extra) {
+        const n = (pm.extra || []).length;
+        g2.appendChild(el('div', { class: 'pm-hint', 'data-mate-extra': String(n) }, pm.type === 'width'
+          ? (n === 0 ? 'Width: now click the first component’s other face (parallel to its first): the second component is centred between them.' : n === 1 ? 'Now click the second component’s other face.' : 'The second component’s two faces are centred between the first’s.')
+          : (n === 0 ? 'Symmetric: now click the plane (or flat face) between them: the second entity is kept where the first one’s mirror image is.' : 'Mirrored about the plane.')));
+      }
+      if (['distance', 'angle'].includes(pm.type)) {
+        const lb = el('label'), cb = el('input', { type: 'checkbox', 'data-mate-limit': '' }); cb.checked = !!pm.limit;
+        cb.onchange = () => { pm.limit = cb.checked; if (pm.limit) { pm.min ??= 0; pm.max ??= pm.value ?? 0; } this.previewMate(); this.renderPM(); };
+        lb.append(cb, document.createTextNode(' Limit (free between a minimum and a maximum)'));
+        g2.appendChild(lb);
+        if (pm.limit) for (const k of ['min', 'max']) {
+          g2.appendChild(el('label', { class: 'pm-label' }, k === 'min' ? 'Minimum' : 'Maximum'));
+          const input = ui.exprInput(pm[k] ?? '', pm.type === 'angle' ? '°' : 'mm', (v) => { pm[k] = v === '' ? '' : Number(v); this.previewMate(); });
+          input.dataset.mateLimit = k; g2.appendChild(input);
+        }
+      }
+      const mech = pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw';
       const flippable = mech || ['coincident', 'parallel', 'distance', 'tangent'].includes(pm.type) && (pm.type === 'distance' || pm.type === 'tangent' || (A.n || A.d) && (B.n || B.d));
       if (flippable) {
         const fb = el('button', { class: 'pm-btn' }, mech ? ((pm.side || 1) > 0 ? 'Reverse the direction' : 'Reversed — click for the usual direction') : pm.type === 'distance' || pm.type === 'tangent' ? 'Flip Side' : pm.align > 0 ? 'Aligned — click for Anti-Aligned' : 'Anti-Aligned — click for Aligned');

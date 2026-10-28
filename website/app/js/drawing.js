@@ -95,7 +95,11 @@ export function viewCamera(dwg, v, depth = 0) {
       const ad = s.arrow; // 2D, perpendicular to the line
       const arrow3 = unit3(add3(mul3(pc.x, ad[0]), mul3(pc.y, ad[1])));
       dir = neg3(arrow3);
-      up = s.horizontal ? cross3(dir, pc.x) : pc.y;
+      if (s.angle != null) {
+        // (a cutting line at an angle: the view up along it when it runs more up than across, else square to it)
+        const t = (s.angle * Math.PI) / 180, L3 = unit3(add3(mul3(pc.x, Math.cos(t)), mul3(pc.y, Math.sin(t))));
+        up = Math.abs(Math.cos(t)) >= Math.abs(Math.sin(t)) ? cross3(dir, L3) : L3;
+      } else up = s.horizontal ? cross3(dir, pc.x) : pc.y;
     }
   }
   return camFrom(dir, up);
@@ -192,7 +196,7 @@ export function viewRect(dwg, v, geos) {
 // with their parent. Returns 'x' (moves horizontally only), 'y' or null (free).
 export function alignAxis(v) {
   if (v.type === 'projected') return v.side === 'up' || v.side === 'down' ? 'y' : 'x';
-  if (v.type === 'section') return v.section.horizontal ? 'y' : 'x';
+  if (v.type === 'section') return v.section.angle != null ? null : v.section.horizontal ? 'y' : 'x';
   return null;
 }
 // Children that stay aligned with v (they move with it).
@@ -610,6 +614,7 @@ export function annPrims(dwg, a, ctx) {
   if (a.type === 'dxf') return dxfAnnPrims(dwg, a);
   if (a.type === 'revtable') return revTablePrims(dwg, a);
   if (a.type === 'cutlist') return cutListPrims(dwg, a, ctx);
+  if (a.type === 'holetable') return holeTablePrims(dwg, a, ctx);
   if (a.type === 'datum' || a.type === 'fcf' || a.type === 'sfin' || a.type === 'weld') return symbolPrims(dwg, a, X);
   if (a.type === 'ordinate' && X) {
     // ordinate dimension: the distance from the origin along one axis, on a leader to a row / column
@@ -856,6 +861,51 @@ function symbolPrims(dwg, a, X) {
   }
   return out;
 }
+
+// A hole table's rows: the holes of view a.of (its full circles, one each where the same circle shows twice), each
+// with its tag (a letter for each size, largest first, numbered along each row from the bottom left: A1, A2… B1), its
+// X and Y from the view's lower-left corner (or a.origin, view coordinates) and its diameter
+export function holeTableRows(dwg, a, geos) {
+  const v = findView(dwg, a.of);
+  if (!v) return null;
+  const pk = viewPickables(dwg, v, geos), key = (x) => Math.round(x * 1e6);
+  if (!pk.points.length) return [];
+  const seen = new Map();
+  for (const c of pk.circles) if (c.full) seen.set(`${key(c.c[0])},${key(c.c[1])},${key(c.r)}`, c);
+  const holes = [...seen.values()];
+  const o = a.origin || [Math.min(...pk.points.map((q) => q.p[0])), Math.min(...pk.points.map((q) => q.p[1]))];
+  const sizes = [...new Set(holes.map((h) => key(2 * h.r)))].sort((x, y) => y - x);
+  const rows = [];
+  sizes.forEach((sz, i) => {
+    const letter = i < 26 ? String.fromCharCode(65 + i) : 'H' + (i + 1);
+    holes.filter((h) => key(2 * h.r) === sz).sort((p, q) => key(p.c[1]) - key(q.c[1]) || p.c[0] - q.c[0]).forEach((h, k) => rows.push({ tag: `${letter}${k + 1}`, x: h.c[0] - o[0], y: h.c[1] - o[1], d: 2 * h.r, c: h.c, r: h.r }));
+  });
+  return rows;
+}
+// A hole table: TAG | X | Y | SIZE for the holes of a view, the tags beside the holes in it; its top-left corner at the
+// annotation's position
+export function holeTablePrims(dwg, a, ctx) {
+  const v = findView(dwg, a.of);
+  if (!v) return [];
+  const th = (dwg.settings?.textH || 3.5) * 0.85, P = annPos(dwg, a), rh = th * 2.2, X = viewXform(dwg, v);
+  const rows = holeTableRows(dwg, a, ctx?.geos) || [];
+  const cols = [['TAG', 14], ['X', 24], ['Y', 24], ['SIZE', 24]], W = cols.reduce((s2, c) => s2 + c[1], 0), N = rows.length + 1, out = [];
+  out.push({ t: 'text', p: [P[0] + W / 2, P[1] - rh * 0.3], text: 'HOLE TABLE', h: th, anchor: 'middle', base: 'bottom', bold: true });
+  for (let r = 0; r <= N; r++) out.push({ t: 'line', a: [P[0], P[1] + r * rh], b: [P[0] + W, P[1] + r * rh], w: LW.thin });
+  let x = P[0];
+  for (let c = 0; c <= cols.length; c++) { out.push({ t: 'line', a: [x, P[1]], b: [x, P[1] + N * rh], w: LW.thin }); if (c < cols.length) x += cols[c][1]; }
+  const cell = (r, vals, bold) => { let cx = P[0]; vals.forEach((t, c) => { out.push({ t: 'text', p: [cx + cols[c][1] / 2, P[1] + r * rh + rh * 0.7], text: String(t), h: th, anchor: 'middle', base: 'bottom', bold }); cx += cols[c][1]; }); };
+  cell(0, cols.map((c) => c[0]), true);
+  rows.forEach((row, i) => {
+    cell(i + 1, [row.tag, fmtLen(row.x, dwg), fmtLen(row.y, dwg), 'Ø' + fmtLen(row.d, dwg)], false);
+    // (the tag beside its hole, up and to the right)
+    const C = X.toSheet(row.c), R = row.r * X.s;
+    out.push({ t: 'text', p: [C[0] + R * 0.75 + 0.8, C[1] - R * 0.75 - 0.8], text: row.tag, h: th, anchor: 'start', base: 'bottom' });
+  });
+  if (!rows.length) out.push({ t: 'text', p: [P[0] + W / 2, P[1] + rh * 1.7], text: geosReady(ctx, v) ? '(no holes seen end on in the view)' : '(updating…)', h: th, anchor: 'middle', base: 'bottom', color: '#8a94a6' });
+  return out;
+}
+const geosReady = (ctx, v) => !!ctx?.geos?.get?.(v.type === 'detail' ? v.parent : v.id);
 
 // A weldment cut list table (rows worked out by the editor: ctx.cutLists by model), its top-left corner at the position.
 export function cutListPrims(dwg, a, ctx) {

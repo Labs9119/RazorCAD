@@ -1017,7 +1017,15 @@ export function addFlanges(sheet, edges, opts) {
     const ref = opts.lengthRef || 'outer';
     const h = opts.rolled ? 0 : opts.length - (ref === 'outer' ? setback(ang, R0 + t) : ref === 'inner' ? setback(ang, R0) : 0);
     if (!(h > 1e-6) && !opts.rolled) throw new Error('The flange is shorter than its bend: make it longer');
-    return { ...loc, e, w, up, dt, h, s0: 0, s1: 0 };
+    // (a flange along part of the edge: extent 'offsets', a and b in from its start and end (swap: the other way
+    // round), or 'centered', width wide in its middle; the rest of the edge stays as it is)
+    const x = opts.extent || { type: 'full' };
+    let i0 = 0, i1 = 0;
+    if (x.type === 'offsets') { [i0, i1] = x.swap ? [x.b, x.a] : [x.a, x.b]; if (!(i0 >= 0 && i1 >= 0)) throw new Error('A flange’s offsets from the ends of its edge can’t be negative'); }
+    else if (x.type === 'centered') { if (!(x.width > 0)) throw new Error('The flange width must be greater than zero'); i0 = i1 = (w - x.width) / 2; if (i0 < -1e-9) throw new Error('The flange is wider than its edge'); i0 = i1 = Math.max(0, i0); }
+    else if (x.type !== 'full') throw new Error('Select a supported flange width');
+    if (i0 + i1 >= w - 1e-6) throw new Error('A flange’s offsets leave nothing of its edge');
+    return { ...loc, e, w, up, dt, h, s0: 0, s1: 0, i0, i1 };
   });
   // flanges sharing a corner stop at the other flange's bend line (an open corner, closed later if wanted)
   const tolC = Math.max(1e-4, t * 1e-3);
@@ -1029,11 +1037,14 @@ export function addFlanges(sheet, edges, opts) {
       }
     }
   }
+  for (const it of items) { it.s0 += it.i0; it.s1 += it.i1; }
   let region = sheet.region;
-  // trim the panels back to the bend lines (over the whole edge, which leaves the corner notches)
+  // trim the panels back to the bend lines (over the whole edge, which leaves the corner notches; a flange along part
+  // of its edge: over that part only)
   for (const it of items) {
-    if (it.dt > 1e-9) region = bop('cut', region, rectFace(it.pa, it.e, it.d, it.w, -it.dt));
-    else if (it.dt < -1e-9) region = bop('fuse', region, rectFace(it.pa, it.e, it.d, it.w, -it.dt));
+    const part = it.i0 > 1e-9 || it.i1 > 1e-9, from = part ? a2(it.pa, m2(it.e, it.i0)) : it.pa, wide = part ? it.w - it.i0 - it.i1 : it.w;
+    if (it.dt > 1e-9) region = bop('cut', region, rectFace(from, it.e, it.d, wide, -it.dt));
+    else if (it.dt < -1e-9) region = bop('fuse', region, rectFace(from, it.e, it.d, wide, -it.dt));
   }
   const bends = [...sheet.bends];
   let nextBend = sheet.nextBend || bends.length + 1;
