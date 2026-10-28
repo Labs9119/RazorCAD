@@ -256,6 +256,10 @@ A part that takes a while to build is stored, once built, in `%LOCALAPPDATA%\Raz
 
 Each open part keeps a geometry kernel of its own, as many as the PC's processor threads and free memory allow (see Speed on your PC in the Troubleshooting chapter). Switching back to a part is then immediate, and a part still building goes on while you work in another tab.
 
+## Point clouds
+
+**File ▸ Import Point Cloud (PLY, XYZ)…** {idx:point cloud}{idx:scan}{idx:PLY} brings a scan into the part as a **Point Cloud** feature, shown as dots: a PLY file (ASCII or binary; its faces are not read) or a text file of x y z lines (XYZ, TXT, CSV, PTS). Up to 200 000 points are kept (every so many of a bigger scan). **Surfaces ▸ Fit Surface to Points** {idx:Fit Surface to Points}{idx:reverse engineering} makes a surface body fitted to it by least squares: a **Plane**, a **Cylinder**, a **Sphere**, or a **Freeform** surface through a grid of heights over the cloud's best plane (more grid points follow it more closely). The message gives how far the points are from the surface (RMS and the largest). Build the part on the fitted surfaces with the usual tools (Thicken, Knit, Replace Face…).
+
 ## Importing STEP, IGES, STL, OBJ and 3MF
 
 There are two ways to bring in a STEP, IGES, STL, OBJ or 3MF file: {idx:STEP, import}{idx:STL, import}{idx:OBJ}{idx:3MF}

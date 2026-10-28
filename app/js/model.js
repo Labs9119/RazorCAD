@@ -115,6 +115,8 @@ export const TYPE_INFO = {
   pipeRoute: { base: 'Pipe Route', icon: 'sweep' },
   cable: { base: 'Cable', icon: 'sweep' },
   ductFitting: { base: 'Duct Fitting', icon: 'sweep' },
+  pointCloud: { base: 'Point Cloud', icon: 'import' },
+  fitSurface: { base: 'Fitted Surface', icon: 'surfPlanar' },
   fillPattern: { base: 'Fill Pattern', icon: 'fillPattern' },
   rib: { base: 'Rib', icon: 'rib' },
   dome: { base: 'Dome', icon: 'dome' },
@@ -241,6 +243,8 @@ export function createFeature(doc, type, props = {}) {
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
     pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18, reduceAt: 'none', reduceSize: '25' },
     cable: { path: null, sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
+    pointCloud: { fileName: '', count: 0, data: '' },
+    fitSurface: { cloud: null, kind: 'freeform', grid: 20 },
     ductFitting: { kind: 'elbow', D: 300, t: 1, seam: 10, angle: 90, R: 450, gores: 5, D2: 200, L: 300, W: 400, H: 300, offset: 150, branchD: 200, branchAngle: 45, branchL: 300 },
     tablePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', plane: null, table: '20, 0; 0, 20; 20, 20, 45' },
     curvePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', path: null, count: 4, spacing: 'equal', distance: 20, reverse: false, align: 'translate' },

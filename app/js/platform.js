@@ -300,6 +300,18 @@ export const platform = {
     return [];
   },
 
+  // A point cloud file's bytes: { name, bytes } or null.
+  async openPointCloud() {
+    if (desktop) { const r = await api().open_points(); if (!r) return null; const bin = atob(r.data), b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return { name: r.name, bytes: b }; }
+    return new Promise((resolve) => {
+      const input = document.getElementById('file-input');
+      input.value = '';
+      input.accept = '.ply,.xyz,.txt,.csv,.pts';
+      input.onchange = async () => { const f = input.files[0]; input.accept = '.rcad,.rasm,.rdrw'; resolve(f ? { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) } : null); };
+      input.click();
+    });
+  },
+
   // A picture: { name, url (a data URL) } or null.
   async openImage() {
     if (desktop) { const r = await api().open_image(); return r ? { name: r.name, url: `data:${r.mime};base64,${r.data}` } : null; }

@@ -22,6 +22,7 @@ import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } f
 import { nest, nestShapes, nestEnts, placeEnts, outlineLoops } from './nest.js';
 import { ductSpec, ductPatterns, patternEnts } from './ducts.js';
 import { formboard } from './routing.js';
+import { parsePoints, thinPoints, encodePoints, decodePoints } from './points.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -650,6 +651,7 @@ class App {
     const doc = this.doc;
     this.annot3d?.refresh();
     showDecals(this.viewport, this.doc.decals);
+    this.showPointClouds();
     if (this.flatView) this.exitFlatten(); // the model changed: back to the model view
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -1260,6 +1262,43 @@ class App {
     ]);
     return result;
   }
+  // Point clouds: imported into the part as a feature (its points kept, at most 200 000), shown as dots.
+  async importPointCloud() {
+    let file;
+    try { file = await platform.openPointCloud(); } catch (e) { this.toast('Could not open the file: ' + e.message, true); return null; }
+    if (!file) return null;
+    let P;
+    try { P = parsePoints(file.name, file.bytes); } catch (e) { this.toast(e.message, true); return null; }
+    const all = P.length / 3;
+    P = thinPoints(P);
+    const f = M.createFeature(this.doc, 'pointCloud', { fileName: file.name, count: P.length / 3, data: encodePoints(P) });
+    M.insertFeature(this.doc, f);
+    this.commit();
+    await this.rebuild();
+    this.status(`${file.name}: ${all} points${all > P.length / 3 ? ` (${P.length / 3} kept)` : ''}. Surfaces ▸ Fit Surface to Points fits a surface to them.`);
+    return f;
+  }
+  showPointClouds() {
+    const vp = this.viewport, list = (this.doc?.features || []).filter((f) => f.type === 'pointCloud' && !f.suppressed && f.data && !M.isRolledBack?.(this.doc, f));
+    this._clouds ||= new Map();
+    if (vp._cloudGroup) vp.scene.remove(vp._cloudGroup);
+    if (!list.length) { vp._cloudGroup = null; return; }
+    const g = new THREE.Group();
+    for (const f of list) {
+      let pts = this._clouds.get(f.id);
+      if (!pts || pts.rev !== f.rev) {
+        const geo = new THREE.BufferGeometry();
+        try { geo.setAttribute('position', new THREE.BufferAttribute(typeof f.data === 'string' ? decodePoints(f.data) : new Float32Array(0), 3)); } catch { continue; }
+        pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xd9822b, size: 2.5, sizeAttenuation: false }));
+        pts.rev = f.rev;
+        this._clouds.set(f.id, pts);
+      }
+      g.add(pts);
+    }
+    vp._cloudGroup = g;
+    vp.scene.add(g);
+  }
+
   // Harness Formboard: the part's cables laid flat at their cut lengths, shown and written as a DXF (each cable a line
   // with its name and length, the points where cables meet marked).
   harnessFormboard(quiet = false) {
@@ -4175,6 +4214,11 @@ class App {
       // the profile last used
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
       if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
+    }
+    if (type === 'fitSurface') {
+      const c = selF?.type === 'pointCloud' ? selF : [...doc.features].reverse().find((x) => x.type === 'pointCloud' && !x.suppressed);
+      if (!c) { this.toast('Import a point cloud first (File ▸ Import Point Cloud)', true); return; }
+      props.cloud = c.id;
     }
     if (type === 'pipeRoute' || type === 'cable') {
       const isPath = (x) => x && (x.type === 'sketch' || x.type === 'sketch3d') && !x.suppressed;

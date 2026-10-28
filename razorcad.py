@@ -76,6 +76,7 @@ OBJ_TYPES = ('OBJ Mesh (*.obj)', 'All files (*.*)')
 THREEMF_TYPES = ('3MF Model (*.3mf)', 'All files (*.*)')
 DXF_OPEN_TYPES = ('DXF Drawing (*.dxf)', 'All files (*.*)')
 IMAGE_TYPES = ('Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)', 'All files (*.*)')
+POINT_TYPES = ('Point clouds (*.ply;*.xyz;*.txt;*.csv;*.pts)', 'All files (*.*)')
 IMAGE_MIME = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'bmp': 'image/bmp', 'gif': 'image/gif', 'webp': 'image/webp'}
 # (pywebview only accepts letters, digits and spaces in a filter's description: no commas or dashes)
 OPEN_TYPES = ('All supported files (*.rcad;*.rasm;*.rdrw;*.rdrt;*.step;*.stp;*.igs;*.iges;*.stl;*.obj;*.3mf)',
@@ -967,6 +968,16 @@ class Api:
             raise ValueError('That picture is too big (over 40 MB)')
         with open(path, 'rb') as f:
             return {'name': os.path.basename(path), 'mime': IMAGE_MIME[ext], 'data': base64.b64encode(f.read()).decode('ascii')}
+
+    def open_points(self):
+        """A point cloud file (PLY, XYZ, TXT, CSV, PTS): { name, data (base64) }, or None. Up to 400 MB."""
+        path = first(self._file_dialog(webview.FileDialog.OPEN, file_types=POINT_TYPES))
+        if not path:
+            return None
+        if os.path.getsize(path) > 400 << 20:
+            raise ValueError('That point cloud is too big (over 400 MB)')
+        with open(path, 'rb') as f:
+            return {'name': os.path.basename(path), 'data': base64.b64encode(f.read()).decode('ascii')}
 
     def open_file(self):
         """Open a part, or a STEP/STL file (the interface then offers a new part or inserting it)."""

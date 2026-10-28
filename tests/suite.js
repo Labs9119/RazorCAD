@@ -1966,6 +1966,17 @@ const UI = {
     return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
   },
 
+  async 'point-clouds-and-fitting'() {
+    const {run,fixture}=await import('/tests/points-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();
+    const P=Float32Array.from(Array.from({length:3000},(_,i)=>[(i%50)*2,Math.floor(i/50)*2,5]).flat());
+    await a.setDoc(fixture(P,'plane').doc);await wait(300);await until(()=>!a.kernel.pending);
+    const pts=a.viewport._cloudGroup?.children?.[0];
+    if(!pts||pts.geometry.getAttribute('position').count!==3000)return {ok:false,detail:'The points are not shown'};
+    if(a.result.bodies.length!==1||a.result.bodies[0].kind!=='surface')return {ok:false,detail:'The fitted plane is not a surface body',b:a.result.bodies};
+    return {ok:true,detail:`${native.results.length} cases (XYZ, PLY ASCII and binary read; a plane, a sphere, a slanted cylinder and a freeform saddle fitted within tolerance); the points shown in the view`};
+  },
+
   async 'harness-formboard'() {
     const RT = await import('/js/routing.js');
     // (three cables from one point: a trunk, a straight on and a branch: laid at their lengths, the branch at 45°)

@@ -21,6 +21,7 @@ import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
 import { pipeOf, bundleDiameter } from './routing.js';
 import { ductSpec, ductPatterns, lateral as ductLateral } from './ducts.js';
+import { decodePoints, fitPlane, fitSphere, fitCylinder, heightGrid } from './points.js';
 import { normalize3d, solve3d, splineGeom } from './sketch3dmodel.js';
 import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
@@ -6031,6 +6032,59 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (reduced.length) parts.push(`${reduced.length} reducer${reduced.length === 1 ? '' : 's'}`);
           if (nf) parts.push(`${nf} flange${nf === 1 ? '' : 's'}`);
           res.notes[f.id] = `${pipe.label}: ${parts.join(', ')}`;
+          break;
+        }
+        case 'pointCloud': {
+          // a scan's points (for reference and fitting): shown by the page, no geometry here
+          res.notes[f.id] = `${f.count || 0} points${f.fileName ? ` from ${f.fileName}` : ''}`;
+          break;
+        }
+        case 'fitSurface': {
+          // A surface fitted to a point cloud (or to the points inside a box of it): a plane, a sphere, a cylinder (least
+          // squares), or a freeform surface through a grid of heights over its best plane. The note gives how far the
+          // points are from it (RMS and the largest)
+          const cf = doc.features.find((x) => x.id === f.cloud && x.type === 'pointCloud');
+          if (!cf) throw new Error('Choose the point cloud to fit to');
+          let P = decodePoints(featureData(cf));
+          if (f.box) {
+            const keep = [];
+            for (let i = 0; i < P.length; i += 3) if ([0, 1, 2].every((k) => P[i + k] >= f.box.min[k] && P[i + k] <= f.box.max[k])) keep.push(P[i], P[i + 1], P[i + 2]);
+            P = Float32Array.from(keep);
+          }
+          const n = P.length / 3;
+          if (n < 10) throw new Error('Too few points to fit to (at least 10)');
+          let shape, what;
+          if (f.kind === 'plane') {
+            const pl = fitPlane(P);
+            let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+            for (let i = 0; i < P.length; i += 3) { const q = sub([P[i], P[i + 1], P[i + 2]], pl.o), u = dot(q, pl.u), v = dot(q, pl.v); u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
+            const C = (u, v) => add(pl.o, add(mul(pl.u, u), mul(pl.v, v)));
+            shape = R.makePolygon([C(u0, v0), C(u1, v0), C(u1, v1), C(u0, v1)]);
+            what = 'Plane';
+          } else if (f.kind === 'sphere') {
+            const sp = fitSphere(P);
+            shape = R.makeSphere(sp.r).translate(sp.c).faces[0];
+            what = `Sphere R${+sp.r.toFixed(4)}`;
+          } else if (f.kind === 'cylinder') {
+            const cy = fitCylinder(P);
+            const base = add(cy.p, mul(cy.d, cy.t0));
+            shape = R.makeCylinder(cy.r, cy.t1 - cy.t0, base, cy.d).faces.find((x) => x.geomType === 'CYLINDRE');
+            what = `Cylinder R${+cy.r.toFixed(4)}`;
+          } else {
+            const N = Math.max(4, Math.min(60, Math.round(ev(f.grid ?? 20))));
+            const g = heightGrid(P, N);
+            const wires = g.rows.map((row) => R.assembleWire([R.makeBSplineApproximation(row.map((q) => new R.Vector(q)))]));
+            shape = R.loft(wires, { ruled: false }, true);
+            what = `Freeform ${N} × ${N}`;
+          }
+          if (!shape) throw new Error('The surface could not be made');
+          // (how far the points are from it: some of them, evenly through the cloud)
+          let e2 = 0, emax = 0, m = 0;
+          const step = Math.max(1, Math.floor(n / (f.kind === 'freeform' || !f.kind ? 120 : 300)));
+          for (let i = 0; i < n; i += step) { const d = new R.DistanceQuery(R.makeVertex([P[3 * i], P[3 * i + 1], P[3 * i + 2]])).distanceTo(shape); e2 += d * d; emax = Math.max(emax, d); m++; }
+          surfaces.push(bodyRec(newId(f.id), shape, f.id));
+          applied.push({ op: 'add', tool: shape });
+          res.notes[f.id] = `${what} fitted to ${n} points: ${+Math.sqrt(e2 / m).toFixed(4)} mm RMS, ${+emax.toFixed(4)} mm at most`;
           break;
         }
         case 'ductFitting': {

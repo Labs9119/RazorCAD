@@ -1082,6 +1082,14 @@ const PM_SCHEMAS = {
       { key: 'prHint', type: 'hint', text: 'Straight pipes run between the fittings: an elbow (or a bend) at each corner, a tee where a line branches square off a straight run. The pipes are on the weldment Cut List with their lengths; the fittings are bodies of their own. Spool Drawing makes an isometric drawing with the cut list and the fittings.' },
     ] },
   ],
+  fitSurface: [
+    { title: 'Fit To', fields: [
+      { key: 'cloud', type: 'select', label: 'Point cloud', options: (f, doc) => (doc?.features || []).filter((x) => x.type === 'pointCloud').map((x) => [x.id, x.name]) },
+      { key: 'kind', type: 'select', label: 'Surface', options: [['freeform', 'Freeform (a grid of heights)'], ['plane', 'Plane'], ['cylinder', 'Cylinder'], ['sphere', 'Sphere']] },
+      { key: 'grid', type: 'expr', label: 'Grid (points each way)', unit: '#', show: (f) => (f.kind || 'freeform') === 'freeform' },
+      { key: 'fHint', type: 'hint', text: 'A surface body fitted to the scan by least squares (freeform: through a grid of heights over its best plane, more grid points following it more closely). The message gives how far the points are from it.' },
+    ] },
+  ],
   ductFitting: [
     { title: 'Fitting', fields: [
       { key: 'kind', type: 'select', label: 'Kind', options: [['elbow', 'Segmented elbow'], ['cone', 'Cone (reducer)'], ['transition', 'Round to rectangle'], ['offset', 'Offset'], ['lateral', 'Lateral (branch)']] },
@@ -1663,6 +1671,7 @@ export class UI {
         { label: 'Where Used…', icon: 'open', action: () => a.whereUsed() },
         'sep',
         { label: 'Import STEP / STL…', icon: 'import', key: 'Ctrl+I', action: () => a.importFile() },
+        { label: 'Import Point Cloud (PLY, XYZ)…', icon: 'import', action: () => a.importPointCloud() },
         { label: 'Export ▸ STEP…', icon: 'step', action: () => a.exportFile('step') },
         { label: 'Export ▸ STL…', icon: 'stl', action: () => a.exportFile('stl') },
         { label: 'Export ▸ glTF (.glb) for web and AR…', icon: 'obj', action: () => a.exportFile('glb') },
@@ -1999,6 +2008,7 @@ export class UI {
         { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
         { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
         { icon: 'replaceFace', label: 'Replace Face', action: () => a.startFeature('replaceFace') },
+        { icon: 'surfPlanar', label: 'Fit Surface to Points', action: () => a.startFeature('fitSurface') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
         { icon: 'flattenSurf', label: 'Flatten Surface', action: () => a.startFeature('flattenSurf') },
@@ -4004,7 +4014,7 @@ export class UI {
           lab.append(cb, document.createTextNode(tr(fd.label)));
           body.appendChild(this.row(null, lab, 'check'));
         } else {
-          let options = fd.options;
+          let options = typeof fd.options === 'function' ? fd.options(f, doc) : fd.options;
           if (fd.type === 'sketch') options = [['', '— select a sketch —'], ...before.filter((x) => x.type === 'sketch').map((x) => [x.id, x.name])];
           if (fd.type === 'feature') options = [['', '— select a feature —'], ...before.filter((x) => !PATTERN_SKIP.has(x.type) && !x.suppressed).map((x) => [x.id, x.name])];
           if (fd.type === 'axis') {
