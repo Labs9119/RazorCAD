@@ -2085,6 +2085,21 @@ const UI = {
       const r1 = A.solveAssembly(doc, { pinned: new Set(['rod']) }), dz = byId('nut').pos[2] - z0;
       out.push({ name: 'screw', ok: r0.ok && r1.ok && Math.abs(Math.abs(dz) - 0.5) < 1e-6, dz });
     }
+    // (a slot: a pin, axis along Z, 0 from a straight edge 40 long along X; left alone inside, held at an end outside)
+    for (const [x0, want] of [[15, 15], [55, 40], [-8, 0]]) {
+      const doc = { components: [comp('base', true), comp('pin', false, [x0, 3, 0])], mates: [
+        { id: 'm', type: 'slot', value: 0, a: { comp: 'pin', ...ax([0, 0, 0], [0, 0, 1], 2) }, b: { comp: 'base', kind: 'axis', p: [0, 0, 0], d: [1, 0, 0], len: 40 } }] };
+      const r = A.solveAssembly(doc), p = doc.components[1].pos;
+      out.push({ name: `slot from ${x0}`, ok: r.ok && Math.abs(p[0] - want) < 1e-9 && Math.abs(p[1]) < 1e-9, p });
+    }
+    // (a path: a point kept on a quarter circle of radius 20, its polyline 64 pieces)
+    {
+      const pts = Array.from({ length: 65 }, (_, i) => { const t = (i / 64) * Math.PI / 2; return [20 * Math.cos(t), 20 * Math.sin(t), 0]; });
+      const doc = { components: [comp('base', true), comp('f', false, [18, 9, 4])], mates: [
+        { id: 'm', type: 'path', a: { comp: 'f', ...pt([0, 0, 0]) }, b: { comp: 'base', kind: 'point', p: pts[32], pts } }] };
+      const r = A.solveAssembly(doc), p = doc.components[1].pos, rr = Math.hypot(p[0], p[1]);
+      out.push({ name: 'path', ok: r.ok && Math.abs(p[2]) < 1e-9 && Math.abs(rr - 20) < 20 * (1 - Math.cos(Math.PI / 256)) + 1e-9, p });
+    }
     const ok = out.every((x) => x.ok);
     return ok ? { ok: true, detail: out.map((x) => `${x.name} ✓`).join(', ') } : { ok: false, detail: out };
   },

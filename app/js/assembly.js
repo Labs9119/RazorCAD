@@ -72,6 +72,9 @@ export const MATE_TYPES = {
   screw: { label: 'Screw', icon: 'mateConcentric', value: 'mm/rev' },
   // (with more entities: width, a second face on each component; symmetric, the plane between them)
   width: { label: 'Width', icon: 'mateDistance', extra: 2 },
+  // (slot: a pin or point the set distance from a straight edge, between its ends; path: a point on a curved edge)
+  slot: { label: 'Slot', icon: 'mateDistance', value: 'mm' },
+  path: { label: 'Path', icon: 'mateTangent' },
   symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
 };
 
@@ -148,6 +151,33 @@ function mateEquations(m, A, B, C = null, D = null) {
     if (m._lim === 'hi') return x - hi;
     return x < lo ? x - lo : x > hi ? x - hi : 0;
   };
+  if (t === 'slot') {
+    // (the edge the one with a length, second picked first; the pin's closest point to it no further than its ends)
+    const [P, L] = B().len ? [A, B] : [B, A];
+    const along = () => { const l = L(), p = P(); if (p.kind === 'axis') { const w = cross(p.d, l.d), ww = dot(w, w); if (ww < 1e-18) return dot(sub(p.p, l.p), l.d); const r = sub(p.p, l.p); return dot(cross(p.d, r), w) / ww; } return dot(sub(p.p, l.p), l.d); };
+    eqs.push(() => {
+      const l = L(), p = P(), r = sub(p.p, l.p);
+      if (p.kind === 'axis') { const w = cross(p.d, l.d), lw = len(w); return (lw < 1e-9 ? len(cross(r, unit(l.d))) : Math.abs(dot(r, mul(w, 1 / lw)))) - v; }
+      return len(cross(r, unit(l.d))) - v;
+    });
+    // (between the ends: a limit, held by solveAssembly's active sets)
+    eqs.push(() => { const x = along(), hi = L().len; if (m._lim === 'free') return 0; if (m._lim === 'lo') return x; if (m._lim === 'hi') return x - hi; return x < 0 ? x : x > hi ? x - hi : 0; });
+    return eqs;
+  }
+  if (t === 'path') {
+    // (the point on the polyline of the curved edge: the second picked when both have one)
+    const [P, C] = B().pts ? [A, B] : [B, A];
+    const nearest = () => {
+      const q = P().p, pts = C().pts; let best = pts[0], bd = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], d = sub(pts[i], a), dd = dot(d, d), s = dd > 0 ? Math.max(0, Math.min(1, dot(sub(q, a), d) / dd)) : 0, x = add(a, mul(d, s)), e = len(sub(q, x));
+        if (e < bd) { bd = e; best = x; }
+      }
+      return sub(q, best);
+    };
+    for (const k of [0, 1, 2]) eqs.push(() => nearest()[k]);
+    return eqs;
+  }
   if (t === 'width') {
     // (B's two faces parallel to A's, their middle plane on A's)
     if (!C || !D) return eqs;
@@ -232,11 +262,11 @@ export function mateChoices(A, B) {
   const cyl = (o) => o.kind === 'axis' && o.r > 0;
   switch (k) {
     case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
-    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
+    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
     case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
-    case 'axis,point': return ['coincident', 'distance', 'lock'];
+    case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path'] : []), 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
-    case 'point,point': return ['coincident', 'distance', 'symmetric', 'lock'];
+    case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path'] : []), 'lock'];
     default: return ['lock'];
   }
 }
@@ -252,13 +282,13 @@ const ORIGIN_POSE = { p: [0, 0, 0], q: new THREE.Quaternion() };
 // Limited distance and angle mates by active sets: each held free inside its limits or exactly at the one it is
 // past, the assembly solved, then each checked again where it ended up (a free one now past a limit held there)
 export function solveAssembly(doc, opts = {}) {
-  const limited = (opts.only || doc.mates).filter((m) => m.limit && !m.suppressed);
+  const limited = (opts.only || doc.mates).filter((m) => (m.limit || m.type === 'slot') && !m.suppressed);
   if (!limited.length) return solveMates(doc, opts);
   const comps = new Map(doc.components.map((c) => [c.id, c]));
   const pose = (id) => (id === ORIGIN ? ORIGIN_POSE : comps.get(id) ? poseOf(comps.get(id)) : null);
   // (where a limit stands: the value equation's band residual with the poses as they are)
   const where = (m) => {
-    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); return o; };
+    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r, len: r.len }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); if (r.pts) o.pts = r.pts.map((q) => toWorld(ps, q)); return o; };
     const eqs = mateEquations({ ...m, _lim: undefined }, ref(m.a), ref(m.b));
     const x = eqs.length ? eqs[eqs.length - 1]() : 0;
     return Math.abs(x) < 1e-12 ? 'free' : x < 0 ? 'lo' : 'hi';
@@ -296,9 +326,10 @@ function solveMates(doc, { pinned = new Set(), only = null } = {}) {
   let cur = X;
   const world = (ref) => () => {
     const ps = poseAt(ref.comp, cur);
-    const o = { kind: ref.kind, p: toWorld(ps, ref.p), r: ref.r };
+    const o = { kind: ref.kind, p: toWorld(ps, ref.p), r: ref.r, len: ref.len };
     if (ref.n) o.n = dirWorld(ps, ref.n);
     if (ref.d) o.d = dirWorld(ps, ref.d);
+    if (ref.pts) o.pts = ref.pts.map((q) => toWorld(ps, q));
     return o;
   };
   const eqs = [];
@@ -1162,7 +1193,7 @@ export class AssemblyEditor {
   worldRef(r) {
     const ps = this.poseOfId(r.comp);
     if (!ps) return null;
-    return { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r };
+    return { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r, len: r.len, pts: r.pts && r.pts.map((q) => toWorld(ps, q)) };
   }
 
   // ---------------------------------------------------------------- solving
@@ -2017,6 +2048,7 @@ export class AssemblyEditor {
     if (pm.type === 'gear') pm.value ??= A.r > 0 && B.r > 0 ? r6(A.r / B.r) : 1;
     if (pm.type === 'rack') { const r = A.kind === 'axis' && A.r > 0 ? A.r : B.r; pm.value ??= r6(2 * Math.PI * (r || 10)); }
     if (pm.type === 'screw') pm.value ??= 1;
+    if (pm.type === 'slot') { const [P, L] = B.len ? [A, B] : [A.len ? B : A, A.len ? A : B]; const r = sub(P.p, L.p); pm.value ??= r6(P.kind === 'axis' && len(cross(P.d, L.d)) > 1e-9 ? Math.abs(dot(r, unit(cross(P.d, L.d)))) : len(cross(r, unit(L.d)))); }
     if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') pm.side ??= 1;
     if (pm.type === 'tangent') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
@@ -2685,7 +2717,7 @@ export class AssemblyEditor {
       g2.appendChild(bar);
       const info = MATE_TYPES[pm.type];
       if (info?.value) {
-        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)' }[pm.type] || 'Distance'));
+        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)', slot: 'Distance from the edge (0: on it)' }[pm.type] || 'Distance'));
         const vu = info.value === '°' ? '°' : info.value === 'ratio' ? '' : 'mm';
         g2.appendChild(ui.exprInput(pm.value ?? 0, vu, (v) => { const x = Number(v); if (Number.isFinite(x) && x > 0 || (vu !== '' && Number.isFinite(x))) { pm.value = x; this.previewMate(); } }, { min: 0 }));
         if (pm.type === 'gear') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two gears\' cylinders (their pitch circles): the ratio starts as their radii\'s. Turn one gear and the other follows. Use Reverse for an internal gear (both turn the same way).'));
@@ -2749,10 +2781,14 @@ function refOfFace(m, gi) {
 function refOfEdge(m, ei) {
   const e = m.edges[ei];
   if (!e) return null;
-  if (e.circ) return { kind: 'axis', p: e.circ.c.map(r6), d: e.circ.n.map(r6), r: r6(e.circ.r), circle: true, what: 'Circular edge' };
+  // (the edge's points, at most 256, for a path mate)
+  const pts = []; const n = Math.floor(e.pts.length / 3), step = Math.max(1, Math.ceil(n / 256));
+  for (let i = 0; i < n; i += step) pts.push(e.pts.slice(3 * i, 3 * i + 3).map(r6));
+  if (n && (n - 1) % step) pts.push(e.pts.slice(3 * (n - 1), 3 * n).map(r6));
+  if (e.circ) return { kind: 'axis', p: e.circ.c.map(r6), d: e.circ.n.map(r6), r: r6(e.circ.r), circle: true, what: 'Circular edge', pts };
   if (e.type === 'LINE' && e.pts.length >= 6) {
     const a = e.pts.slice(0, 3), b = e.pts.slice(-3);
-    return { kind: 'axis', p: a.map(r6), d: unit(sub(b, a)).map(r6), what: 'Edge' };
+    return { kind: 'axis', p: a.map(r6), d: unit(sub(b, a)).map(r6), len: r6(len(sub(b, a))), what: 'Edge' };
   }
-  return { kind: 'point', p: e.mid.map(r6), what: 'Edge middle' };
+  return { kind: 'point', p: e.mid.map(r6), what: 'Edge middle', pts };
 }

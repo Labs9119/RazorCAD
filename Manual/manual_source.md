@@ -1540,6 +1540,8 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 | **Rack Pinion** | A pinion turning as a rack slides: pick the pinion's cylinder and a straight edge or the flat face of the rack |
 | **Screw** | On one axis, the second component advancing the **pitch** along it per turn it makes relative to the first (a nut on a lead screw) |
 | **Width** {idx:Width mate} | The second component centred between two faces of the first: pick a face of each, then the first component's other face, then the second's (two parallel faces each: a tongue in a slot) |
+| **Slot** {idx:Slot mate} | A pin (a cylinder's axis) or a point kept the set distance from a straight edge (0: on it; the slot's side edge with the pin's radius), free to slide between the edge's ends and stopped there |
+| **Path** {idx:Path mate} | A point (a vertex, an edge's middle, a sphere's centre) kept on a curved or circular edge of another component, free to move along it |
 | **Symmetric** {idx:Symmetric mate} | Two faces, edges or vertices kept mirror images of each other about a plane: pick them, then the plane (or a flat face) between them |
 
 - Flat faces count as planes; cylinders, cones and circular edges as axes; spheres and vertices as points.
