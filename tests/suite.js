@@ -4990,6 +4990,28 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (starts, ends up to vertices and planes, angled trims, drafts, own direction, model edges and faces, surface revolve of an edge; rejections); the panel's Start, Along, Draft, Up To Surface and model edge picking`};
   },
 
+  async 'sweep-scale-twist-faces-edges'() {
+    const {run}=await import('/tests/sweep-law-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const {fixture}=await import('/tests/sweep-options-cases.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const labels=()=>[...document.querySelectorAll('#pm label, #pm .pm-label, #pm span, #pm button')].map((x)=>x.textContent.trim());
+    const d=fixture('sweep','perpendicular',0);await a.setDoc(d.doc);a.editFeature(d.sweep.id);await settle();
+    if(!labels().some((t)=>t.startsWith('End scale')))return {ok:false,detail:'No End scale in the Sweep panel'};
+    if(labels().some((t)=>t==='Scale'))return {ok:false,detail:'Scale law shown with an end scale of 1'};
+    a.pm.feature.scaleEnd=2;a.pm.feature.twistAngle=30;a.ui.renderPM();await settle();
+    if(!labels().some((t)=>t==='Scale')||!labels().some((t)=>t==='Twist'))return {ok:false,detail:`Scale / Twist laws not offered: ${labels().join(' | ')}`};
+    a.pm.feature.orientation='surface';a.ui.renderPM();await settle();
+    const support=document.querySelector('[data-sweep-support]');if(!support)return {ok:false,detail:'No face pick for Square to faces'};
+    support.click();await settle();if(a.pickMode()!=='faces')return {ok:false,detail:`Pick mode for the faces: ${a.pickMode()}`};
+    const edges=document.querySelector('[data-planar-edges]');if(!edges)return {ok:false,detail:'No model edge pick for the path'};
+    edges.click();await settle();if(a.pickMode()!=='edge')return {ok:false,detail:`Pick mode for the path edges: ${a.pickMode()}`};
+    a.pm.feature.orientation='perpendicular';a.pm.feature.twistAngle=0;await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+    if(a.result.errors.size||!m||Math.abs(m.volume-14000)>1e-3)return {ok:false,detail:`Scaled sweep: volume ${m?.volume} (expected 14000), errors ${JSON.stringify([...a.result.errors])}`};
+    const curved=native.results.filter((r)=>/arc/.test(r.name)).map((r)=>`${r.name} ${r.rel.toExponential(1)}`).join(', ');
+    return {ok:true,detail:`${native.results.length} kernel cases (scale evenly and eased, by length along a line and an arc: ${curved}; eased twist, square to faces, model edge paths; rejections); the panel's End scale, laws, face and edge picks`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

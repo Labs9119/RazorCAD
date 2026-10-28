@@ -24,7 +24,7 @@ import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
 import { compareSurfaceContinuity, surfaceNormalAtUV } from './surfacecontinuity.js';
 import { guideScaleLaw } from './sweepguides.js';
-import { sweepWithOrientation } from './sweepoptions.js';
+import { sweepWithOrientation, scaleLaw } from './sweepoptions.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
@@ -2780,19 +2780,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
     }
     res.features[f.id] = { ...(res.features[f.id] || {}), edges: f.edges };
     const near = (p, q) => len(sub(p, q)) < 1e-5, ends = (e) => [vec(e.startPoint), vec(e.endPoint)];
+    // (each chain's edges in order, each with reverse: whether it is followed from its curve's end to its start)
     const left = [...edges], chains = [];
     while (left.length) {
-      const chain = [left.shift()];
+      const chain = [{ ...left.shift(), reverse: false }];
       let [head, tail] = ends(chain[0].edge);
       while (!near(head, tail)) {
         const at = (q) => left.flatMap((x, i) => (ends(x.edge).some((p) => near(p, q)) ? [i] : []));
         const t = at(tail), h = at(head);
         if (t.length > 1 || h.length > 1) throw new Error('The selected model edges branch: pick chains without branches');
-        if (t.length) { const [x] = left.splice(t[0], 1), [s, e] = ends(x.edge); chain.push(x); tail = near(s, tail) ? e : s; }
-        else if (h.length) { const [x] = left.splice(h[0], 1), [s, e] = ends(x.edge); chain.unshift(x); head = near(s, head) ? e : s; }
+        if (t.length) { const [x] = left.splice(t[0], 1), [s, e] = ends(x.edge), reverse = !near(s, tail); chain.push({ ...x, reverse }); tail = reverse ? s : e; }
+        else if (h.length) { const [x] = left.splice(h[0], 1), [s, e] = ends(x.edge), reverse = !near(e, head); chain.unshift({ ...x, reverse }); head = reverse ? e : s; }
         else break;
       }
-      chains.push({ edges: chain.map((x) => x.edge), closed: near(head, tail) });
+      chains.push({ edges: chain, closed: near(head, tail), start: head, end: tail });
     }
     const pts = edges.flatMap(({ edge }) => Array.from({ length: 17 }, (_, i) => vec(edge.pointAt(i / 16))));
     const c = mul(pts.reduce((s, p) => add(s, p), [0, 0, 0]), 1 / pts.length), b = bbox(asShape(edges.map((x) => x.edge))), scale = b.diag || 1;
@@ -2809,7 +2810,56 @@ async function rebuild(doc, previewId = null, opts = {}) {
       else { const k = [0, 1, 2].reduce((m, i) => (Math.abs(n[i]) > Math.abs(n[m]) ? i : m), 0); if (n[k] < 0) n = mul(n, -1); }
       frame = frameOnPlane(c, n);
     }
-    return { frame, planar, centre: c, pts, edgeChains: true, wires: chains.map((ch) => ({ wire: R.assembleWire(ch.edges), closed: ch.closed })) };
+    return { frame, planar, centre: c, pts, chains, wires: chains.map((ch) => ({ wire: chainWire(ch), closed: ch.closed })) };
+  };
+  // A chain of model edges as a wire, followed from its start (or, backwards, from its end)
+  const chainWire = (chain, backwards = false) => {
+    const list = backwards ? [...chain.edges].reverse().map((x) => ({ ...x, reverse: !x.reverse })) : chain.edges, flipped = [];
+    try {
+      return R.assembleWire(list.map(({ edge, reverse }) => { if ((edge.orientation === 'backward') === reverse) return edge; const e = edge.flipOrientation(); flipped.push(e); return e; }));
+    } finally { flipped.forEach((e) => e.delete()); }
+  };
+  // A sweep's path: its sketch or curve, or the picked model edges (f.edges) joined into one chain, followed from the end
+  // in the profile's plane (frame) when only that one is
+  const sweepPath = (f, owned, frame = null) => {
+    if (!f.edges?.length) return sweepWire(f.path, 'path', owned);
+    if (f.path) throw new Error('Choose one path: a sketch or curve, or model edges');
+    const sec = edgeSection(f);
+    sec.wires.forEach((w) => w.wire.delete());
+    if (sec.chains.length !== 1) throw new Error('The path’s model edges must join into one chain');
+    const ch = sec.chains[0], off = (p) => (frame ? Math.abs(dot(sub(p, frame.o), frame.n)) : 0);
+    const wire = chainWire(ch, !ch.closed && off(ch.end) < 1e-6 && off(ch.start) > 1e-6);
+    owned.push(wire);
+    return { wire, helical: false };
+  };
+  // A Sweep's or Surface Sweep's options: orientation 'perpendicular' (twistAngle, twistLaw), 'parallel' or 'surface' (the
+  // profile kept square to the picked supportFaces), and the profile scaled along the path to scaleEnd (scaleLaw)
+  const sweepOptions = (f, spine, guide) => {
+    const orientation = guide ? 'perpendicular' : f.orientation || 'perpendicular';
+    if (!['perpendicular', 'parallel', 'surface'].includes(orientation)) throw new Error('Select Perpendicular, Parallel or Square to faces as the sweep orientation');
+    const twist = guide || orientation !== 'perpendicular' ? 0 : ev(f.twistAngle ?? 0), end = ev(f.scaleEnd ?? 1);
+    if (!Number.isFinite(twist)) throw new Error('The twist angle must be finite');
+    if (!(Number.isFinite(end) && end > 0)) throw new Error('The end scale must be greater than zero');
+    const scaled = Math.abs(end - 1) > 1e-12;
+    if (scaled && guide) throw new Error('A guide sets the section’s size: leave the end scale at 1 with a guide');
+    let support = null;
+    if (orientation === 'surface') {
+      const refs = f.supportFaces || [];
+      if (!refs.length) throw new Error('Select the faces the profile follows');
+      needEdges('Picking a model face');
+      const hits = refs.map((r) => findFaceAny([...solids, ...surfaces], r));
+      if (hits.some((h) => !h)) throw new Error('A face the profile follows could not be found');
+      support = hits.length > 1 ? asShape(hits.map((h) => h.face)) : hits[0].face;
+      res.features[f.id] = { ...(res.features[f.id] || {}), supportFaces: refs };
+    }
+    return { orientation, twist, twistLaw: f.twistLaw || 'linear', support, scale: scaled ? scaleLaw(R, spine, end, f.scaleLaw || 'linear') : null };
+  };
+  const sweepAlong = (w, spine, o, { surface = false, helical = false } = {}) => {
+    if (o.orientation === 'parallel' || o.twist !== 0) return sweepWithOrientation(R, w, spine, o.orientation, o.twist, surface, nearFacePoint, { scale: o.scale, twistLaw: o.twistLaw });
+    for (const transitionMode of ['right', 'round', 'transformed']) {
+      try { const r = R.genericSweep(w, spine, { frenet: helical && !o.support, transitionMode, law: o.scale?.law || null, support: o.support?.wrapped }, surface); return surface ? r[0] : r; } catch (e) { if (isFatal(e)) throw e; }
+    }
+    throw new Error(o.support ? 'The profile could not be swept along the path following those faces (the path should lie on them)' : 'The profile could not be swept along the path (place the profile at the start of the path, across it)');
   };
   // The solid a feature makes from a sketch profile: make(drawing) for the outlines and for the text,
   // combined so text inside an outline is cut out of it (and text outside it is added).
@@ -4773,7 +4823,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const owned=[];
           try{
           checkSweepRefs(f);
-          const {wire:spine,helical}=sweepWire(f.path,'path',owned);
+          const ps=f.profileType==='circle'||!f.profile?null:sketches.get(LR.sourceId(f.profile));
+          const {wire:spine,helical}=sweepPath(f,owned,ps?.frame);
           let profile;
           if (f.profileType === 'circle') {
             const dia = ev(f.diameter);
@@ -4781,7 +4832,6 @@ async function rebuild(doc, previewId = null, opts = {}) {
             profile = R.assembleWire([R.makeCircle(dia / 2, vec(spine.startPoint), unit(vec(spine.tangentAt(0))))]);owned.push(profile);
           } else {
             if(!f.profile)throw new Error('Select a surface sweep profile');
-            const ps=sketches.get(LR.sourceId(f.profile));
             if(!ps)throw new Error('The profile sketch is missing, suppressed or has errors');
             const subset=typeof f.profile==='string'?ps.sk:LR.resolveContour(ps.sk,f.profile).sketch;
             const ws=sketchWires(subset,ps.frame);owned.push(...ws);
@@ -4789,12 +4839,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
             profile=ws[0];
           }
           const guide=f.guide?sweepWire(f.guide,'guide',owned).wire:null;
-          const orientation = f.orientation || 'perpendicular', twist = guide || orientation === 'parallel' ? 0 : ev(f.twistAngle ?? 0);
-          const oriented = !guide && (orientation !== 'perpendicular' || twist !== 0);
-          let shape = guide ? sweepWithGuide(profile, spine, guide, f.guideMode || 'orientation', true) : oriented ? sweepWithOrientation(R, profile, spine, orientation, twist, true, nearFacePoint) : null;
-          for (const transitionMode of guide || oriented ? [] : ['right', 'round', 'transformed']) {
-            try { shape = R.genericSweep(profile, spine, { frenet: helical, transitionMode }, true)[0]; break; } catch (e) { if (isFatal(e)) throw e; }
-          }
+          const options = sweepOptions(f, spine, guide);
+          let shape = guide ? sweepWithGuide(profile, spine, guide, f.guideMode || 'orientation', true) : sweepAlong(profile, spine, options, { surface: true, helical });
           if (guide) res.notes[f.id] = `Path and one guide · ${f.guideMode === 'contact' ? 'Section size; CAD guide contact ≤ 0.0001 mm' : 'Orientation; constant profile size'} · Uncapped surface`;
           if (!shape) throw new Error('The profile could not be swept along the path (place it at the start of the path, across it)');
           surfaces.push(bodyRec(newId(f.id), shape, f.id));
@@ -5916,7 +5962,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const owned=[];
           try{
           checkSweepRefs(f);
-          const {wire:spine,helical}=sweepWire(f.path,'path',owned);
+          const sk = f.profileType === 'circle' ? null : getSketch(f.profile, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null);
+          const {wire:spine,helical}=sweepPath(f,owned,sk?.frame);
           const start = vec(spine.startPoint), tan0 = unit(vec(spine.tangentAt(0)));
           let profiles;
           if (f.profileType === 'circle') {
@@ -5924,21 +5971,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (!(dia > 0)) throw new Error('The diameter must be greater than zero');
             profiles = [{ outer: R.assembleWire([R.makeCircle(dia / 2, start, tan0)]), holes: [] }];
           } else {
-            const sk = getSketch(f.profile, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null);
             profiles = sk.regions.map((rg) => ({ outer: loopWire(sk.frame, rg.outer.segs), holes: rg.holes.map((h) => loopWire(sk.frame, h.segs)) }));
           }
           profiles.forEach(p=>owned.push(p.outer,...p.holes));
           const guide=f.guide?sweepWire(f.guide,'guide',owned).wire:null;
           if(guide&&(f.profileType!=='circle'&&f.thin||profiles.length!==1||profiles[0].holes.length))throw new Error('A guided sweep requires one closed profile without holes or Thin Feature');
-          const orientation = f.orientation || 'perpendicular', twist = guide || orientation === 'parallel' ? 0 : ev(f.twistAngle ?? 0);
-          const sweepOne = (w) => {
-            if (guide) return sweepWithGuide(w, spine, guide, f.guideMode || 'orientation');
-            if (orientation !== 'perpendicular' || twist !== 0) return sweepWithOrientation(R, w, spine, orientation, twist, false, nearFacePoint);
-            for (const transitionMode of ['right', 'round', 'transformed']) {
-              try { return R.genericSweep(w, spine, { frenet: helical, transitionMode }); } catch (e) { if (isFatal(e)) throw e; }
-            }
-            throw new Error('The profile could not be swept along the path (place the profile at the start of the path, across it)');
-          };
+          const options = sweepOptions(f, spine, guide);
+          const sweepOne = (w) => (guide ? sweepWithGuide(w, spine, guide, f.guideMode || 'orientation') : sweepAlong(w, spine, options, { helical }));
           let tool = null;
           for (const pr of profiles) {
             let s = sweepOne(pr.outer);

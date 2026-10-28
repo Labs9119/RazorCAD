@@ -1987,7 +1987,7 @@ class App {
   activateSweepSlot(slot) {
     const pm=this.pm;
     if(pm.loftDraft?.curves.length&&pm.sweepSlot!==slot){this.toast('Add or clear the current contour before switching sweep roles',true);return false;}
-    pm.sweepSlot=slot;pm.sweepCanvas=true;pm.scopePick=false;pm.loftHover=null;
+    pm.sweepSlot=slot;pm.sweepCanvas=true;pm.scopePick=false;pm.planarEdges=false;pm.sweepSupportPick=false;pm.loftHover=null;
     this.ui.renderPM();this.updateSketchDisplay();return true;
   }
 
@@ -2242,7 +2242,8 @@ class App {
     if (!f) return null;
     if(['loft','surfLoft'].includes(f.type)&&this.pm.loftConnector&&!this.pm.loftEndSlot)return 'loftConnector';
     if(this.pm.scopePick&&['extrude','revolve','sweep'].includes(f.type)&&['cut','intersect'].includes(f.op)&&f.scopeAll===false)return 'body';
-    if (['surfPlanar', 'surfExtrude', 'surfRevolve'].includes(f.type) && this.pm.planarEdges) return 'edge';
+    if (['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) return 'edge';
+    if (['sweep', 'surfSweep'].includes(f.type) && this.pm.sweepSupportPick) return 'faces';
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
@@ -2334,11 +2335,11 @@ class App {
       return;
     }
     if (mode === 'edge') {
-      if (['surfFill','surfPlanar','surfExtrude','surfRevolve'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
-      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || ((f.type === 'surfExtrude' || f.type === 'surfRevolve') && this.pm.planarEdges) || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
+      if (['surfFill','surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type) && f.chainSelection) { this.pickPatchChain(hit); return; }
+      if (f.type === 'fillet' || f.type === 'chamfer' || f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange' || f.type === 'surfFill' || f.type === 'surfPlanar' || (['surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) || f.type === 'surfExtend' || f.type === 'ruledSurface' || f.type === 'compCurve') {
         const i = f.edges.findIndex((x) => this.viewport.edgeIndexForPoint(x.p) === hit.index);
         if (i >= 0) f.edges.splice(i, 1);
-        else { f.edges ||= []; f.edges.push({ p: hit.edge.mid, ...(['surfPlanar', 'surfExtrude', 'surfRevolve'].includes(f.type) ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) }); }
+        else { f.edges ||= []; f.edges.push({ p: hit.edge.mid, ...(['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) ? {body:this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id} : {}) }); }
       } else f.edge = { p: hit.edge.mid };
     } else if (mode === 'vertex') {
       if (f.type === 'extrude' && this.pm.extrudeSurfaceSlot === 'end2' && f.side2) { f.toVertex2 = { p: hit.point.toArray() }; f.toPoint2 = null; }
@@ -2467,6 +2468,7 @@ class App {
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
+      if (['sweep', 'surfSweep'].includes(f.type) && f.orientation === 'surface') faceRefs.push(...(f.supportFaces || []));
       for (const r of faceRefs) { const i = vp.faceIndexNear(r.p); if (i >= 0) infos.push(vp.faceInfo(i)); }
       const ids = [...(f.bodies || []), f.main, f.body, ...(f.scopeAll === false ? f.scope || [] : [])].filter(Boolean);
       for (const id of new Set(ids)) { const bi = vp.bodyIndexOf(id); if (bi >= 0) infos.push(vp.bodyInfo(bi)); }
@@ -3259,7 +3261,7 @@ class App {
       }
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
-      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : f.type === 'surfFill' ? 'supportFaces' : 'faces';
+      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep'].includes(f.type) ? 'supportFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);

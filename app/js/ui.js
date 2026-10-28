@@ -271,6 +271,19 @@ const REVOLUTION_DIRECTIONS = {title:'Revolution',fields:[
   {key:'toPlane',type:'surfaceRef',label:'Surface',show:f=>f.extent==='upToSurface'},
   {key:'reverse',type:'check',label:'Reverse direction',show:f=>revUpTo(f)||revAngle(f)&&f.end!=='midplane'},
 ]};
+// (a sweep's orientation, its twist and the profile's scale along the path: kernel.worker.js sweepOptions)
+const twisted = (f) => !f.guide && (f.orientation || 'perpendicular') === 'perpendicular';
+const SWEEP_SHAPE = [
+  { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile'], ['surface', 'Square to faces it runs on']] },
+  { key: 'supportFaces', type: 'faceList', sweepSupport: true, show: (f) => !f.guide && f.orientation === 'surface', hint: 'Select the faces the path runs on: the profile keeps square to them all along it (its plane through their normal).' },
+  { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: twisted },
+  { key: 'twistLaw', type: 'select', label: 'Twist', default: 'linear', show: (f) => twisted(f) && !!f.twistAngle && String(f.twistAngle).trim() !== '0', options: [['linear', 'Evenly along the path'], ['smooth', 'Eased in and out']] },
+  { key: 'twistHint', type: 'hint', show: twisted, text: 'Total rotation distributed by distance along the path (evenly, or slowly at both ends). Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+  { key: 'scaleEnd', type: 'expr', default: 1, label: 'End scale', unit: '×', show: (f) => !f.guide },
+  { key: 'scaleLaw', type: 'select', label: 'Scale', default: 'linear', show: (f) => !f.guide && f.scaleEnd != null && String(f.scaleEnd).trim() !== '1', options: [['linear', 'Evenly along the path'], ['smooth', 'Eased in and out']] },
+  { key: 'scaleHint', type: 'hint', show: (f) => !f.guide && f.scaleEnd != null && String(f.scaleEnd).trim() !== '1', text: 'The profile grows or shrinks about the path, by the length along it, from its own size at the start to End scale times it at the end.' },
+];
+const SWEEP_EDGES = { title: 'Path from Model Edges', fields: [{ key: 'edges', type: 'edges' }] };
 const THIN_GROUP = {
   title: 'Thin Feature', fields: [
     { key: 'thin', type: 'check', label: 'Thin feature (a wall along the sketch curves)' },
@@ -667,14 +680,13 @@ const PM_SCHEMAS = {
         { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.profileType === 'circle' },
         { key: 'path', type: 'sweepSelection', label: 'Path' },
         { key: 'guide', type: 'sweepSelection', label: 'Guide (optional)', optional: true },
-        { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile']] },
-        { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: (f) => !f.guide && f.orientation !== 'parallel' },
-        { key: 'twistHint', type: 'hint', show: (f) => !f.guide && f.orientation !== 'parallel', text: 'Total rotation distributed by distance along the path. Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+        ...SWEEP_SHAPE,
         { key: 'guideMode', type: 'select', label: 'Guide controls', show: (f) => !!f.guide, options: [['orientation', 'Orientation — keep profile size'], ['contact', 'Section size — keep guide on boundary']] },
         { key: 'guideHint', type: 'hint', show: (f) => !!f.guide, text: 'Use one closed profile without holes or Thin, with an open path and guide. Both curves must span the same normal sections. Orientation keeps the profile size; the guide need not touch its boundary. Section size uniformly scales the profile; the guide must start on its boundary. Contact is checked to 0.0001 mm.' },
         { key: 'sweepHint', type: 'hint', text: 'The path is a sketch (one chain of lines and arcs) or a helix. A sketch profile should sit at the start of the path, across it. For a spring: a helix path and a circular profile.' },
       ],
     },
+    SWEEP_EDGES,
     { title: 'Operation', fields: [{ key: 'operation', type: 'solidOperation' }] },
     { ...THIN_GROUP, fields: THIN_GROUP.fields.map((x) => ({ ...x, show: (f) => f.profileType !== 'circle' && (!x.show || x.show(f)) })) },
     ...SCOPE_GROUP,
@@ -1101,13 +1113,12 @@ const PM_SCHEMAS = {
       { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.profileType === 'circle' },
       { key: 'path', type: 'sweepSelection', label: 'Path' },
       { key: 'guide', type: 'sweepSelection', label: 'Guide (optional)', optional: true },
-        { key: 'orientation', type: 'select', label: 'Orientation', show: (f) => !f.guide, options: [['perpendicular', 'Perpendicular to path'], ['parallel', 'Parallel to initial profile']] },
-        { key: 'twistAngle', type: 'expr', default: 0, label: 'Twist angle', unit: '°', show: (f) => !f.guide && f.orientation !== 'parallel' },
-        { key: 'twistHint', type: 'hint', show: (f) => !f.guide && f.orientation !== 'parallel', text: 'Total rotation distributed by distance along the path. Positive angles follow the right-hand rule along the path. Twist requires an open, tangent-continuous path; zero keeps the usual sweep.' },
+        ...SWEEP_SHAPE,
       { key: 'guideMode', type: 'select', label: 'Guide controls', show: (f) => !!f.guide, options: [['orientation', 'Orientation — keep profile size'], ['contact', 'Section size — follow the guide']] },
       { key: 'guideHint', type: 'hint', show: (f) => !!f.guide, text: 'Use one open or closed profile chain and an open path and guide. Orientation keeps the profile size. Section size uniformly scales the profile; the guide must start on the profile curve. Contact with the surface is checked to 0.0001 mm. Closed profiles produce an uncapped surface.' },
       { key: 'ssHint', type: 'hint', text: 'The profile (one chain of curves, open or closed) is swept along the path as a surface. Place it at the start of the path, across it.' },
     ] },
+    SWEEP_EDGES,
   ],
   surfFill: [
     { title: 'Patch Boundary', fields: [
@@ -5186,6 +5197,7 @@ export class UI {
     const a = this.app;
     const key = fd.key || 'faces', pm = a.pm;
     if (!Array.isArray(f[key])) f[key] = [];
+    if (fd.sweepSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.sweepSupportPick ? ' on' : ''), 'data-sweep-support': '', onclick: () => { pm.sweepSupportPick = !pm.sweepSupportPick; pm.planarEdges = false; if (pm.sweepSupportPick) pm.sweepCanvas = false; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, 'Select faces in canvas'));
     if (fd.patchSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.patchSupportPick ? ' on' : ''), 'data-patch-support': '', onclick: () => { pm.patchSupportPick = !pm.patchSupportPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select support faces'));
     if (fd.loftEnd) body.appendChild(el('button', { class: 'pm-btn' + (pm.loftEndSlot === key ? ' on' : ''), 'data-loft-end-faces': key, onclick: () => { pm.loftEndSlot = pm.loftEndSlot === key ? null : key; pm.loftDraft = null; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, `Select ${fd.loftEnd} support faces`));
     body.appendChild(el('div', { class: 'pm-hint' }, esc(fd.hint || 'Click faces on the model to add or remove them.')));
@@ -5564,13 +5576,14 @@ export class UI {
     const a = this.app;
     f.edges ||= [];
     const n = f.edges.length;
-    if(['surfFill','surfPlanar','surfExtrude','surfRevolve'].includes(f.type)){
+    if(['surfFill','surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type)){
       const label=el('label'),checkbox=el('input',{type:'checkbox','data-patch-chain':''});checkbox.checked=!!f.chainSelection;
       checkbox.onchange=()=>{f.chainSelection=checkbox.checked;this.renderPM();};
       label.append(checkbox,document.createTextNode(' Chain selection'));body.appendChild(this.row(null,label,'check'));
       body.appendChild(el('div',{class:'pm-hint'},'Chain selection follows connected boundary edges on the clicked body and stops at branches. Turn it off to pick individual edges. Existing edge continuity settings are preserved.'));
     }
-    if(['surfPlanar','surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;a.pm.revolveEndPick=false;a.pm.extrudeSurfaceSlot=null;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();}},'Select model edges'));
+    if(['surfPlanar','surfExtrude','surfRevolve','sweep','surfSweep'].includes(f.type))body.appendChild(el('button',{class:'pm-btn'+(a.pm.planarEdges?' on':''),'data-planar-edges':'',onclick:()=>{a.pm.planarEdges=true;a.pm.revolveEndPick=false;a.pm.extrudeSurfaceSlot=null;a.pm.sweepSupportPick=false;if(['sweep','surfSweep'].includes(f.type))a.pm.sweepCanvas=false;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();}},'Select model edges'));
+    if(['sweep','surfSweep'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Instead of a sketch or curve, the path can be model edges joined end to end into one chain (it starts at the end in the profile’s plane).'));
     if(['surfExtrude','surfRevolve'].includes(f.type))body.appendChild(el('div',{class:'pm-hint'},'Model edges join end to end into open or closed chains (without branches); they are extruded or revolved with the contours.'));
     if (f.type === 'surfFill') body.appendChild(el('button', { class: 'pm-btn' + (!a.pm.patchSupportPick ? ' on' : ''), 'data-patch-edges': '', onclick: () => { a.pm.patchSupportPick = false; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select boundary edges'));
     body.appendChild(el('div', { class: 'pm-hint' }, 'Click edges on the model to add or remove them. The preview shows material removed in <b style="color:#c62828">red</b> and added in <b style="color:#a37f00">yellow</b>.'));

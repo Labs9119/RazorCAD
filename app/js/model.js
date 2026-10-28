@@ -269,7 +269,7 @@ export function createFeature(doc, type, props = {}) {
     // profiles: sketches / 3D sketches (one chain each, all open or all closed), in order; guides: guide curves
     // (sketches or curves) the surface follows, each through every profile
     surfLoft: { profiles: [], guides: [], ruled: false, startCondition: 'none', endCondition: 'none', startDirection: 'y', endDirection: 'y', startStrength: 1, endStrength: 1, startReverse: false, endReverse: false, startFaces: [], endFaces: [] },
-    surfSweep: { profileType: 'sketch', profile: null, diameter: 10, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0 },
+    surfSweep: { profileType: 'sketch', profile: null, diameter: 10, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, twistLaw: 'linear', scaleEnd: 1, scaleLaw: 'linear', supportFaces: [], edges: [], chainSelection: false },
     // Patch continuity: G0/G1/G2, with optional per-edge overrides and support faces. Legacy tangent means G1.
     surfFill: { edges: [], chainSelection: true, continuity: null, supportFaces: [], merge: true, solid: false },
     // tool: a plane, surface body or sketch; faces: points on the pieces; mode 'keep' | 'remove'
@@ -315,7 +315,7 @@ export function createFeature(doc, type, props = {}) {
     deleteBody: { bodies: [] },
     deleteSurface: { bodies: [] },
     // profileType 'circle': a round profile of `diameter` made across the start of the path (springs)
-    sweep: { op: 'add', profileType: 'sketch', profile: null, diameter: 2, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, merge: true, thin: false, thinT: 1, thinDir: 'one', scopeAll: true, scope: [] },
+    sweep: { op: 'add', profileType: 'sketch', profile: null, diameter: 2, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, twistLaw: 'linear', scaleEnd: 1, scaleLaw: 'linear', supportFaces: [], edges: [], chainSelection: false, merge: true, thin: false, thinT: 1, thinDir: 'one', scopeAll: true, scope: [] },
     // profiles: sketch ids in order; circles are split to match the other profiles' points
     // continuity: 'C2' (curvature-continuous through the profiles) | 'C1' (tangent-continuous); smoothing: evened out
     // guides: guide curves (sketches or curves) the loft's outline follows, each from the first profile to the last
