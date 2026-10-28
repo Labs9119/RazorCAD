@@ -4884,10 +4884,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
               support=choices[0];used.add(support);
             }
             if(owners.length===1){ref.body=owners[0].id;updateEdgeRef(ref,edge,owners[0].shape);}
-            entries.push({edge,support,continuity});
+            const reach=ref.reach==null||ref.reach===''?0:ev(ref.reach);
+            if(!(Number.isFinite(reach)&&reach>=0))throw new Error('The tangent reach must be zero or more');
+            entries.push({edge,support,continuity,reach});
+          }
+          // (curves and points inside the opening that the patch passes through: sketches, 3D sketches and curves;
+          // reference points and the standalone points of sketches)
+          const interior={edges:[],points:[]};
+          for(const id of f.throughCurves||[]){
+            if(curves.has(id)){interior.edges.push(...curves.get(id).wire.edges);continue;}
+            const s=sketches.get(id);if(!s)throw new Error('A curve the patch passes through is missing, suppressed or has errors');
+            for(const w of sketchWires(s.sk,s.frame))interior.edges.push(...w.edges);
+          }
+          for(const id of f.throughPoints||[]){
+            if(points.has(id)){interior.points.push(points.get(id));continue;}
+            const s=sketches.get(id);if(!s)throw new Error('A point the patch passes through is missing, suppressed or has errors');
+            const used=new Set(s.sk.curves.flatMap(c=>[c.p1,c.p2,c.c,c.a,...(c.pts||[])]).filter(Boolean)),pts=s.sk.points.filter(q=>q.id!=='O'&&!used.has(q.id));
+            if(!pts.length)throw new Error(`${s.sk.name} has no points of its own (points not on its curves) for the patch to pass through`);
+            interior.points.push(...pts.map(q=>S.fromFrame2D(s.frame,q.x,q.y)));
           }
           if(entries.some(e=>e.continuity!=='G0')&&selected.some(face=>![...used].some(f=>f.isSame(face))))throw new Error('A selected patch support face is not adjacent to a constrained boundary edge');
-          const result=buildSurfacePatch(R,entries,{fatal:isFatal,message:e=>e instanceof WebAssembly.Exception?R.getOC().getExceptionMessage(e).join(': '):e.message||String(e),stack});
+          const result=buildSurfacePatch(R,entries,{fatal:isFatal,message:e=>e instanceof WebAssembly.Exception?R.getOC().getExceptionMessage(e).join(': '):e.message||String(e),stack,interior:interior.edges.length||interior.points.length?interior:null});
           const patch=result.shape,surfRec=recs.size===1&&surfaces.includes([...recs][0])?[...recs][0]:null;
           let note='';
           try{

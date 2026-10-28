@@ -1127,7 +1127,12 @@ const PM_SCHEMAS = {
       { key: 'supportFaces', type: 'faceList', patchSupport: true, show: f => (f.continuity ?? (f.tangent ? 'G1' : 'G0')) !== 'G0' || f.edges.some(e => e.continuity && e.continuity !== 'G0'), hint: 'Open boundary edges infer their adjacent face. Select support faces explicitly when an edge has two adjacent faces. Each G1/G2 edge needs exactly one support.' },
       { key: 'merge', type: 'check', default: true, label: 'Knit into the surface (when the edges are all on one surface body)' },
       { key: 'solid', type: 'check', label: 'Make a solid when that closes it', show: (f) => f.merge !== false },
-      { key: 'fHint', type: 'hint', text: 'Select one closed loop. Set G0, G1 or G2 for the boundary, or override individual edges. Contact, tangency and curvature are checked on CAD surfaces; incompatible constraints report an error without lowering continuity.' },
+      { key: 'fHint', type: 'hint', text: 'Select one closed loop. Set G0, G1 or G2 for the boundary, or override individual edges. Contact, tangency and curvature are checked on CAD surfaces; incompatible constraints report an error without lowering continuity. A tangent edge’s reach (mm) keeps the patch to its support’s tangent plane further in before it turns.' },
+    ] },
+    { title: 'Pass Through', fields: [
+      { key: 'throughCurves', type: 'curveList', empty: 'No curves', add: '+ Add a curve it passes through…' },
+      { key: 'throughPoints', type: 'curveList', types: ['point', 'sketch'], empty: 'No points', add: '+ Add points it passes through…' },
+      { key: 'thHint', type: 'hint', text: 'Curves (sketches, 3D sketches, curves) and points (reference points, or a sketch’s own points) inside the opening that the patch passes through, checked to 0.0001 mm.' },
     ] },
   ],
   surfTrim: [
@@ -3653,7 +3658,7 @@ export class UI {
           // an ordered list of curves (sketches, 3D sketches, composite / projected curves, helices)
           if (!Array.isArray(f[fd.key])) f[fd.key] = [];
           const L = f[fd.key], ul = el('div', { class: 'pm-list' });
-          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No curves yet'));
+          if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, fd.empty || 'No curves yet'));
           L.forEach((id, i) => {
             const x = before.find((y) => y.id === id);
             const li = el('div', { class: 'li sel' }, `${icon(x ? TYPE_INFO[x.type]?.icon || 'sketch' : 'sketch')}<span>${i + 1}. ${esc(x?.name || '(missing)')}</span><span class="x" title="Move up">▲</span><span class="x" title="Remove">✕</span>`);
@@ -3664,8 +3669,8 @@ export class UI {
           });
           body.appendChild(ul);
           const sel = el('select');
-          sel.appendChild(el('option', { value: '' }, '+ Add a curve…'));
-          for (const x of before.filter((y) => ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix'].includes(y.type) && !y.suppressed && !L.includes(y.id))) sel.appendChild(el('option', { value: x.id }, esc(x.name)));
+          sel.appendChild(el('option', { value: '' }, fd.add || '+ Add a curve…'));
+          for (const x of before.filter((y) => (fd.types || ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix']).includes(y.type) && !y.suppressed && !L.includes(y.id))) sel.appendChild(el('option', { value: x.id }, esc(x.name)));
           sel.onchange = () => { if (sel.value) { L.push(sel.value); a.preview(true); } };
           const w = el('div', { class: 'pm-input' }); w.appendChild(sel);
           body.appendChild(w);
@@ -5633,6 +5638,7 @@ export class UI {
         }
         select.onchange=()=>{if(select.value)e.continuity=select.value;else delete e.continuity;this.renderPM();a.preview();};
         li.insertBefore(select,li.querySelector('.x'));
+        if((e.continuity||f.continuity||(f.tangent?'G1':'G0'))==='G1'){const reach=this.exprInput(e.reach??0,'mm',value=>{e.reach=value;a.preview();});reach.dataset.patchEdgeReach=i;reach.title='Tangent reach';li.insertBefore(reach,li.querySelector('.x'));}
       }
       li.querySelector('.x').onclick = () => { f.edges.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
       li.onpointerenter = () => { a.hoverEdge = a.viewport.edgeIndexForPoint(e.p); a.updateEdgeHighlights(); };

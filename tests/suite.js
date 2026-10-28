@@ -5032,6 +5032,18 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (a point inside an edge matching a triangle to a square, holes paired and started by hand, a Thin loft started by hand, CAD guide constraints with a hole; rejections); the panel's start inside a curve, hole pairing and hole starts`};
   },
 
+  async 'patch-pass-through-and-reach'() {
+    const {run}=await import('/tests/patch-through-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const {fixture}=await import('/tests/surface-patch-cases.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture({continuity:'G1'});await a.setDoc(d.doc);a.editFeature(d.patch.id);await settle();
+    const text=document.querySelector('#pm')?.textContent||'';
+    for(const t of ['Pass Through','Add a curve it passes through','Add points it passes through'])if(!text.includes(t))return {ok:false,detail:`No ${t} in the Filled Surface panel`};
+    if(!document.querySelector('[data-patch-edge-reach="0"]'))return {ok:false,detail:'No tangent reach on a G1 edge'};
+    a.cancelPM?.();await settle();
+    return {ok:true,detail:`${native.results.length} kernel cases (through points, a curve and a sketch's points; tangent reach against plain tangency; rejections); the panel's Pass Through lists and the edges' reach`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

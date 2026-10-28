@@ -271,7 +271,7 @@ export function createFeature(doc, type, props = {}) {
     surfLoft: { profiles: [], guides: [], ruled: false, startCondition: 'none', endCondition: 'none', startDirection: 'y', endDirection: 'y', startStrength: 1, endStrength: 1, startReverse: false, endReverse: false, startFaces: [], endFaces: [] },
     surfSweep: { profileType: 'sketch', profile: null, diameter: 10, path: null, guide: null, guideMode: 'orientation', orientation: 'perpendicular', twistAngle: 0, twistLaw: 'linear', scaleEnd: 1, scaleLaw: 'linear', supportFaces: [], edges: [], chainSelection: false },
     // Patch continuity: G0/G1/G2, with optional per-edge overrides and support faces. Legacy tangent means G1.
-    surfFill: { edges: [], chainSelection: true, continuity: null, supportFaces: [], merge: true, solid: false },
+    surfFill: { edges: [], chainSelection: true, continuity: null, supportFaces: [], merge: true, solid: false, throughCurves: [], throughPoints: [] },
     // tool: a plane, surface body or sketch; faces: points on the pieces; mode 'keep' | 'remove'
     surfTrim: { tool: '', faces: [], mode: 'keep', mutual: false },
     surfExtend: { edges: [], distance: 10 },
@@ -424,6 +424,7 @@ export function referencesOf(doc, f) {
   if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface')addId(f.startPlane);
   if (f.type === 'surfExtrude' && f.direction && f.direction !== 'none') addId(f.direction);
   for (const ref of [f.profile,f.path,f.guide,...(f.profiles || []), ...(f.guides || [])]) addId(typeof ref === 'string' ? ref : ref?.sketch);
+  if (f.type === 'surfFill') for (const id of [...(f.throughCurves || []), ...(f.throughPoints || [])]) addId(id);
   for (const id of expandFeatureRefs(doc, f.features)) addId(id);
   if (f.type !== 'sketch' && typeof f.plane === 'string') addId(f.plane);
   if (f.plane?.ref) addId(f.plane.ref);
