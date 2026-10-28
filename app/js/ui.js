@@ -739,6 +739,52 @@ const PM_SCHEMAS = {
     THIN_GROUP,
     ...SCOPE_GROUP,
   ],
+  // (3D printing fasteners: sizes from the part's print profile unless given; 3D Print tab)
+  nutPocket: [
+    { title: 'Nut', fields: [
+      { key: 'size', type: 'select', label: 'Nut (ISO 4032)', options: () => Object.keys(P3.NUTS).map((k) => [k, k]) },
+      { key: 'clearance', type: 'expr', label: 'Clearance (each side; empty: the print profile’s)', unit: 'mm', optional: true },
+      { key: 'depth', type: 'expr', label: 'Pocket depth (empty: the nut’s height + clearance)', unit: 'mm', optional: true },
+      { key: 'angle', type: 'expr', label: 'Turn the flats by', unit: '°' },
+      { key: 'slot', type: 'check', label: 'Captive slot (below the face, running out sideways)' },
+      { key: 'slotDepth', type: 'expr', label: 'Slot below the face', unit: 'mm', show: (f) => !!f.slot },
+      { key: 'slotAngle', type: 'expr', label: 'Slot direction', unit: '°', show: (f) => !!f.slot },
+      { key: 'hole', type: 'check', label: 'The screw’s clearance hole through' },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
+  insertHole: [
+    { title: 'Insert', fields: [
+      { key: 'size', type: 'select', label: 'Insert', options: () => Object.keys(P3.INSERTS).map((k) => [k, k]) },
+      { key: 'diameter', type: 'expr', label: 'Hole diameter (empty: the table’s)', unit: 'mm', optional: true },
+      { key: 'length', type: 'expr', label: 'Insert length (empty: the table’s)', unit: 'mm', optional: true },
+      { key: 'relief', type: 'expr', label: 'Relief below it', unit: 'mm' },
+      { key: 'chamfer', type: 'expr', label: 'Lead-in chamfer', unit: 'mm' },
+      { key: 'iHint', type: 'hint', text: (f) => { const t = P3.INSERTS[f.size]; return t ? `Table: Ø${t[0]} hole, insert ${t[1]} long. Makers’ sizes differ: check yours and type them above if they do.` : ''; } },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
+  plasticScrewHole: [
+    { title: 'Screw', fields: [
+      { key: 'size', type: 'select', label: 'Screw', options: () => P3.SCREW_SIZES.map((k) => [k, k]) },
+      { key: 'pilot', type: 'expr', label: 'Pilot hole (empty: 0.85 × the screw’s size)', unit: 'mm', optional: true },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm' },
+      { key: 'head', type: 'select', label: 'Head', options: [['none', 'None'], ['cbore', 'Counterbore (cap screw)'], ['csink', 'Countersink']] },
+    ] },
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
   hole: [
     { title: 'Hole Type', fields: [
       { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['cdrill', 'Counterdrill'], ['slot', 'Slot']] },
@@ -2119,6 +2165,10 @@ export class UI {
         { icon: 'gear', label: 'Print Profile', action: () => this.showPrintProfiles() },
         { icon: 'body', label: 'Place on Bed', action: () => a.placeOnBed() },
         { icon: 'eye', label: 'Show Bed', action: () => a.togglePrintBed(), active: !!a.printBedOn },
+        'sep',
+        { icon: 'hole', label: 'Nut Pocket', action: () => a.startFeature('nutPocket') },
+        { icon: 'hole', label: 'Insert Hole', action: () => a.startFeature('insertHole') },
+        { icon: 'hole', label: 'Screw Hole for Plastic', action: () => a.startFeature('plasticScrewHole') },
         'sep',
         { icon: 'measure', label: 'Check Printability', action: () => a.checkPrintability() },
         { icon: 'draftAnalysis', label: 'Overhang Map', action: () => a.overhangMap(), active: a.analysis?.kind === 'overhang' },

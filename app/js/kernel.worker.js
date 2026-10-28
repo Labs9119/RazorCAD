@@ -17,6 +17,7 @@ import * as LC from './loftcorrespondence.js';
 import { threadList, minorDiameter, nearestThread } from './threads.js';
 import * as SM from './sheetmetal.js';
 import { holeSpec, holeProfile } from './holes.js';
+import * as P3 from './print3d.js';
 import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
 import { pipeOf, bundleDiameter } from './routing.js';
@@ -3089,6 +3090,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // the edge's parameter halved to 1e-15 at each change of side (400 steps first); anything else: the kernel's
   // distance query, its solutions at no distance. In a fixed order (along the edge from its start, else by x, y, z),
   // so f.solution keeps its point from one rebuild to the next.
+  // Where a 3D-printing fastener goes, as Hole places its holes: the points and circle centres of a sketch, and points
+  // clicked on a face (a curved one: moved onto it, square to it there): [{ p, dir (into the material) }]
+  const printLocs = (f) => {
+    const locs = [];
+    if (f.sketch) {
+      const s = sketches.get(f.sketch);
+      if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
+      const P3d = (id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); };
+      const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
+      const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
+      const dir = mul(s.frame.n, f.reverse ? 1 : -1);
+      for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: P3d(pt.id), dir });
+    }
+    for (const fc of f.faces || []) {
+      if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+      const hit = body && findFaceAny(solids, fc);
+      if (!hit) throw new Error('A position’s face could not be found in the model');
+      const q = vec(hit.face.pointOnSurface(...hit.face.uvCoordinates(fc.p).map((x, i) => { const b = hit.face.UVBounds; return i ? (x - b.vMin) / (b.vMax - b.vMin) : (x - b.uMin) / (b.uMax - b.uMin); })));
+      locs.push({ p: q, dir: mul(unit(vec(hit.face.normalAt(q))), f.reverse ? 1 : -1) });
+    }
+    if (!locs.length) throw new Error('Click points on a face for them, or select a sketch with points (or circles) on the face');
+    return locs;
+  };
   const curvedPointCrossing=f=>{
     const refs=f.refs||[];
     if(f.type!=='point'||!f.referenceDefinition||f.pointType==='coords'||refs.length!==2||refs.some(r=>r.relation&&r.relation!=='coincident'))return null;
@@ -7759,6 +7783,63 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const tool = slots.sketchOnPlane(rPlane(sk.frame, start)).extrude((through ? depth : depth + 0.05) * (dot(n, sk.frame.n) > 0 ? 1 : -1));
           tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
           apply('cut', tool, true, null);
+          break;
+        }
+        case 'nutPocket':
+        case 'insertHole':
+        case 'plasticScrewHole': {
+          // 3D printing fasteners (the 3D Print tab), placed as holes are, square into the material, sized from the part's
+          // print profile unless given: a hex pocket for a nut (from the face, or a captive slot below it running out
+          // sideways) with the screw's clearance hole through; a hole for a threaded insert, a lead-in chamfer at its top
+          // and a relief below it; a pilot hole for a screw cut straight into the print, with a counterbore or countersink
+          if (!body) throw new Error('There is no body to put them in');
+          const prof = P3.profileFor(doc, null), blank = (x) => x === '' || x == null;
+          const c = blank(f.clearance) ? prof.clearance : ev(f.clearance);
+          const locs = printLocs(f), bb = bbox(body), far = 2 * bb.diag + 1 + Math.max(0, ...locs.map((l) => len(sub(l.p, bb.center))));
+          let tool = null, label = '';
+          const join = (x) => { tool = tool ? tool.fuse(x) : x; };
+          const turned = (p, dir, rz) => { const u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.revolution(R.makePolygon(rz.map(([r, z]) => add(add(p, mul(u, r)), mul(dir, z)))), p, dir, 360); };
+          const prism = (pts, dir, h) => { const v = new R.Vector(mul(dir, h)); try { return R.basicFaceExtrusion(R.makePolygon(pts), v); } finally { v.delete(); } };
+          if (f.type === 'nutPocket') {
+            const nut = P3.NUTS[f.size];
+            if (!nut) throw new Error('Choose a nut size');
+            if (!(c >= 0)) throw new Error('The clearance can’t be negative');
+            const s0 = nut[0] + 2 * c, m0 = blank(f.depth) ? nut[1] + c : ev(f.depth), top = f.slot ? ev(f.slotDepth ?? 3) : 0, ang = (ev(f.angle ?? 0) * Math.PI) / 180;
+            if (!(m0 > 0)) throw new Error('The pocket depth must be greater than zero');
+            if (f.slot && !(top > 0)) throw new Error('The captive slot must start below the face');
+            const holeD = holeSpec({ holeType: 'simple', size: f.size, fit: 'normal' }, ev).d;
+            for (const { p, dir } of locs) {
+              const fr = frameOnPlane(p, mul(dir, -1)), Rr = s0 / Math.sqrt(3), z0 = f.slot ? top : -0.05, h = f.slot ? m0 : m0 + 0.05;
+              const at = (r, a, z) => add(add(add(p, mul(fr.u, r * Math.cos(a))), mul(fr.v, r * Math.sin(a))), mul(dir, z));
+              join(prism(Array.from({ length: 6 }, (_, k) => at(Rr, ang + Math.PI / 6 + (k * Math.PI) / 3, z0)), dir, h));
+              if (f.slot) {
+                // (the slot: as wide as the nut across its flats, from its middle out sideways past the part's edge)
+                const sa = ang + (ev(f.slotAngle ?? 0) * Math.PI) / 180, x = add(mul(fr.u, Math.cos(sa)), mul(fr.v, Math.sin(sa))), y = cross(dir, x), o = add(p, mul(dir, z0));
+                join(prism([add(o, mul(y, -s0 / 2)), add(o, mul(y, s0 / 2)), add(add(o, mul(y, s0 / 2)), mul(x, far)), add(add(o, mul(y, -s0 / 2)), mul(x, far))], dir, h));
+              }
+              if (f.hole !== false) join(turned(p, dir, [[0, -0.05], [holeD / 2, -0.05], [holeD / 2, far], [0, far]]));
+            }
+            label = `${f.size} nut pocket${f.slot ? ' (captive slot)' : ''} ${+s0.toFixed(3)} across flats × ${+m0.toFixed(3)} deep${f.hole !== false ? `, Ø${holeD} through` : ''}`;
+          } else if (f.type === 'insertHole') {
+            const t = P3.INSERTS[f.size];
+            if (!t && (blank(f.diameter) || blank(f.length))) throw new Error('Choose an insert size, or give its hole diameter and length');
+            const d = blank(f.diameter) ? t[0] : ev(f.diameter), L = blank(f.length) ? t[1] : ev(f.length), rel = ev(f.relief ?? 1), ch = ev(f.chamfer ?? 0.5);
+            if (!(d > 0 && L > 0 && rel >= 0 && ch >= 0)) throw new Error('The insert’s hole needs a diameter and a length (and a relief and chamfer of 0 or more)');
+            for (const { p, dir } of locs) join(turned(p, dir, [[0, -0.05], [d / 2 + ch + 0.05, -0.05], [d / 2, ch], [d / 2, L + rel], [0, L + rel]]));
+            label = `${blank(f.diameter) && blank(f.length) ? f.size + ' insert: ' : ''}Ø${+d.toFixed(3)} × ${+(L + rel).toFixed(3)} deep (insert ${+L.toFixed(3)} + relief ${+rel.toFixed(3)}), chamfer ${+ch.toFixed(3)}`;
+          } else {
+            const nominal = parseFloat(String(f.size || 'M3').slice(1)), d = blank(f.pilot) ? +(P3.PILOT_SHARE * nominal).toFixed(3) : ev(f.pilot), depth = ev(f.depth ?? 10);
+            if (!(d > 0 && depth > 0)) throw new Error('The pilot hole needs a diameter and a depth');
+            const head = f.head || 'none', iso = holeSpec({ holeType: head === 'none' ? 'simple' : head, size: f.size, fit: 'normal' }, ev);
+            const spec = { type: head === 'none' ? 'simple' : head, d, cbD: iso.cbD, cbDepth: iso.cbDepth, csD: iso.csD, csAng: iso.csAng };
+            if (head === 'cbore' && !(depth > spec.cbDepth)) throw new Error('The pilot hole must be deeper than its counterbore');
+            for (const { p, dir } of locs) join(turned(p, dir, holeProfile(spec, depth, false)));
+            label = `${f.size} screw into plastic: pilot Ø${+d.toFixed(3)} × ${+depth.toFixed(3)}${head === 'cbore' ? `, counterbore Ø${spec.cbD} × ${spec.cbDepth}` : head === 'csink' ? `, countersink Ø${spec.csD}` : ''}`;
+          }
+          tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
+          apply('cut', tool, true, null);
+          res.features[f.id] = { ...(res.features[f.id] || {}), faces: f.faces || [], holes: locs.map((l) => ({ p: l.p, dir: l.dir })) };
+          res.notes[f.id] = `${locs.length} × ${label} (${prof.name}: clearance ${c} mm)`;
           break;
         }
         case 'hole': {

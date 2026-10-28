@@ -103,6 +103,9 @@ export const TYPE_INFO = {
   loft: { base: 'Loft', cutBase: 'Loft Cut', icon: 'loft', cutIcon: 'cutLoft' },
   helix: { base: 'Helix', icon: 'helix' },
   hole: { base: 'Hole', icon: 'hole' },
+  nutPocket: { base: 'Nut Pocket', icon: 'hole' },
+  insertHole: { base: 'Insert Hole', icon: 'hole' },
+  plasticScrewHole: { base: 'Screw Hole for Plastic', icon: 'hole' },
   boss: { base: 'Mounting Boss', icon: 'hole' },
   snapHook: { base: 'Snap Hook', icon: 'rib' },
   lipGroove: { base: 'Lip-Groove', icon: 'shell' },
@@ -357,6 +360,10 @@ export function createFeature(doc, type, props = {}) {
     moldSide: { faces: [], dir: 'normal', reverse: false, margin: 2 },
     moldRunner: { sketch: null, runnerD: 6, sprueD: 4, taper: 1 },
     vent: { sketch: null, slotWidth: 2, barWidth: 2, angle: 0, margin: 1, end: 'through', depth: 2, reverse: false },
+    // (3D printing fasteners: '' = from the part's print profile or the size table)
+    nutPocket: { size: 'M3', clearance: '', depth: '', angle: 0, slot: false, slotDepth: 3, slotAngle: 0, hole: true, faces: [], sketch: null, reverse: false },
+    insertHole: { size: 'M3', diameter: '', length: '', relief: 1, chamfer: 0.5, faces: [], sketch: null, reverse: false },
+    plasticScrewHole: { size: 'M3', pilot: '', depth: 10, head: 'none', faces: [], sketch: null, reverse: false },
     hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'
     sketch3d: { pts: [], segs: [], rels: [], nextId: 1, kind: 'lines', radius: 0 },

@@ -776,6 +776,17 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  async 'print-fasteners'() {
+    const {run}=await import('/tests/print-fastener-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    // (the panel: Nut Pocket from the 3D Print tab, a click on the top face)
+    const a=window.app,{fixture}=await import('/tests/print-fastener-cases.js'),d=fixture('nutPocket',{size:'M4'});d.doc.features.pop();
+    await a.newDocument?.();closeModals();await a.setDoc(d.doc);await a.rebuild();
+    a.startFeature('nutPocket');await wait(150);
+    if(a.pickMode()!=='faces'||!document.querySelector('#pm select'))return {ok:false,detail:`Nut Pocket panel: pick mode ${a.pickMode()}`};
+    a.cancelPM();
+    return {ok:true,detail:`${native.results.length} kernel cases (nut pocket from the face, a captive slot, sized from the profile; insert holes; screw holes into plastic), each to its volume; the panel`};
+  },
+
   async 'print-check-details'() {
     // the hole, pin and overhang checks: a 20 × 20 × 10 block with a Ø1 hole through it (under Ø1.5: fails), a Ø1.5 pin
     // 5 high on it (under Ø2: fails), and a wedge on one side whose underside faces down 60° from vertical (over 45°:

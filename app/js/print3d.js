@@ -26,8 +26,19 @@ export function allProfiles(prefs) {
 // else the settings' default, else the first one
 export function profileFor(doc, prefs) {
   const all = allProfiles(prefs), name = doc?.print?.profile || prefs?.printProfile;
-  return all.find((p) => p.name === name) || (doc?.print?.p?.name === name ? doc.print.p : null) || all[0];
+  return (name && (all.find((p) => p.name === name) || (doc?.print?.p?.name === name ? doc.print.p : null))) || all[0];
 }
+
+// ------------------------------------------------------------ fastener sizes
+// hex nuts (ISO 4032): across flats, height (mm)
+export const NUTS = { M2: [4, 1.6], 'M2.5': [5, 2], M3: [5.5, 2.4], M4: [7, 3.2], M5: [8, 4.7], M6: [10, 5.2], M8: [13, 6.8], M10: [16, 8.4], M12: [18, 10.8] };
+// threaded inserts pressed or melted in (heat-set): the hole's diameter and the insert's length (mm). Typical sizes from
+// the makers' charts, which differ from one maker to the next: check them against your inserts (the Insert Hole
+// panel takes your own numbers)
+export const INSERTS = { M2: [3.2, 4], 'M2.5': [3.6, 5.7], M3: [4, 5.7], M4: [5.6, 8.1], M5: [6.4, 9.5], M6: [8, 12.7], M8: [9.7, 12.7] };
+// screws cut straight into the print: the pilot hole as a share of the screw's size
+export const PILOT_SHARE = 0.85;
+export const SCREW_SIZES = ['M2', 'M2.5', 'M3', 'M4', 'M5', 'M6'];
 
 // ------------------------------------------------------------ orientation
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
