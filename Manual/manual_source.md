@@ -981,9 +981,9 @@ Click edges as for a fillet. Chamfer types: **equal distance**, **distance + ang
 
 ## Shell
 
-Click the faces to remove and set the wall thickness, inward or outward. With no faces removed, the body is **hollowed**: a closed void inside, the thickness in from the outside everywhere (inward only; a body too thin for it is refused). {idx:shell, hollow}
+Click the faces to remove and set the wall thickness, inward or outward. With no faces removed, the body is **hollowed**: a closed void inside, the thickness in from the outside everywhere (a body too thin for it is refused). Hollowed **outward**, the body itself becomes the void and the walls are built round it, the thickness out from every face (edges and corners rounded). {idx:shell, hollow}
 
-**Walls of Their Own Thickness** {idx:shell, wall thickness}: **Select walls in canvas**, then click flat faces of the body: each wall gets a thickness of its own, more than the shell's (the box beside it). The material behind the face is kept down to that depth. Inward shells only; a removed face cannot have one. Shell validates the resulting solid and rejects a failed offset that merely returns the original full body. For inward shells, small fillets or chamfers can be retained outside with sharp corners inside; the feature note reports this construction. If no valid cavity can be made, reduce the thickness, select different removal faces, or place Shell before the fillets and chamfers. {idx:shell}
+**Walls of Their Own Thickness** {idx:shell, wall thickness}: **Select walls in canvas**, then click flat faces of the body: each wall gets a thickness of its own, more than the shell's (the box beside it). Inward, the material behind the face is kept down to that depth; outward, the face is built out to that thickness over its own outline. A removed face cannot have one (it is the opening). Shell validates the resulting solid and rejects a failed offset that merely returns the original full body. For inward shells, small fillets or chamfers can be retained outside with sharp corners inside; the feature note reports this construction. If no valid cavity can be made, reduce the thickness, select different removal faces, or place Shell before the fillets and chamfers. {idx:shell}
 
 ## Draft
 

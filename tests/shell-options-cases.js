@@ -10,6 +10,7 @@ export function fixture(options={}){
   const feature=M.createFeature(doc,'shell',{faces:[{p:[0,0,20],n:[0,0,1]}],thickness:1,...options});doc.features.push(sk,block,feature);
   return {doc,feature};
 }
+const OUT=(400+80+Math.PI)*20+400+20*Math.PI+(2/3)*Math.PI-8000;
 const XP={p:[10,0,10],n:[1,0,0]},YN={p:[0,-10,10],n:[0,-1,0]},BOT={p:[0,0,0],n:[0,0,-1]};
 export async function run({threads=1}={}){
   const k=new KernelClient({threads}),results=[];await k.ready;
@@ -21,7 +22,14 @@ export async function run({threads=1}={}){
     {name:'two walls and the bottom thicker',options:{thickFaces:[{...XP,t:3},{...YN,t:2},{...BOT,t:4}]},volume:8000-16*17*16,probes:[[7,0,10],[0,-8,10],[0,0,4]]},
     {name:'a wall thinner than the shell rejected',options:{thickness:2,thickFaces:[{...XP,t:1}]},reject:/more than the shell/},
     {name:'a removed face with a thickness rejected',options:{thickFaces:[{p:[0,0,20],n:[0,0,1],t:3}]},reject:/removed face/},
-    {name:'outward with walls of their own rejected',options:{outward:true,thickFaces:[{...XP,t:3}]},reject:/inward/},
+    // outward (t = 1, the top open): a prism of the rounded square 20 + 2t (corners radius t) up to z = 20, and the bottom
+    // slab with its rounded edges and corners, less the cube; a wall of its own builds its face out to 3 mm (2 more)
+    {name:'outward shell',options:{outward:true},volume:OUT},
+    {name:'outward with a wall 3 mm thick',options:{outward:true,thickFaces:[{...XP,t:3}]},volume:OUT+20*20*2,probes:[[12.5,0,10]]},
+    // hollow outward (t = 2): the cube offset outward all round (faces, rounded edges and corners) is the solid, the
+    // cube the void; a wall built out to 5 mm adds 3 mm over that face
+    {name:'hollow outward',options:{faces:[],thickness:2,outward:true},volume:6*400*2+12*20*Math.PI+(4/3)*Math.PI*8,probes:[[11,0,10],[-11,0,10]]},
+    {name:'hollow outward with a thicker wall',options:{faces:[],thickness:2,outward:true,thickFaces:[{...XP,t:5}]},volume:6*400*2+12*20*Math.PI+(4/3)*Math.PI*8+20*20*3,probes:[[14,0,10]]},
     {name:'hollow (no faces removed)',options:{faces:[],thickness:2},volume:8000-16*16*16,probes:[[8,0,10],[-8,0,10]]},
     {name:'hollow with a thicker wall',options:{faces:[],thickness:2,thickFaces:[{...XP,t:5}]},volume:8000-13*16*16,probes:[[5,0,10]]},
     {name:'hollow too thick rejected',options:{faces:[],thickness:11},reject:/could not be hollowed/},

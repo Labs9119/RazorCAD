@@ -1242,7 +1242,7 @@ const PM_SCHEMAS = {
   shell: [
     { title: 'Parameters', fields: [{ key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' }, { key: 'outward', type: 'check', label: 'Shell outward' }] },
     { title: 'Faces to Remove', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces to remove (open the shell there). With none, the body is hollowed: a closed void inside.' }] },
-    { title: 'Walls of Their Own Thickness', show: (f) => !f.outward, fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
+    { title: 'Walls of Their Own Thickness', fields: [{ key: 'thickFaces', type: 'faceList', shellThick: true, empty: 'None (every wall the same)', itemLabel: 'Wall', hint: 'Select walls in canvas, then click flat faces of the body: each gets a thickness of its own (more than the shell’s).' }] },
   ],
   combine: [
     { title: 'Operation Type', fields: [{ key: 'op', type: 'select', label: 'Type', options: [['add', 'Add (union)'], ['subtract', 'Subtract'], ['common', 'Common (keep the overlap)']] }] },
