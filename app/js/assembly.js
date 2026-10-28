@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import { icon } from './icons.js';
 import { platform } from './platform.js';
-import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName } from './model.js';
+import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName, createFeature, insertFeature, newRev } from './model.js';
 import { STD_TYPES, makeStdPart, fitToHole, fitLength, stdLengths, lengthLabel, setParts, heightOf } from './stdparts.js';
 import { gauss } from './sketch3dmodel.js';
 import { fmt, evalEquations, isValidName } from './expr.js';
@@ -2018,10 +2018,61 @@ export class AssemblyEditor {
     await a.openFromFile({ name: p.name + (sub ? ASM_EXT : '.rcad'), content: JSON.stringify(p.doc), path: null });
     return a.tabs[a.tabIndex];
   }
+  // Edit in Context: the part opened with the other parts of the assembly in it as context bodies (transparent), where
+  // they are from it, so it can be sketched on them, take their edges or be extruded up to them. The context bodies are
+  // references only: left out of the part where it is used. Again on the same component: the context brought up to date.
+  async editInContext(id, pick = null) {
+    const a = this.app, c = this.comp(id), p = c && this.part(c.part);
+    if (!p) return null;
+    if (this.isSub(p) || p.libKey) { a.toast('Edit in Context works on parts made here (not sub-assemblies or library parts)', true); return null; }
+    const others = this.doc.components.filter((x) => x.id !== c.id && !this.eff(x).suppressed && !this.eff(x).hidden && this.part(x.part) && !this.isSub(this.part(x.part)));
+    if (!others.length) { a.toast('There are no other parts to show in context', true); return null; }
+    let chosen = pick ? others.filter((x) => pick.includes(x.id)) : null;
+    if (!chosen) {
+      const v = await a.ui.promptFields(`Edit ${c.name || p.name} in Context`, 'part', others.slice(0, 40).map((x, i) => ({ key: 'c' + i, label: x.name || this.part(x.part).name, type: 'check', value: others.length <= 12 })), 'The parts ticked come into the part as transparent context bodies, where they are in the assembly.');
+      if (!v) return null;
+      chosen = others.slice(0, 40).filter((_, i) => v['c' + i]);
+      if (!chosen.length) return null;
+    }
+    const P0 = poseOf(c), inv = P0.q.clone().invert();
+    const pool = a.kernelPool || a.kernel, ctx = [];
+    await a.withProgress?.('Bringing in the context…', async () => {
+      for (const x of chosen) {
+        const px = this.part(x.part), Px = poseOf(x), q = inv.clone().multiply(Px.q), t = applyQ(inv, sub(Px.p, P0.p)), cfg = this.eff(x).config;
+        const doc = { ...px.doc, activeConfig: cfg && (px.doc.configs || []).some((k) => k.id === cfg) ? cfg : null };
+        try { const r = await pool.request('partSTEP', { doc: JSON.stringify(doc), pose: { p: t, q: [q.x, q.y, q.z, q.w] }, name: x.name || px.name }, 'asm-parts'); ctx.push({ comp: x, text: r.text }); }
+        catch (e) { a.toast(`${x.name || px.name} could not come into context: ${e.message}`, true); }
+      }
+    }) ?? null;
+    if (!ctx.length) return null;
+    const asmTab = a.tabs[a.tabIndex];
+    await this.openPart(c.id);
+    const doc = a.doc;
+    if (!doc || doc === this.doc) return null;
+    const made = [];
+    for (const { comp, text } of ctx) {
+      let f = doc.features.find((g) => g.type === 'import' && g.context?.comp === comp.id);
+      if (f) { f.data = text; f.rev = newRev(); }
+      else {
+        f = createFeature(doc, 'import', { format: 'step', fileName: `${comp.name || 'context'}.step`, data: text, context: { comp: comp.id, name: comp.name } });
+        f.name = `Context: ${comp.name || this.part(comp.part).name}`;
+        insertFeature(doc, f);
+      }
+      made.push(f.id);
+    }
+    a.commit();
+    await a.rebuild?.();
+    const ids = (a.result?.bodies || []).filter((b) => made.includes(String(b.id).split(/[.~]/)[0])).map((b) => b.id);
+    if (ids.length) a.setBodiesTransparent(ids, true);
+    a.status(`Editing ${p.name} in context: ${ctx.length} part${ctx.length === 1 ? '' : 's'} in as transparent context bodies. Sketch on them, use their edges or extrude up to them; they are left out of the part in the assembly. Save the part to update the assembly.`);
+    this.contextOf = { asmTab, comp: c.id };
+    return { ids: made };
+  }
   compMenu(c) {
     const sub = this.isSub(this.part(c.part));
     return [
       { label: sub ? 'Open Sub-assembly' : 'Open Part', icon: sub ? 'assembly' : 'part', action: () => this.openPart(c.id) },
+      ...(sub ? [] : [{ label: 'Edit in Context…', icon: 'part', action: () => this.editInContext(c.id) }]),
       { label: 'Mate…', icon: 'mate', action: () => this.startMate() },
       'sep',
       c.fixed ? { label: 'Float', icon: 'float', action: () => this.setFixed(c.id, false) } : { label: 'Fix', icon: 'fix', action: () => this.setFixed(c.id, true) },
@@ -2617,6 +2668,7 @@ export class AssemblyEditor {
         { icon: selC && this.eff(selC).hidden ? 'show' : 'hide', label: selC && this.eff(selC).hidden ? 'Show Component' : 'Hide Component', action: () => selC && this.setHidden(selC.id, !this.eff(selC).hidden), disabled: !selC },
         { icon: 'suppress', label: selC && this.eff(selC).suppressed ? 'Unsuppress' : 'Suppress', action: () => selC && this.setSuppressed(selC.id, !this.eff(selC).suppressed), disabled: !selC },
         { icon: 'part', label: 'Open Part', action: () => selC && this.openPart(selC.id), disabled: !selC },
+        { icon: 'part', label: 'Edit in Context', action: () => selC && this.editInContext(selC.id), disabled: !selC },
         'sep',
         { icon: 'explode', label: 'Exploded View', action: () => this.startExplode(), active: !!this.explodeTool },
         { icon: 'explode', label: this.doc.exploded ? 'Collapse' : 'Explode', action: () => (this.doc.exploded ? this.setExploded(null, true) : this.doc.explodes.length && this.setExploded(this.doc.explodes[this.doc.explodes.length - 1].id, true)), disabled: !this.doc.explodes.length },

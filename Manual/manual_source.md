@@ -1524,7 +1524,7 @@ An assembly places parts and other assemblies as **components** and holds them t
 
 **File ▸ New Assembly**, or **New Assembly** in the start window. Every assembly has the standard **Front, Top and Right Planes** and the **Origin** at the top of its tree. They show in the view as a part's do (the eye in the tree, **View ▸ Show Planes**), and mates can use them; they stay where they are. {idx:assembly, planes}
 
-The **Assembly** tab of the ribbon holds Insert Components, Standard Parts, Equations, Assembly Hole, Assembly Cut, Mate, Fix, Float, Hide Component, Suppress, Open Part, Exploded View, Explode / Collapse, Motion Study, Bill of Materials, Interference Check, Collision Detection, Speed Mode and Zoom to Fit.
+The **Assembly** tab of the ribbon holds Insert Components, Standard Parts, Equations, Assembly Hole, Assembly Cut, Mate, Fix, Float, Hide Component, Suppress, Open Part, Edit in Context, Exploded View, Explode / Collapse, Motion Study, Bill of Materials, Interference Check, Collision Detection, Speed Mode and Zoom to Fit.
 
 ## Inserting components
 
@@ -1619,7 +1619,8 @@ The copies are components of their own (in the bill of materials, mateable), fix
 
 - Each component shows **(f)** when fixed or **(-)** while still free to move, its configuration, and an eye to hide or show it.
 - The **Mates** folder lists the mates; right-click one for **Edit**, **Flip**, **Suppress** or **Delete**.
-- Right-click a component for **Mate…**, **Open Part** (or double-click it), **Fix / Float**, **Hide / Show**, **Suppress / Unsuppress**, **Insert Another Instance**, **Rename** and **Delete**.
+- Right-click a component for **Mate…**, **Open Part** (or double-click it), **Edit in Context…**, **Fix / Float**, **Hide / Show**, **Suppress / Unsuppress**, **Insert Another Instance**, **Rename** and **Delete**.
+- **Edit in Context** {idx:Edit in Context}{idx:top-down design} opens the part with the other parts you tick brought into it as transparent **context bodies** (the features *Context: …*), where they are in the assembly from it. Design the part to fit them: sketch on their faces, convert their edges, extrude up to them. Context bodies are references only: they are left out of the part where it is used (in the assembly, drawings, the bill of materials and exports). Edit in Context again on the same component brings the context up to date (after the other parts moved or changed); delete or suppress the context features when they are no longer needed. Save the part to update the assembly.
 - Undo and redo work in the assembly.
 
 ## Sub-assemblies

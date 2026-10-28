@@ -2183,6 +2183,33 @@ const UI = {
 
   // Fasten All Holes: two plates stacked, four lined-up Ø9 holes: four M8 bolts, each with two washers and a nut, as
   // long as the stack; done again, nothing more
+  async 'assembly-edit-in-context'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), THREE = await import('three');
+    const box = (name, w) => { const d = M.newDoc(); d.name = name; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); const P = [[-w / 2, -w / 2], [w / 2, -w / 2], [w / 2, w / 2], [-w / 2, w / 2]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4])); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: w })); return d; };
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, pa = asm.addPart(box('Lid', 20), null, null), pb = asm.addPart(box('Base', 10), null, null);
+    await asm.addComponent(pa); await asm.addComponent(pb);
+    const [ca, cb] = asm.doc.components;
+    // (the lid at (0, 0, 0) turned 90° about Z; the base at (40, 0, 0): from the lid it is 40 along −Y)
+    const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2);
+    ca.pos = [0, 0, 0]; ca.rot = [qz.x, qz.y, qz.z, qz.w]; ca.fixed = true; cb.pos = [40, 0, 0]; cb.rot = [0, 0, 0, 1]; cb.fixed = true;
+    await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000);
+    const r = await asm.editInContext(ca.id, [cb.id]);
+    await wait(300); await until(() => !a.kernel.pending, 30000);
+    const doc = a.doc, ctx = doc.features.find((f) => f.type === 'import' && f.context);
+    if (!r || !ctx || ctx.context.comp !== cb.id) return { ok: false, detail: 'No context feature in the part', r };
+    const bodies = a.result.bodies || [], cb2 = bodies.find((b) => b.id.startsWith(ctx.id));
+    if (bodies.length !== 2 || !cb2 || !a.isBodyTransparent(cb2.id)) return { ok: false, detail: 'The part should show its own body and a transparent context body', bodies: bodies.map((b) => b.id) };
+    // (where the base is from the lid: its centre at (0, −40, 5))
+    const m = await a.kernel.request('measure', { refs: [{ kind: 'body', id: cb2.id }] }), v = m.items[0].volume;
+    const near = await a.kernel.request('measure', { refs: [{ kind: 'vertex', p: [0, -40, 5] }, { kind: 'body', id: cb2.id }] });
+    if (Math.abs(v - 1000) > 1e-6 || near.distance > 1e-9) return { ok: false, detail: 'The context body is not the base where it is', v, d: near.distance };
+    // (left out where the part is used: the assembly's mesh of it, an export)
+    const pm = await a.kernel.request('partMesh', { doc: JSON.stringify(doc), withVolume: true });
+    if (Math.abs(pm.body.volume - 8000) > 1e-6) return { ok: false, detail: `The context body went into the part as the assembly sees it (volume ${pm.body.volume}, ${Object.keys(pm.body).join(' ')})` };
+    return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), and is left out of the part as the assembly builds it' };
+  },
+
   async 'assembly-fasten-all-holes'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), SP = await import('/js/stdparts.js');
     const plate = M.newDoc(); plate.name = 'Plate';

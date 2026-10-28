@@ -216,6 +216,7 @@ let lastMeshTol = 0.01;
 
 let lastBody = null;
 let lastSolids = [];
+let lastContext = new Set(); // (the ids of the context bodies in the last rebuild)
 let lastSurfaces = [];
 let lastName = 'Part';
 const importCache = new Map();
@@ -2495,6 +2496,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const axes = new Map();
   const points = new Map();
   const tools = new Map();
+  // (import features holding other parts of an assembly, for reference: Edit in Context; from the list, as features
+  // restored from the rebuild cache are not run again)
+  const contextFeats = new Set((doc.features || []).filter((f) => f.type === 'import' && f.context).map((f) => f.id));
   let applied = []; // tools applied by the current feature (for previews)
   let blendPair = null; // a fillet/chamfer on one body: that body before and after (for its preview)
   let body = null;    // all bodies together (one solid, or a compound of several)
@@ -7915,6 +7919,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
   if (useCache) rebuildCache = { eqKey, entries };
 
 
+  // (the context bodies of a part edited in context are references only: left out where the part is used, in an
+  // assembly, a drawing or an export)
+  const isContext = (s) => contextFeats.has(String(s.id).split(/[.~]/)[0]);
+  if ((opts.partial || opts.noContext) && contextFeats.size) {
+    solids = solids.filter((s) => !isContext(s));
+    surfaces = surfaces.filter((s) => !isContext(s));
+    body = solids.length ? compoundOf(solids) : null;
+  }
+  lastContext = new Set([...solids, ...surfaces].filter(isContext).map((s) => s.id));
   if (opts.partial) return { solids, surfaces, features: res.features, threads: res.threads };
   lastFeatureDiffs = featureDiffs;
   lastSketchBodies = sketchBodies;
@@ -8043,6 +8056,7 @@ function updateProjections(f, frame, body, sketches, surfaceShapes = []) {
 async function exportBody(format, bodyId = null, info = {}) {
   if (!lastBody && !lastSurfaces.length) throw new Error('There is no body to export');
   let list = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
+  if (!bodyId && lastContext.size) list = list.filter((s) => !lastContext.has(s.id));
   if (bodyId) {
     list = list.filter((s) => s.id === bodyId);
     if (!list.length) throw new Error('That body no longer exists');
@@ -10848,12 +10862,23 @@ async function handleMessage(e) {
     } else if (type === 'partMesh') {
       const doc = JSON.parse(data.doc);
       doc.rollbackAt = null;
-      const out = await rebuild(doc, null, { coarse: !!data.coarse });
+      const out = await rebuild(doc, null, { coarse: !!data.coarse, noContext: true });
       const r = out.res;
       result = { body: r.body, errors: [...(r.errors instanceof Map ? r.errors : Object.entries(r.errors || {}))].length };
       // (Kernel Lab: the solids' volume, for the BOM's mass, instead of the display mesh's)
       if (data.withVolume && r.body && lastSolids.length) { const ex = exactProps(lastSolids.map((x) => x.shape), 1e-6); r.body.volume = ex.reduce((t, x, i) => t + finite(x.volume, () => preciseVolume(lastSolids[i].shape)), 0); }
       transfer = out.transfer;
+    } else if (type === 'partSTEP') {
+      // a part's solids as a STEP file, placed by pose { p, q: [x, y, z, w] } (Edit in Context: another part, where it is
+      // from the part being edited)
+      const doc = JSON.parse(data.doc);
+      doc.rollbackAt = null;
+      const part = await rebuild(doc, null, { partial: true });
+      if (!part.solids.length) throw new Error('The part has no solids');
+      const [qx, qy, qz, qw] = data.pose?.q || [0, 0, 0, 1], s = Math.hypot(qx, qy, qz), ang = (2 * Math.atan2(s, qw) * 180) / Math.PI, t = data.pose?.p || [0, 0, 0];
+      const placed = part.solids.map((r) => { let sh = r.shape.clone(); if (s > 1e-12 && Math.abs(ang) > 1e-9) sh = sh.rotate(ang, [0, 0, 0], [qx / s, qy / s, qz / s]); return { shape: sh.translate(t), name: data.name || 'Context' }; });
+      const blob = R.exportSTEP(placed, { unit: 'mm' });
+      result = { text: await blob.text() };
     } else if (type === 'exportAssemblySTEP') {
       result = await exportAssemblySTEP(data.doc);
       transfer = [result.bytes.buffer];
