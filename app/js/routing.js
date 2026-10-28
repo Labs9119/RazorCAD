@@ -19,5 +19,34 @@ export function pipeOf(f, ev) {
   if (!(R > D / 2)) throw new Error('The bend radius must be more than half the pipe’s diameter');
   return { D, t, R, tee: s ? s.tee : D, reducer: s ? s.reducer : 1.5 * D, label: s ? `Pipe DN${s.dn}` : `Tube ${+D.toFixed(3)} × ${+t.toFixed(3)}` };
 }
+// A harness formboard: the cables laid flat at their cut lengths, joined where their ends meet (within tol): from the
+// first end, each cable straight on from the one before it, branches fanned out at 45° steps either side. cables:
+// [{ name, cut, D, ends: [p, q] }] → { lines: [{ a, b, name, cut, D }], nodes: [{ p, n (cables there) }] } (2D, mm)
+export function formboard(cables, tol = 1) {
+  const nodes = [], nodeOf = (q) => { let k = nodes.findIndex((x) => Math.hypot(x.q[0] - q[0], x.q[1] - q[1], x.q[2] - q[2]) < tol); if (k < 0) { nodes.push({ q, edges: [] }); k = nodes.length - 1; } return k; };
+  const edges = cables.map((c, i) => { const a = nodeOf(c.ends[0]), b = nodeOf(c.ends[1]); nodes[a].edges.push(i); nodes[b].edges.push(i); return { ...c, a, b }; });
+  const pos = new Map(), lines = [], done = new Set();
+  const place = (start, at) => {
+    pos.set(start, at);
+    const queue = [[start, 0]];
+    while (queue.length) {
+      const [k, heading] = queue.shift();
+      const out = nodes[k].edges.filter((e) => !done.has(e));
+      out.forEach((e, j) => {
+        done.add(e);
+        const E = edges[e], other = E.a === k ? E.b : E.a;
+        const turn = j === 0 ? 0 : (Math.ceil(j / 2) * (j % 2 ? 1 : -1) * Math.PI) / 4, h = heading + turn, P = pos.get(k);
+        if (pos.has(other)) return; // (a loop: that cable is left out)
+        const Q = [P[0] + E.cut * Math.cos(h), P[1] + E.cut * Math.sin(h)];
+        pos.set(other, Q);
+        lines.push({ a: P, b: Q, name: E.name, cut: E.cut, D: E.D });
+        queue.push([other, h]);
+      });
+    }
+  };
+  let y = 0;
+  for (let k = 0; k < nodes.length; k++) if (!pos.has(k)) { const ends = nodes.findIndex((n, i) => !pos.has(i) && n.edges.length === 1); place(ends >= 0 ? ends : k, [0, y]); y -= 200; }
+  return { lines, nodes: nodes.map((n, k) => ({ p: pos.get(k), n: n.edges.length })) };
+}
 // A bundle of n wires of diameter d: about 1.15 · d · √n across (round, loosely packed); one wire: d.
 export const bundleDiameter = (n, d) => (n <= 1 ? d : 1.15 * d * Math.sqrt(n));

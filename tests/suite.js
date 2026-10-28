@@ -1966,6 +1966,24 @@ const UI = {
     return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
   },
 
+  async 'harness-formboard'() {
+    const RT = await import('/js/routing.js');
+    // (three cables from one point: a trunk, a straight on and a branch: laid at their lengths, the branch at 45°)
+    const fb = RT.formboard([{ name: 'A', cut: 100, D: 6, ends: [[0, 0, 0], [80, 0, 0]] }, { name: 'B', cut: 50, D: 4, ends: [[80, 0, 0], [80, 40, 10]] }, { name: 'C', cut: 120, D: 4, ends: [[80, 0, 0], [200, 0, 0]] }]);
+    const L = (l) => Math.hypot(l.b[0] - l.a[0], l.b[1] - l.a[1]), ang = (l) => (Math.atan2(l.b[1] - l.a[1], l.b[0] - l.a[0]) * 180) / Math.PI;
+    const okPure = fb.lines.length === 3 && fb.lines.every((l) => Math.abs(L(l) - l.cut) < 1e-9) && fb.nodes.filter((n) => n.n === 3).length === 1 && Math.abs(ang(fb.lines[1])) < 1e-9 && Math.abs(Math.abs(ang(fb.lines[2])) - 45) < 1e-9;
+    if (!okPure) return { ok: false, detail: fb };
+    // (in the app: two cables of a part meeting at an end)
+    const a = window.app; await a.newDocument?.(); closeModals();
+    const doc = M.newDoc(), g1 = M.createFeature(doc, 'sketch3d', { segs: null, pts: [{ x: 0, y: 0, z: 0 }, { x: 100, y: 0, z: 0 }, { x: 150, y: 50, z: 0 }], kind: 'spline', radius: 0 }), g2 = M.createFeature(doc, 'sketch3d', { segs: null, pts: [{ x: 150, y: 50, z: 0 }, { x: 200, y: 50, z: 40 }], kind: 'lines', radius: 0 });
+    doc.features.push(g1, g2, M.createFeature(doc, 'cable', { path: g1.id, diameter: 8, slack: 10 }), M.createFeature(doc, 'cable', { path: g2.id, diameter: 5, slack: 0 }));
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    const f2 = a.harnessFormboard(true);
+    const want2 = Math.hypot(50, 0, 40);
+    if (!f2 || f2.lines.length !== 2 || !f2.lines.some((l) => Math.abs(l.cut - want2) < 1e-6) || f2.nodes.filter((n) => n.n === 2).length !== 1) return { ok: false, detail: f2 };
+    return { ok: true, detail: `a trunk, a straight on and a 45° branch at their lengths; a part's two cables joined end to end (${f2.lines.map((l) => l.cut.toFixed(1)).join(' + ')} mm)` };
+  },
+
   async 'duct-fittings'() {
     const {run,fixture}=await import('/tests/duct-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};

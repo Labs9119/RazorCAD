@@ -21,6 +21,7 @@ import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fo
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
 import { nest, nestShapes, nestEnts, placeEnts, outlineLoops } from './nest.js';
 import { ductSpec, ductPatterns, patternEnts } from './ducts.js';
+import { formboard } from './routing.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -1259,6 +1260,30 @@ class App {
     ]);
     return result;
   }
+  // Harness Formboard: the part's cables laid flat at their cut lengths, shown and written as a DXF (each cable a line
+  // with its name and length, the points where cables meet marked).
+  harnessFormboard(quiet = false) {
+    const cables = this.doc.features.filter((f) => f.type === 'cable' && !f.suppressed).map((f) => ({ name: f.name, ...(this.result.detected?.get(f.id)?.cable || {}) })).filter((c) => c.ends);
+    if (!cables.length) { this.toast('There are no cables (Weldments ▸ Cable)', true); return null; }
+    const fb = formboard(cables);
+    if (quiet) return fb;
+    const xs = fb.lines.flatMap((l) => [l.a[0], l.b[0]]), ys = fb.lines.flatMap((l) => [l.a[1], l.b[1]]);
+    const x0 = Math.min(...xs) - 40, x1 = Math.max(...xs) + 40, y0 = Math.min(...ys) - 40, y1 = Math.max(...ys) + 40, k = 640 / Math.max(x1 - x0, y1 - y0, 1);
+    const X = (p) => [((p[0] - x0) * k).toFixed(1), ((y1 - p[1]) * k).toFixed(1)];
+    let svg = `<svg width="${((x1 - x0) * k).toFixed(0)}" height="${((y1 - y0) * k).toFixed(0)}" style="background:#fff;border:1px solid #ccc">`;
+    for (const l of fb.lines) { const [ax, ay] = X(l.a), [bx, by] = X(l.b), m = X([(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2]); svg += `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="#1f5fa8" stroke-width="${Math.max(1.5, l.D * k)}" stroke-linecap="round"/><text x="${m[0]}" y="${m[1] - 6}" font-size="11" text-anchor="middle">${String(l.name).replace(/[&<>]/g, "")} ${l.cut.toFixed(0)}</text>`; }
+    for (const n of fb.nodes) if (n.p && n.n > 1) { const [cx, cy] = X(n.p); svg += `<circle cx="${cx}" cy="${cy}" r="4" fill="#d97706"/>`; }
+    svg += '</svg>';
+    const ents = [...fb.lines.flatMap((l) => [{ type: 'LINE', layer: 'OUTLINE', a: l.a, b: l.b }, { type: 'TEXT', layer: 'NOTES', p: [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2 + 6], h: 5, rot: 0, text: `${l.name} ${l.cut.toFixed(1)}`, align: 'center' }]), ...fb.nodes.filter((n) => n.p && n.n > 1).map((n) => ({ type: 'CIRCLE', layer: 'NOTES', c: n.p, r: 4 }))];
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="pm-hint" style="margin-bottom:6px">${fb.lines.length} cable${fb.lines.length === 1 ? '' : 's'} at their cut lengths (slack included), ${fb.lines.reduce((t, l) => t + l.cut, 0).toFixed(0)} mm in all; where cables meet is marked.</div>${svg}`;
+    this.ui.modal('Harness Formboard', 'cutList', box, [
+      { label: 'Export DXF…', primary: true, action: () => { const s0 = loadDxfSettings(); platform.saveBinary(dxfFileName(`${this.safeName()} formboard`), new TextEncoder().encode(buildDXF(ents, { ...s0.mapping, NOTES: s0.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } })), 'dxf'); return false; } },
+      { label: 'Close' },
+    ]);
+    return fb;
+  }
+
   // Duct Patterns: the flat patterns of every duct fitting of the part, side by side in one DXF.
   ductPatternList() {
     const out = [];

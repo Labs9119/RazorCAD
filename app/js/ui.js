@@ -2014,6 +2014,7 @@ export class UI {
         { icon: 'sweep', label: 'Cable', action: () => a.startFeature('cable') },
         { icon: 'sweep', label: 'Duct Fitting', action: () => a.startFeature('ductFitting') },
         { icon: 'cutList', label: 'Spool Drawing', action: () => a.spoolDrawing() },
+        { icon: 'cutList', label: 'Harness Formboard', action: () => a.harnessFormboard() },
         { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },

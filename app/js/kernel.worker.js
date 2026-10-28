@@ -6090,6 +6090,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (const tm of ['round', 'right', 'transformed']) { try { sh = R.genericSweep(prof, w, { frenet: false, transitionMode: tm }); break; } catch (e) { if (isFatal(e)) throw e; } }
           if (!sh || !solidsOf(sh).length) throw new Error('The cable could not follow the route (a corner tighter than its radius?)');
           const L = R.measureLength(w), slack = ev(f.slack ?? 0) / 100;
+          res.detected[f.id] = { cable: { L, cut: L * (1 + slack), D, ends: [vec(w.startPoint), vec(w.endPoint)] } }; // (for the formboard)
           const rec = bodyRec(newId(f.id), sh, f.id); rec.name = `Cable Ø${+D.toFixed(2)}`;
           solids.push(rec); applied.push({ op: 'add', tool: sh });
           body = compoundOf(solids);

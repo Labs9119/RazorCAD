@@ -1513,6 +1513,8 @@ Set the weld size and click the bodies to weld (none: every weldment member). A 
 
 **Cable** {idx:Cable}{idx:harness}{idx:routing, cables} sweeps a round cable or bundle along a sketch or 3D sketch (a 3D sketch spline through the points it must pass follows them smoothly). Give its **Diameter**, or the number of **Wires** and their diameter (the bundle is about 1.15 × d × √n across). The message gives the route length and the cut length with the **Slack** added.
 
+**Harness Formboard** {idx:formboard}{idx:harness, formboard} lays the part's cables flat at their cut lengths, joined where their ends meet: each cable straight on from the one before it, branches fanned out at 45° steps. It shows the board with each cable's name and length and the points where cables meet, and **Export DXF…** writes it to lay out the board full size.
+
 # Configurations
 
 A configuration is a variant of a part or assembly: other values for the global variables and other features suppressed in a part, other part configurations and components shown in an assembly. {idx:configurations}
