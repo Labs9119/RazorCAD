@@ -2596,12 +2596,12 @@ export class AssemblyEditor {
     return seen.size;
   }
 
-  // Pack and Go: the assembly with everything in it (parts and sub-assemblies, as the assembly has them now) copied into
+  // Collect Files: the assembly with everything in it (parts and sub-assemblies, as the assembly has them now) copied into
   // one folder, each a file of its own, names given a prefix / suffix if asked; the copied assemblies use the copied
   // files. The assembly open here is left as it is. Returns the files written ([{ name, path }]), or null.
-  async packAndGo(opts = null) {
+  async collectFiles(opts = null) {
     const a = this.app;
-    const v = opts || (await a.ui.promptFields('Pack and Go', 'save', [
+    const v = opts || (await a.ui.promptFields('Collect Files', 'save', [
       { key: 'prefix', label: 'Before each name', type: 'text', value: '' },
       { key: 'suffix', label: 'After each name', type: 'text', value: '' },
     ], 'Every part and sub-assembly of the assembly is copied, with the assembly, into the folder you choose next (to send it on, or to start a variant of it).'));
@@ -2636,14 +2636,14 @@ export class AssemblyEditor {
       }
     };
     try {
-      await a.withProgress?.('Pack and Go…', async () => {
+      await a.withProgress?.('Collect Files…', async () => {
         await pack(top, 0);
         const name = nameOf(this.doc.name || 'Assembly', ASM_EXT);
         top.name = name.replace(/\.[^.]+$/, '');
         await write(top, name);
       });
-    } catch (e) { a.toast('Pack and Go failed: ' + e.message, true); return null; }
-    a.status(`Pack and Go: ${out.length} file${out.length === 1 ? '' : 's'} written${platform.desktop ? ` to ${folder}` : ''}.`);
+    } catch (e) { a.toast('Collect Files failed: ' + e.message, true); return null; }
+    a.status(`Collect Files: ${out.length} file${out.length === 1 ? '' : 's'} written${platform.desktop ? ` to ${folder}` : ''}.`);
     return out;
   }
 
@@ -2796,7 +2796,7 @@ export class AssemblyEditor {
         'sep',
         { label: 'Save', icon: 'save', key: 'Ctrl+S', action: () => a.saveFile() },
         { label: 'Save As…', icon: 'save', key: 'Ctrl+Shift+S', action: () => a.saveFile(true) },
-        { label: 'Pack and Go…', icon: 'save', action: () => this.packAndGo(), disabled: !this.doc.components.length },
+        { label: 'Collect Files…', icon: 'save', action: () => this.collectFiles(), disabled: !this.doc.components.length },
         { label: 'Revisions…', icon: 'revTable', action: () => revisionsDialog(a, this.doc, () => this.commit('Revision'), ASM_EXT) },
         'sep',
         { label: 'Export ▸ STEP…', icon: 'step', action: () => this.exportSTEP(), disabled: !this.doc.components.length },

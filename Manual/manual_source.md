@@ -1713,9 +1713,9 @@ When an assembly holds parts or sub-assemblies that are only inside it (as a STE
 - **Save Parts as Separate Files** saves each part as a .rcad file and each sub-assembly as a .rasm file in the assembly's folder, named after them. The assembly (and each sub-assembly) then uses those files, so each part can be opened and changed on its own and the change shows in the assembly. A part used in several places is one file. If files of those names are already there, you are asked before they are replaced.
 - **Save as One File** keeps everything inside the assembly file. You are not asked again, except on Save As.
 
-## Pack and Go
+## Collect Files
 
-**File ▸ Pack and Go…** (in an assembly) {idx:Pack and Go} copies the assembly with everything in it into one folder: each part and sub-assembly a file of its own (as the assembly has it now), the assembly last, using those files. Names can be given something **before** and **after** them (e.g. `P1-`), to start a variant of the design or send it all to someone. The assembly open here is left as it is.
+**File ▸ Collect Files…** (in an assembly) {idx:Collect Files}{idx:copying an assembly} copies the assembly with everything in it into one folder: each part and sub-assembly a file of its own (as the assembly has it now), the assembly last, using those files. Names can be given something **before** and **after** them (e.g. `P1-`), to start a variant of the design or send it all to someone. The assembly open here is left as it is.
 
 ## Big assemblies
 

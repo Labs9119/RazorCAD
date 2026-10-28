@@ -1892,6 +1892,16 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'dfm-check'() {
+    const {run,fixture}=await import('/tests/dfm-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();await a.setDoc(fixture());await wait(300);await until(()=>!a.kernel.pending);
+    const f=await a.dfmCheck({minR:1,minHole:1,maxRatio:10,tiny:0.01,quiet:true});
+    const marks=document.querySelectorAll('#labels .point-mark').length;
+    a.viewport.setPointMarks('dfm',null);
+    if(!f?.length||marks<f.length)return {ok:false,detail:`${f?.length} findings, ${marks} marks`};
+    return {ok:true,detail:`${native.results.length} kernel cases (sharp inside corners, deep, small and odd-size holes, small inside rounds); ${f.length} findings marked on the model`};
+  },
+
   async 'render-and-decals'() {
     const S = await import('/js/sketchmodel.js'), Rn = await import('/js/render.js'), {packFeature} = await import('/js/kernelclient.js');
     const a = window.app; await a.newDocument?.(); closeModals();
@@ -2320,7 +2330,7 @@ const UI = {
     return { ok: true, detail: 'the base came into the lid as a transparent context body where it is (turned with the lid), and is left out of the part as the assembly builds it' };
   },
 
-  async 'pack-and-go-and-revisions'() {
+  async 'collect-files-and-revisions'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), {platform} = await import('/js/platform.js'), R = await import('/js/revisions.js');
     // (revision letters)
     const seq = ['', 'A', 'B', 'Z', 'AZ', 'ZZ', '3', 'R7'].map(R.nextRev).join(' ');
@@ -2336,13 +2346,13 @@ const UI = {
     await asm.addComponent(p1); await asm.addComponent(p2); await asm.addComponent(p2);
     const files = [], keep = platform.saveInto;
     platform.saveInto = async (folder, name, bytes) => { files.push({ name, text: new TextDecoder().decode(bytes) }); return `${folder}/${name}`; };
-    let out; try { out = await asm.packAndGo({ prefix: 'P1-', suffix: '', folder: 'C:/pack' }); } finally { platform.saveInto = keep; }
+    let out; try { out = await asm.collectFiles({ prefix: 'P1-', suffix: '', folder: 'C:/pack' }); } finally { platform.saveInto = keep; }
     const names = files.map((f) => f.name).sort().join(', ');
     if (!out || names !== 'P1-Assembly1.rasm, P1-Base.rcad, P1-Pin.rcad') return { ok: false, detail: 'Files: ' + names };
     const top = JSON.parse(files.at(-1).text);
     if (top.parts.length !== 2 || !top.parts.every((p) => p.path.startsWith('C:/pack/P1-') && p.doc)) return { ok: false, detail: 'The copied assembly does not use the copied files' };
-    if (asm.doc.parts.some((p) => p.path)) return { ok: false, detail: 'Pack and Go changed the open assembly' };
-    return { ok: true, detail: `revision letters A, B … AA; a part's revisions keep it as it was; Pack and Go wrote ${files.length} files (${names}), the copy using them, the open assembly left as it was` };
+    if (asm.doc.parts.some((p) => p.path)) return { ok: false, detail: 'Collect Files changed the open assembly' };
+    return { ok: true, detail: `revision letters A, B … AA; a part's revisions keep it as it was; Collect Files wrote ${files.length} files (${names}), the copy using them, the open assembly left as it was` };
   },
 
   async 'assembly-fasten-all-holes'() {
