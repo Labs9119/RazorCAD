@@ -29,6 +29,8 @@ export async function run({threads=1}={}){
     {name:'two directions',type:'lpattern',options:{dir1:'x',dist1:20,count1:3,dir2:'y',dist2:20,count2:2},n:6,holes:[at(50,30)]},
     {name:'second direction for the feature only',type:'lpattern',options:{dir1:'x',dist1:20,count1:3,dir2:'y',dist2:20,count2:2,seedOnly2:true},n:4,holes:[at(10,30),at(50,10)],solid:[at(30,30)]},
     {name:'two directions skipping 2.2',type:'lpattern',options:{dir1:'x',dist1:20,count1:3,dir2:'y',dist2:20,count2:2,skip:'2.2'},n:5,solid:[at(30,30)],holes:[at(50,30)]},
+    {name:'linear spacing growing by 5',type:'lpattern',options:{dir1:'x',dist1:10,count1:4,inc1:5},n:4,holes:[at(20,10),at(35,10),at(55,10)],solid:[at(30,10),at(40,10)]},
+    {name:'circular angle growing by 30°',type:'cpattern',options:{axis:'z',angle:30,count:3,equal:false,angleInc:30},n:3,holes:[at(-10,10)],solid:[at(10,-10)]},
     {name:'a skip that is not an instance number rejected',type:'lpattern',options:{dir1:'x',dist1:20,count1:3,skip:'second'},reject:/not an instance number/},
     {name:'circular (as before)',type:'cpattern',options:{axis:'z',angle:360,count:4,equal:true},n:4,holes:[at(-10,-10)]},
     {name:'circular symmetric',type:'cpattern',options:{axis:'z',angle:90,count:2,equal:false,sym:true},n:3,holes:[at(-10,10),at(10,-10)],solid:[at(-10,-10)]},

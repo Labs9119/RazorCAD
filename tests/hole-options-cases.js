@@ -33,6 +33,8 @@ export async function run({threads=1}={}){
     {name:'up to next with a far-side countersink',shellBottom:true,options:{end:'upToNext',farCsink:true,farCsinkD:8,farCsinkAngle:90},volume:8000-16*16*18-A*2-(cone(r,4,4-r)-A*(4-r)),probes:[[4,0,18]]},
     {name:'a far-side countersink narrower than the hole rejected',options:{end:'through',farCsink:true,farCsinkD:5},reject:/wider than the hole/},
     {name:'a hole on a curved face (square to it)',cylinder:true,options:{faces:[{p:[10,0,10]}],depth:5},volume:Math.PI*100*20-radial(),rel:1e-6,probes:[[5,0,10]]},
+    {name:'a counterdrill (M6: Ø11 × 6.5, 90° point)',options:{holeType:'cdrill',cdrillAngle:90,end:'through'},volume:8000-A*20-(Math.PI*5.5*5.5*6.5-A*6.5)-(cone(5.5,r,5.5-r)-A*(5.5-r)),probes:[[5.5,0,13.5],[r,0,20-6.5-(5.5-r)]]},
+    {name:'a counterdrill deeper than the hole rejected',options:{holeType:'cdrill',depth:5},reject:/deeper than its counterdrill/},
     {name:'a slot through',options:{holeType:'slot',slotLength:10,end:'through'},volume:8000-(10*6.6+A)*20,probes:[[5+r,0,10],[0,r,10]]},
     {name:'a slot turned 90°',options:{holeType:'slot',slotLength:10,slotAngle:90,end:'through'},volume:8000-(10*6.6+A)*20},
   ];

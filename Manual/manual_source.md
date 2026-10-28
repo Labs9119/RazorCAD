@@ -866,6 +866,7 @@ The kernel constructs clamped tensor B-splines (cubic, or degree five along the 
 | Counterbore | For socket head cap screws (ISO 4762) |
 | Countersink | ISO 10642, 90° |
 | Tapped hole | ISO metric or Unified (inch), drilled at the tap drill size; the thread is shown as a cosmetic thread and given in drawing callouts |
+| Counterdrill | A wider drill (standard sizes: the counterbore's diameter and depth) with a drill point of its own angle down to the hole |
 | Slot | Two half circles of the hole's diameter joined: **Slot length** between their centres, **Slot angle** from the face's X direction |
 | Custom sizes | Your own diameters and depths |
 
@@ -917,9 +918,9 @@ Patterns and mirrors copy features or bodies. Any feature that changes the bodie
 
 {idx:Sketch Driven Pattern}{idx:Curve Driven Pattern}{idx:Fill Pattern}
 
-**Linear Pattern options** {idx:Linear Pattern, options}: **Distance → From the first to the last** spreads the instances over a total length instead of setting the spacing between each two. **Symmetric** adds as many again the other way from the feature. With a second direction, **Pattern the feature only** copies just the feature along it, not the whole first row (an L of copies).
+**Linear Pattern options** {idx:Linear Pattern, options}: **Distance → From the first to the last** spreads the instances over a total length instead of setting the spacing between each two. **Spacing grows by** makes each spacing that much more than the one before (a negative value: less), for copies that spread out or close up. **Symmetric** adds as many again the other way from the feature. With a second direction, **Pattern the feature only** copies just the feature along it, not the whole first row (an L of copies).
 
-**Circular Pattern options** {idx:Circular Pattern, options}: **Symmetric** adds as many again the other way round (less than a whole turn). **Rings** makes rings of copies further out from the axis, **Ring spacing** apart, out through the feature's middle.
+**Circular Pattern options** {idx:Circular Pattern, options}: **Angle grows by** (without equal spacing) makes each angle between copies that much more than the one before. **Symmetric** adds as many again the other way round (less than a whole turn). **Rings** makes rings of copies further out from the axis, **Ring spacing** apart, out through the feature's middle.
 
 **Instances to Skip** (Linear and Circular) {idx:pattern, skip instances}: instance numbers to leave out, separated by commas: 1 is the feature, 2 the first copy, -2 the first copy the other way (symmetric). With a second direction or rings, row.column: 3.2 is the third along the first direction (or round) in the second row (or ring).
 

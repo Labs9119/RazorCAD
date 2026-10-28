@@ -4231,8 +4231,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const two = f.dir2 && f.dir2 !== 'none';
           const c2 = two ? Math.max(1, Math.round(ev(f.count2))) : 1;
           const step = (k, c) => { const d = ev(f['dist' + k]); return f['spacing' + k] === 'total' ? (c > 1 ? d / (c - 1) : 0) : d; };
-          const d1 = mul(resolveAxis(f.dir1).d, (f.rev1 ? -1 : 1) * step(1, c1));
-          const d2 = two ? mul(resolveAxis(f.dir2).d, (f.rev2 ? -1 : 1) * step(2, c2)) : [0, 0, 0];
+          // (inc1 / inc2: each spacing that much more than the one before; the i-th instance at i·spacing + inc·i(i−1)/2,
+          // the other way the same)
+          const at = (k, s, i) => { const n = Math.abs(i), inc = ev(f['inc' + k] ?? 0) || 0; return Math.sign(i) * (n * s + (inc * n * (n - 1)) / 2); };
+          const s1 = step(1, c1), s2 = two ? step(2, c2) : 0;
+          const u1 = mul(resolveAxis(f.dir1).d, f.rev1 ? -1 : 1), u2 = two ? mul(resolveAxis(f.dir2).d, f.rev2 ? -1 : 1) : [0, 0, 0];
           const range = (c, sym) => Array.from({ length: sym ? 2 * c - 1 : c }, (_, k) => (sym ? k - (c - 1) : k));
           const skip = patternSkips(f, two);
           const xs = [];
@@ -4240,7 +4243,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (!i && !j) continue;
             if (two && f.seedOnly2 && i && j) continue;
             if (skip.has(two ? `${i}.${j}` : `${i}`)) continue;
-            xs.push(xMove(add(mul(d1, i), mul(d2, j))));
+            xs.push(xMove(add(mul(u1, at(1, s1, i)), mul(u2, at(2, s2, j)))));
           }
           if (xs.length > 400) throw new Error('Too many instances (max 400)');
           await patternAll(f, xs);
@@ -4266,7 +4269,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (let k = 0; k < rings; k++) for (let i = sym ? -(n - 1) : 0; i < n; i++) {
             if (!i && !k) continue;
             if (skip.has(rings > 1 ? `${i}.${k}` : `${i}`)) continue;
-            const turn = xTurn(step * i, ax.o, ax.d);
+            // (angleInc: each angle between copies that much more than the one before)
+            const ai = Math.abs(i), inc = ev(f.angleInc ?? 0) || 0, turn = xTurn(Math.sign(i) * (step * ai + (inc * ai * (ai - 1)) / 2), ax.o, ax.d);
             xs.push(k ? (i ? xChain(xMove(mul(out, k)), turn) : xMove(mul(out, k))) : turn);
           }
           if (xs.length > 400) throw new Error('Too many instances (max 400)');
@@ -6947,6 +6951,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(spec.d > 0)) throw new Error('The hole diameter must be greater than zero');
           if (spec.type === 'cbore' && !(spec.cbD > spec.d && spec.cbDepth > 0)) throw new Error('The counterbore must be wider than the hole and have a depth');
           if (spec.type === 'csink' && !(spec.csD > spec.d && spec.csAng > 0 && spec.csAng < 180)) throw new Error('The countersink must be wider than the hole, at an angle between 0° and 180°');
+          if (spec.type === 'cdrill' && !(spec.cdD > spec.d && spec.cdDepth > 0 && spec.cdAng > 0 && spec.cdAng < 180)) throw new Error('The counterdrill must be wider than the hole, have a depth, and a point angle between 0° and 180°');
           const locs = [];
           if (f.sketch) {
             const s = sketches.get(f.sketch);
@@ -7009,6 +7014,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (depths.some((d) => !(d > 0))) throw new Error(end === 'blind' ? 'The hole depth must be greater than zero' : 'A hole’s end lies behind where it starts (reverse it, or choose another end)');
           const depth = depths[0];
           if (spec.type === 'cbore' && depths.some((d) => d <= spec.cbDepth)) throw new Error('The hole must be deeper than its counterbore');
+          if (spec.type === 'cdrill' && depths.some((d) => d <= spec.cdDepth + (spec.cdD - spec.d) / 2 / Math.tan((spec.cdAng * Math.PI) / 360))) throw new Error('The hole must be deeper than its counterdrill');
           // (a drill point at a blind hole's end, of drillAngle; open ends go a hair past where they leave the material,
           // less than half way to where it starts again)
           const point = end === 'blind' && f.drillPoint !== false, pointAngle = ev(f.drillAngle ?? 118);
