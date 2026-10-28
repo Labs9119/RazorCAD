@@ -321,6 +321,19 @@ export class DrawingEditor {
       const g = byModel.get(gk);
       g.reqs.push(req); g.keys.set(v.id, key);
     }
+    // (alternate positions: the view again with the assembly's components where a kept position has them)
+    for (const v of this.doc.views) {
+      const m = v.altPos && !v.section && this.viewModel(v), pos = m?.doc?.kind === 'assembly' && (m.doc.positions || []).find((p) => p.id === v.altPos);
+      const req = pos && D.viewRequest(this.doc, v);
+      if (!req) { this.geos.delete(v.id + '~alt'); continue; }
+      const doc = { ...m.doc, components: m.doc.components.map((c) => (pos.comps[c.id] ? { ...c, pos: pos.comps[c.id].pos, rot: pos.comps[c.id].rot } : c)) };
+      const docJson = JSON.stringify(doc), id = v.id + '~alt', key = docJson.length + ':' + hash(docJson) + JSON.stringify(req);
+      if (this.geoKeys.get(id) === key) continue;
+      const gk = m.id + '|alt:' + pos.id + '|' + (this.explodeOf(v) || '');
+      if (!byModel.has(gk)) byModel.set(gk, { m: { ...m, doc }, docJson, reqs: [], keys: new Map() });
+      const g = byModel.get(gk);
+      g.reqs.push({ ...req, id }); g.keys.set(id, key);
+    }
     if (!byModel.size) return;
     const run = ++this._geoRun;
     for (const [, { m: model, docJson, reqs, keys }] of byModel) {
@@ -334,6 +347,7 @@ export class DrawingEditor {
         if (run !== this._geoRun && this._geoRun) { /* a newer update follows; keep what arrived */ }
         let moved = false;
         for (const r of res) {
+          if (String(r.id).endsWith('~alt')) { this.geos.set(r.id, r); this.geoKeys.set(r.id, keys.get(r.id)); continue; }
           if (r.error) this.errors.set(r.id, r.error); else this.errors.delete(r.id);
           const old = this.geos.get(r.id);
           this.geos.set(r.id, r);
@@ -2356,6 +2370,10 @@ export class DrawingEditor {
         d.appendChild(th);
         // (an assembly with exploded views: show this view exploded)
         const md = this.doc.models.find((x) => x.id === v.model)?.doc;
+        if (md?.kind === 'assembly' && v.type !== 'section') {
+          if (md.positions?.length) row(d, 'Alternate position', select([['', 'None'], ...md.positions.map((x) => [x.id, x.name])], v.altPos || '', (s) => { if (s) v.altPos = s; else delete v.altPos; this.changed(); this.updateGeometry(); }));
+          else d.appendChild(el('div', { class: 'pm-hint' }, 'Positions kept in the assembly (Assembly ▸ Positions) can be shown here as alternate positions, in phantom lines.'));
+        }
         if (md?.kind === 'assembly' && md.explodes?.length && (v.type === 'model' || v.explode)) {
           row(d, 'Exploded', select([['', 'Not exploded'], ...md.explodes.map((x) => [x.id, x.name])], v.explode || '', (s) => { (this.pendingCentre ||= new Map()).set(v.id, this.viewCentre(v)); if (s) v.explode = s; else delete v.explode; this.changed(); this.updateGeometry(); }));
         } else if (md?.kind === 'assembly' && v.type === 'model') d.appendChild(el('div', { class: 'pm-hint' }, 'Exploded views made in the assembly (Exploded View) can be shown here.'));

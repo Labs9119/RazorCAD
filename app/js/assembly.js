@@ -2018,6 +2018,36 @@ export class AssemblyEditor {
     await a.openFromFile({ name: p.name + (sub ? ASM_EXT : '.rcad'), content: JSON.stringify(p.doc), path: null });
     return a.tabs[a.tabIndex];
   }
+  // Positions (doc.positions: [{ id, name, comps: { component id: { pos, rot } } }]): where the components are now, kept
+  // under a name: shown in a drawing view as an alternate position (phantom lines), or the assembly put back there.
+  savePosition(name) {
+    const list = (this.doc.positions ||= []);
+    let n = 1;
+    while (list.some((p) => p.id === 'pos' + n)) n++;
+    const p = { id: 'pos' + n, name: name || `Position ${n}`, comps: Object.fromEntries(this.doc.components.map((c) => [c.id, { pos: [...c.pos], rot: [...c.rot] }])) };
+    list.push(p);
+    this.commit('Save position');
+    return p;
+  }
+  restorePosition(id) {
+    const p = (this.doc.positions || []).find((x) => x.id === id);
+    if (!p) return false;
+    for (const c of this.doc.components) { const q = p.comps[c.id]; if (q) { c.pos = [...q.pos]; c.rot = [...q.rot]; } }
+    this.solve(); this.updateGeometry(); this.renderAll();
+    this.commit('Restore position');
+    return true;
+  }
+  async positionsDialog() {
+    const a = this.app, list = this.doc.positions || [];
+    const v = await a.ui.promptFields('Positions', 'explode', [
+      { key: 'act', label: 'Do', type: 'select', options: [['save', 'Keep where the components are now as a position'], ...list.flatMap((p) => [['go:' + p.id, `Put the components back at ${p.name}`], ['del:' + p.id, `Delete ${p.name}`]])], value: 'save' },
+      { key: 'name', label: 'Name (a new position)', type: 'text', value: `Position ${list.length + 1}` },
+    ], 'A position keeps where every component is (e.g. a lid open, after changing a mate). A drawing view of the assembly can show a position as an alternate position, in phantom lines.');
+    if (!v) return;
+    if (v.act === 'save') { const p = this.savePosition(v.name.trim()); a.status(`${p.name} kept: a drawing view can show it as an alternate position.`); }
+    else if (v.act.startsWith('go:')) this.restorePosition(v.act.slice(3));
+    else if (v.act.startsWith('del:')) { this.doc.positions = list.filter((p) => p.id !== v.act.slice(4)); if (!this.doc.positions.length) delete this.doc.positions; this.commit('Delete position'); }
+  }
   // Edit in Context: the part opened with the other parts of the assembly in it as context bodies (transparent), where
   // they are from it, so it can be sketched on them, take their edges or be extruded up to them. The context bodies are
   // references only: left out of the part where it is used. Again on the same component: the context brought up to date.
@@ -2671,6 +2701,7 @@ export class AssemblyEditor {
         { icon: 'part', label: 'Edit in Context', action: () => selC && this.editInContext(selC.id), disabled: !selC },
         'sep',
         { icon: 'explode', label: 'Exploded View', action: () => this.startExplode(), active: !!this.explodeTool },
+        { icon: 'explode', label: 'Positions', action: () => this.positionsDialog() },
         { icon: 'explode', label: this.doc.exploded ? 'Collapse' : 'Explode', action: () => (this.doc.exploded ? this.setExploded(null, true) : this.doc.explodes.length && this.setExploded(this.doc.explodes[this.doc.explodes.length - 1].id, true)), disabled: !this.doc.explodes.length },
         { icon: 'motion', label: 'Motion Study', action: () => this.startMotion(), active: !!this.motionTool },
         'sep',

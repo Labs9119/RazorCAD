@@ -1892,6 +1892,35 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'drawing-alternate-position'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
+    const box = (name, w, h) => { const p = M.newDoc(); p.name = name; const s = M.createFeature(p, 'sketch', { plane: { ref: 'front' } }); const P = [[-w / 2, 0], [w / 2, 0], [w / 2, h], [-w / 2, h]].map((q) => S.addPoint(s, ...q)); P.forEach((id, i) => S.addLine(s, id, P[(i + 1) % 4])); p.features.push(s, M.createFeature(p, 'extrude', { sketch: s.id, depth: 10 })); return p; };
+    a.newAssembly(); await wait(400); closeModals();
+    const asm = a.drawing, base = asm.addPart(box('Base', 60, 10), null, null), lid = asm.addPart(box('Lid', 60, 4), null, null);
+    await asm.addComponent(base); await asm.addComponent(lid);
+    const [cb, cl] = asm.doc.components;
+    cb.pos = [0, 0, 0]; cb.rot = [0, 0, 0, 1]; cb.fixed = true; cl.pos = [0, 10, 0]; cl.rot = [0, 0, 0, 1]; cl.fixed = true;
+    await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000);
+    // (the lid lifted 40: kept as a position, then put back)
+    cl.pos = [0, 50, 0]; const pos = asm.savePosition('Lid up'); cl.pos = [0, 10, 0];
+    if (!pos || pos.comps[cl.id].pos[1] !== 50) return { ok: false, detail: 'The position was not kept' };
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Alt position', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing;
+    await until(() => ed.doc.views.every((v) => ed.geos.get(v.id)?.edges?.length), 60000, 250);
+    const v = ed.doc.views.find((x) => x.orient === 'front') || ed.doc.views[0];
+    v.altPos = pos.id; ed.changed?.(); await ed.updateGeometry();
+    await until(() => ed.geos.get(v.id + '~alt')?.edges?.length, 60000, 250);
+    const g = ed.geos.get(v.id), ga = ed.geos.get(v.id + '~alt');
+    const top = (G) => Math.max(...G.edges.flatMap(({ g: e }) => (e.t === 'l' ? [e.a[1], e.b[1]] : [])));
+    if (!(Math.abs(top(ga) - top(g) - 40) < 1e-6)) return { ok: false, detail: `The alternate position is not 40 higher (${top(g)} and ${top(ga)})` };
+    const prims = Dm.sheetPrims(ed.doc, ed.doc.sheets.find((s) => s.id === v.sheet), { geos: ed.geos });
+    const phantom = prims.filter((p) => p.dash?.length === 6).length;
+    if (!phantom) return { ok: false, detail: 'No phantom lines on the sheet' };
+    return { ok: true, detail: `a position kept in the assembly (the lid 40 up) shown in the front view: ${phantom} phantom lines, the top 40 higher` };
+  },
+
   async 'assembly-drawing-bom-balloons'() {
     const a = window.app;
     const box = (name, w, d, h) => {

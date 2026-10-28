@@ -14,6 +14,7 @@ import { bomRows, bomCell, bomTotals } from './bom.js';
 export const DRAWING_EXT = '.rdrw';
 const DASH_HIDDEN = [2.4, 1.2];
 const DASH_CENTER = [8, 1.5, 1.2, 1.5];
+const DASH_PHANTOM = [10, 1.5, 1.2, 1.5, 1.2, 1.5]; // (long, short, short: an alternate position)
 
 export const ORIENTATIONS = {
   front: { label: 'Front', dir: [0, 0, 1], up: [0, 1, 0] },
@@ -346,6 +347,9 @@ function viewPrims(dwg, v, ctx) {
       if (X.brk) geomPrims.push(...brokenEdgePrims(e, X, w, dash));
       else geomPrims.push(edgePrim(e, X, w, dash));
     }
+    // an alternate position of an assembly: its visible (and tangent) edges in thin phantom lines
+    const ga = v.altPos ? ctx.geos.get(v.id + '~alt') : null;
+    if (ga?.edges) for (const { k, g: e } of ga.edges) if (k === 'v' || (k === 't' && tangent)) geomPrims.push(...(X.brk ? brokenEdgePrims(e, X, LW.thin, DASH_PHANTOM) : [edgePrim(e, X, LW.thin, DASH_PHANTOM)]));
     // break lines across the gap
     if (X.brk && g.box) {
       const B = X.brk, ix = B.axis === 'y' ? 1 : 0, jx = 1 - ix, lo = g.box.min[jx] - 2 / X.s, hi = g.box.max[jx] + 2 / X.s;

@@ -1530,7 +1530,7 @@ An assembly places parts and other assemblies as **components** and holds them t
 
 **File ▸ New Assembly**, or **New Assembly** in the start window. Every assembly has the standard **Front, Top and Right Planes** and the **Origin** at the top of its tree. They show in the view as a part's do (the eye in the tree, **View ▸ Show Planes**), and mates can use them; they stay where they are. {idx:assembly, planes}
 
-The **Assembly** tab of the ribbon holds Insert Components, Standard Parts, Equations, Assembly Hole, Assembly Cut, Mate, Fix, Float, Hide Component, Suppress, Open Part, Edit in Context, Exploded View, Explode / Collapse, Motion Study, Bill of Materials, Interference Check, Collision Detection, Speed Mode and Zoom to Fit.
+The **Assembly** tab of the ribbon holds Insert Components, Standard Parts, Equations, Assembly Hole, Assembly Cut, Mate, Fix, Float, Hide Component, Suppress, Open Part, Edit in Context, Exploded View, Positions, Explode / Collapse, Motion Study, Bill of Materials, Interference Check, Collision Detection, Speed Mode and Zoom to Fit.
 
 ## Inserting components
 
@@ -1779,6 +1779,7 @@ Click a view to open its panel: {idx:view properties}
 - Orientation, changeable after placing (also to and from Flat Pattern; projected and section views made from it are removed when it becomes a flat pattern, and [[Ctrl+Z]] brings them back).
 - Display style: hidden lines removed, hidden lines visible, or wireframe; tangent edges and cosmetic threads on or off.
 - **Exploded** (a view of an assembly that has exploded views): shows the view exploded as one of them. The components are where that exploded view moves them, the view keeps its place on the sheet, and its projected, section, auxiliary and detail views follow. Balloons on it pick the moved parts. {idx:exploded view, drawing}
+- **Alternate position** (a view of an assembly): draws the assembly again as a **position** kept in it, in thin phantom lines (long dash, two short), over the view: a lid open, a lever at its other end. Keep positions in the assembly with **Assembly ▸ Positions** (move the components, e.g. by changing a mate, keep the position, then put them back). {idx:alternate position}{idx:positions, assembly}
 - Sheet scale or a custom scale; labels.
 - **Rotate View**: −90°, +90°, 180° and 0° buttons and an angle box (degrees, counter-clockwise). Section lines, detail circles and annotations turn with the view.
 
