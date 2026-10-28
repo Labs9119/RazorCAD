@@ -37,6 +37,7 @@ import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
+import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -645,6 +646,7 @@ class App {
   applyResult(r) {
     const doc = this.doc;
     this.annot3d?.refresh();
+    showDecals(this.viewport, this.doc.decals);
     if (this.flatView) this.exitFlatten(); // the model changed: back to the model view
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -3226,6 +3228,7 @@ class App {
     }
     if (this.pickMode() === 'measure') { this.measureClick(e); return; }
     if (this.pm?.kind === 'annotate') { this.annotateClick(e); return; }
+    if (this.pm?.kind === 'decal') { this.decalClick(e); return; }
     // cycling through overlapping bodies: Shift+left-click steps back, a plain click on the spot selects
     if (this.cycleAllowed()) {
       const c = this._cycle;
@@ -4171,7 +4174,7 @@ class App {
     if (pm.kind === 'sketch') return this.exitSketch(true);
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(true);
-    if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate') return this.cancelPM();
+    if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate' || pm.kind === 'decal') return this.cancelPM();
     if (pm.kind === 'section') {
       // (a view of the model only: the cut stays, its arrow goes; nothing is built again)
       this.pm = null;
@@ -4226,7 +4229,7 @@ class App {
     if (pm.kind === 'section') this.clearSection();
     if (pm.kind === 'measure') { this.viewport.setMeasure(null); this.viewport.setPointMarks('measure-picks', null); this.viewport.setPointMarks('measure-hover', null); }
     if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.showBanner(null); }
-    if (pm.kind === 'annotate') this.showBanner(null);
+    if (pm.kind === 'annotate' || pm.kind === 'decal') this.showBanner(null);
     this.hoverEdge = null;
     this.hoverVertex = null;
     this.refresh();
@@ -4293,6 +4296,99 @@ class App {
     this.commit();
     this.refresh();
     this.status(doc.rollbackAt ? `Rolled back to before ${M.findFeature(doc, doc.rollbackAt).name}. New features are inserted above the bar; drag it to the bottom to roll forward.` : 'Rolled forward to the end.');
+  }
+
+  // ------------------------------------------------------------ rendering and decals (render.js)
+  // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
+  renderSetup() {
+    const bodies = this.result?.bodies || [], vp = this.viewport;
+    return {
+      looks: bodies.map((b) => lookFor(this.doc.bodies?.[b.id]?.look, M.bodyMaterialId(this.doc, b.id))),
+      colors: bodies.map((_, i) => (Array.isArray(vp.bodyColors) ? vp.bodyColors[i] : vp.bodyColors) ?? 0xc3cad4),
+      hidden: new Set(vp.hiddenBodies || []),
+    };
+  }
+  async renderView(opts = null) {
+    const bodies = this.result?.bodies || [];
+    if (!this.viewport.bodyGeo) { this.toast('There is no model to render', true); return null; }
+    let o = opts;
+    if (!o) {
+      const prev = this._renderOpts || { size: '1920x1080', env: 'studio', floor: true, exposure: 1 };
+      const v = await this.ui.promptFields('Render', 'camera', [
+        { key: 'size', label: 'Size', type: 'select', options: [['view', 'As the view'], ['1280x720', '1280 × 720'], ['1920x1080', '1920 × 1080'], ['2560x1440', '2560 × 1440'], ['3840x2160', '3840 × 2160']], value: prev.size },
+        { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
+        { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
+        { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
+        ...bodies.slice(0, 24).map((b, i) => ({ key: 'look' + i, label: `${b.name}`, type: 'select', options: Object.entries(LOOKS).map(([k, l]) => [k, l.name]), value: this.doc.bodies?.[b.id]?.look || 'auto' })),
+      ], 'One frame of the view as it is now. Each body’s look is kept with it.');
+      if (!v) return null;
+      let changed = false;
+      bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
+      if (changed) this.commit();
+      o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1 };
+      this._renderOpts = o;
+    }
+    const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
+    let img;
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, decals: this.doc.decals || [] })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    if (o.quiet) return img;
+    const box = document.createElement('div');
+    box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
+    this.ui.modal(`Render — ${img.width} × ${img.height}`, 'camera', box, [
+      { label: 'Save PNG…', primary: true, action: () => { const b = Uint8Array.from(atob(img.url.split(',')[1]), (c) => c.charCodeAt(0)); platform.saveBinary(`${this.safeName()}.png`, b, 'png').then((p) => p && this.status('Saved ' + String(p).split(/[\\/]/).pop())); return false; } },
+      { label: 'Close' },
+    ]);
+    return img;
+  }
+  // Decal: a picture put on a flat face of the part (for the view and renders): opened, then the face clicked.
+  async addDecal() {
+    let file;
+    try { file = await platform.openImage(); } catch (e) { this.toast('Could not open the picture: ' + e.message, true); return; }
+    if (!file) return;
+    const img = await new Promise((res) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = file.url; });
+    if (!img?.naturalWidth) { this.toast('That picture could not be read', true); return; }
+    const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+    cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    const v = await this.ui.promptFields('Decal', 'sketchPicture', [{ key: 'w', label: 'Width', type: 'expr', value: 30 }, { key: 'angle', label: 'Turned (°)', type: 'expr', value: 0 }], 'Then click the flat face for it: it is centred where you click.');
+    if (!v) return;
+    if (this.pm) this.cancelPM();
+    const w = this.result.ev(String(v.w));
+    this.pm = { kind: 'decal', draft: { name: file.name, src: cv.toDataURL('image/png'), w, h: (w * cv.height) / cv.width, angle: this.result.ev(String(v.angle)) || 0 } };
+    this.showBanner('Click the flat face for the decal');
+    this.ui.renderPM();
+  }
+  decalClick(e) {
+    const fh = this.faceAt(e);
+    if (!fh) { this.toast('Click a flat face of the model'); return null; }
+    const face = this.viewport.faceInfo(fh.hit.face);
+    if (!face.planar) { this.toast('A decal goes on a flat face'); return null; }
+    const list = (this.doc.decals ||= []), d = { id: 'dc' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1), ...this.pm.draft, p: fh.hit.point.toArray(), n: face.normal.toArray() };
+    list.push(d);
+    this.pm = null;
+    this.showBanner(null);
+    this.commit();
+    this.ui.renderPM();
+    showDecals(this.viewport, this.doc.decals);
+    this.status(`Decal ${d.name} put on the face (Tools ▸ Decals… lists them; renders show them).`);
+    return d;
+  }
+  manageDecals() {
+    const list = this.doc.decals || [];
+    if (!list.length) { this.toast('No decals yet: View ▸ Decal puts one on a face', true); return; }
+    const box = document.createElement('div');
+    const render = () => {
+      box.innerHTML = '';
+      for (const d of [...(this.doc.decals || [])]) {
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0';
+        const t = document.createElement('span'); t.style.flex = '1'; t.textContent = `${d.name} (${+d.w.toFixed(2)} × ${+d.h.toFixed(2)})`;
+        const x = document.createElement('button'); x.textContent = 'Delete';
+        x.onclick = () => { this.doc.decals = this.doc.decals.filter((y) => y !== d); if (!this.doc.decals.length) delete this.doc.decals; this.commit(); showDecals(this.viewport, this.doc.decals); render(); };
+        row.append(t, x); box.appendChild(row);
+      }
+    };
+    render();
+    this.ui.modal('Decals', 'sketchPicture', box, [{ label: 'Close', primary: true }]);
   }
 
   // ------------------------------------------------------------ 3D annotations (annotations3d.js), in doc.annotations

@@ -1038,6 +1038,12 @@ The **Material** item in the tree sets the part material (**Tools ▸ Edit Mater
 
 Right-click a face ▸ **Appearance…** or a body ▸ **Body Appearance…** to give it a colour, or **Default colour** to set it back. Face colours stay with their face when the model changes. A body's own appearance wins over its material colour and over colours imported from a STEP file. {idx:appearance}
 
+## Render and decals
+
+**Evaluate ▸ Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the lighting (**Studio**, **Outdoor sky**, or studio on white), a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them. **Save PNG…** writes the picture.
+
+**Evaluate ▸ Decal** {idx:decal} puts a picture (a logo, a label) on a flat face: open the picture, give its width and angle, then click the face where its middle goes. Decals show in the view and in renders, are saved with the part, and are not geometry. **Tools ▸ Decals…** lists them, to delete them.
+
 ## Exploded views of a part
 
 A part with two or more bodies can have exploded views: **Insert ▸ Exploded View…**, or right-click the Solid Bodies folder. Only the display moves; the model stays as it is. The steps are made as for an assembly (see Exploded views in the Assemblies chapter). {idx:exploded view, part}

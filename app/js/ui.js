@@ -1729,6 +1729,8 @@ export class UI {
         { label: 'Mass Properties…', icon: 'mass', action: () => this.showMassProps() },
         { label: 'Tolerance Stack-Up…', icon: 'measure', action: () => this.showStackUp() },
         { label: '3D Annotations…', icon: 'measure', action: () => a.manageAnnotations() },
+        { label: 'Render…', icon: 'camera', action: () => a.renderView() },
+        { label: 'Decals…', icon: 'sketchPicture', action: () => a.manageDecals() },
         { label: 'Section View…', icon: 'section', action: () => a.startSection() },
         { label: 'Edit Material…', icon: 'material', action: () => this.showMaterial() },
         { label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences() },
@@ -2038,6 +2040,8 @@ export class UI {
         'sep',
         { icon: 'interference', label: 'Interference Check', action: () => a.checkInterference() },
         { icon: 'zebra', label: 'Zebra Stripes', action: () => a.setAnalysis({ kind: 'zebra', density: 10 }), active: a.analysis?.kind === 'zebra' },
+        { icon: 'camera', label: 'Render', action: () => a.renderView() },
+        { icon: 'sketchPicture', label: 'Decal', action: () => a.addDecal() },
         { icon: 'curvature', label: 'Curvature', action: () => a.setAnalysis({ kind: 'curvature' }), active: a.analysis?.kind === 'curvature' },
         { icon: 'draftAnalysis', label: 'Draft Analysis', action: () => (a.analysis?.kind === 'draft' ? a.setAnalysis(null) : this.showDraftAnalysis()), active: a.analysis?.kind === 'draft' },
         { icon: 'measure', label: 'Thickness Analysis', action: () => (a.analysis?.kind === 'thickness' ? a.setAnalysis(null) : this.showThicknessAnalysis()), active: a.analysis?.kind === 'thickness' },
@@ -3574,6 +3578,7 @@ export class UI {
     if (pm.kind === 'sketch') return this.renderSketchPM(root);
     if (pm.kind === 'sketch3d') return a.sketch3d.renderPM(root, { el, esc, icon, pmGroup: (...x) => this.pmGroup(...x), exprInput: (...x) => this.exprInput(...x) });
     if (pm.kind === 'selectPlane') return this.renderSelectPlanePM(root);
+    if (pm.kind === 'decal') { root.appendChild(el('div', { class: 'pm-hint', style: 'margin:10px' }, esc(`Decal ${pm.draft.name}: click the flat face for it. Esc cancels.`))); return; }
     if (pm.kind === 'annotate') { root.appendChild(el('div', { class: 'pm-hint', style: 'margin:10px' }, esc(`3D annotation (${pm.draft.kind}): click ${pm.need - pm.pts.length === 2 ? 'the two points' : 'the point'} on the model. Esc cancels.`))); return; }
     if (pm.kind === 'section') return this.renderSectionPM(root);
     if (pm.kind === 'measure') return this.renderMeasurePM(root);

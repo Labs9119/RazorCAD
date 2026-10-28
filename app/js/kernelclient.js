@@ -98,7 +98,9 @@ export function packFeature(f, blobs = null) {
   blobs?.set(id, f.data);
   return { ...f, data: { blob: id } };
 }
-const packDoc = (doc, blobs) => (doc.features?.some((f) => (typeof f?.data === 'string' && f.data.length >= BLOB_MIN) || f?.pictures?.length) ? { ...doc, features: doc.features.map((f) => packFeature(f, blobs)) } : doc);
+const packFeatures = (doc, blobs) => (doc.features?.some((f) => (typeof f?.data === 'string' && f.data.length >= BLOB_MIN) || f?.pictures?.length) ? { ...doc, features: doc.features.map((f) => packFeature(f, blobs)) } : doc);
+// (decals are pictures for the view and renders: not geometry)
+const packDoc = (doc, blobs) => { const d = packFeatures(doc, blobs); if (!d.decals) return d; const { decals: _d, ...rest } = d; return rest; };
 
 export class KernelClient {
   // threads: how many threads the kernel may use (more than 1: the multi-threaded kernel, where the page allows it)

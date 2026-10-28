@@ -1892,6 +1892,38 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'render-and-decals'() {
+    const S = await import('/js/sketchmodel.js'), Rn = await import('/js/render.js'), {packFeature} = await import('/js/kernelclient.js');
+    const a = window.app; await a.newDocument?.(); closeModals();
+    const doc = M.newDoc(), sk = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } });
+    const P = [[-20, -20], [20, -20], [20, 20], [-20, 20]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4]));
+    doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 10 }));
+    doc.material = 'al6061';
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    // (a decal on the top face, from a red square picture)
+    const cv = document.createElement('canvas'); cv.width = cv.height = 32; const g = cv.getContext('2d'); g.fillStyle = '#d00'; g.fillRect(0, 0, 32, 32);
+    a.pm = { kind: 'decal', draft: { name: 'logo.png', src: cv.toDataURL('image/png'), w: 20, h: 20, angle: 0 } };
+    const keepF = a.faceAt, keepI = a.viewport.faceInfo.bind(a.viewport);
+    a.faceAt = () => ({ hit: { point: { toArray: () => [0, 10, 0] }, face: 0 } }); a.viewport.faceInfo = () => ({ planar: true, normal: { toArray: () => [0, 1, 0] } });
+    let d; try { d = a.decalClick({}); } finally { a.faceAt = keepF; a.viewport.faceInfo = keepI; }
+    if (!d || a.doc.decals?.length !== 1 || !a.viewport._decals?.children.length) return { ok: false, detail: 'The decal was not put on' };
+    // (kept out of what the kernel is sent)
+    await wait(200); await until(() => !a.kernel.pending);
+    if (a.result.errors.size) return { ok: false, detail: 'The part with a decal did not build' };
+    const st = a.renderSetup();
+    if (st.looks[0] !== 'brushed') return { ok: false, detail: `Aluminium should look brushed, not ${st.looks[0]}` };
+    a.viewport.setStandardView('iso', false);
+    const img = await a.renderView({ size: '320x200', env: 'studio', floor: true, exposure: 1, quiet: true });
+    if (!img?.url?.startsWith('data:image/png') || img.width !== 320 || img.height !== 200) return { ok: false, detail: 'No render', img };
+    // (the picture: not blank, the decal's red in it)
+    const im = await new Promise((res) => { const x = new Image(); x.onload = () => res(x); x.src = img.url; });
+    const c2 = document.createElement('canvas'); c2.width = 320; c2.height = 200; const g2 = c2.getContext('2d'); g2.drawImage(im, 0, 0);
+    const px = g2.getImageData(0, 0, 320, 200).data; let red = 0, varied = new Set();
+    for (let i = 0; i < px.length; i += 4) { if (px[i] > px[i + 1] + 60 && px[i] > px[i + 2] + 80) red++; varied.add(px[i] >> 4); }
+    if (!red || varied.size < 4) { const samp = []; for (let y = 20; y < 200; y += 30) for (let x = 20; x < 320; x += 50) { const i = (y * 320 + x) * 4; samp.push(`${px[i]},${px[i + 1]},${px[i + 2]}`); } return { ok: false, detail: `The render looks wrong: ${red} red pixels, ${varied.size} levels; ${samp.join(' ')}` }; }
+    return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); the decal kept out of the kernel` };
+  },
+
   async 'nest-flat-patterns'() {
     const N = await import('/js/nest.js'), {fixture} = await import('/tests/sheet-options-cases.js'), {buildDXF} = await import('/js/dxf.js');
     const rect = (w, h) => [[0, 0], [w, 0], [w, h], [0, h]].map((p, i, a) => ({ type: 'LINE', layer: 'OUTLINE', a: p, b: a[(i + 1) % 4] }));
