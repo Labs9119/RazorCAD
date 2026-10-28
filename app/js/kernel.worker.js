@@ -6904,26 +6904,97 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const dir = mul(s.frame.n, f.reverse ? 1 : -1);
             for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: P3(pt.id), dir });
           }
-          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) });
-          if (!locs.length) throw new Error('Click points on a flat face for the holes, or select a sketch with points (or circles) on the face');
-          if (!body) throw new Error('There is no body to put holes in');
-          const through = f.end === 'through';
-          // (through: past the far side, from points on the body or, for an assembly's hole, away from it)
-          const bb = bbox(body), depth = through ? 2 * bb.diag + 1 + Math.max(0, ...locs.map((l) => len(sub(l.p, bb.center)))) : ev(f.depth);
-          if (!(depth > 0)) throw new Error('The hole depth must be greater than zero');
-          if (spec.type === 'cbore' && depth <= spec.cbDepth) throw new Error('The hole must be deeper than its counterbore');
-          const prof = holeProfile(spec, depth, !through && f.drillPoint !== false);
-          let tool = null;
-          for (const { p, dir } of locs) {
-            const u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-            const face = R.makePolygon(prof.map(([r, z]) => add(add(p, mul(u, r)), mul(dir, z))));
-            const one = R.revolution(face, p, dir, 360);
-            tool = tool ? tool.fuse(one) : one;
+          for (const fc of f.faces || []) {
+            if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+            // (a point on a curved face: moved onto it, the hole square to it there)
+            if (!body) break;
+            const hit = findFaceAny(solids, fc);
+            if (!hit) throw new Error('A hole’s face could not be found in the model');
+            const oc = R.getOC(), g = new oc.gp_Pnt(...fc.p), mv = new oc.BRepBuilderAPI_MakeVertex(g), dq = new oc.BRepExtrema_DistShapeShape();
+            let q = fc.p;
+            try { dq.LoadS1(mv.Vertex()); dq.LoadS2(hit.face.wrapped); dq.Perform(); if (dq.IsDone() && dq.NbSolution() > 0) { const t = dq.PointOnShape2(1); q = [t.X(), t.Y(), t.Z()]; t.delete?.(); } } finally { dq.delete(); mv.delete(); g.delete(); }
+            locs.push({ p: q, dir: mul(unit(vec(hit.face.normalAt(q))), f.reverse ? 1 : -1) });
           }
+          if (!locs.length) throw new Error('Click points on a face for the holes, or select a sketch with points (or circles) on the face');
+          if (!body) throw new Error('There is no body to put holes in');
+          // ends: blind, through (all), upToNext (where the axis first leaves the material), upToSurface /
+          // offsetSurface (toPlane / toFace, toOffset, toFlip) and upToVertex (toPoint / toVertex): a depth for each hole
+          const end = f.end || 'blind';
+          if (!['blind', 'through', 'upToNext', 'upToSurface', 'offsetSurface', 'upToVertex'].includes(end)) throw new Error('Select a supported hole end');
+          const through = end === 'through';
+          const bb = bbox(body), far = 2 * bb.diag + 1 + Math.max(0, ...locs.map((l) => len(sub(l.p, bb.center))));
+          // (where the axis runs in the material: the pieces of it inside the body, [from, to] along it)
+          const runs = ({ p, dir }) => {
+            const e = R.makeLine(add(p, mul(dir, -1e-3)), add(p, mul(dir, far))), parts = [];
+            try {
+              const inside = boolByList('common', e, [body]);
+              for (const piece of inside.edges) { const a = dot(sub(vec(piece.startPoint), p), dir), b = dot(sub(vec(piece.endPoint), p), dir); parts.push([Math.min(a, b), Math.max(a, b)]); }
+            } finally { e.delete(); }
+            return parts.sort((x, y) => x[0] - y[0]);
+          };
+          let endPlane = null;
+          if (end === 'upToSurface' || end === 'offsetSurface') {
+            endPlane = resolveSurface(f.toPlane, f.toFace);
+            if (f.toFace) res.features[f.id] = { ...(res.features[f.id] || {}), toFace: f.toFace };
+          }
+          const depthOf = (loc) => {
+            if (through) return far;
+            if (end === 'blind') return ev(f.depth);
+            if (end === 'upToNext') {
+              const r = runs(loc).filter(([, b]) => b > 1e-6);
+              if (!r.length) throw new Error('A hole does not go into the material (Up To Next: reverse it?)');
+              return r[0][1];
+            }
+            if (end === 'upToVertex') return dot(sub(resolvePoint(f.toPoint, f.toVertex), loc.p), loc.dir);
+            const c = dot(loc.dir, endPlane.n);
+            if (Math.abs(c) < 1e-9) throw new Error('The end surface is parallel to the hole');
+            let d = dot(sub(endPlane.p, loc.p), endPlane.n) / c;
+            if (end === 'offsetSurface') d -= ev(f.toOffset ?? 0) * (f.toFlip ? -1 : 1);
+            return d;
+          };
+          const depths = locs.map(depthOf);
+          if (depths.some((d) => !(d > 0))) throw new Error(end === 'blind' ? 'The hole depth must be greater than zero' : 'A hole’s end lies behind where it starts (reverse it, or choose another end)');
+          const depth = depths[0];
+          if (spec.type === 'cbore' && depths.some((d) => d <= spec.cbDepth)) throw new Error('The hole must be deeper than its counterbore');
+          // (a drill point at a blind hole's end, of drillAngle; open ends go a hair past where they leave the material,
+          // less than half way to where it starts again)
+          const point = end === 'blind' && f.drillPoint !== false, pointAngle = ev(f.drillAngle ?? 118);
+          if (point && !(pointAngle > 0 && pointAngle < 180)) throw new Error('The drill point angle must be between 0° and 180°');
+          const over = (loc, d) => { if (end !== 'upToNext') return 0; const next = runs(loc).find(([a]) => a > d + 1e-6); return Math.min(0.05, next ? (next[0] - d) / 2 : 0.05); };
+          // (far-side countersink: a cone at the far side, where the hole leaves the material: the first wall for Up To
+          // Next, the last for Through All)
+          const farSink = f.farCsink && (through || end === 'upToNext') ? { D: ev(f.farCsinkD), ang: ev(f.farCsinkAngle ?? 90) } : null;
+          if (farSink && !(farSink.D > spec.d && farSink.ang > 0 && farSink.ang < 180)) throw new Error('The far-side countersink must be wider than the hole, at an angle between 0° and 180°');
+          const slot = spec.type === 'slot';
+          let tool = null;
+          locs.forEach((loc, i) => {
+            const { p, dir } = loc, u = unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), d = depths[i] + over(loc, depths[i]);
+            let one;
+            if (slot) {
+              // (a slot: two half circles of the hole's diameter joined, slotLength between their centres, turned slotAngle
+              // about the hole's axis from the face's X direction, as a sketch on it has it)
+              const L = ev(f.slotLength), w = spec.d / 2, a = (ev(f.slotAngle ?? 0) * Math.PI) / 180, fr = frameOnPlane(p, mul(dir, -1)), x = add(mul(fr.u, Math.cos(a)), mul(fr.v, Math.sin(a)));
+              if (!(L >= 0)) throw new Error('The slot length must be zero or more');
+              const outline = L > 1e-9 ? R.draw([-L / 2, -w]).lineTo([L / 2, -w]).threePointsArcTo([L / 2, w], [L / 2 + w, 0]).lineTo([-L / 2, w]).threePointsArcTo([-L / 2, -w], [-L / 2 - w, 0]).close() : R.drawCircle(w);
+              one = outline.sketchOnPlane(new R.Plane(add(p, mul(dir, -0.05)), x, dir)).extrude(d + 0.05);
+            } else {
+              const prof = holeProfile(spec, d, point, pointAngle);
+              one = R.revolution(R.makePolygon(prof.map(([r, z]) => add(add(p, mul(u, r)), mul(dir, z)))), p, dir, 360);
+            }
+            if (farSink) {
+              const r = runs(loc).filter(([, b]) => b > 1e-6), exit = (end === 'upToNext' ? r[0] : r.at(-1))?.[1];
+              if (exit != null) {
+                const rc = farSink.D / 2, rr = spec.d / 2, h = (rc - rr) / Math.tan((farSink.ang * Math.PI) / 360);
+                const cone = [[0, exit - h], [rr, exit - h], [rc + 0.05 * Math.tan((farSink.ang * Math.PI) / 360), exit + 0.05], [0, exit + 0.05]];
+                one = one.fuse(R.revolution(R.makePolygon(cone.map(([r2, z]) => add(add(p, mul(u, r2)), mul(dir, z)))), p, dir, 360));
+              }
+            }
+            tool = tool ? tool.fuse(one) : one;
+          });
           tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
           apply('cut', tool, true, null);
-          res.features[f.id] = { faces: f.faces || [], holes: locs.map((l) => ({ p: l.p, dir: l.dir })), spec: spec.label, sizes: { type: spec.type, d: spec.d, cbD: spec.cbD, cbDepth: spec.cbDepth, csD: spec.csD, csAng: spec.csAng }, through, depth: through ? null : depth, thread: spec.thread ? { label: spec.thread.label, depth: f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth) } : null };
-          res.notes[f.id] = `${locs.length} hole${locs.length === 1 ? '' : 's'}: ${spec.label}${through ? ', through all' : `, ${+depth.toFixed(3)} deep`}${spec.thread ? ' (cosmetic thread: add Thread Cut on the hole for a modelled one)' : ''}`;
+          res.features[f.id] = { ...(res.features[f.id] || {}), faces: f.faces || [], holes: locs.map((l) => ({ p: l.p, dir: l.dir })), spec: spec.label, sizes: { type: spec.type, d: spec.d, cbD: spec.cbD, cbDepth: spec.cbDepth, csD: spec.csD, csAng: spec.csAng }, through, depth: through ? null : depth, thread: spec.thread ? { label: spec.thread.label, depth: f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth) } : null };
+          res.notes[f.id] = `${locs.length} ${slot ? 'slot' : 'hole'}${locs.length === 1 ? '' : 's'}: ${spec.label}${through ? ', through all' : end === 'upToNext' ? ', up to the next face' : `, ${+depth.toFixed(3)} deep`}${farSink ? `, far-side countersink Ø${+farSink.D.toFixed(3)}` : ''}${spec.thread ? ' (cosmetic thread: add Thread Cut on the hole for a modelled one)' : ''}`;
           // a tapped hole's thread, shown like a cosmetic thread: as deep as asked, else the bore in the material
           if (spec.thread) {
             const th = spec.thread, D1 = minorDiameter(th.D, th.P), tDepth = f.threadDepth === '' || f.threadDepth == null ? null : ev(f.threadDepth);

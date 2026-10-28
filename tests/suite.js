@@ -5070,6 +5070,21 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (walls of their own thickness, hollow bodies; rejections); the panel's wall pick`};
   },
 
+  async 'hole-ends-slots-curved'() {
+    const {run,fixture}=await import('/tests/hole-options-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture({depth:10});await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    const end=[...document.querySelectorAll('#pm select')].find((s)=>[...s.options].some((o)=>o.value==='upToNext'));if(!end)return {ok:false,detail:'No Up To Next for Hole'};
+    end.value='upToSurface';end.dispatchEvent(new Event('change'));await settle();
+    const pick=document.querySelector('[data-hole-end-pick="toPlane"]');if(!pick)return {ok:false,detail:'No end surface pick for Hole'};
+    pick.click();await settle();if(a.pickMode()!=='face')return {ok:false,detail:`Pick mode for the end surface: ${a.pickMode()}`};
+    a.pmPick('plane','front');await settle();if(a.pm.feature.toPlane!=='front')return {ok:false,detail:`End surface after the tree pick: ${a.pm.feature.toPlane}`};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0],want=8000-Math.PI*3.3*3.3*20;
+    if(a.result.errors.size||!m||Math.abs(m.volume-want)>1e-6)return {ok:false,detail:`Hole up to Front: volume ${m?.volume} (expected ${want}), errors ${JSON.stringify([...a.result.errors])}`};
+    return {ok:true,detail:`${native.results.length} kernel cases (up to next, a surface, an offset, a vertex; drill point angle; far-side countersinks; a curved face; slots; rejections); the panel's ends and their pick`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

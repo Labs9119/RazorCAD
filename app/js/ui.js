@@ -712,13 +712,15 @@ const PM_SCHEMAS = {
   ],
   hole: [
     { title: 'Hole Type', fields: [
-      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole']] },
+      { key: 'holeType', type: 'select', label: 'Type', options: [['simple', 'Hole (clearance)'], ['cbore', 'Counterbore'], ['csink', 'Countersink'], ['tapped', 'Tapped hole'], ['slot', 'Slot']] },
       { key: 'system', type: 'select', label: 'Standard', options: [['metric', 'ISO metric'], ['imperial', 'Unified (inch)']], show: (f) => f.holeType === 'tapped' },
       { key: 'thread', type: 'select', label: 'Thread', options: (f) => threadList(f.system || 'metric').map((t) => [t.id, t.label]), show: (f) => f.holeType === 'tapped' },
       { key: 'threadDepth', type: 'expr', label: 'Thread depth (for the callout; empty: the hole)', unit: 'mm', optional: true, show: (f) => f.holeType === 'tapped' },
       { key: 'size', type: 'select', label: 'Screw size', options: [...HOLE_SIZES.map((s) => [s, s]), ['custom', 'Custom sizes']], show: (f) => f.holeType !== 'tapped' },
       { key: 'fit', type: 'select', label: 'Fit (ISO 273)', options: [['close', 'Close'], ['normal', 'Normal'], ['loose', 'Loose']], show: (f) => f.holeType !== 'tapped' && f.size !== 'custom' },
-      { key: 'diameter', type: 'expr', label: 'Hole diameter', unit: 'mm', show: (f) => f.holeType !== 'tapped' && f.size === 'custom' },
+      { key: 'diameter', type: 'expr', label: (f) => (f.holeType === 'slot' ? 'Slot width' : 'Hole diameter'), unit: 'mm', show: (f) => f.holeType !== 'tapped' && f.size === 'custom' },
+      { key: 'slotLength', type: 'expr', label: 'Slot length (between the ends’ centres)', unit: 'mm', default: 10, show: (f) => f.holeType === 'slot' },
+      { key: 'slotAngle', type: 'expr', label: 'Slot angle', unit: '°', default: 0, show: (f) => f.holeType === 'slot' },
       { key: 'cboreD', type: 'expr', label: 'Counterbore diameter', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'cboreDepth', type: 'expr', label: 'Counterbore depth', unit: 'mm', show: (f) => f.holeType === 'cbore' && f.size === 'custom' },
       { key: 'csinkD', type: 'expr', label: 'Countersink diameter', unit: 'mm', show: (f) => f.holeType === 'csink' && f.size === 'custom' },
@@ -726,13 +728,22 @@ const PM_SCHEMAS = {
       { key: 'tHint', type: 'hint', text: (f) => (f.holeType === 'tapped' ? 'Drilled at the tap drill size (major diameter − pitch), with the thread kept for callouts. For a modelled thread, add Thread Cut on the hole afterwards.' : f.size === 'custom' ? 'Your own sizes.' : 'Sizes for the screw: clearance hole by ISO 273, counterbore for socket head cap screws (ISO 4762), countersink for countersunk screws (ISO 10642, 90°).') },
     ] },
     { title: 'End Condition', fields: [
-      { key: 'end', type: 'select', label: 'End', options: [['blind', 'Blind'], ['through', 'Through all']] },
-      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.end !== 'through' },
-      { key: 'drillPoint', type: 'check', default: true, label: 'Drill point (118°)', show: (f) => f.end !== 'through' },
+      { key: 'end', type: 'select', label: 'End', options: [['blind', 'Blind'], ['through', 'Through all'], ['upToNext', 'Up To Next'], ['upToVertex', 'Up To Vertex'], ['upToSurface', 'Up To Surface'], ['offsetSurface', 'Offset From Surface']] },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => (f.end || 'blind') === 'blind' },
+      { key: 'toPoint', type: 'pointRef', label: 'Vertex', show: (f) => f.end === 'upToVertex' },
+      { key: 'toPlane', type: 'surfaceRef', label: 'Surface', show: isSurfEnd },
+      { key: 'toOffset', type: 'expr', label: 'Offset', unit: 'mm', default: 2, show: (f) => f.end === 'offsetSurface' },
+      { key: 'toFlip', type: 'check', label: 'Reverse offset (past the surface)', show: (f) => f.end === 'offsetSurface' },
+      { key: 'drillPoint', type: 'check', default: true, label: 'Drill point', show: (f) => (f.end || 'blind') === 'blind' && f.holeType !== 'slot' },
+      { key: 'drillAngle', type: 'expr', label: 'Drill point angle', unit: '°', default: 118, show: (f) => (f.end || 'blind') === 'blind' && f.drillPoint !== false && f.holeType !== 'slot' },
+      { key: 'farCsink', type: 'check', label: 'Far-side countersink (where it comes out)', show: (f) => ['through', 'upToNext'].includes(f.end) && f.holeType !== 'slot' },
+      { key: 'farCsinkD', type: 'expr', label: 'Far-side countersink diameter', unit: 'mm', default: 12, show: (f) => ['through', 'upToNext'].includes(f.end) && f.farCsink && f.holeType !== 'slot' },
+      { key: 'farCsinkAngle', type: 'expr', label: 'Far-side countersink angle', unit: '°', default: 90, show: (f) => ['through', 'upToNext'].includes(f.end) && f.farCsink && f.holeType !== 'slot' },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
+      { key: 'eHint', type: 'hint', show: (f) => f.end === 'upToNext', text: 'Up To Next: each hole goes until its axis first comes out of the material (through the wall it starts in).' },
     ] },
     { title: 'Positions', fields: [
-      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the holes, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
       { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
     ] },
   ],
@@ -3804,6 +3815,7 @@ export class UI {
           if (f.type === 'surfFill' && fd.key === 'continuity') s.dataset.patchContinuity = '';
           if (['sweep','surfSweep'].includes(f.type) && ['profile','path','guide'].includes(fd.key)) s.onfocus = () => { pm.sweepSlot = fd.key; };
           if(['extrude','surfExtrude'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.profilePick=f.type==='surfExtrude'?false:pm.profilePick;pm.planarEdges=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(f.type==='hole'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.holeEndPick=true;a.updateSketchDisplay();};
           if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
           s.onchange = () => {
             f[fd.key] = s.value || null;
@@ -3832,6 +3844,7 @@ export class UI {
           const wrap = el('div', { class: 'pm-input' });
           wrap.appendChild(s);
           body.appendChild(this.row(fd.label, wrap));
+          if(f.type==='hole'&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.holeEndPick?' on':''),'data-hole-end-pick':fd.key,onclick:()=>{pm.holeEndPick=!pm.holeEndPick;this.renderPM();a.updatePlanes();a.status(pm.holeEndPick?(fd.type==='pointRef'?'Click the vertex the holes go up to.':'Select the plane or flat face the holes go up to.'):'Click points on a face for the holes.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
           if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.revolveEndPick?' on':''),'data-revolve-end-pick':fd.key,onclick:()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(fd.type==='pointRef'?'Click the vertex the revolution goes up to.':'Select the plane or flat face the revolution goes up to.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
           if(['extrude','surfExtrude'].includes(f.type)&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]&&(f.type==='extrude'||pm.profilePick===false&&!pm.planarEdges)?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;if(f.type==='surfExtrude'){pm.profilePick=false;pm.planarEdges=false;}pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
         }

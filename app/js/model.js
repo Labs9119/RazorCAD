@@ -323,7 +323,7 @@ export function createFeature(doc, type, props = {}) {
     // Hole: holeType 'simple' | 'cbore' | 'csink' | 'tapped'; size a standard screw size (or
     // 'custom': diameter / cboreD / cboreDepth / csinkD / csinkAngle), fit 'close' | 'normal' | 'loose';
     // tapped: system + thread (cosmetic, threadDepth for the callout); end 'blind' (depth, drill point) | 'through'
-    hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, reverse: false, sketch: null, faces: [] },
+    hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'
     sketch3d: { pts: [], segs: [], rels: [], nextId: 1, kind: 'lines', radius: 0 },
     helix: { sketch: null, definedBy: 'pitchRev', pitch: 5, revolutions: 5, height: 25, startAngle: 0, clockwise: false, reverse: false },

@@ -866,10 +866,12 @@ The kernel constructs clamped tensor B-splines (cubic, or degree five along the 
 | Counterbore | For socket head cap screws (ISO 4762) |
 | Countersink | ISO 10642, 90° |
 | Tapped hole | ISO metric or Unified (inch), drilled at the tap drill size; the thread is shown as a cosmetic thread and given in drawing callouts |
+| Slot | Two half circles of the hole's diameter joined: **Slot length** between their centres, **Slot angle** from the face's X direction |
 | Custom sizes | Your own diameters and depths |
 
-- **Blind** with a 118° drill point, or **Through All**; reversible.
-- Place holes at clicked points on a flat face, or exactly at the points and circle centres of a sketch on the face.
+- **End**: **Blind** (with a **Drill point** of **Drill point angle**, 118° unless set), **Through All**, **Up To Next** (each hole until its axis first comes out of the material: through the wall it starts in), **Up To Vertex**, **Up To Surface** and **Offset From Surface** (a plane or flat face, picked in the canvas or chosen in the list; each hole's own depth along its axis); reversible. {idx:Hole, end conditions}
+- **Far-side countersink** (Through All, Up To Next): a countersink of its own diameter and angle where the hole comes out (the far side of the first wall for Up To Next, of the last for Through All). {idx:Hole, far-side countersink}
+- Place holes at clicked points on a face, or exactly at the points and circle centres of a sketch on the face. On a curved face (a shaft, a pipe) a hole is drilled square to the face where it was clicked: a radial hole. {idx:Hole, on a curved face}
 - Holes work on sheet metal too, and a drawing's **Hole Callout** reads their size from the feature.
 
 ## Helix
