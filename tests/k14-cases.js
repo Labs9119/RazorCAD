@@ -16,7 +16,7 @@ export async function run({threads=1}={}){
     // (all 12 edges rounded R2: corner blends where three meet; defeatured exactly)
     {const doc=M.newDoc();box(doc);const E=[];for(const y of [0,10])for(const z of [-10,10])E.push({p:[0,y,z]});for(const x of [-20,20])for(const y of [0,10])E.push({p:[x,y,0]});for(const x of [-20,20])for(const z of [-10,10])E.push({p:[x,5,z]});
      doc.features.push(M.createFeature(doc,'fillet',{radius:2,edges:E}),M.createFeature(doc,'defeature',{filletR:2.5,holes:false}));
-     await one('every edge rounded, corners and all: taken out exactly',doc,8000,/([1-9]\d*) fillet faces and 0 holes taken out exactly/);}
+     await one('every edge rounded, corners and all: taken out exactly',doc,8000,/12 fillets and 0 holes taken out exactly/);}
     {const doc=M.newDoc();box(doc);doc.features.push(M.createFeature(doc,'fillet',{radius:2,edges:[{p:[0,10,10]}]}),M.createFeature(doc,'editFillet',{faces:[{p:[0,8+2*c45,8+2*c45]}],mode:'resize',radius:4}));
      await one('a round resized from 2 to 4 by the kernel',doc,8000-(16-4*Math.PI)*40,/exactly/);}
     {const doc=M.newDoc();box(doc);const pl=M.createFeature(doc,'plane',{refs:[{kind:'plane',id:'top'}],offset:10}),b=M.createFeature(doc,'sketch',{plane:{ref:pl.id}});S.addCircle(b,'O',4);

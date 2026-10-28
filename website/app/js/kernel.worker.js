@@ -5390,6 +5390,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const hits = f.faces.map((r0) => findFaceAny(solids, r0));
             if (hits.every(Boolean) && hits.every((h) => h.body === hits[0].body)) {
               const kinds = hits.map((h) => surfOf(h.face)), cham = kinds.every((x) => x.t === 'PLANE');
+              // (only blends: a flat face must be a chamfer between two faces; a whole cylinder is a hole or a boss)
+              hits.forEach((h, i) => {
+                if (kinds[i].t === 'PLANE') blendCorner(h.body.shape, h.face);
+                else if (kinds[i].t === 'CYLINDER' && faceHasSeam(h.face)) throw new Error('That face is not a fillet or a chamfer');
+              });
               const r0 = hits[0].body, out = labDefeature(r0.shape, hits.map((h) => h.face));
               if (out) {
                 const before = r0.shape;
@@ -5437,11 +5442,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (const rec of recs) {
             // (Kernel Lab k14: every such face at once by the kernel's defeaturing; else one by one with booleans)
             if (R.getOC().LabDefeature) {
-              const faces = defeatureFaces(rec.shape, maxR, maxD), kinds = faces.map((x) => ({ ...surfOf(x), seam: faceHasSeam(x) }));
+              const faces = defeatureFaces(rec.shape, maxR, maxD);
               const done = faces.length ? labDefeature(rec.shape, faces) : null;
               if (done) {
-                nf += kinds.filter((x) => (x.t === 'CYLINDER' && !x.seam) || x.t === 'TORUS' || x.t === 'SPHERE').length;
-                nh += kinds.filter((x) => x.t === 'CYLINDER' && x.seam).length;
+                nf += faces.fillets;
+                nh += faces.holes;
                 replaceSolid(rec, unify(done), f.id);
                 exact = true;
                 continue;
@@ -5451,7 +5456,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             nf += out.fillets; nh += out.holes;
             if (out.fillets || out.holes) replaceSolid(rec, out.shape, f.id);
           }
-          res.notes[f.id] = exact ? `${nf} fillet face${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out exactly` : `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
+          res.notes[f.id] = exact ? `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out exactly` : `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
           break;
         }
         case 'replaceFace': {
@@ -10356,13 +10361,15 @@ function newEdgesNear(before, after, removed) {
   });
 }
 // The faces a defeature takes out: fillets up to maxR (round strips: open cylinders, tori, spheres at corners) and holes
-// up to maxD (closed concave cylinders with their counterbores, countersinks and drill points).
+// up to maxD (closed concave cylinders with their counterbores, countersinks and drill points). out.fillets, out.holes:
+// how many (a sphere at a corner where rounds meet is part of them; a hole is all its faces).
 function defeatureFaces(shape, maxR, maxD) {
   const out = [], have = (fc) => out.some((x) => x.isSame(fc));
+  out.fillets = 0; out.holes = 0;
   for (const fc of shape.faces) {
     if (have(fc)) continue;
     const s = surfOf(fc);
-    if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9) || (s.t === 'SPHERE' && s.r <= maxR + 1e-9))) { out.push(fc); continue; }
+    if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9) || (s.t === 'SPHERE' && s.r <= maxR + 1e-9))) { out.push(fc); if (s.t !== 'SPHERE') out.fillets++; continue; }
     if (maxD > 0 && s.t === 'CYLINDER' && 2 * s.r <= maxD + 1e-9 && faceHasSeam(fc)) {
       const mid = holeFill(shape, fc, maxD);
       if (!mid) continue;
@@ -10375,6 +10382,7 @@ function defeatureFaces(shape, maxR, maxD) {
         if ((t === 'CYLINDRE' || t === 'CONE') && onAxis(nb.face)) { group.push(nb.face); todo.push(nb.face); }
         else if (t === 'PLANE' && len(cross(surfOf(nb.face).n, d)) < 1e-6 && nb.face.edges.every((x) => x.geomType === 'CIRCLE' && len(cross(sub(circleOf(x)?.c ?? [NaN, NaN, NaN], o), d)) < 1e-6)) { group.push(nb.face); todo.push(nb.face); }
       }
+      if (group.some((g) => !have(g))) out.holes++;
       for (const g of group) if (!have(g)) out.push(g);
     }
   }

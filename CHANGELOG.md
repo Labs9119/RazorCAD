@@ -6,6 +6,22 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 05:46 — The k14 geometry kernel: exact defeaturing and STEP files with semantic PMI
+
+- RazorCAD now ships the Kernel Lab's k14 kernel (k12, which it had, plus defeaturing and PMI; OpenCascade 8.0.1, both
+  the single- and multi-threaded builds).
+- **Delete / Resize Fillet**, **Defeature** and **Delete Face ▸ Heal** take faces out exactly: the faces round them are
+  grown or shrunk to close the gap, so rounds that run into other rounds at a corner come out too. When the kernel
+  cannot close a gap, the old way is used.
+- **STEP export** writes datums, geometric tolerances and dimensions from the 3D annotations as semantic PMI (AP242), on
+  the faces they point at; a STEP file with PMI opened in RazorCAD shows them as 3D annotations.
+- Fixed with it: Delete Fillet refuses a face that is not a round or chamfer (a flat face, a hole's or a boss's side)
+  instead of handing it to the defeaturing; Defeature counts a counterbored hole with its drill point as one hole, and
+  says "fillets", not "fillet faces".
+- Checked: the full suite (231 tests), the kernel probes (surface patches at 16, 32 and 128; guided lofts and hard
+  cases, single- and multi-threaded, with the lifetime hooks), the defeaturing and PMI cases on one thread and on four,
+  and the desktop window (a fillet deleted exactly, a STEP file written with its PMI).
+
 ## 2026-10-29 00:19 — The manual inside RazorCAD, freeform faces, G2 fillets, true-shape nesting, piping, ducts, moulds and more
 
 - **The user manual inside RazorCAD**: Help ▸ User Manual, [F1] (at the feature being edited), the title bar's **?**
@@ -23,7 +39,7 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 - **Assemblies**: cam mate; clearance along a motion study; flexible sub-assemblies; Number Parts; Where Used.
 - **Drawings**: broken-out sections; Compare With another drawing.
 - **glTF (.glb) export**; **point clouds** (PLY, XYZ) with surfaces fitted to them.
-- With the Kernel Lab's k14 geometry kernel (not shipped yet): exact defeaturing, and STEP files with semantic PMI
+- With the Kernel Lab's k14 geometry kernel (shipped in the entry above): exact defeaturing, and STEP files with semantic PMI
   written and read.
 
 ## 2026-10-29 00:08 — Edit in Context follows its own assembly when several are open
