@@ -2018,6 +2018,7 @@ export class UI {
         'sep',
         { icon: 'dxf', label: 'Export DXF (flat pattern)', action: () => a.exportSheetDXF() },
         { icon: 'dxfAll', label: 'Export All DXF', action: () => a.exportSheetDXF(null, true) },
+        { icon: 'dxfAll', label: 'Nest Flat Patterns', action: () => a.nestFlatPatterns() },
         { icon: 'gear', label: 'DXF Settings', action: () => this.showDxfSettings() },
       ],
       claude: [

@@ -1282,7 +1282,7 @@ The **Sheet Metal** tab holds the sheet metal features. Sheet metal bodies are l
 | Forms and details | Cross Break, Tab and Slot, Forming Tools, Gusset |
 | Corners | Corner Relief, Closed Corner |
 | Flat | Unbend, Bend, Flatten |
-| Checking and output | Sheet Metal Check, Export DXF, Export All DXF, DXF Settings |
+| Checking and output | Sheet Metal Check, Export DXF, Export All DXF, Nest Flat Patterns, DXF Settings |
 
 ## Base Flange
 
@@ -1440,6 +1440,7 @@ Body Properties for a sheet metal body shows thickness, bend radius and K-factor
 
 - Right-click a sheet metal body (tree or view) ▸ **Export Flat Pattern as DXF**, or **Export DXF** on the tab. {idx:DXF, flat pattern}
 - **Export All DXF**: choose a target folder; one file per body, named after the body. Identical bodies give one file with the quantity multiplied by the count.
+- **Nest Flat Patterns** {idx:nesting}{idx:Nest Flat Patterns}: lays every sheet metal body's flat pattern out on stock sheets (width × height, a margin round the sheet, a gap between parts, parts turned 90° where that fits better). Identical bodies are counted, times each body's quantity and the number of **Sets**. Each part takes the rectangle round its flat pattern. The result shows each sheet and how much of it is used; **Export DXF…** writes one DXF with the sheets side by side, their outlines on layer SHEET and each part's outline and holes, named at its middle.
 - Each file is shown in a **preview window** with its layer colours and line types, which can be changed there. Buttons: **Export**, **Skip This One** and **Abort Export**.
 - In the preview, zoom with the wheel, pan by dragging and double-click or **Fit** to see it all. Click lines to select them ([[Ctrl]] or [[Shift]] adds, [[Shift]]+drag for a box, [[Ctrl+A]] for all), then **Delete** them, give them their own **Line type**, or move them to another **Layer** (for example make a line an etch line). **Undo** and **Restore All** put them back. These edits apply to that one export. {idx:DXF preview}
 - Options: bend lines, bend notes, bend region (hidden) lines, etch lines and part information.

@@ -1892,6 +1892,30 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'nest-flat-patterns'() {
+    const N = await import('/js/nest.js'), {fixture} = await import('/tests/sheet-options-cases.js'), {buildDXF} = await import('/js/dxf.js');
+    const rect = (w, h) => [[0, 0], [w, 0], [w, h], [0, h]].map((p, i, a) => ({ type: 'LINE', layer: 'OUTLINE', a: p, b: a[(i + 1) % 4] }));
+    const parts = [{ name: 'A', qty: 6, size: [100, 50], area: 5000, ents: rect(100, 50) }, { name: 'B', qty: 2, size: [300, 200], area: 60000, ents: rect(300, 200) }, { name: 'C', qty: 3, size: [40, 180], area: 7200, ents: rect(40, 180) }];
+    const o = { W: 400, H: 300, margin: 10, gap: 5, rotate: true };
+    const sheets = N.nest(parts, o), all = sheets.flatMap((s, k) => s.placed.map((q) => ({ ...q, k })));
+    const inside = all.every((q) => q.x >= 10 - 1e-9 && q.y >= 10 - 1e-9 && q.x + q.w <= 390 + 1e-9 && q.y + q.h <= 290 + 1e-9);
+    const apart = all.every((p, i) => all.every((q, j) => j <= i || p.k !== q.k || p.x + p.w + 5 <= q.x + 1e-9 || q.x + q.w + 5 <= p.x + 1e-9 || p.y + p.h + 5 <= q.y + 1e-9 || q.y + q.h + 5 <= p.y + 1e-9));
+    if (all.length !== 11 || !inside || !apart) return { ok: false, detail: `placed ${all.length}, inside ${inside}, apart ${apart}`, sheets };
+    let big = ''; try { N.nest([{ name: 'X', qty: 1, size: [500, 100] }], o); } catch (e) { big = e.message; }
+    if (!/does not fit/.test(big)) return { ok: false, detail: 'A part too big was not refused' };
+    const turned = N.placeEnts(rect(100, 50), [100, 50], { x: 20, y: 30, rot: 90 }), xs = turned.flatMap((e) => [e.a[0], e.b[0]]), ys = turned.flatMap((e) => [e.a[1], e.b[1]]);
+    if (Math.min(...xs) !== 20 || Math.max(...xs) !== 70 || Math.min(...ys) !== 30 || Math.max(...ys) !== 130) return { ok: false, detail: 'A turned part is not where its rectangle is' };
+    // (in the app: a bent part's flat pattern nested, two sets)
+    const a = window.app; await a.newDocument?.(); closeModals();
+    const d = fixture(); await a.setDoc(d.doc); await wait(300); await until(() => !a.kernel.pending);
+    const r = await a.nestFlatPatterns({ W: 500, H: 300, margin: 10, gap: 5, rotate: true, sets: 2, quiet: true });
+    if (!r || r.sheets.length !== 1 || r.sheets[0].placed.length !== 2) return { ok: false, detail: 'The part was not nested', r };
+    const dxf = buildDXF(N.nestEnts(r.parts, r.sheets, r.opts), { OUTLINE: { color: 7, ltype: 'CONTINUOUS' }, SHEET: { color: 8, ltype: 'CONTINUOUS' }, NOTES: { color: 7, ltype: 'CONTINUOUS' } });
+    const lines = dxf.split(/\r?\n/).map((x) => x.trim());
+    if (!lines.includes('SHEET') || lines.filter((x) => x === 'OUTLINE').length < 8) return { ok: false, detail: 'The nest DXF lacks the sheet or the outlines' };
+    return { ok: true, detail: `11 parts of 3 sizes on ${sheets.length} sheets (inside the margin, 5 apart, some turned); a part too big refused; a bent part's flat pattern nested twice and written to DXF` };
+  },
+
   async 'drawing-general-table'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
     await a.newDocument?.(); closeModals();

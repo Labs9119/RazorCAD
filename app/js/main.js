@@ -19,6 +19,7 @@ import { platform } from './platform.js';
 import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
+import { nest, nestEnts } from './nest.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -1178,6 +1179,56 @@ class App {
 
   // Export flat patterns as DXF: one body (save dialog) or all sheet metal bodies (into a chosen
   // folder). Each one is previewed first; the layer colours / line types can be changed there.
+  // Nest Flat Patterns: every sheet metal body's flat pattern (identical bodies counted, times their quantity and
+  // the sets asked for) laid out on stock sheets, shown, and written as one DXF (the sheets side by side).
+  async nestFlatPatterns(opts = null) {
+    const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
+    if (!sheets.length) { this.toast('There are no sheet metal bodies to nest', true); return null; }
+    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1 };
+    const v = opts || (await this.ui.promptFields('Nest Flat Patterns', 'dxfAll', [
+      { key: 'W', label: 'Sheet width', type: 'expr', value: prev.W }, { key: 'H', label: 'Sheet height', type: 'expr', value: prev.H },
+      { key: 'margin', label: 'Margin (round the sheet)', type: 'expr', value: prev.margin }, { key: 'gap', label: 'Gap between parts', type: 'expr', value: prev.gap },
+      { key: 'rotate', label: 'Parts may be turned 90°', type: 'check', value: prev.rotate }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
+    ], 'Each part is placed as the rectangle round its flat pattern.'));
+    if (!v) return null;
+    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: !!v.rotate, sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))) };
+    this._nestOpts = o;
+    const parts = [];
+    for (const g of groupBodies(sheets)) {
+      let data;
+      try { data = await this.withProgress(`Flattening ${g.rep.name}…`, () => this.kernel.request('sheetFlat', { bodyId: g.rep.id, flip: this.flatFlip(g.rep.id) })); } catch (err) { this.toast(`${g.rep.name}: ${err.message}`, true); continue; }
+      const each = Math.max(1, Math.round(+(this.doc.bodies?.[g.rep.id]?.qty) || 1));
+      parts.push({ name: g.rep.name, qty: g.members.length * each * o.sets, size: data.size, area: data.area, ents: data.ents });
+    }
+    let laid;
+    try { laid = nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
+    const n = parts.reduce((t, p) => t + p.qty, 0), useAll = laid.reduce((t, s) => t + s.used, 0) / laid.length;
+    const result = { parts, sheets: laid, opts: o };
+    if (opts?.quiet) return result;
+    // (the layout, drawn small)
+    const k = 560 / Math.max(o.W, 1), svgH = laid.length * (o.H * k + 14);
+    let svg = `<svg width="${o.W * k + 2}" height="${svgH}" style="background:#fff;border:1px solid #ccc">`;
+    laid.forEach((s, j) => {
+      const oy = j * (o.H * k + 14);
+      svg += `<rect x="1" y="${oy + 1}" width="${o.W * k}" height="${o.H * k}" fill="#f4f6f8" stroke="#555"/>`;
+      for (const q of s.placed) svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8"><title>${parts[q.i].name.replace(/[&<>]/g, '')}</title></rect>`;
+    });
+    svg += '</svg>';
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="pm-hint" style="margin-bottom:6px">${n} part${n === 1 ? '' : 's'} on ${laid.length} sheet${laid.length === 1 ? '' : 's'} of ${o.W} × ${o.H}: ${laid.map((s, j) => `sheet ${j + 1} ${(s.used * 100).toFixed(1)} %`).join(', ')} used (${(useAll * 100).toFixed(1)} % on average).</div><div style="max-height:60vh;overflow:auto">${svg}</div>`;
+    this.ui.modal('Nest Flat Patterns', 'dxfAll', box, [
+      { label: 'Export DXF…', primary: true, action: () => { this.exportNestDXF(result); return false; } },
+      { label: 'Close' },
+    ]);
+    return result;
+  }
+  async exportNestDXF({ parts, sheets, opts }) {
+    const settings = loadDxfSettings(), mapping = { ...settings.mapping, SHEET: settings.mapping?.SHEET || { color: 8, ltype: 'CONTINUOUS' }, NOTES: settings.mapping?.NOTES || { color: 7, ltype: 'CONTINUOUS' } };
+    const bytes = new TextEncoder().encode(buildDXF(nestEnts(parts, sheets, opts), mapping));
+    try { const path = await platform.saveBinary(dxfFileName(`${this.safeName()} nest`), bytes, 'dxf'); if (path) this.status(`Nest exported: ${String(path).split(/[\\/]/).pop()}`); } catch (err) { this.toast('DXF export failed: ' + err.message, true); }
+    return bytes;
+  }
+
   async exportSheetDXF(bodyId = null, all = false) {
     if (this.mode === 'sketch') { this.toast('Exit the sketch first', true); return; }
     const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
