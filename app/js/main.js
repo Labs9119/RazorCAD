@@ -661,6 +661,7 @@ class App {
       const f = M.findFeature(doc, fid);
       if (f && this.pm?.feature !== f) Object.assign(f, u);
     }
+    this.takeImportedPMI(r);
     if (r.body?.same) {
       // the kernel says the view already shows this mesh
       if (this.result?.body?.key !== r.body.key) { this._forceMesh = true; this.rebuild(); return; }
@@ -4551,6 +4552,36 @@ class App {
     ui.modal('3D Annotations', 'measure', box, [{ label: 'Close', primary: true }]);
   }
 
+  // Whether this part's geometry kernel has a class (e.g. a Lab kernel's LabPMI), asked once per kernel.
+  async kernelHas(name) {
+    const k = this.kernel;
+    k._has ||= new Map();
+    if (!k._has.has(name)) k._has.set(name, k.request('ocHas', { names: [name] }).then((r) => r.includes(name)).catch(() => false));
+    return k._has.get(name);
+  }
+  // A STEP import's PMI (read by the kernel) made 3D annotations, once.
+  takeImportedPMI(r) {
+    const doc = this.doc;
+    let n = 0;
+    for (const f of doc.features) {
+      if (f.type !== 'import' || !f.pmi?.length || f.pmiTaken) continue;
+      const list = (doc.annotations ||= []), nextId = () => 'an' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1);
+      const pt = (s) => String(s).trim().split(/\s+/).map(Number);
+      for (const line of f.pmi) {
+        const c = line.split('|');
+        let a = null;
+        if (c[0] === 'D') { if (list.some((x) => x.from === f.id && x.kind === 'datum' && x.letter === c[1])) continue; a = { kind: 'datum', letter: c[1], p: pt(c[2]) }; } // (a datum read once for each tolerance using it)
+        else if (c[0] === 'T') a = { kind: 'gdt', symbol: c[1], tol: +c[2], dia: c[3] === '1', p: pt(c[4]), datums: (c[5] || '').split(',').filter(Boolean).join(' ') };
+        else if (c[0] === 'L') a = { kind: 'dim', value: +c[1], plus: Math.abs(+c[2]), minus: Math.abs(+c[3]), p: pt(c[4]), q: pt(c[5]) };
+        if (!a || !a.p.every(Number.isFinite)) continue;
+        a.id = nextId(); a.from = f.id; a.at = this.annot3d.labelAt(a.p, a.q);
+        list.push(a); n++;
+      }
+      f.pmiTaken = true;
+    }
+    if (n) { this.commit(); this.status(`${n} annotation${n === 1 ? '' : 's'} (PMI) read from the STEP file: Tools ▸ 3D Annotations… lists them.`); }
+  }
+
   // (a glTF binary of the bodies as shown: colours and render looks, in metres)
   glbBytes() {
     const st = this.renderSetup();
@@ -4560,6 +4591,15 @@ class App {
   // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
   async stepBytes(bodyId = null) {
     const ann = this.doc.annotations || [];
+    // (Kernel Lab k14: datums, geometric tolerances and dimensions written as semantic PMI, on the faces they point at)
+    if (ann.length && !bodyId && (await this.kernelHas('LabPMI'))) {
+      const P = (q) => q.map((x) => +(+x).toFixed(6)).join(' ');
+      const spec = ann.map((a) => (a.kind === 'datum' ? `D|${a.letter}|${P(a.p)}` : a.kind === 'gdt' ? `T|${a.symbol}|${+a.tol}|${a.dia ? 1 : 0}|${P(a.p)}|${String(a.datums || '').split(/[\s,|]+/).filter(Boolean).join(',')}` : a.kind === 'dim' && a.q ? `L|${+a.value}|${+a.plus || 0}|${+a.minus || 0}|${P(a.p)}|${P(a.q)}|${P(a.at || a.p)}` : null)).filter(Boolean).join('\n');
+      try {
+        const r = await this.kernel.request('stepPMI', { spec, name: this.doc.name || 'Part' });
+        return new TextEncoder().encode(stepWithAnnotations(r.text, ann));
+      } catch (e) { this.toast('STEP with PMI failed (written without it): ' + e.message, true); }
+    }
     const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo());
     if (!ann.length) return bytes;
     return new TextEncoder().encode(stepWithAnnotations(new TextDecoder().decode(bytes), ann));

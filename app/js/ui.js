@@ -1342,7 +1342,7 @@ const PM_SCHEMAS = {
   deleteFace: [
     { title: 'Faces to Delete', fields: [{ key: 'faces', type: 'faceList', hint: 'Click faces of a solid or a surface body.' }] },
     { title: 'Options', fields: [
-      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Leave the hole (a solid becomes a surface body)'], ['patch', 'Patch each hole (the solid stays a solid)']] },
+      { key: 'mode', type: 'select', label: 'Then', options: [['delete', 'Leave the hole (a solid becomes a surface body)'], ['patch', 'Patch each hole (the solid stays a solid)'], ['heal', 'Heal: the faces round them grow to close the gap (exact)']] },
       { key: 'tangent', type: 'check', label: 'Patch tangent to the faces round the hole', show: (f) => f.mode === 'patch' },
       { key: 'dHint', type: 'hint', text: (f) => (f.mode === 'patch' ? 'Each hole left by the deleted faces gets a smooth patch: good for taking out fillets, small features and bad faces of imported parts.' : 'The faces are taken out; the rest stays as a surface body (e.g. to rebuild them with other surface tools).') },
     ] },

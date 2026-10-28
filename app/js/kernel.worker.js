@@ -4641,6 +4641,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'import': {
           const rec = await importShape(f, timing);
+          // (Kernel Lab k14: a STEP file's PMI (dimensions, geometric tolerances, datums) read once, for 3D annotations)
+          if (f.format === 'step' && !f.pmiRead && R.getOC().LabPMI) {
+            const text = featureData(f);
+            if (typeof text === 'string' && /DIMENSIONAL_|GEOMETRIC_TOLERANCE|DATUM_FEATURE|DATUM\(/.test(text)) {
+              try { const lines = R.getOC().LabPMI.ReadStep(text); res.features[f.id] = { pmiRead: true, pmi: String(lines || '').split('\n').filter(Boolean) }; } catch (e) { if (isFatal(e)) throw e; }
+            }
+          }
           let shape = rec.shape.clone();
           // (an IGES file's faces, each on its own: sewn together, a solid where they close)
           if (f.sew && !shape.solids.length) shape = sewFaces(shape, f.sewTolerance ?? 0.01);
@@ -5300,6 +5307,16 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (hits.some((h) => h.body !== rec)) throw new Error('The faces must be on the same body');
           const keep = rec.shape.faces.filter((fc) => !hits.some((h) => h.face.isSame(fc)));
           if (!keep.length) throw new Error('That would delete every face of the body (use Delete Body instead)');
+          if (f.mode === 'heal') {
+            // (Kernel Lab k14: the faces round them grown or shrunk to close the gap)
+            if (!R.getOC().LabDefeature) throw new Error('Delete and heal needs the geometry kernel with defeaturing');
+            if (!solids.includes(rec)) throw new Error('Delete and heal works on solids');
+            const out = labDefeature(rec.shape, hits.map((h) => h.face));
+            if (!out) throw new Error(`The faces could not be taken out: ${labDefeatureError() || 'the faces round them cannot close the gap'}`);
+            replaceSolid(rec, unify(out), f.id);
+            res.notes[f.id] = `${hits.length} face${hits.length === 1 ? '' : 's'} deleted, the faces round them carried on to close the gap`;
+            break;
+          }
           let sewn = sewShapes(keep, 1e-6);
           let note = `${hits.length} face${hits.length === 1 ? '' : 's'} deleted`;
           if (f.mode === 'patch') {
@@ -5337,6 +5354,28 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (resize && !(r > 0)) throw new Error('The new size must be more than zero');
           let rec = null;
           const sharp = [];
+          // (Kernel Lab k14: all the faces at once by the kernel's defeaturing, exact for any blend; else one by one)
+          if (R.getOC().LabDefeature) {
+            const hits = f.faces.map((r0) => findFaceAny(solids, r0));
+            if (hits.every(Boolean) && hits.every((h) => h.body === hits[0].body)) {
+              const kinds = hits.map((h) => surfOf(h.face)), cham = kinds.every((x) => x.t === 'PLANE');
+              const r0 = hits[0].body, out = labDefeature(r0.shape, hits.map((h) => h.face));
+              if (out) {
+                const before = r0.shape;
+                rec = replaceSolid(r0, unify(out), f.id)[0];
+                if (resize) {
+                  const edges = newEdgesNear(before, rec.shape, hits.map((h) => h.face));
+                  if (!edges.length) throw new Error('The sharp edge could not be found to round again');
+                  let o2;
+                  try { o2 = rec.shape[cham ? 'chamfer' : 'fillet']((x) => (edges.some((y) => y.isSame(x)) ? r : null)); } catch (e) { if (isFatal(e)) throw e; throw new Error(`The edge${edges.length > 1 ? 's' : ''} could not be ${cham ? 'chamfered' : 'rounded'} at ${r} (too big for the faces beside ${edges.length > 1 ? 'them' : 'it'}?)`); }
+                  replaceSolid(rec, unify(o2), f.id);
+                }
+                const was = [...new Set(kinds.map((x) => (x.t === 'PLANE' ? 'chamfered' : x.t === 'TORUS' ? `R${+x.r2.toFixed(4)}` : x.r ? `R${+x.r.toFixed(4)}` : 'blended')))].join(', ');
+                res.notes[f.id] = `${f.faces.length} face${f.faces.length === 1 ? '' : 's'} ${resize ? `resized to ${r}` : 'deleted'} exactly (was ${was})`;
+                break;
+              }
+            }
+          }
           for (const ref of f.faces) {
             const hit = findFaceAny(rec ? [rec] : solids, ref);
             if (!hit) throw new Error(rec ? 'The faces must be on the same body' : 'A selected face could not be found on a solid body');
@@ -5363,13 +5402,25 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(maxR > 0) && !(maxD > 0)) throw new Error('Give a fillet radius or a hole size to take out');
           const recs = f.body ? solids.filter((x) => x.id === f.body) : [...solids];
           if (!recs.length) throw new Error(f.body ? 'The body is missing' : 'There is no solid to defeature');
-          let nf = 0, nh = 0;
+          let nf = 0, nh = 0, exact = false;
           for (const rec of recs) {
+            // (Kernel Lab k14: every such face at once by the kernel's defeaturing; else one by one with booleans)
+            if (R.getOC().LabDefeature) {
+              const faces = defeatureFaces(rec.shape, maxR, maxD), kinds = faces.map((x) => ({ ...surfOf(x), seam: faceHasSeam(x) }));
+              const done = faces.length ? labDefeature(rec.shape, faces) : null;
+              if (done) {
+                nf += kinds.filter((x) => (x.t === 'CYLINDER' && !x.seam) || x.t === 'TORUS' || x.t === 'SPHERE').length;
+                nh += kinds.filter((x) => x.t === 'CYLINDER' && x.seam).length;
+                replaceSolid(rec, unify(done), f.id);
+                exact = true;
+                continue;
+              }
+            }
             const out = defeatureShape(rec.shape, maxR, maxD);
             nf += out.fillets; nh += out.holes;
             if (out.fillets || out.holes) replaceSolid(rec, out.shape, f.id);
           }
-          res.notes[f.id] = `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
+          res.notes[f.id] = exact ? `${nf} fillet face${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out exactly` : `${nf} fillet${nf === 1 ? '' : 's'} and ${nh} hole${nh === 1 ? '' : 's'} taken out`;
           break;
         }
         case 'replaceFace': {
@@ -9886,6 +9937,57 @@ function holeFill(shape, face, maxD) {
   }
   return tool && { tool, count: group.length };
 }
+// (Kernel Lab k14) faces taken out of a solid by OpenCascade's defeaturing: their neighbours grown or shrunk to close the
+// gap, any faces (fillet chains with their corner blends, holes, bosses, faces of imported parts). null: this kernel
+// has no defeaturing, or it could not be done.
+function labDefeature(shape, faces) {
+  const oc = R.getOC();
+  if (!oc.LabDefeature || !faces.length) return null;
+  const comp = R.makeCompound(faces.map((x) => x.clone())); // (copies: the compound takes what it is given)
+  let out = null;
+  try {
+    out = oc.LabDefeature.Remove(shape.wrapped, comp.wrapped, kernelThreads > 1);
+    if (!out || out.IsNull()) { out?.delete?.(); return null; }
+    const sh = R.cast(out);
+    return solidsOf(sh).length ? sh : null;
+  } catch (e) { if (isFatal(e)) throw e; return null; }
+}
+const labDefeatureError = () => { try { return R.getOC().LabDefeature?.LastError() || ''; } catch { return ''; } };
+// The edges of `after` made where faces were taken out of `before`: not on before's faces, near the faces removed.
+function newEdgesNear(before, after, removed) {
+  const skin = R.makeCompound(before.faces), boxes = removed.map((fc) => { const b = bbox(fc), g = b.diag * 0.5 + 1e-6; return { min: b.min.map((x) => x - g), max: b.max.map((x) => x + g) }; });
+  return after.edges.filter((e) => {
+    const m = vec(e.pointAt(0.5));
+    if (!boxes.some((b) => m.every((x, i) => x >= b.min[i] && x <= b.max[i]))) return false;
+    return new R.DistanceQuery(R.makeVertex(m)).distanceTo(skin) > 1e-6;
+  });
+}
+// The faces a defeature takes out: fillets up to maxR (round strips: open cylinders, tori, spheres at corners) and holes
+// up to maxD (closed concave cylinders with their counterbores, countersinks and drill points).
+function defeatureFaces(shape, maxR, maxD) {
+  const out = [], have = (fc) => out.some((x) => x.isSame(fc));
+  for (const fc of shape.faces) {
+    if (have(fc)) continue;
+    const s = surfOf(fc);
+    if (maxR > 0 && ((s.t === 'CYLINDER' && s.r <= maxR + 1e-9 && !faceHasSeam(fc)) || (s.t === 'TORUS' && s.r2 <= maxR + 1e-9) || (s.t === 'SPHERE' && s.r <= maxR + 1e-9))) { out.push(fc); continue; }
+    if (maxD > 0 && s.t === 'CYLINDER' && 2 * s.r <= maxD + 1e-9 && faceHasSeam(fc)) {
+      const mid = holeFill(shape, fc, maxD);
+      if (!mid) continue;
+      // (the hole's faces: the cylinder and its coaxial neighbours)
+      const { p: o, d } = s, onAxis = (x) => { const a = faceAxis(x); return a && len(cross(a.d, d)) < 1e-6 && len(cross(sub(a.o, o), d)) < 1e-6; };
+      const group = [fc], todo = [fc];
+      while (todo.length) for (const nb of faceNeighbours(shape, todo.pop())) {
+        if (group.some((g) => g.isSame(nb.face))) continue;
+        const t = nb.face.geomType;
+        if ((t === 'CYLINDRE' || t === 'CONE') && onAxis(nb.face)) { group.push(nb.face); todo.push(nb.face); }
+        else if (t === 'PLANE' && len(cross(surfOf(nb.face).n, d)) < 1e-6 && nb.face.edges.every((x) => x.geomType === 'CIRCLE' && len(cross(sub(circleOf(x)?.c ?? [NaN, NaN, NaN], o), d)) < 1e-6)) { group.push(nb.face); todo.push(nb.face); }
+      }
+      for (const g of group) if (!have(g)) out.push(g);
+    }
+  }
+  return out;
+}
+
 // Fillets (radius up to maxR) and holes (up to maxD across) taken out of a solid, one at a time, as many as can be.
 function defeatureShape(shape, maxR, maxD) {
   const bad = new Set(), key = (fc) => vec(fc.center).map((x) => x.toFixed(5)).join();
@@ -11066,6 +11168,18 @@ async function handleMessage(e) {
       // (Kernel Lab: the solids' volume, for the BOM's mass, instead of the display mesh's)
       if (data.withVolume && r.body && lastSolids.length) { const ex = exactProps(lastSolids.map((x) => x.shape), 1e-6); r.body.volume = ex.reduce((t, x, i) => t + finite(x.volume, () => preciseVolume(lastSolids[i].shape)), 0); }
       transfer = out.transfer;
+    } else if (type === 'stepPMI') {
+      // (Kernel Lab k14) the part's solids (not its context bodies) as AP242 STEP with semantic PMI from spec
+      const oc = R.getOC();
+      if (!oc.LabPMI) throw new Error('This geometry kernel cannot write PMI');
+      const list = lastSolids.filter((s) => !lastContext.has(s.id));
+      if (!list.length) throw new Error('There is no solid to export');
+      const shape = list.length === 1 ? list[0].shape : compoundOf(list);
+      // (a writer made once first: the first one made sets OpenCascade's STEP parameters up, the schema too)
+      if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+      const text = oc.LabPMI.WriteStep(shape.wrapped, data.name || lastName, data.spec || '');
+      if (!text) throw new Error('The STEP file could not be written');
+      result = { text };
     } else if (type === 'partSTEP') {
       // a part's solids as a STEP file, placed by pose { p, q: [x, y, z, w] } (Edit in Context: another part, where it is
       // from the part being edited)

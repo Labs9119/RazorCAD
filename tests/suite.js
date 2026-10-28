@@ -1960,6 +1960,12 @@ const UI = {
     return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); 16 passes ${t16} tones against ${t1}; the decal kept out of the kernel` };
   },
 
+  async 'kernel-defeaturing-and-pmi'() {
+    const {run}=await import('/tests/k14-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:native};
+    return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
+  },
+
   async 'duct-fittings'() {
     const {run,fixture}=await import('/tests/duct-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
