@@ -2053,6 +2053,14 @@ class App {
     }
     let target=null,distance=12;
     for(const point of options.points){const p=G.toWorld(source.frame,point.x,point.y),screen=this.viewport.project(p),d=Math.hypot(screen.x-m.x,screen.y-m.y);if(d<distance){target={point,p:p.toArray()};distance=d;}}
+    if(!target&&options.curves.length){
+      // (inside a curve: the profile gains a point there, its start)
+      const hit=this.viewport.aimRay(e).ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(source.frame.n,source.frame.o),new THREE.Vector3());if(!hit)return null;
+      const q=G.toLocal(source.frame,hit),near=LC.nearestCurvePoint2D(options.segs,options.curves,[q.x,q.y]);if(!near)return null;
+      const p=G.toWorld(source.frame,near.q[0],near.q[1]),screen=this.viewport.project(p);if(Math.hypot(screen.x-m.x,screen.y-m.y)>12)return null;
+      const next={...control,curve:near.curve,at:+near.at.toFixed(4)};delete next.point;delete next.circle;delete next.angle;
+      return {ref,control:next,p:p.toArray(),points:null};
+    }
     if(!target)return null;
     let point=target.point,points=row?.points;
     if(row){
@@ -2061,7 +2069,7 @@ class App {
       point=options.points.find(p=>G.toWorld(source.frame,p.x,p.y).distanceTo(new THREE.Vector3(...start))<1e-5);if(!point)return null;
       points=[...row.points.slice(shift),...row.points.slice(0,shift)];
     }else if(pick.connector)return null;
-    const next={...control,point:point.id};delete next.circle;delete next.angle;if(!options.closed)next.reverse=false;
+    const next={...control,point:point.id};delete next.circle;delete next.angle;delete next.curve;delete next.at;if(!options.closed)next.reverse=false;
     return {ref,control:next,p:target.p,points};
   }
 

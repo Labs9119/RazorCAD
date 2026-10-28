@@ -39,7 +39,7 @@ export async function run({threads=1}={}){
       {name:'circle auto seam ignores sketch-axis rotation',circle:true,volume:2000*Math.PI,edit:d=>{d.doc.features.find(f=>f.type==='plane').turn=45;}},
       {name:'circle auto traversal handles opposite normals',circle:true,volume:2000*Math.PI,edit:d=>{d.doc.features.find(f=>f.type==='plane').reverse=true;}},
       {name:'circular seam angle is geometric',circle:true,volume:4000*Math.PI/3,edit:d=>{d.feature.loftCorrespondence[LR.refKey(d.profiles[1])]={circle:d.sources[1].sk.curves[0].id,angle:'90'};}},
-      {name:'manual Thin is explicitly rejected',reject:/Thin lofts/,edit:d=>{d.feature.thin=true;}},
+      {name:'manual Thin follows the connectors (both walls turn a quarter)',volume:2/3*(100-64)*20,edit:d=>{d.feature.thin=true;d.feature.thinT=1;d.feature.thinDir='other';d.feature.loftCorrespondence[LR.refKey(d.profiles[1])]={point};}},
       {name:'normal endpoint conditions retain connectors',edit:d=>{d.feature.ruled=false;d.feature.startCondition='normal';d.feature.endCondition='normal';d.feature.loftCorrespondence[LR.refKey(d.profiles[1])]={point};}},
       {name:'solid holes retain automatic inner correspondence',volume:4000/3-80*Math.PI,edit:d=>{
         d.feature.profiles=d.sources.map(({sk})=>{S.addCircle(sk,'O',2);return LR.regionRef(sk.id,LR.selectableRegions(sk).find(r=>r.holes.length));});d.feature.loftCorrespondence[LR.refKey(d.feature.profiles[1])]={point};

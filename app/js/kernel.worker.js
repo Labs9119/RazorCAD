@@ -3100,11 +3100,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
   };
   const loftConnectionControls=(f,ids)=>{
     if(!LC.hasManualConnections(f))return null;
-    if(f.thin)throw new Error('Manual connectors are not yet supported for Thin lofts; use Automatic correspondence');
     return ids.map(ref=>{
       const source=sketches.get(LR.sourceId(ref));if(!source||curves.has(ref))throw new Error('Manual connectors require sketch profile contours; use Automatic for 3D curve profiles');
       const control=LC.connectionFor(f,ref);
-      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),reverse:!!control?.reverse};
+      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),reverse:!!control?.reverse,control,source,ref};
     });
   };
   const loftConnectionInfo=(f,ids,sections,closed)=>{
@@ -4757,6 +4756,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               return loftSection(sk.frame, S.chainSegs(subset, ch));
             });
             if (secs.every(Boolean)) {
+              if (connectorControls) secs.forEach((s, i) => { secs[i] = LC.splitSectionAt(s, connectorControls[i].anchor); });
               closedSecs = matchLoftSections(secs, ids.map((id) => sketches.get(LR.sourceId(id)).sk.name));
               if(connectorControls)closedSecs=LC.applySectionConnections(closedSecs,secs,connectorControls,true);
               list = closedSecs.map(sectionWire);
@@ -6004,7 +6004,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const resolved = typeof id === 'string' ? { sketch: s.sk } : LR.resolveContour(s.sk, id);
             const regions = thin ? S.thinRegions(resolved.sketch, thin.t, thin.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
             if (regions.length !== 1) throw new Error(`${s.sk.name} must have exactly one closed profile (it has ${regions.length})`);
-            return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)) };
+            return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)), holeKeys: regions[0].holes.map(LC.holeKey) };
+          });
+          // (manual connectors: a connector inside a curve splits it there, so the profile gains a point; holes paired
+          // and started by hand; a Thin loft's walls each start at their vertex nearest the connector)
+          const holeControls = profs.map(() => []);
+          if (connectorControls) profs.forEach((p, i) => {
+            const c = connectorControls[i];
+            if (thin) {
+              const nearest = (sec, q) => (q && sec.segs ? sec.segs.reduce((b, g) => (len(sub(g.a, q)) < len(sub(b, q)) ? g.a : b), sec.segs[0].a) : null);
+              if (c.anchor) { holeControls[i] = p.holes.map((h) => ({ anchor: nearest(h, c.anchor), reverse: c.reverse })); connectorControls[i] = { ...c, anchor: nearest(p.outer, c.anchor) }; }
+              return;
+            }
+            p.outer = LC.splitSectionAt(p.outer, c.anchor);
+            const order = LC.holeOrder(c.control, p.holeKeys);
+            p.holes = order.map((k) => p.holes[k]); p.holeKeys = order.map((k) => p.holeKeys[k]);
+            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
           });
           // (continuity C2: curvature-continuous through the profiles, the kernel's usual; C1: tangent-continuous;
           // smoothing: the surface evened out, with its own builder when either is asked for)
@@ -6040,7 +6055,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (profs.some((p) => p.holes.length !== nh)) throw new Error('Every profile needs the same number of holes (inner loops)');
           let outerM = matchLoftSections(profs.map((p) => p.outer), names);
           if(connectorControls){outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
-          const holesM = Array.from({ length: nh }, (_, i) => matchLoftSections(profs.map((p) => p.holes[i]), names));
+          const holesM = Array.from({ length: nh }, (_, i) => {
+            const m = matchLoftSections(profs.map((p) => p.holes[i]), names), cs = holeControls.map((h) => h[i] || { anchor: null, reverse: false });
+            return cs.some((c) => c.anchor) ? LC.applySectionConnections(m, profs.map((p) => p.holes[i]), cs.map((c) => ({ ...c, reverse: cs[0].reverse })), true) : m;
+          });
           if (hasLoftEnds(f)) {
             const endWires = outerM.map(sectionWire);
             const tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thin ? thin.t : 0 });
@@ -8090,7 +8108,7 @@ function matchLoftSections(secs, names) {
   if (N === 0) return secs.map((s) => ({ circle: s.circle }));
   const ref = counts.findIndex((n) => n > 0);
   secs.forEach((s, i) => {
-    if (s.segs && s.segs.length !== N) throw new Error(`${names[i]} has ${s.segs.length} segments but ${names[counts.indexOf(N)]} has ${N}. A loft needs the same number of points on every profile (circles are split automatically) — split the curves so the counts match.`);
+    if (s.segs && s.segs.length !== N) throw new Error(`${names[i]} has ${s.segs.length} segments but ${names[counts.indexOf(N)]} has ${N}. A loft needs the same number of points on every profile (circles are split automatically) — split the curves so the counts match, or attach a connector inside a curve (Edit profile connectors) to add a point there.`);
   });
   const centroid = (pts) => mul(pts.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / pts.length);
   const newell = (pts) => { let n = [0, 0, 0]; pts.forEach((p, i) => { n = add(n, cross(p, pts[(i + 1) % pts.length])); }); return n; };
@@ -8367,6 +8385,12 @@ function guidedLoftWires(matched, guides, names, holeSets = [], slack = 0, { ope
 // Refine the intermediate sections until independent points on the native guide edges are within 0.01 mm
 // of the resulting CAD faces. Never silently accept a fit that fails this sampled tolerance check.
 function buildGuidedLoft(matched, guides, names, holeSets, slack, options) {
+  if (options.constrained && holeSets.length && !slack && matched.length === 2) {
+    // (holes with CAD guide constraints: the outline made from the guides, each hole lofted between the two profiles
+    // without them, for the caller to cut out)
+    const g = constrainedGuideLoft(matched, guides, names, [], 0, options);
+    return { ...g, holes: holeSets.map((set) => R.loft(set.map(sectionWire), { ruled: false })) };
+  }
   if (options.constrained) return constrainedGuideLoft(matched, guides, names, holeSets, slack, options);
   let worst = 0, worstName = '';
   for (const stations of [16, 32, 64, 128]) {
@@ -8496,7 +8520,7 @@ function sweepWithGuide(profile, spine, originalGuide, mode, surface = false) {
   }catch(e){shape?.delete();throw e;}finally{reversed?.delete();}
 }
 function constrainedGuideLoft(matched, guides, names, holeSets, slack, options) {
-  if (matched.length !== 2 || holeSets.length || slack) throw new Error('CAD guide constraints currently require two profiles without holes or Thin Feature. Select Adaptive approximation for this loft');
+  if (matched.length !== 2 || holeSets.length || slack) throw new Error('CAD guide constraints currently require two profiles, without Thin Feature. Select Adaptive approximation for this loft');
   const continuity = options.guideContinuity || 'C0', seams = [];
   if (continuity === 'G2' && (typeof R.getOC().RazorCADSurfacePatch?.BuildNetwork !== 'function' || typeof R.getOC().RazorCADSurfacePatch?.BuildNetworkOnSurface !== 'function')) throw new Error('G2 guide continuity is not available in the loaded kernel. Reload RazorCAD to load the updated kernel');
   if (!['C0', 'G1', 'G2'].includes(continuity)) throw new Error('Select C0, G1 or G2 guide continuity');

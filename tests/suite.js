@@ -4819,7 +4819,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     const nativeEdge = await a.kernel.request('measure', { refs: [{ kind: 'point', p: nativePoint }, { kind: 'edge', p: nativePoint }] });
     if (!Number.isFinite(nativeEdge.distance) || nativeEdge.distance > 1e-8 || !r.notes[loft.id]?.includes('CAD guide constraints')) return { ok: false, detail: 'The guide was not retained as a native CAD edge' };
     loft.thin = true; r = await a.kernel.rebuild(d, null, null);
-    if (!r.errors.some(([, message]) => message.includes('without holes or Thin Feature'))) return { ok: false, detail: 'Unsupported constrained thin loft silently fell back to approximation' };
+    if (!r.errors.some(([, message]) => message.includes('without Thin Feature'))) return { ok: false, detail: 'Unsupported constrained thin loft silently fell back to approximation' };
     loft.thin = false;
     const circles = JSON.parse(JSON.stringify(d));
     for (const id of profiles) { const sk = circles.features.find((f) => f.id === id); sk.points = []; sk.curves = []; S.addCircle(sk, 'O', 20); }
@@ -5010,6 +5010,26 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     if(a.result.errors.size||!m||Math.abs(m.volume-14000)>1e-3)return {ok:false,detail:`Scaled sweep: volume ${m?.volume} (expected 14000), errors ${JSON.stringify([...a.result.errors])}`};
     const curved=native.results.filter((r)=>/arc/.test(r.name)).map((r)=>`${r.name} ${r.rel.toExponential(1)}`).join(', ');
     return {ok:true,detail:`${native.results.length} kernel cases (scale evenly and eased, by length along a line and an arc: ${curved}; eased twist, square to faces, model edge paths; rejections); the panel's End scale, laws, face and edge picks`};
+  },
+
+  async 'loft-attach-holes-thin'() {
+    const {run,fixture}=await import('/tests/loft-attach-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const S=await import('/js/sketchmodel.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const poly=(sk,pts)=>{const ids=pts.map(q=>S.addPoint(sk,...q));const lines=ids.map((id,i)=>S.addLine(sk,id,ids[(i+1)%ids.length]));return {ids,lines};};
+    const d=fixture([sk=>({...poly(sk,[[-15,-15],[15,-15],[15,15],[-15,15]]),h:[S.addCircle(sk,S.addPoint(sk,-8,0),2),S.addCircle(sk,S.addPoint(sk,8,0),2)]}),sk=>({...poly(sk,[[-15,-15],[15,-15],[15,15],[-15,15]]),h:[S.addCircle(sk,S.addPoint(sk,-8,8),2),S.addCircle(sk,S.addPoint(sk,8,-8),2)]})]);
+    await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    const start=document.querySelector('[data-loft-connector-point="1"]');if(!start||![...start.options].some((o)=>o.value==='@curve'))return {ok:false,detail:'No start inside a curve in the connector panel'};
+    if(!document.querySelector('[data-loft-hole-order="1:0"]'))return {ok:false,detail:'No hole pairing in the connector panel'};
+    if(!document.querySelector('[data-loft-hole-start="1:0"]')&&!document.querySelector('[data-loft-hole-angle="1:0"]'))return {ok:false,detail:'No hole start in the connector panel'};
+    start.value='@curve';start.dispatchEvent(new Event('change'));await settle();
+    if(!document.querySelector('[data-loft-connector-curve="1"]'))return {ok:false,detail:'No curve choice for a start inside a curve'};
+    const at=document.querySelector('[data-loft-connector-at="1"]');if(!at)return {ok:false,detail:'No position along the curve'};
+    const ctrl=Object.values(a.pm.feature.loftCorrespondence||{}).find((c)=>c.curve);if(!ctrl||ctrl.at!==50)return {ok:false,detail:`Start inside a curve not stored: ${JSON.stringify(a.pm.feature.loftCorrespondence)}`};
+    // (a start inside one profile's curve only: the counts differ and the loft says how to match them)
+    if(![...a.result.errors].some(([id,m])=>id===d.feature.id&&/attach a connector inside a curve/.test(m)))return {ok:false,detail:`Mismatched counts not explained: ${JSON.stringify([...a.result.errors])}`};
+    a.cancelPM?.();await settle();
+    return {ok:true,detail:`${native.results.length} kernel cases (a point inside an edge matching a triangle to a square, holes paired and started by hand, a Thin loft started by hand, CAD guide constraints with a hole; rejections); the panel's start inside a curve, hole pairing and hole starts`};
   },
 
   async 'extrusion-start-controls'() {

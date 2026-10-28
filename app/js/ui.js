@@ -699,7 +699,7 @@ const PM_SCHEMAS = {
       { key: 'guides', type: 'loftSelection', show: (f) => !f.ruled || f.guides?.length },
       { key: 'guideMethod', type: 'select', label: 'Guide construction', show: (f) => f.guides?.length && !f.ruled, options: (f) => [['adaptive', 'Adaptive approximation'], ['constrained', [f.startCondition, f.endCondition].some(x => x && x !== 'none') ? 'CAD constraints (requires free endpoints)' : 'CAD constraints (two profiles)']] },
       { key: 'guideContinuity', type: 'select', label: 'Across guide seams', show: (f) => f.guides?.length && f.guideMethod === 'constrained' && !f.ruled, options: [['C0', 'C0 — Contact'], ['G1', 'G1 — Tangent'], ['G2', 'G2 — Curvature']] },
-      { key: 'guideMethodHint', type: 'hint', show: (f) => f.guides?.length && f.guideMethod === 'constrained', text: 'Native guide edges constrain the CAD patches to 0.0001 mm. Requires two profiles without holes or Thin Feature. Across guide seams controls the joins along shared guides; original profile corners are not smoothed. Incompatible constraints report an error without lowering continuity.' },
+      { key: 'guideMethodHint', type: 'hint', show: (f) => f.guides?.length && f.guideMethod === 'constrained', text: 'Native guide edges constrain the CAD patches to 0.0001 mm. Requires two profiles without Thin Feature; holes are lofted straight between the profiles, without the guides. Across guide seams controls the joins along shared guides; original profile corners are not smoothed. Incompatible constraints report an error without lowering continuity.' },
     ] },
     { title: 'Options', fields: [
       { key: 'ruled', type: 'check', label: 'Straight (ruled) sides between profiles' },
@@ -5246,7 +5246,7 @@ export class UI {
     const a=this.app,pm=a.pm,active=LC.hasManualConnections(f),refs=f.profiles||[];
     body.classList.add('datum-definition');body.dataset.loftCorrespondence='';
     const graph=a.result?.info?.[f.id]?.loftConnections;body.dataset.graph=graph?.signature===JSON.stringify(f)?JSON.stringify(graph):'';
-    const blocked=f.thin?'Manual connectors are not yet supported for Thin lofts.':refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
+    const blocked=refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
     const enabled=el('input',{type:'checkbox','data-loft-manual':''});enabled.checked=active;enabled.disabled=!!blocked&&!active;
     enabled.onchange=()=>{
       if(pm.loftDraft?.curves.length){a.toast('Add or clear the current contour before editing connectors',true);this.renderPM();return;}
@@ -5255,7 +5255,7 @@ export class UI {
     const label=el('label');label.append(enabled,document.createTextNode(' Edit profile connectors'));body.appendChild(this.row(null,label,'check'));
     if(blocked)body.appendChild(el('div',{class:'pm-hint'},blocked+' Choose Automatic correspondence to continue.'));
     if(active&&!blocked){
-      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle.'));
+      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin?' Thin: each wall starts at its vertex nearest the start.':'')));
       refs.forEach((ref,i)=>{
         const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{};if(!source)return;
         const heading=el('div',{},`<b>${i+1}. ${esc(LR.describeRef(a.doc,ref))}</b>`);body.appendChild(heading);
@@ -5266,9 +5266,13 @@ export class UI {
             const input=this.exprInput(control.circle?control.angle??0:angle,'°',value=>{const next={...control,circle:options.circle.curve,angle:value};delete next.point;a.setLoftConnection(ref,next,false);});input.dataset.loftConnectorAngle=i;body.appendChild(this.row('Seam angle',input));
           }else{
             const select=el('select',{'data-loft-connector-point':i,'aria-label':'Profile start vertex'});select.appendChild(el('option',{value:''},'Automatic start'));
-            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));select.value=control.point||'';
-            select.onchange=()=>{const next={...control};if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}else delete next.point;a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
+            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+            if(options.curves.length&&!f.thin)select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+            select.value=control.curve?'@curve':control.point||'';
+            select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
+            if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
           }
+          if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;
           reverse.onchange=()=>{const next={...control,reverse:reverse.checked};if(!options.closed)delete next.point;a.setLoftConnection(ref,next);};
           const label=el('label');label.append(reverse,document.createTextNode(' Reverse traversal'));body.appendChild(this.row(null,label,'check'));
@@ -5277,6 +5281,36 @@ export class UI {
       });
     }
     if(active||Object.keys(f.loftCorrespondence||{}).length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-reset':'',onclick:()=>{f.loftCorrespondence={};f.correspondenceMode='auto';pm.loftConnector=null;a.preview(true);a.updateSketchDisplay();}},'Reset all to Automatic'));
+  }
+
+  // A start inside a curve: which curve, and how far along it (percent, in the curve's own direction)
+  loftCurveStart(body,options,source,control,set,i,label='Start'){
+    const curve=el('select',{'data-loft-connector-curve':i,'aria-label':`${label} curve`});
+    for(const id of options.curves)curve.appendChild(el('option',{value:id},esc(SM.itemName(source.sketch,id))));
+    curve.value=control.curve;curve.onchange=()=>set({...control,curve:curve.value});body.appendChild(this.row(`${label} on`,curve));
+    const at=this.exprInput(control.at??50,'%',value=>set({...control,at:value}));at.dataset.loftConnectorAt=i;body.appendChild(this.row('Along it',at));
+  }
+
+  // A profile's holes: which of its holes goes with each hole of the others (slot by slot), and where each starts
+  loftHoleControls(body,f,ref,i,options,source,control){
+    const a=this.app,keys=options.holes.map(h=>h.key),set=next=>a.setLoftConnection(ref,next);
+    let order;try{order=LC.holeOrder(control,keys);}catch{order=keys.map((_,k)=>k);}
+    const name=h=>esc(h.curves.length?SM.itemName(source.sketch,h.curves[0]):h.circle?SM.itemName(source.sketch,h.circle.curve):'Hole');
+    order.forEach((hi,slot)=>{
+      const sel=el('select',{'data-loft-hole-order':`${i}:${slot}`,'aria-label':`Hole ${slot+1}`});
+      options.holes.forEach((h,k)=>sel.appendChild(el('option',{value:String(k)},`${name(h)}`)));sel.value=String(hi);
+      sel.onchange=()=>{const next=[...order],k=+sel.value,j=next.indexOf(k);[next[slot],next[j]]=[next[j],next[slot]];set({...control,holeOrder:next.map(x=>keys[x])});};
+      body.appendChild(this.row(`Hole ${slot+1}`,sel));
+      const h=options.holes[hi],hc=control.holeStarts?.[h.key]||{},put=v=>{const starts={...(control.holeStarts||{})};if(v)starts[h.key]=v;else delete starts[h.key];set({...control,holeStarts:starts});};
+      if(h.circle){const input=this.exprInput(hc.angle??0,'°',value=>put({circle:h.circle.curve,angle:value}));input.dataset.loftHoleAngle=`${i}:${slot}`;body.appendChild(this.row(`Hole ${slot+1} seam`,input));return;}
+      const start=el('select',{'data-loft-hole-start':`${i}:${slot}`,'aria-label':`Hole ${slot+1} start`});start.appendChild(el('option',{value:''},'Automatic start'));
+      for(const p of h.points)start.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+      if(h.curves.length)start.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+      start.value=hc.curve?'@curve':hc.point||'';
+      start.onchange=()=>put(start.value==='@curve'?{curve:h.curves[0],at:50}:start.value?{point:start.value}:null);
+      body.appendChild(this.row(`Hole ${slot+1} start`,start));
+      if(hc.curve)this.loftCurveStart(body,h,source,hc,v=>put(v),`${i}:${slot}`,`Hole ${slot+1} start`);
+    });
   }
 
   renderLoftSelection(body, f, before, fd) {
