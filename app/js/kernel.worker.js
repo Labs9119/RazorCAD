@@ -3054,6 +3054,55 @@ async function rebuild(doc, previewId = null, opts = {}) {
     }
     throw new Error('Unknown reference');
   };
+  // The points where a reference point's two references meet, when one of them is curved (an edge that is not straight,
+  // or a curved face that is not a cylinder): null for the cases the affine solver takes. An edge against a plane:
+  // the edge's parameter halved to 1e-15 at each change of side (400 steps first); anything else: the kernel's
+  // distance query, its solutions at no distance. In a fixed order (along the edge from its start, else by x, y, z),
+  // so f.solution keeps its point from one rebuild to the next.
+  const curvedPointCrossing=f=>{
+    const refs=f.refs||[];
+    if(f.type!=='point'||!f.referenceDefinition||f.pointType==='coords'||refs.length!==2||refs.some(r=>r.relation&&r.relation!=='coincident'))return null;
+    const items=[];
+    for(const r of refs){
+      if(r.kind==='edge'){
+        needEdges('Reference point from an edge');const e=findEdge(body,r);if(!e)throw new Error('The selected edge could not be found in the model');
+        updateEdgeRef(r,e,body);items.push({kind:'shape',shape:e,edge:true,curved:edgeGeom(e,bbox(body).diag)?.type!=='line'});
+      }else if(r.kind==='face'){
+        const hit=findFaceAny([...solids,...surfaces],r);if(!hit)throw new Error('The selected face could not be found in the model');
+        const t=surfOf(hit.face).t;
+        if(t==='PLANE')items.push({kind:'plane',...resolveSurface(null,r)});else items.push({kind:'shape',shape:hit.face,curved:t!=='CYLINDER'});
+      }else if(r.kind==='plane'){const fr=resolveFrame(r.id);items.push({kind:'plane',p:fr.o,n:fr.n});}
+      else if(r.kind==='axis'){const a=axes.get(r.id);if(!a)return null;items.push({kind:'axis',o:a.o,d:unit(a.d)});}
+      else return null;
+    }
+    if(!items.some(x=>x.curved))return null;
+    const pl=items.find(x=>x.kind==='plane'),other=items.find(x=>x!==pl),out=[];
+    const add1=p=>{if(p.every(Number.isFinite)&&!out.some(q=>len(sub(p,q))<1e-7))out.push(p);};
+    if(pl&&other.kind==='plane')return null;
+    if(pl){
+      if(!other.edge)throw new Error('A curved face and a plane meet along a curve, not at a point: pick an edge instead of the face');
+      const e=other.shape,d=t=>dot(sub(vec(e.pointAt(t)),pl.p),pl.n),N=400;
+      let t0=0,d0=d(0);
+      if(Math.abs(d0)<1e-9)add1(vec(e.pointAt(0)));
+      for(let i=1;i<=N;i++){
+        const t1=i/N,d1=d(t1);
+        if(Math.abs(d1)<1e-9)add1(vec(e.pointAt(t1)));
+        else if(d0*d1<0&&Math.abs(d0)>=1e-9){let a=t0,b=t1,da=d0;for(let k=0;k<60&&b-a>1e-15;k++){const m=(a+b)/2,dm=d(m);if(da*dm<=0)b=m;else{a=m;da=dm;}}add1(vec(e.pointAt((a+b)/2)));}
+        t0=t1;d0=d1;
+      }
+    }else{
+      const oc=R.getOC(),L=4*Math.max(1,bbox(body).diag),made=[];
+      const shapeOf=x=>{if(x.kind!=='axis')return x.shape;const l=R.makeLine(add(x.o,mul(x.d,-L)),add(x.o,mul(x.d,L)));made.push(l);return l;};
+      const q=new oc.BRepExtrema_DistShapeShape();
+      try{
+        q.LoadS1(shapeOf(items[0]).wrapped);q.LoadS2(shapeOf(items[1]).wrapped);q.Perform();
+        if(q.IsDone())for(let i=1;i<=q.NbSolution();i++){const p=q.PointOnShape1(i),r=q.PointOnShape2(i),a=[p.X(),p.Y(),p.Z()],b=[r.X(),r.Y(),r.Z()];p.delete?.();r.delete?.();if(len(sub(a,b))<1e-6)add1(mul(add(a,b),.5));}
+      }finally{q.delete();made.forEach(x=>x.delete?.());}
+    }
+    if(!out.length)throw new Error('These references do not meet');
+    if(!pl)out.sort((a,b)=>Math.abs(a[0]-b[0])>1e-9?a[0]-b[0]:Math.abs(a[1]-b[1])>1e-9?a[1]-b[1]:a[2]-b[2]);
+    return out;
+  };
   const referenceDatum=f=>{
     const signature=JSON.stringify(f);
     try{
@@ -3078,6 +3127,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
           return {kind:'path',sample:locateAlongPath(path,options,f.type==='plane'),curve:{type:sourceType}};
         }finally{path?.delete?.();}
       };
+      // A point where a curved edge meets a plane, a face or another edge, or where a line or edge meets a curved face
+      // other than a cylinder (the affine solver takes straight lines and planes only): found by the kernel, every
+      // crossing, nearest the picks first (f.solution picks another)
+      const crossing=curvedPointCrossing(f);
+      if(crossing){
+        const value=crossing.at(Math.max(0,Math.min(crossing.length-1,f.solution??0)));
+        const solved={status:'defined',dof:0,alternatives:crossing.length,value},relations=(f.refs||[]).map(()=>'coincident');
+        (res.info ||= {})[f.id]={datum:solved,datumSignature:signature,datumAnchor:null,relations,geometry:(f.refs||[]).map(r=>({kind:r.kind,curve:null})),pathLocations:[]};
+        res.features[f.id]={refs:f.refs};
+        return {solved,geo:[],relations};
+      }
       const refs=f.refs||[],geo=refs.map(r=>{
         if(['plane','point'].includes(f.type)){
           const sketchCurve=r.kind==='sketch'&&r.curve&&S.getCurve(sketches.get(r.sketch)?.sk||{curves:[]},r.curve);

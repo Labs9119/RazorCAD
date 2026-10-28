@@ -114,6 +114,23 @@ export async function run({threads=1}={}){
     ].map(([name,type,refs,status])=>({name,type,refs:()=>structuredClone(refs),...(status?{status}:{}),bodyRef:true,edit:d=>{
       const s=M.createFeature(d.doc,'sketch',{plane:{ref:'top'}});S.addCircle(s,'O',5);const solid=M.createFeature(d.doc,'extrude',{sketch:s.id,depth:10});d.doc.features.splice(-1,0,s,solid);
     }})),
+    // curved references (kernel crossings): the cylinder's bottom edge (radius 5 round the y axis, y = 0) meets Front
+    // (z = 0) at x = ±5 (the second choice the other one); its top edge rounded R2 (a torus: centre circle radius 3 at
+    // y = 8, tube 2) meets the vertical axis through x = 4 at y = 8 + √3
+    ...[
+      ['circular model edge meets a plane',[{kind:'edge',p:[5,0,0]},{kind:'plane',id:'front'}],{oneOf:[[5,0,0],[-5,0,0]],alternatives:2}],
+      ['other crossing of a circular edge and a plane',[{kind:'edge',p:[5,0,0]},{kind:'plane',id:'front'}],{oneOf:[[5,0,0],[-5,0,0]],alternatives:2,solution:1}],
+      ['rounded face meets an axis',[{kind:'face',p:[3+2*Math.SQRT1_2,8+2*Math.SQRT1_2,0]},{kind:'axis'}],{point:[4,8+Math.sqrt(3),0],alternatives:1,round:true}],
+      ['rounded face and a plane meet along a curve',[{kind:'face',p:[3+2*Math.SQRT1_2,8+2*Math.SQRT1_2,0]},{kind:'plane',id:'front'}],{status:'conflict',round:true}],
+    ].map(([name,refs,o])=>({name,type:'point',refs:()=>structuredClone(refs),bodyRef:true,...(o.status?{status:o.status}:{point:o.point,oneOf:o.oneOf,alternatives:o.alternatives}),edit:d=>{
+      const s=M.createFeature(d.doc,'sketch',{plane:{ref:'top'}});S.addCircle(s,'O',5);const solid=M.createFeature(d.doc,'extrude',{sketch:s.id,depth:10});
+      const extra=[s,solid];
+      if(o.round)extra.push(M.createFeature(d.doc,'fillet',{radius:2,edges:[{p:[5,10,0]}]}));
+      const ax=d.feature.refs.find(r=>r.kind==='axis');
+      if(ax){const q=[[4,0,0],[4,20,0]].map(([x,y,z])=>M.createFeature(d.doc,'point',{pointType:'coords',x,y,z})),axis=M.createFeature(d.doc,'axis',{referenceDefinition:true,axisType:'references',refs:q.map(p=>({kind:'point',id:p.id}))});extra.push(...q,axis);ax.id=axis.id;}
+      if(o.solution)d.feature.solution=o.solution;
+      d.doc.features.splice(-1,0,...extra);
+    }})),
   ];
   try{await kernel.ready;
     for(const c of cases){
@@ -128,12 +145,15 @@ export async function run({threads=1}={}){
         if(c.direction)item.ok&&=Math.abs(Math.abs(value.d.reduce((s,v,i)=>s+v*c.direction[i],0))-1)<1e-7;
         if(c.position)item.ok&&=Math.abs(value.n.reduce((s,v,i)=>s+v*(c.position[i]-value.o[i]),0))<1e-7;
         if(c.point)item.ok&&=close(value,c.point);
+        if(c.oneOf)item.ok&&=c.oneOf.some(q=>close(value,q));
         if(c.alternatives)item.ok&&=info.alternatives===c.alternatives;
         if(c.check)item.ok&&=c.check({planes:value});
         const cached=await kernel.rebuild(d.doc);item.ok&&=cached.info?.[d.feature.id]?.datum?.status==='defined';
       }
       results.push(item);
     }
+    const crossings=['circular model edge meets a plane','other crossing of a circular edge and a plane'].map(n=>results.find(r=>r.name===n)?.value);
+    results.push({name:'the two crossings are the two choices',ok:crossings.every(Boolean)&&!close(...crossings)});
     const chain=fixture();chain.feature.refs=chain.points.map(p=>({kind:'point',id:p.id}));
     const profile=M.createFeature(chain.doc,'sketch',{plane:{ref:chain.feature.id}});S.addCircle(profile,'O',2);const solid=M.createFeature(chain.doc,'extrude',{sketch:profile.id,depth:3});chain.doc.features.push(profile,solid);
     const before=await kernel.rebuild(chain.doc);for(const p of chain.points)p.z=8;const after=await kernel.rebuild(chain.doc);
