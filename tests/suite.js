@@ -366,6 +366,29 @@ const UI = {
     return { ok: true, detail: `hole table ${got}; a 45° section drawn (${ed.geos.get(sec.id).edges.length} lines)` };
   },
 
+  // thickness analysis (a 5 mm plate: 5 on its faces, its length across its ends) and the undercut check (a hole
+  // across the pull direction, 60 long, is undercut, the rest is not: its share of the area)
+  async 'thickness-and-undercut-analysis'() {
+    const a = window.app, S = await import('/js/sketchmodel.js');
+    if (a.mode !== 'part') { await a.newDocument?.(); closeModals(); }
+    const doc = M.newDoc(); doc.name = 'Plate';
+    const sk = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } });
+    const P = [[-30, -20], [30, -20], [30, 20], [-30, 20]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4]));
+    const hs = M.createFeature(doc, 'sketch', { plane: { ref: 'right' } }); S.addCircle(hs, S.addPoint(hs, 0, 2.5), 1);
+    doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 5 }), hs, M.createFeature(doc, 'extrude', { sketch: hs.id, op: 'cut', end: 'through2' }));
+    await a.setDoc(doc); await until(() => !a.kernel.pending && a.result?.bodies?.length, 60000, 100);
+    a.setAnalysis({ kind: 'thickness', min: 1, max: 6, force: true });
+    const vp = a.viewport, t = vp.thicknessStats, geo = vp.body.geometry, pos = geo.getAttribute('position').array, nor = geo.getAttribute('normal').array;
+    // (a vertex on the top face, away from the hole: 5 thick)
+    let top = null;
+    for (let i = 0; i < pos.length / 3; i++) if (Math.abs(pos[3 * i + 1] - 5) < 1e-6 && nor[3 * i + 1] > 0.999 && Math.abs(pos[3 * i + 2]) > 5) { top = t.values[i]; break; }
+    a.setAnalysis({ kind: 'undercut', dir: [0, 1, 0], force: true });
+    const share = vp.undercutShare;
+    a.setAnalysis(null);
+    const ok = top != null && Math.abs(top - 5) < 1e-4 && Math.abs(t.max - 60) < 1e-3 && Math.abs(share - (2 * Math.PI * 60) / (2 * 2400 + 2 * 300 + 2 * 200 - 2 * Math.PI + 2 * Math.PI * 60)) < 0.002;
+    return ok ? { ok: true, detail: `top face 5 mm thick (${top}), walls up to ${t.max} mm; ${Math.round(share * 100)} % of the surface undercut (the cross hole)` } : { ok: false, detail: `top ${top}, range ${t?.min}–${t?.max}, undercut ${share}` };
+  },
+
   // an assembly with two copies of a part
   async 'assembly-two-components'() {
     const a = window.app;

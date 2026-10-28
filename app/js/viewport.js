@@ -276,6 +276,51 @@ export class Viewport {
         c.set(s >= lim + 1e-9 ? 0x22a046 : s <= -lim - 1e-9 ? 0xd63b2f : 0xf2c12e);
         out[3 * i] = c.r; out[3 * i + 1] = c.g; out[3 * i + 2] = c.b;
       }
+    } else if (a.kind === 'thickness' || a.kind === 'undercut') {
+      // (rays through the shaded mesh: thickness, from each point in along the inward normal to where it comes out;
+      // undercut, from each point along the pull direction and against it, a face neither way free is undercut)
+      const geoB = this.body.geometry;
+      if (!geoB.boundsTree) geoB.computeBoundsTree();
+      const ray = new THREE.Raycaster(); ray.firstHitOnly = true;
+      const o = new THREE.Vector3(), dv = new THREE.Vector3(), eps = 1e-4 * Math.max(1, this.bodyDiag?.() || 1);
+      // (both sides of the triangles: a ray from inside the wall meets the far side from behind)
+      const keepMat = this.body.material; this.body.material = this._rayMat ||= new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+      // (each point's share of the surface: a third of its triangles' areas, for the shares reported)
+      const wt = new Float64Array(n), ix = geoB.index.array;
+      let area = 0;
+      for (let k = 0; k < ix.length; k += 3) {
+        const [i, j, l] = [ix[k], ix[k + 1], ix[k + 2]], ux = pos[3 * j] - pos[3 * i], uy = pos[3 * j + 1] - pos[3 * i + 1], uz = pos[3 * j + 2] - pos[3 * i + 2], vx = pos[3 * l] - pos[3 * i], vy = pos[3 * l + 1] - pos[3 * i + 1], vz = pos[3 * l + 2] - pos[3 * i + 2];
+        const A = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+        wt[i] += A / 3; wt[j] += A / 3; wt[l] += A / 3; area += A;
+      }
+      const hitAt = (px, py, pz, dx, dy, dz, off) => { o.set(px + dx * off, py + dy * off, pz + dz * off); dv.set(dx, dy, dz); ray.set(o, dv); ray.near = 0; ray.far = Infinity; const h = ray.intersectObject(this.body, false)[0]; return h ? h.distance + off : null; };
+      if (a.kind === 'thickness') {
+        const lo = a.min, hi = a.max, t = new Float32Array(n);
+        let thin = 0, thick = 0, tmin = Infinity, tmax = 0;
+        for (let i = 0; i < n; i++) {
+          const nx = nor[3 * i], ny = nor[3 * i + 1], nz = nor[3 * i + 2];
+          const d = hitAt(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], -nx, -ny, -nz, eps);
+          t[i] = d ?? NaN;
+          if (d != null) { tmin = Math.min(tmin, d); tmax = Math.max(tmax, d); if (d < lo) thin += wt[i]; else if (d > hi) thick += wt[i]; }
+          // red too thin, blue too thick, green to yellow in between (thin to thick), grey where no wall was found
+          if (d == null) c.set(0x9aa3ad); else if (d < lo) c.set(0xd63b2f); else if (d > hi) c.set(0x2f6fd6); else c.setHSL(0.33 - 0.17 * ((d - lo) / Math.max(1e-9, hi - lo)), 0.8, 0.45);
+          out[3 * i] = c.r; out[3 * i + 1] = c.g; out[3 * i + 2] = c.b;
+        }
+        this.thicknessStats = { min: tmin, max: tmax, thin: thin / (area || 1), thick: thick / (area || 1), values: t };
+      } else {
+        const d = new THREE.Vector3(...a.dir).normalize();
+        let under = 0;
+        for (let i = 0; i < n; i++) {
+          const nx = nor[3 * i], ny = nor[3 * i + 1], nz = nor[3 * i + 2], px = pos[3 * i] + nx * eps, py = pos[3 * i + 1] + ny * eps, pz = pos[3 * i + 2] + nz * eps;
+          const up = hitAt(px, py, pz, d.x, d.y, d.z, eps), down = hitAt(px, py, pz, -d.x, -d.y, -d.z, eps);
+          // green: free along the pull (one half), blue: free against it (the other), red: neither way free (undercut)
+          if (up != null && down != null) under += wt[i];
+          c.set(up == null ? 0x22a046 : down == null ? 0x2f6fd6 : 0xd63b2f);
+          out[3 * i] = c.r; out[3 * i + 1] = c.g; out[3 * i + 2] = c.b;
+        }
+        this.undercutShare = under / (area || 1);
+      }
+      this.body.material = keepMat;
     } else if (a.kind === 'curvature') {
       // curvature from how fast the normals turn along the mesh edges (within each face)
       const k = new Float32Array(n), idx = this.bodyGeo.index.array;

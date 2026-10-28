@@ -1899,6 +1899,8 @@ export class UI {
         { icon: 'zebra', label: 'Zebra Stripes', action: () => a.setAnalysis({ kind: 'zebra', density: 10 }), active: a.analysis?.kind === 'zebra' },
         { icon: 'curvature', label: 'Curvature', action: () => a.setAnalysis({ kind: 'curvature' }), active: a.analysis?.kind === 'curvature' },
         { icon: 'draftAnalysis', label: 'Draft Analysis', action: () => (a.analysis?.kind === 'draft' ? a.setAnalysis(null) : this.showDraftAnalysis()), active: a.analysis?.kind === 'draft' },
+        { icon: 'measure', label: 'Thickness Analysis', action: () => (a.analysis?.kind === 'thickness' ? a.setAnalysis(null) : this.showThicknessAnalysis()), active: a.analysis?.kind === 'thickness' },
+        { icon: 'draftAnalysis', label: 'Undercut Check', action: () => (a.analysis?.kind === 'undercut' ? a.setAnalysis(null) : this.showDraftAnalysis('undercut')), active: a.analysis?.kind === 'undercut' },
         { icon: 'configs', label: 'Configurations', action: () => this.showConfigurations() },
         'sep',
         { icon: 'step', label: 'Export STEP', action: () => a.exportFile('step') },
@@ -4987,17 +4989,29 @@ export class UI {
   }
 
   // Draft analysis: the pull direction and the draft needed.
-  async showDraftAnalysis() {
+  async showThicknessAnalysis() {
+    const v = await this.promptFields('Thickness Analysis', 'measure', [
+      { key: 'min', label: 'Thinnest wall allowed (mm)', value: 1 },
+      { key: 'max', label: 'Thickest wall allowed (mm)', value: 4 },
+    ], 'The model is coloured by its wall thickness, measured from each point straight in through the material: red thinner than allowed, blue thicker (sinks and voids when moulded), green to yellow between.');
+    if (!v) return;
+    const lo = parseFloat(v.min), hi = parseFloat(v.max);
+    if (!(lo >= 0 && hi > lo)) { this.app.toast('Give a thinnest wall and a thicker thickest one', true); return; }
+    this.app.setAnalysis({ kind: 'thickness', min: lo, max: hi, force: true });
+  }
+
+  async showDraftAnalysis(kind = 'draft') {
     const a = this.app, sel = a.selection;
     const opts = [['y', 'Y (up)'], ['-y', '−Y'], ['x', 'X'], ['-x', '−X'], ['z', 'Z'], ['-z', '−Z']];
     if (sel?.kind === 'face' && sel.face.planar) opts.unshift(['face', 'Normal of the selected face']);
-    const v = await this.promptFields('Draft Analysis', 'draftAnalysis', [
+    const v = await this.promptFields(kind === 'undercut' ? 'Undercut Check' : 'Draft Analysis', 'draftAnalysis', [
       { key: 'dir', label: 'Pull direction', type: 'select', options: opts, value: opts[0][0] },
-      { key: 'angle', label: 'Draft needed (°)', value: 1 },
-    ], 'Faces are coloured by their angle to the pull direction: green has the draft, red has it the other way (the other mould half), yellow needs more.');
+      ...(kind === 'undercut' ? [] : [{ key: 'angle', label: 'Draft needed (°)', value: 1 }]),
+    ], kind === 'undercut' ? 'Each point is looked at along the pull direction and against it: green can be pulled out one way (one mould half), blue the other, red neither (an undercut: it needs a side action or a change).' : 'Faces are coloured by their angle to the pull direction: green has the draft, red has it the other way (the other mould half), yellow needs more.');
     if (!v) return;
     const ax = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
     const dir = v.dir === 'face' ? sel.face.normal.toArray() : v.dir.startsWith('-') ? ax[v.dir[1]].map((q) => -q) : ax[v.dir];
+    if (kind === 'undercut') { a.setAnalysis({ kind: 'undercut', dir, force: true }); return; }
     const ang = parseFloat(v.angle);
     a.setAnalysis({ kind: 'draft', dir, angle: Number.isFinite(ang) ? Math.max(0, ang) : 1, force: true });
   }

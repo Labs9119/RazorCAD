@@ -855,6 +855,8 @@ class App {
     const k = this.analysis?.kind;
     if (k === 'curvature') this.status(`Curvature: blue flat → green → yellow → red tightest (red: radius ${fmt(1 / this.viewport.curvatureMax, 2)} mm or less). Click Curvature again to turn it off.`);
     else if (k === 'draft') this.status(`Draft analysis: green ≥ ${this.analysis.angle}° draft toward the pull direction, red ≥ ${this.analysis.angle}° away from it, yellow needs draft. Click Draft Analysis again to turn it off.`);
+    else if (k === 'thickness') { const t = this.viewport.thicknessStats; this.status(`Thickness: red under ${fmt(this.analysis.min, 3)} mm, blue over ${fmt(this.analysis.max, 3)} mm, green to yellow between. Walls ${t && Number.isFinite(t.min) ? `${fmt(t.min, 3)} to ${fmt(t.max, 3)} mm` : 'not found'}${t ? `; ${Math.round(t.thin * 100)} % too thin, ${Math.round(t.thick * 100)} % too thick` : ''}. Click again to turn it off.`); }
+    else if (k === 'undercut') this.status(`Undercut check: green free along the pull direction, blue free against it, red undercut (${Math.round((this.viewport.undercutShare || 0) * 100)} % of the surface): the mould cannot release it either way. Click again to turn it off.`);
     else if (k === 'zebra') this.status('Zebra stripes: smooth (tangent / curvature-continuous) joins show stripes running on without a kink. Click again to turn them off.');
     else this.status('Ready');
   }
