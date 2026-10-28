@@ -73,6 +73,32 @@ const reading = new Map(); // big imports just read from the store or written to
 export const forgetImportTexts = () => reading.clear(); // (tests: the next read is from the store itself)
 const START_TRIES = 3;   // starts tried before a kernel that keeps failing is given up on
 
+// Big feature data (an imported file's text, a mesh's base64: f.data) goes to each kernel once and is named after
+// that, { blob: id }, by a hash of its content: a 342-body STEP's 18 MB were stringified, posted, parsed and
+// stringified again by the kernel at every edit. The id is the same in every session (the kernel's stored feature
+// states hold it); a kernel without the text asks for it again (kernel.worker.js featureData).
+const BLOB_MIN = 1e6;
+const blobIds = new Map(); // text → id, the last few (the same text is found again by comparing, not by hashing it)
+function blobId(text) {
+  let id = blobIds.get(text);
+  if (!id) {
+    let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+    for (let i = 0; i < text.length; i++) { const c = text.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619); h2 = Math.imul(h2 ^ c, 2246822507) ^ (h2 >>> 15); }
+    id = `${text.length.toString(36)}.${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}`;
+  }
+  blobIds.delete(text); blobIds.set(text, id);
+  while (blobIds.size > 8) blobIds.delete(blobIds.keys().next().value);
+  return id;
+}
+// a feature as the kernel is sent it (blobs: id → text, filled with the texts it names)
+export function packFeature(f, blobs = null) {
+  if (typeof f?.data !== 'string' || f.data.length < BLOB_MIN) return f;
+  const id = blobId(f.data);
+  blobs?.set(id, f.data);
+  return { ...f, data: { blob: id } };
+}
+const packDoc = (doc, blobs) => (doc.features?.some((f) => typeof f?.data === 'string' && f.data.length >= BLOB_MIN) ? { ...doc, features: doc.features.map((f) => packFeature(f, blobs)) } : doc);
+
 export class KernelClient {
   // threads: how many threads the kernel may use (more than 1: the multi-threaded kernel, where the page allows it)
   constructor({ fonts = null, threads = 1 } = {}) {
@@ -117,6 +143,8 @@ export class KernelClient {
     // (the browser version: the kernel's files asked for by its signature, so a browser or the website's cache never
     // hands an older kernel to this worker after an update; the files are kept a day: website/_headers)
     if (globalThis.RAZORCAD_WEB?.kernel) url.searchParams.set('k', String(globalThis.RAZORCAD_WEB.kernel));
+    // (and published gzipped, one file a kernel: tools/build_web_app.py)
+    if (globalThis.RAZORCAD_WEB?.packed) url.searchParams.set('z', '1');
     const worker = new Worker(url, { type: 'module' });
     this.worker = worker;
     worker.onmessage = (e) => {
@@ -223,6 +251,12 @@ export class KernelClient {
   call(type, data = {}) {
     const id = ++this.seq;
     const worker = this.worker;
+    // (the big texts a document names: each sent to a worker once; all again after it said one was missing)
+    if (data.blobs instanceof Map) {
+      const sent = (worker.blobs ??= new Set());
+      data = { ...data, blobs: [...data.blobs].filter(([k]) => !sent.has(k)) };
+      for (const [k] of data.blobs) sent.add(k);
+    }
     return new Promise((resolve, reject) => {
       this.calls.set(id, { resolve, reject, worker });
       worker.postMessage({ id, type, data });
@@ -239,12 +273,18 @@ export class KernelClient {
     await this.ready; // (a kernel still starting: requests go to it once it answers)
     const worker = this.worker;
     try {
-      return await this.call(type, data);
+      try {
+        return await this.call(type, data);
+      } catch (err) {
+        if (!/^Missing feature data/.test(err.message) || !worker.blobs) throw err;
+        worker.blobs.clear();
+        return await this.call(type, data);
+      }
     } catch (err) {
       if (!err.fatal) throw err;
       if (!err.followOn) this.onRestart?.(err); // one report per crash, not one per waiting request
       await this.restart(worker);
-      if (type !== 'rebuild' && this.lastDoc) await this.call('rebuild', { doc: this.lastDoc, previewId: null });
+      if (type !== 'rebuild' && this.lastDoc) await this.call('rebuild', { doc: this.lastDoc, previewId: null, blobs: this.lastBlobs });
       try {
         return await this.call(type, data);
       } catch (err2) {
@@ -259,7 +299,8 @@ export class KernelClient {
   rebuild(doc, previewId = null, haveMesh = null) {
     return new Promise((resolve, reject) => {
       this.waiters.push({ resolve, reject });
-      this.nextDoc = JSON.stringify(doc);
+      this.nextBlobs = new Map();
+      this.nextDoc = JSON.stringify(packDoc(doc, this.nextBlobs));
       this.nextPreview = previewId;
       this.nextHave = haveMesh;
       this.pump();
@@ -271,6 +312,7 @@ export class KernelClient {
     const doc = this.nextDoc;
     const previewId = this.nextPreview;
     const haveMesh = this.nextHave;
+    const blobs = this.nextBlobs;
     const waiters = this.waiters;
     this.nextDoc = null;
     this.waiters = [];
@@ -279,9 +321,9 @@ export class KernelClient {
     this.runningSince = performance.now();
     // clear `busy` (and start any queued rebuild) before waiters resume, so they can
     // tell whether their result is already superseded
-    this.request('rebuild', { doc, previewId, haveMesh }).then(
+    this.request('rebuild', { doc, previewId, haveMesh, blobs }).then(
       (r) => {
-        this.lastDoc = doc; this.busy = false; this.pump(); waiters.forEach((w) => w.resolve(r));
+        this.lastDoc = doc; this.lastBlobs = blobs; this.busy = false; this.pump(); waiters.forEach((w) => w.resolve(r));
         if (r?.kernelMemoryMB > RECYCLE_MB) this.recycle();
       },
       (err) => { this.busy = false; this.pump(); waiters.forEach((w) => w.reject(err)); },
@@ -297,7 +339,7 @@ export class KernelClient {
       while (this.busy || this.calls.size) await new Promise((r) => setTimeout(r, 250));
       const doc = this.lastDoc;
       await this.restart(this.worker);
-      if (doc && !this.busy) await this.call('rebuild', { doc, previewId: null }).catch(() => {});
+      if (doc && !this.busy) await this.call('rebuild', { doc, previewId: null, blobs: this.lastBlobs }).catch(() => {});
     } finally {
       this._recycling = false;
     }

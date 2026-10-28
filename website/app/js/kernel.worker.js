@@ -154,6 +154,25 @@ function wasmBytes(url) {
   })());
   return wasmFetched.get(key);
 }
+// The browser version's kernel (?z): its wasm gzipped into one file, name.wasm.gz (tools/build_web_app.py), a third
+// of the download; unpacked as it arrives and compiled while it downloads, its bytes kept too (stackNamesFromWasm).
+const PACKED = new URL(self.location.href).searchParams.has('z');
+const packedUrl = new URL(`../vendor/replicad/${KERNEL_BUILD}.wasm.gz${KERNEL_QUERY}`, import.meta.url);
+async function packedWasm() {
+  const r = await fetch(packedUrl);
+  if (!r.ok) throw new Error(`The geometry kernel could not be loaded (${r.status})`);
+  // (a host that sends it as Content-Encoding: gzip has the browser unpack it already)
+  const reader = r.body.getReader(), first = await reader.read(), head = first.value || new Uint8Array(0);
+  let body = new ReadableStream({
+    start(c) { if (head.length) c.enqueue(head); if (first.done) c.close(); },
+    async pull(c) { const { done, value } = await reader.read(); if (done) c.close(); else c.enqueue(value); },
+    cancel(why) { return reader.cancel(why); },
+  });
+  if (head[0] === 0x1f && head[1] === 0x8b) body = body.pipeThrough(new DecompressionStream('gzip'));
+  const [compile, keep] = body.tee();
+  wasmFetched.set(String(wasmUrl), new Response(keep).arrayBuffer().then((b) => new Uint8Array(b)));
+  return new Response(compile, { headers: { 'Content-Type': 'application/wasm' } });
+}
 let kernelThreads = 1; // (threads the kernel runs with: for the status and crash reports)
 const ready = (async () => {
   let exportsOf = null;
@@ -162,8 +181,8 @@ const ready = (async () => {
     Module({
       ...(MULTI ? { razorcadThreads: THREADS } : {}),
       instantiateWasm(imports, done) {
-        WebAssembly.instantiateStreaming(fetch(wasmUrl), imports)
-          .catch(() => wasmBytes(wasmUrl).then((b) => WebAssembly.instantiate(b, imports)))
+        (PACKED ? packedWasm() : fetch(wasmUrl)).then((r) => WebAssembly.instantiateStreaming(r, imports))
+          .catch(() => { if (PACKED) wasmFetched.delete(String(wasmUrl)); return wasmBytes(wasmUrl).then((b) => WebAssembly.instantiate(b, imports)); })
           .then((r) => { exportsOf = r.instance.exports; done(r.instance, r.module); }, reject);
         return {};
       },
@@ -2363,7 +2382,21 @@ async function importKey(text, extra) {
     return 'imp' + [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
   } catch { return null; }
 }
+// Big feature data sent once, then named by the page ({ blob: id }: kernelclient.js packFeature): id → text, the texts
+// the last rebuild's document names.
+const BLOBS = new Map();
+const featureData = (f) => (typeof f.data === 'object' && f.data?.blob ? BLOBS.get(f.data.blob) : f.data);
+// (before a rebuild: the texts it was sent kept, the ones its document no longer names dropped; one it names but this
+// kernel hasn't got: the page sends them all again)
+function takeBlobs(doc, sent) {
+  for (const [id, text] of sent || []) BLOBS.set(id, text);
+  const named = new Set((doc.features || []).map((f) => (typeof f.data === 'object' && f.data?.blob) || null).filter(Boolean));
+  for (const id of named) if (!BLOBS.has(id)) throw new Error(`Missing feature data (${id})`);
+  for (const id of [...BLOBS.keys()]) if (!named.has(id)) BLOBS.delete(id);
+}
 async function importShape(f, timing = null) {
+  const data = featureData(f);
+  f = { ...f, data };
   const key = `${f.format}:${f.data.length}:${f.data.slice(0, 64)}:${f.data.slice(-64)}:${f.maxTris ?? ''}`;
   const hit = importCache.get(f.id);
   if (hit && hit.key === key) return hit.rec;
@@ -2668,6 +2701,49 @@ async function rebuild(doc, previewId = null, opts = {}) {
     let out = a.cut(t);
     try { const outside = t.cut(a); if (solidsOf(outside).length) out = out.fuse(outside); } catch (e) { if (isFatal(e)) throw e; }
     return out;
+  };
+  // An extrusion's side walls drafted: every face but its two flat ends tilted by `ang` degrees about where it meets
+  // the plane through `o` square to `up` (the profile's plane), narrowing along `up` (a negative angle: widening)
+  const draftPrism = (tool, o, up, ang) => {
+    const oc = R.getOC();
+    const D = new oc.gp_Dir(up[0], up[1], up[2]), N = new oc.gp_Dir(up[0], up[1], up[2]), P = new oc.gp_Pnt(o[0], o[1], o[2]);
+    const pln = new oc.gp_Pln(P, N);
+    const mk = new oc.BRepOffsetAPI_DraftAngle(tool.wrapped);
+    try {
+      for (const face of tool.faces) {
+        if (face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9) continue;
+        mk.Add(face.wrapped, D, (ang * Math.PI) / 180, pln, true);
+        if (!mk.AddDone()) throw new Error('A wall of this profile cannot be drafted');
+      }
+      mk.Build();
+      const out = R.cast(mk.Shape());
+      // (walls tilted until they cross make a shape that is not a solid, or one that runs through itself past the
+      // point where they meet: OpenCascade's self-interference check, LabToolCheck, finds those)
+      const check = new oc.BRepCheck_Analyzer(out.wrapped, true);
+      try { if (!solidsOf(out).length || !check.IsValid()) throw new Error('The draft could not be made'); } finally { check.delete(); }
+      if (oc.LabToolCheck && oc.LabToolCheck.Interferences(out.wrapped, 0) > 0) throw new Error('The draft could not be made');
+      // (nor do walls that meet and go on: a cone through its tip, which leaves a valid double cone. So no wall's cone
+      // may have its tip between the ends, and the far end must be smaller than the profile, or larger drafted outward)
+      const height = (face) => dot(sub(flatCentre(face), o), up);
+      let far = 0, near = 0, top = 0;
+      const ends = [];
+      for (const face of out.faces) {
+        if (face.geomType === 'PLANE' && Math.abs(dot(unit(vec(face.normalAt())), up)) > 1 - 1e-9) { const h = height(face); ends.push([h, R.measureArea(face)]); top = Math.max(top, h); }
+      }
+      for (const [h, a] of ends) { if (h > top - 1e-7) far += a; else if (Math.abs(h) < 1e-7) near += a; }
+      if (!(ang > 0 ? far < near : far > near)) throw new Error('The draft could not be made');
+      for (const face of out.faces) {
+        if (face.geomType !== 'CONE') continue;
+        const ad = new oc.BRepAdaptor_Surface(face.wrapped, true);
+        let h = null;
+        try { const c = ad.Cone(); if (typeof c.Apex === 'function') { const A = c.Apex(); h = dot(sub([A.X(), A.Y(), A.Z()], o), up); } } finally { ad.delete(); }
+        if (h != null && h > 1e-7 && h < top - 1e-7) throw new Error('The draft could not be made');
+      }
+      return out;
+    } catch (e) {
+      if (isFatal(e)) throw e;
+      throw new Error(e.message?.startsWith('A wall') ? e.message : 'The draft could not be made (the walls meet too soon at this angle and depth, or one of them cannot tilt)');
+    } finally { mk.delete(); pln.delete(); P.delete(); N.delete(); D.delete(); }
   };
 
   // world-space point from a reference: reference point feature or model vertex ref
@@ -3641,6 +3717,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
             sk.extrudeSign = dot(sk.frame.n, firstFrame.n) < 0 ? -1 : 1;
           }
           const extrusions = [];
+          // (draft: the side walls tilted about the profile's plane by the angle, narrowing away from it, or widening
+          // with draftOutward; the walls of holes tilt with them. An extrusion to one side of the profile only)
+          const draftAng = ev(f.draft ?? 0);
+          if (!Number.isFinite(draftAng) || Math.abs(draftAng) >= 89) throw new Error('The draft angle must be between 0° and 89°');
+          const drafted = Math.abs(draftAng) > 1e-9;
           const startMode=f.startFrom||'profile';
           if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
           const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null;
@@ -3656,6 +3737,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               sk={...sk,frame:{...sk.frame,o:add(sk.frame.o,mul(axis,distance))}};
             }
             if(startSurface&&Math.abs(dot(startSurface.n,axis))<=1-1e-7){
+              if(drafted)throw new Error('Draft needs a start parallel to the profile');
               // Clip a prism with two independent planar boundaries. Keep the
               // sketch frame fixed; only the generated feature changes origin.
               const fr=sk.frame,probe=profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(fr)).extrude(1));let box;
@@ -3718,6 +3800,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 if (Math.abs(d) < 1e-6) throw new Error('The surface lies in the sketch plane');
                 z0 = Math.min(0, d); z1 = Math.max(0, d);
               } else {
+                if (drafted) throw new Error('Draft needs an end parallel to the profile');
                 // angled surface: extrude past it, then keep the part on the sketch's side
                 const dir = Math.sign(t) || 1;
                 let rProf = 0;
@@ -3737,7 +3820,16 @@ async function rebuild(doc, previewId = null, opts = {}) {
             }
             if (!tool) {
               if (z1 - z0 <= 1e-9) throw new Error('Depth must be greater than zero');
-              tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
+              const ang = f.draftOutward ? -draftAng : draftAng;
+              if (drafted && z0 < -1e-9 && z1 > 1e-9) {
+                // (both sides of the profile: each drafted away from it, then joined)
+                const up = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1)), fr.o, fr.n, ang);
+                const down = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0)), fr.o, mul(fr.n, -1), ang);
+                tool = up.fuse(down);
+              } else {
+                tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
+                if (drafted) tool = draftPrism(tool, fr.o, mul(fr.n, z1 > 1e-9 ? 1 : -1), ang);
+              }
             }
             extrusions.push(tool);
           }
@@ -6861,7 +6953,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
     parts.forEach((s, i) => {
       const m = meshes[i];
       // (color / transparency: the look an import gave the body)
-      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
+      // (meshKey: the same for a body meshed the same as before: the page keeps what it works out from the triangles)
+      bodies.push({ id: s.id, kind: s.kind, last: s.last, feats: s.feats, meshKey: `${KERNEL_SESSION}|${tol}|${ang}|${diagQ}|${shapeId(s.shape)}`, sheet: s.sheet ? SM.sheetInfo(s.sheet) : null, member: s.member || null, ...(s.look ? { color: s.look.c, transparency: s.look.t } : {}), faceStart: nf, faceCount: m.m.faceGroups.length, triStart: nt, triCount: m.m.triangles.length, edgeStart: ne, edgeCount: m.edges.length });
       for (const pts of m.facePts) lastFacePts.push(pts);
       nv += m.m.vertices.length; nt += m.m.triangles.length; nf += m.m.faceGroups.length; ne += m.edges.length;
     });
@@ -9550,7 +9643,9 @@ async function handleMessage(e) {
     resetStack();
     let result, transfer = [];
     if (type === 'rebuild') {
-      ({ res: result, transfer } = await rebuild(JSON.parse(data.doc), data.previewId || null, { haveMesh: data.haveMesh || null, batchCuts: data.batchCuts, meshHelp: data.meshHelp || null }));
+      const doc = JSON.parse(data.doc);
+      takeBlobs(doc, data.blobs);
+      ({ res: result, transfer } = await rebuild(doc, data.previewId || null, { haveMesh: data.haveMesh || null, batchCuts: data.batchCuts, meshHelp: data.meshHelp || null }));
       for (const k of ['add', 'remove', 'tool']) {
         const m = result.preview?.[k];
         if (m) transfer.push(m.vertices.buffer, m.normals.buffer, m.triangles.buffer);

@@ -6,6 +6,43 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-28 13:08 — GitHub workflows on Node.js 24
+- GitHub's build steps moved to the actions' Node.js 24 versions (checkout v5, setup-python v6, upload-artifact v6,
+  cache v5): GitHub warned that the Node.js 20 ones are being retired. Only the runtime changes.
+
+## 2026-10-28 13:08 — Browser version: the geometry kernel ready three times sooner on a first visit
+- **One gzipped file a kernel**: the website sent each kernel uncompressed (25 MB, in two parts, fetched one after
+  the other after two requests for a whole file that isn't there). It now publishes `replicad_*.wasm.gz` (7.9 MB,
+  `tools/build_web_app.py`), which the kernel worker unpacks as it arrives and compiles while it downloads (and
+  takes as it is from a host that sends it already unpacked).
+- **The spare kernel waits**: the kernel started ahead for a second part downloaded the kernel at the same time as
+  the first one (each at half the speed); it now starts once the first is ready, and gets it from the browser's cache.
+- First visit, the kernel ready (a fresh browser, the website's own headers, 30 ms latency): 10 Mbit/s 46.9 → 11.5 s,
+  50 Mbit/s 9.1 → 2.9 s, 100 Mbit/s 5.0 → 1.9 s (49.8 → 8.5 MB). The Windows app loads its kernel as before.
+- Tried and left out: starting the kernel's download from the page, ahead of the app's scripts (the worker's request
+  did not join it, so the kernel came twice).
+
+## 2026-10-28 13:08 — Edits of parts with big imports twice as fast
+- **An import's file sent once**: every rebuild sent the whole part to the kernel, imported files included (a
+  342-body STEP: 18 MB, made into text, posted, read and made into text again by the kernel at each edit). Big feature
+  data now goes to each kernel once and is named after that by a hash of its content (`kernelclient.js`
+  packFeature; a kernel without it asks again). The stored feature states hold the name, not the file.
+- **The picking index after the model is drawn**: it was rebuilt for the whole model before the model was shown;
+  now just after (picks until then take the plain search, with the same hits).
+- **Identical-body signatures kept**: bodies meshed as before keep their signature (by the kernel's mesh key).
+- An edit of the 342-body part in the app, kernel to screen: 1,618 → 769 ms (kernel 681 → 524, the trip to and
+  from it 636 → 146, showing it 415 → 69 ms). Other parts: as before (their time is the kernel's work).
+
+## 2026-10-28 13:08 — Extrude and Extrude Cut: Draft
+- **Draft angle** and **Draft outward**: the walls tilt about the plane the extrusion starts from, narrowing away from
+  the profile (or widening); the walls of holes tilt the other way, so the material keeps one taper and a drafted cut
+  narrows as it goes in. Mid Plane, Two sides and Through All – Both draft each side away from the profile. Up To and
+  Offset From a surface take a draft when the surface is parallel to the profile. Walls that would meet before the
+  end are refused, including a cone through its tip (which OpenCascade leaves as a valid double cone).
+- Test `extrusion-draft`: 14 cases against the exact volumes of their frustums (square, circle, a square with a hole,
+  cuts, both sides, offset start, rejections) and the panel's fields. From Claw267's list of open differences
+  (`Manual/cad-behavior-alignment.md`, updated).
+
 ## 2026-10-28 12:19 — Version 0.18.2-beta
 - Installer, user manual (94 pages) and website for 0.18.2-beta.
 

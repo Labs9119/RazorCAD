@@ -815,6 +815,13 @@ const PM_SCHEMAS = {
       ],
     },
     {
+      // (the walls tilted about the profile's plane: an extrusion to one side of it)
+      title: 'Draft', fields: [
+        { key: 'draft', type: 'expr', label: 'Draft angle', unit: '°', default: 0 },
+        { key: 'draftOutward', type: 'check', label: 'Draft outward (wider away from the profile)', show: (f) => !!f.draft && String(f.draft).trim() !== '0' },
+      ],
+    },
+    {
       title: 'Thin Feature', fields: [
         { key: 'thin', type: 'check', label: 'Thin feature (a wall along the sketch curves)' },
         { key: 'thinT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => f.thin },

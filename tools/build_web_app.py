@@ -12,6 +12,7 @@ there into website/app for publishing. Without that folder
 
     python tools/build_web_app.py
 """
+import gzip
 import os
 import re
 import shutil
@@ -37,20 +38,21 @@ def app_version():
         return 'dev'
 
 
-def split_big_wasm(app, part=24 * 1024 * 1024):
-    """A geometry kernel too big for the host (an optimised build can pass 25 MiB) is published in parts, name.part0,
-    name.part1…, which the kernel worker joins again when the whole file is not there (kernel.worker.js wasmBytes)."""
+def pack_kernels(app):
+    """Each geometry kernel published gzipped, name.wasm.gz: a third of the download (25 MB -> 8 MB) and one file under
+    the host's 25 MiB, which the kernel worker unpacks as it arrives and compiles while it downloads
+    (kernel.worker.js packedWasm). Deterministic (no time stamp in the file), so the kernel's signature is too."""
     vendor = os.path.join(app, 'vendor', 'replicad')
     for n in sorted(os.listdir(vendor)) if os.path.isdir(vendor) else []:
         p = os.path.join(vendor, n)
-        if not n.endswith('.wasm') or os.path.getsize(p) <= MAX_FILE:
+        if not n.endswith('.wasm'):
             continue
         data = open(p, 'rb').read()
-        for i in range(0, len(data), part):
-            with open(f'{p}.part{i // part}', 'wb') as f:
-                f.write(data[i:i + part])
+        with open(p + '.gz', 'wb') as f:
+            with gzip.GzipFile(filename='', mode='wb', fileobj=f, compresslevel=9, mtime=0) as z:
+                z.write(data)
         os.remove(p)
-        print(f'{n}: {len(data) / 1048576:.1f} MB, published in {-(-len(data) // part)} parts')
+        print(f'{n}: {len(data) / 1048576:.1f} MB, published gzipped: {os.path.getsize(p + ".gz") / 1048576:.1f} MB')
 
 
 def main():
@@ -59,14 +61,15 @@ def main():
     if os.path.isdir(DST):
         shutil.rmtree(DST)
     shutil.copytree(SRC, DST, ignore=shutil.ignore_patterns(*SKIP))
-    split_big_wasm(DST)
+    pack_kernels(DST)
     version = app_version()
     p = os.path.join(DST, 'index.html')
     html = open(p, encoding='utf-8').read()
     main_tag = '<script type="module" src="js/main.js"></script>'
     assert html.count(main_tag) == 1, 'main.js script tag'
-    # (the kernel's signature: the models the browser keeps are kept per kernel)
-    html = html.replace(main_tag, f'<script>window.RAZORCAD_WEB = {{ version: {version!r}, kernel: {kernel_signature(DST)!r} }};</script>\n{main_tag}')
+    # (the kernel's signature: the models the browser keeps are kept per kernel. Not tried again: the kernel's download
+    # started from the page, ahead of the app's scripts: the worker's request didn't join it, the kernel came twice)
+    html = html.replace(main_tag, f'<script>window.RAZORCAD_WEB = {{ version: {version!r}, kernel: {kernel_signature(DST)!r}, packed: true }};</script>\n{main_tag}')
     html = re.sub(r'<title>[^<]*</title>', '<title>RazorCAD in your browser</title>', html, count=1)
     if 'name="description"' not in html:
         html = html.replace('</title>', '</title>\n<meta name="description" content="RazorCAD, the free parametric 3D CAD program, running in your browser: parts, sketches, assemblies and drawings.">', 1)

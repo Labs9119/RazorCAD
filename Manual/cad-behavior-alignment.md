@@ -32,7 +32,7 @@ instead of changing the resulting geometry.
 
 | Family | Existing behavior | Remaining alignment work |
 | --- | --- | --- |
-| Extrude | Region selection, Thin, through/up-to/offset and scoped cuts | Start from offset/object, draft, independent end conditions for each side, Intersect operation and direct face inputs |
+| Extrude | Region selection, Thin, through/up-to/offset and scoped cuts, start from an offset or a plane, draft (each side from the profile plane) | Draft to angled end surfaces, independent end conditions for each side, Intersect operation and direct face inputs |
 | Revolve | Features listed above | To Object extent; direct planar-face inputs; additional component-level operations |
 | Surface Extrude | Features listed above | Start offsets/objects, To Object termination, direct model-edge/face inputs and draft |
 | Surface Revolve | Features listed above | To Object extent and direct model-edge/face inputs |

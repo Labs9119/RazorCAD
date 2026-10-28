@@ -4888,6 +4888,20 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return { ok: true, detail: `Nonplanar open surface / two native spline guides (${worst.toExponential(3)} mm), uncapped circular surface, panel method selection and cancel` };
   },
 
+  async 'extrusion-draft'() {
+    const {run,fixture}=await import('/tests/extrusion-draft-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();
+    const labels=()=>[...document.querySelectorAll('#pm label, #pm .pm-label, #pm span')].map((x)=>x.textContent.trim());
+    if(!labels().some((t)=>t.startsWith('Draft angle')))return {ok:false,detail:'No Draft angle in the Extrude panel'};
+    if(labels().some((t)=>t.startsWith('Draft outward')))return {ok:false,detail:'Draft outward shown without a draft angle'};
+    a.pm.feature.draft=5;a.ui.renderPM();await settle();
+    if(!labels().some((t)=>t.startsWith('Draft outward')))return {ok:false,detail:'Draft outward not offered with a draft angle'};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.[0],m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0],T=Math.tan(5*Math.PI/180),want=10/3*(400+20*(20-20*T)+(20-20*T)**2);
+    if(!m||Math.abs(m.volume-want)>1e-4)return {ok:false,detail:`Drafted extrusion's volume ${m?.volume} (expected ${want})`};
+    return {ok:true,detail:`${native.results.length} kernel cases (inward, outward, reversed, offset start, circle, hole, cuts, rejections); the panel's Draft fields`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();
@@ -5623,7 +5637,9 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       const fg = (b) => JSON.stringify(b.faceGroups.map((g) => [g.start, g.count, g.surf ?? null, g.look ?? null]));
       if (fg(A) !== fg(H)) bad.push(`faces ${A.faceGroups.length} / ${H.faceGroups.length}`);
       if (JSON.stringify(A.edges) !== JSON.stringify(H.edges)) bad.push(`edges ${A.edges.length} / ${H.edges.length}`);
-      if (JSON.stringify(A.bodies) !== JSON.stringify(H.bodies)) bad.push('bodies differ');
+      // (meshKey names the kernel that meshed a body: not part of its mesh)
+      const bodiesOf = (b) => JSON.stringify(b.bodies.map(({ meshKey, ...x }) => x));
+      if (bodiesOf(A) !== bodiesOf(H)) bad.push('bodies differ');
       const detail = `${(step.length / 1e6).toFixed(1)} MB STEP, 12 bodies, ${A.faceGroups.length} faces: meshed in ${n + 1} kernels, the same mesh (${A.triangles.length / 3} triangles, ${A.edges.length} edges); mesh ${alone.r.timing.mesh} ms alone, ${helped.r.timing.mesh} ms helped`;
       return !bad.length ? { ok: true, detail } : { ok: false, detail: bad.join('; ') + ' — ' + detail };
     } finally {

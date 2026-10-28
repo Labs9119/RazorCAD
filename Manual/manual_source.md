@@ -772,6 +772,7 @@ Options:
 
 - **Operation**: **Join** merges with existing material where possible; **New body** keeps the result separate; **Cut** removes material. A Join that does not touch existing material makes a new body.
 - **Thin Feature**: makes a wall of the given thickness from the profile; direction one side, other side or mid-plane. Open sketches switch it on automatically. {idx:thin feature}
+- **Draft**: tilts the walls by the **Draft angle**, about the plane the extrusion starts from: the solid narrows away from the profile, or widens with **Draft outward**. The walls of holes in the profile tilt the other way with them, so the material keeps one taper (a cut narrows as it goes in). Mid Plane, Two sides and Through All – Both draft each side away from the profile. Up To and Offset From a surface take a draft when the surface is parallel to the profile, and the start must be too. If the walls would meet before the end, the draft is refused. {idx:draft (extrude)}
 - **Feature Scope** (cuts): **All bodies** by default; untick it and click the bodies to cut. {idx:feature scope}
 
 ## Revolve and Revolve Cut

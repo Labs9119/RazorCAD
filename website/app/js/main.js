@@ -14,7 +14,7 @@ import * as LR from './loftrefs.js';
 import * as LC from './loftcorrespondence.js';
 import {useReferenceRelations} from './refgeom.js';
 import { evaluate, evalEquations, fmt } from './expr.js';
-import { KernelClient, KernelPool } from './kernelclient.js';
+import { KernelClient, KernelPool, packFeature } from './kernelclient.js';
 import { platform } from './platform.js';
 import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
@@ -598,7 +598,8 @@ class App {
     const old = this._staleParsed.features || [], cur = this.doc.features;
     const i = old.findIndex((f) => f.id === fid);
     if (i < 0) return false;
-    for (let j = 0; j <= i; j++) if (!cur[j] || cur[j].id !== old[j].id || JSON.stringify(cur[j]) !== JSON.stringify(old[j])) return true;
+    // (features as the kernel was sent them: a big import's text named by its hash)
+    for (let j = 0; j <= i; j++) if (!cur[j] || cur[j].id !== old[j].id || JSON.stringify(packFeature(cur[j])) !== JSON.stringify(old[j])) return true;
     return false;
   }
   endLongRun() {
@@ -719,8 +720,16 @@ class App {
       };
     });
     // shape signature of each solid (identical bodies are listed once with a count)
+    // (kept by the body's mesh key: a body meshed the same as before has the same triangles)
     if (mesh?.vertices && mesh?.triangles) {
-      for (const b of list) if (b.kind !== 'surface') { try { b.sig = bodySignature(mesh.vertices, mesh.triangles, b.triStart, b.triCount); } catch { b.sig = null; } }
+      const was = this._bodySigs || new Map(), now = new Map();
+      for (const b of list) {
+        if (b.kind === 'surface') continue;
+        if (b.meshKey && was.has(b.meshKey)) b.sig = was.get(b.meshKey);
+        else { try { b.sig = bodySignature(mesh.vertices, mesh.triangles, b.triStart, b.triCount); } catch { b.sig = null; } }
+        if (b.meshKey) now.set(b.meshKey, b.sig);
+      }
+      this._bodySigs = now;
     }
     // unnamed bodies are called after the last feature that changed them
     const seen = {};
@@ -1452,13 +1461,18 @@ class App {
   // the kernels the open parts hold
   liveKernels() { return new Set([this.kernel, ...this.tabs.map((t) => t.kernel), this._spareKernel].filter((k) => k && !k.disposed)); }
   // (one kernel started ahead, while the PC allows another: a new part's tab takes it ready, without waiting for a
-  // kernel to start)
+  // kernel to start. Only once the part's own kernel is ready: in the browser both would download the kernel at
+  // once, each at half the speed; after it, the spare one's comes from the browser's cache)
   warmSpareKernel() {
     clearTimeout(this._spareTimer);
-    this._spareTimer = setTimeout(() => {
-      if (this._spareKernel || this.liveKernels().size >= this.tabKernelMax || (this.machine && !memoryFor(this.machine, this.liveKernels().size))) return;
-      this._spareKernel = this.wireKernel(new KernelClient({ fonts: this.kernel.fonts, threads: threadsPerKernel(this.machine?.threads) }));
-    }, 300);
+    const seq = (this._spareSeq = (this._spareSeq || 0) + 1);
+    Promise.resolve(this.kernel?.ready).catch(() => {}).then(() => {
+      if (seq !== this._spareSeq) return;
+      this._spareTimer = setTimeout(() => {
+        if (this._spareKernel || this.liveKernels().size >= this.tabKernelMax || (this.machine && !memoryFor(this.machine, this.liveKernels().size))) return;
+        this._spareKernel = this.wireKernel(new KernelClient({ fonts: this.kernel.fonts, threads: threadsPerKernel(this.machine?.threads) }));
+      }, 300);
+    });
   }
   // A kernel for a part coming to the front (tab: its tab, or a new one): its own if it still has one; else a
   // new one while the PC allows (machine.js); else the one of the part used longest ago (it builds this part next).

@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import time
-import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,20 +63,10 @@ def main():
             fails.append(f'the site did not serve this checkout\'s browser version within {args.wait} s')
 
     # the pages and the browser version's headers
-    for path in ['/', '/docs/', '/app/', '/app/js/kernel.worker.js', '/app/vendor/replicad/replicad_multi.wasm']:
+    # (the kernel is published gzipped: tools/build_web_app.py pack_kernels)
+    for path in ['/', '/docs/', '/app/', '/app/js/kernel.worker.js', '/app/vendor/replicad/replicad_multi.wasm.gz']:
         try:
             status, h, body = get(base + path)
-        except urllib.error.HTTPError as e:
-            # (a kernel too big for the host is published in parts: tools/build_web_app.py split_big_wasm)
-            if not (path.endswith('.wasm') and e.code == 404):
-                fails.append(f'{path}: {e}')
-                continue
-            path += '.part0'
-            try:
-                status, h, body = get(base + path)
-            except Exception as e:
-                fails.append(f'{path}: {e}')
-                continue
         except Exception as e:
             fails.append(f'{path}: {e}')
             continue

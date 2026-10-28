@@ -221,7 +221,10 @@ export class Viewport {
       if (nGlass) { drawGeo.addGroup(0, nOpaque, 0); drawGeo.addGroup(nOpaque, nGlass, 1); }
       drawGeo.computeBoundingSphere();
     }
-    drawGeo.computeBoundsTree();
+    // (the picking index built once the model has been drawn, not before it: a big model shows sooner after an edit;
+    // until then picks take the plain raycast, with the same hits)
+    clearTimeout(this._bvhTimer);
+    this._bvhTimer = setTimeout(() => this.ensurePickIndex(), 60);
     this.body = new THREE.Mesh(drawGeo, drawGeo.groups.length ? [this.bodyMat, this.glassMat] : this.bodyMat);
     const linePts = mesh.dense ? denseFeatureEdges(mesh.vertices, drawGeo.index.array) : [];
     mesh.edges.forEach((e, ei) => {
@@ -1340,7 +1343,13 @@ export class Viewport {
     if (this.analysis && this.analysis.kind !== 'zebra') this.applyAnalysis();
   }
 
+  ensurePickIndex() {
+    const g = this.body?.geometry;
+    if (g && !g.boundsTree) g.computeBoundsTree();
+  }
+
   faceIndexNear(p) {
+    this.ensurePickIndex();
     if (!this.body?.geometry.boundsTree) return -1;
     const hit = this.body.geometry.boundsTree.closestPointToPoint(new THREE.Vector3(...p));
     if (!hit) return -1;
