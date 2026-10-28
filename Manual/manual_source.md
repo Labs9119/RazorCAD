@@ -1259,6 +1259,8 @@ The **Sheet Metal** tab holds the sheet metal features. Sheet metal bodies are l
 
 A closed sketch (holes allowed) becomes a sheet of the given **thickness**. The **bend radius** and **K-factor** set here become the part's defaults. {idx:Base Flange}{idx:K-factor}
 
+**Bend calculation** {idx:bend allowance}{idx:bend deduction} (Base Flange, Sheet Metal Extrude, Lofted Bend, Transition): **K-factor**, or, from your bend table for this thickness and radius, the **Bend allowance** (the length a 90° bend takes flat) or the **Bend deduction** (how much shorter the flat is than the two outside lengths to the sharp, for a 90° bend). RazorCAD works out the K-factor it gives (refused when outside 0 to 1), so every flat length agrees with the table at 90° and other angles follow in proportion.
+
 ## Gauge tables
 
 Base Flange, Sheet Metal Extrude and Transition / Reducer have a **Gauge** list: mild steel, steel gauges, stainless 304, and aluminium 5052 and 6061-T6. Picking a gauge sets the thickness, inside bend radius and K-factor. **Save…** keeps your own values as a gauge. {idx:gauge tables}
@@ -1291,6 +1293,7 @@ Click straight edges on the top or bottom face. {idx:Edge Flange}
 | Setting | Options |
 |---|---|
 | Length | Measured to the outer virtual sharp, inner virtual sharp or tangent |
+| Flange width {idx:Edge Flange, partial} | **Along the edge**: the whole edge, **Offsets from its ends** (from the start, from the end; **Swap the ends**), or **A width in its middle**; the rest of the edge stays as it is, with reliefs where the bend ends |
 | Angle | Flange angle |
 | Position | Material inside, material outside, bend outside, plus an offset; flip |
 | Bend radius | Its own radius, or the default |

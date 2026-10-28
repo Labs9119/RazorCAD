@@ -3359,6 +3359,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
     return pieces.length > 1 ? compoundOf(pieces.map((shape) => ({ shape }))) : pieces[0];
   };
 
+  // A sheet's K-factor: given (bendCalc 'k'), or the one that a bend allowance or a bend deduction for a 90° bend
+  // (bendCalc 'ba' / 'bd': bendAllowance / bendDeduction, mm) gives with this radius and thickness, so that every flat
+  // length agrees with it at 90° (and other angles in proportion). A deduction with the outside setbacks: BA = 2(R + t) − BD
+  const sheetKFactor = (f, R0, t) => {
+    const m = f.bendCalc || 'k';
+    if (!['k', 'ba', 'bd'].includes(m)) throw new Error('Select a supported bend calculation');
+    let K;
+    if (m === 'k') K = ev(f.kFactor);
+    else {
+      const BA = m === 'ba' ? ev(f.bendAllowance) : 2 * (R0 + t) - ev(f.bendDeduction);
+      K = (BA / (Math.PI / 2) - R0) / t;
+    }
+    if (!(K >= 0 && K <= 1)) throw new Error(m === 'k' ? 'The K-factor must be between 0 and 1' : `That bend ${m === 'ba' ? 'allowance' : 'deduction'} gives a K-factor of ${Number.isFinite(K) ? +K.toFixed(4) : K}: it must give one between 0 and 1`);
+    return K;
+  };
+
   // consecutive fillets (or chamfers) applied since the last other solid feature
   let blendChain = null;
   // every solid-changing feature so far, so blends can be recomputed in a different order
@@ -6601,7 +6617,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'smBase': {
           const sk = getSketch(f.sketch);
-          const t = ev(f.thickness), R0 = ev(f.radius), K = ev(f.kFactor);
+          const t = ev(f.thickness), R0 = ev(f.radius), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
           if (!(R0 > 0)) throw new Error('The bend radius must be greater than zero');
           if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
@@ -6618,9 +6634,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // a sheet between two open profiles (one sketch each), bent from flat facets or formed smooth
           if (!f.profileA || !f.profileB) throw new Error('Select the two open profile sketches');
           if (f.profileA === f.profileB) throw new Error('Select two different sketches');
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius ?? 0);
+          const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
           const bent = f.method !== 'formed';
           // formed: the surface finer, a whole number of strips per forming line in the flat pattern
           const nDiv = Math.round(ev(f.bends ?? 12));
@@ -7209,8 +7224,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (chains.length !== 1) throw new Error(`The sketch must hold one chain of lines / arcs joined end to end, or one circle (it has ${chains.length || 'none'})`);
           const segs = S.chainSegs(s.sk, chains[0]);
           if (chains[0].closed && !(segs.length === 1 && segs[0].type === 'circle')) throw new Error('The profile is closed: leave a gap where the seam goes (only a lone circle is rolled closed, with its seam gap)');
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius), depth = ev(f.depth);
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
+          const t = ev(f.thickness), R0 = ev(f.radius), K = sheetKFactor(f, R0, t), depth = ev(f.depth);
           if (!(R0 >= 0)) throw new Error('The bend radius can\'t be negative');
           if (!(depth > 0)) throw new Error('The depth must be greater than zero');
           const [z0, z1] = f.direction === 'mid' ? [-depth / 2, depth / 2] : f.direction === 'reverse' ? [-depth, 0] : [0, depth];
@@ -7244,9 +7258,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // X: in the sketch plane, square to the line; turned about the axis by the rotation
           const X0 = unit(cross(d, fr.n)), Y0 = cross(d, X0), rot = (ev(f.rotation ?? 0) * Math.PI) / 180;
           const X = add(mul(X0, Math.cos(rot)), mul(Y0, Math.sin(rot))), Y = cross(d, X);
-          const t = ev(f.thickness), K = ev(f.kFactor), R0 = ev(f.radius ?? 0);
+          const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');
-          if (!(K >= 0 && K <= 1)) throw new Error('The K-factor must be between 0 and 1');
           const spec = (k) => ({ shape: f[k + 'Shape'], d: ev(f[k + 'D']), w: ev(f[k + 'W']), l: ev(f[k + 'L']), size: ev(f[k + 'Size']), basis: f[k + 'Basis'] });
           const raw = [SM.transitionEnd(spec('b')), SM.transitionEnd(spec('t'))];
           // the sizes are of the inside (material outward), the outside (material inward) or the middle of
@@ -7306,6 +7319,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           let out = SM.addFlanges(sheet, edges, {
             length: ev(f.length), lengthRef: f.lengthRef, angle: ev(f.angle), position: f.position, offset: ev(f.offset || 0),
             R: R0, flip: !!f.flip, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
+            extent: { type: f.widthType || 'full', a: ev(f.startOffset ?? 0), b: ev(f.endOffset ?? 0), width: ev(f.flangeWidth ?? 0), swap: !!f.swapEnds },
           });
           // corners between these flanges: closed with the gap (older parts: open)
           if ((f.corner === 'closed' || f.corner === 'butt' || f.corner === 'square') && edges.length > 1) {

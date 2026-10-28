@@ -5100,6 +5100,20 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (total length, symmetric, second direction for the feature only, skips, circular rings; rejections); the panel's skip and spacing`};
   },
 
+  async 'sheet-bend-tables-partial-flanges'() {
+    const {run,fixture}=await import('/tests/sheet-options-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture();await a.setDoc(d.doc);a.editFeature(d.base.id);await settle();
+    const text=()=>document.querySelector('#pm')?.textContent||'';
+    if(!text().includes('Bend calculation'))return {ok:false,detail:'No Bend calculation in the Base Flange panel'};
+    a.pm.feature.bendCalc='bd';a.ui.renderPM();await settle();
+    if(!text().includes('Bend deduction'))return {ok:false,detail:'No Bend deduction field'};
+    a.cancelPM?.();await settle();a.editFeature(d.feature.id);await settle();
+    if(!text().includes('Along the edge'))return {ok:false,detail:'No flange width choice in the Edge Flange panel'};
+    a.cancelPM?.();await settle();
+    return {ok:true,detail:`${native.results.length} kernel cases (bend allowance and deduction against the K-factor's flat, partial flanges centred and offset, swapped ends; rejections); the panels' bend calculation and flange width`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

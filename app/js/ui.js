@@ -323,9 +323,17 @@ const patternSources = (title, model = 'pick') => ({ title, fields: [
   ] : []),
   ...(model !== 'none' ? [{ key: 'bodies', type: 'bodyList', kinds: ['solid', 'surface'], show: (f) => model === 'list' || f.pick === 'bodies', hint: 'Bodies copied whole to every place, as new bodies. Click them on the model or tick them here.' }] : []),
 ] });
+// (how a bend's flat length is worked out: kernel.worker.js sheetKFactor)
+const SM_BEND_CALC = [
+  { key: 'bendCalc', type: 'select', label: 'Bend calculation', default: 'k', options: [['k', 'K-factor'], ['ba', 'Bend allowance (90° bend)'], ['bd', 'Bend deduction (90° bend)']] },
+  { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '', show: (f) => (f.bendCalc || 'k') === 'k' },
+  { key: 'bendAllowance', type: 'expr', label: 'Bend allowance', unit: 'mm', default: 4.2, show: (f) => f.bendCalc === 'ba' },
+  { key: 'bendDeduction', type: 'expr', label: 'Bend deduction', unit: 'mm', default: 3.8, show: (f) => f.bendCalc === 'bd' },
+  { key: 'bcHint', type: 'hint', show: (f) => ['ba', 'bd'].includes(f.bendCalc), text: 'For a 90° bend at this radius and thickness (from your bend table): the length the bend takes flat (allowance), or how much shorter the flat is than the two outside lengths to the sharp (deduction). Other angles follow in proportion.' },
+];
 const SM_PARAMS = [
   { key: 'radius', type: 'expr', label: 'Bend radius (inside)', unit: 'mm' },
-  { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+  ...SM_BEND_CALC,
   { key: 'kHint', type: 'hint', text: 'The K-factor is where the neutral (unstretched) layer lies in the thickness: 0.5 is the middle. It sets how much material a bend takes when flattened; 0.3–0.45 is typical for steel bent on a press brake.' },
 ];
 
@@ -391,7 +399,7 @@ const PM_SCHEMAS = {
       title: 'Sheet Metal Parameters', fields: [
         { key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' },
         { key: 'flip', type: 'check', label: 'Material on the other side' },
-        { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+        ...SM_BEND_CALC,
       ],
     },
   ],
@@ -523,7 +531,7 @@ const PM_SCHEMAS = {
       { key: 'side', type: 'select', label: 'Material', options: (f, a) => (smCircle(f, a) ? [['one', 'Inside the circle'], ['other', 'Outside the circle'], ['mid', 'Both sides (the circle in the middle)']] : [['one', 'One side of the sketch'], ['other', 'Other side of the sketch'], ['mid', 'Both sides (the sketch in the middle)']]) },
       { key: 'radius', type: 'expr', label: 'Bend radius (inside, at sharp corners)', unit: 'mm', show: (f, a) => !smCircle(f, a) },
       { key: 'seamGap', type: 'expr', label: 'Seam gap', unit: 'mm', show: (f, a) => smCircle(f, a) },
-      { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+      ...SM_BEND_CALC,
     ] },
   ],
   smTransition: [
@@ -559,7 +567,7 @@ const PM_SCHEMAS = {
       SM_GAUGE,
       { key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' },
       { key: 'dims', type: 'select', label: 'Sizes are', options: [['inside', 'Inside sizes (material outward)'], ['outside', 'Outside sizes (material inward)'], ['mean', 'Mean (middle of the thickness)']] },
-      { key: 'kFactor', type: 'expr', label: 'K-factor', unit: '' },
+      ...SM_BEND_CALC,
     ] },
   ],
   smHem: [
@@ -586,6 +594,15 @@ const PM_SCHEMAS = {
       title: 'Flange Length', fields: [
         { key: 'length', type: 'expr', label: 'Length', unit: 'mm' },
         { key: 'lengthRef', type: 'select', label: 'Measured to', options: [['outer', 'Outer virtual sharp'], ['inner', 'Inner virtual sharp'], ['tangent', 'Tangent (end of the bend)']] },
+      ],
+    },
+    {
+      title: 'Flange Width', fields: [
+        { key: 'widthType', type: 'select', label: 'Along the edge', default: 'full', options: [['full', 'The whole edge'], ['offsets', 'Offsets from its ends'], ['centered', 'A width in its middle']] },
+        { key: 'startOffset', type: 'expr', label: 'From the start', unit: 'mm', default: 0, show: (f) => f.widthType === 'offsets' },
+        { key: 'endOffset', type: 'expr', label: 'From the end', unit: 'mm', default: 0, show: (f) => f.widthType === 'offsets' },
+        { key: 'swapEnds', type: 'check', label: 'Swap the ends', show: (f) => f.widthType === 'offsets' },
+        { key: 'flangeWidth', type: 'expr', label: 'Width', unit: 'mm', default: 20, show: (f) => f.widthType === 'centered' },
       ],
     },
     {
@@ -673,7 +690,7 @@ const PM_SCHEMAS = {
         { key: 'radius', type: 'expr', unit: 'mm',
           label: (f, a) => (f.autoRadius === false ? 'Bend radius (inside, every bend)' : convertDet(f, a)?.kind === 'surface' ? 'Bend radius (inside)' : 'Bend radius for sharp edges (inside)'),
           show: (f, a) => { const d = convertDet(f, a); return f.autoRadius === false || !d || (d.kind === 'surface' && !d.curved) || d.sharp > 0; } },
-        ...SM_PARAMS.filter((x) => x.key !== 'radius'),
+        ...SM_PARAMS.filter((x) => !['radius', 'bendCalc', 'bendAllowance', 'bendDeduction', 'bcHint'].includes(x.key)),
       ],
     },
   ],
