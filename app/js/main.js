@@ -2201,6 +2201,7 @@ class App {
   loftClick(e) {
     try {
       const ref = this.pickLoftContour(e);
+      if (!ref && this.faceProfilePicking()) { const fh = this.faceAt(e); if (fh) return this.addFaceProfile(fh); }
       if (!ref) { this.status('Click a sketch contour, or inside a closed profile.'); return; }
       const chain=this.sweepPicking()?this.pm.feature.selectionChains?.[this.pm.sweepSlot||'profile']!==false:this.pm.loftChain!==false;
       if (chain) return this.addLoftContour(ref);
@@ -2212,6 +2213,26 @@ class App {
       this.pm.loftDraft = draft; this.pm.loftHover = null;
       this.ui.renderPM(); this.updateSketchDisplay();
     } catch (e) { this.toast(e.message, true); }
+  }
+
+  // Extrude and Revolve take flat model faces as profiles too (where no sketch profile is clicked)
+  faceProfilePicking() {
+    const f = this.pm?.feature;
+    return !!f && ['extrude', 'revolve'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
+  }
+
+  // A flat model face added as a profile, or removed when it is picked again
+  addFaceProfile(fh) {
+    const f = this.pm.feature, vp = this.viewport, face = vp.faceInfo(fh.hit.face);
+    if (!face.planar) { this.toast('Click a flat face of the model, or a sketch profile', true); return; }
+    const body = this.result.bodies?.[vp.faceBody[fh.hit.face]]?.id;
+    f.profiles ||= [];
+    const i = f.profiles.findIndex((q) => q?.kind === 'modelFace' && vp.faceIndexNear(q.p) === fh.hit.face);
+    if (i >= 0) f.profiles.splice(i, 1);
+    else { f.profiles.push({ kind: 'modelFace', p: fh.hit.point.toArray(), n: face.normal.toArray(), ...(body ? { body } : {}) }); f.thin = false; }
+    this.pm.loftDraft = null; this.pm.loftHover = null;
+    this.preview(true); this.updateSketchDisplay(); this.updateEdgeHighlights();
+    this.status(i >= 0 ? 'Face profile removed.' : `Profile ${f.profiles.length} selected (a model face).`);
   }
 
   pickMode() {
@@ -2242,6 +2263,8 @@ class App {
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
+    if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
+    if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToSurface') return 'face';
     if (f.type === 'revolve' && scoped) return 'body';
     if (f.type === 'revolve' || f.type === 'surfRevolve') return 'revaxis';
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot) return 'entity';
@@ -2319,7 +2342,7 @@ class App {
       } else f.edge = { p: hit.edge.mid };
     } else if (mode === 'vertex') {
       if (f.type === 'extrude' && this.pm.extrudeSurfaceSlot === 'end2' && f.side2) { f.toVertex2 = { p: hit.point.toArray() }; f.toPoint2 = null; }
-      else if (f.type === 'extrude') { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
+      else if (['extrude', 'revolve', 'surfRevolve'].includes(f.type)) { f.toVertex = { p: hit.point.toArray() }; f.toPoint = null; }
       else if (f.type === 'sketch3d') { const q = hit.point.toArray().map((x) => +x.toFixed(6)); (f.pts ||= []).push({ x: q[0], y: q[1], z: q[2] }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
@@ -2415,7 +2438,7 @@ class App {
       vp.setVertexMarkers(pts?.length ? { selected: pts, hover: this._fpDrag ? pts[this._fpDrag.i] ?? null : null } : null);
     } else if (mode === 'vertex') {
       const two = f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2';
-      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : f.type === 'sketch3d' ? null : f.vertex;
+      const ref = f.type === 'extrude' ? (two ? f.toVertex2 : f.toVertex) : ['revolve', 'surfRevolve'].includes(f.type) ? f.toVertex : f.type === 'sketch3d' ? null : f.vertex;
       vp.setVertexMarkers({ selected: ref && !(two ? f.toPoint2 : f.toPoint) ? ref.p : null, hover: this.hoverVertex ?? null });
     }
   }
@@ -2440,9 +2463,10 @@ class App {
     if (f) {
       if(f.type==='extrude'&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
+      if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
       for (const r of faceRefs) { const i = vp.faceIndexNear(r.p); if (i >= 0) infos.push(vp.faceInfo(i)); }
       const ids = [...(f.bodies || []), f.main, f.body, ...(f.scopeAll === false ? f.scope || [] : [])].filter(Boolean);
       for (const id of new Set(ids)) { const bi = vp.bodyIndexOf(id); if (bi >= 0) infos.push(vp.bodyInfo(bi)); }
@@ -2978,10 +3002,12 @@ class App {
       else if(f.type==='extrude'&&f.startFrom==='surface'&&this.pm.extrudeSurfaceSlot==='start'){key='startPlane';f.startFace=null;}
       else if(f.type==='extrude'&&f.side2&&this.pm.extrudeSurfaceSlot==='end2'&&['upToSurface','offsetSurface'].includes(f.end2)){key='toPlane2';f.toFace2=null;}
       else if (f.type === 'extrude' && (f.end === 'upToSurface' || f.end === 'offsetSurface')) { key = 'toPlane'; f.toFace = null; }
+      else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && this.pm.revolveEndPick) { key = 'toPlane'; f.toFace = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPlanes') key = slot('planeA', 'planeB');
     } else if (kind === 'point') {
       if (f.type === 'extrude' && f.side2 && this.pm.extrudeSurfaceSlot === 'end2' && f.end2 === 'upToVertex') { key = 'toPoint2'; f.toVertex2 = null; }
       else if (f.type === 'extrude' && f.end === 'upToVertex') { key = 'toPoint'; f.toVertex = null; }
+      else if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToVertex' && this.pm.revolveEndPick) { key = 'toPoint'; f.toVertex = null; }
       else if (f.type === 'axis' && f.axisType === 'twoPoints') key = slot('pointA', 'pointB');
     } else if (kind === 'axis') {
       if (['cpattern','revolve','surfRevolve'].includes(f.type)) { key = 'axis'; if(['revolve','surfRevolve'].includes(f.type))this.pm.profilePick=false; }

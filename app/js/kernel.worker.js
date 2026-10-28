@@ -2705,6 +2705,36 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (!regions.length && !text && !gears.length) throw new Error(s.sk.curves.some((c) => !c.construction) ? 'The sketch has no closed profile — tick Thin Feature to use open curves' : 'The sketch has no closed profile');
     return { ...s, sourceSketch, regions, drawing: regions.length ? regionsDrawing(regions) : null, text, gears };
   };
+  // A flat model face as a profile (a profiles entry { kind: 'modelFace', p, n, body }): the face itself, holes and
+  // all, in place of a sketch's regions. Its plane is the profile plane, facing out of its body; `drawing` stands in
+  // for a sketch drawing (sketchOnPlane(plane).extrude(d) / .revolve(axis, { origin, angle })), the face moved to
+  // the plane's origin along its normal
+  const faceSection = (ref, thin) => {
+    if (thin) throw new Error('Thin Feature works on sketch curves: a model face cannot be a thin profile');
+    needEdges('Picking a model face');
+    const hit = findFaceAny(solids, ref);
+    if (!hit) throw new Error('A profile face could not be found in the model');
+    if (hit.face.geomType !== 'PLANE') throw new Error('A profile face must be flat');
+    const face = hit.face, n = unit(vec(face.normalAt())), frame = frameOnPlane(vec(face.center), n);
+    ref.n = n; if (hit.body?.id) ref.body = hit.body.id;
+    const drawing = {
+      sketchOnPlane: (pl) => {
+        const shift = sub([pl.origin.x, pl.origin.y, pl.origin.z], frame.o), at = len(shift) > 1e-12 ? face.clone().translate(shift) : face.clone();
+        return {
+          extrude: (d) => { const v = new R.Vector(mul([pl.zDir.x, pl.zDir.y, pl.zDir.z], d)); try { return R.basicFaceExtrusion(at, v); } finally { v.delete(); at.delete(); } },
+          revolve: (axis, { origin, angle } = {}) => { try { return R.revolution(at, origin, axis, angle ?? 360); } finally { at.delete(); } },
+        };
+      },
+    };
+    // (how far it reaches from the plane's origin, and points round its edges: for the revolve axis check)
+    const b = bbox(face);
+    let reach = 0;
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) reach = Math.max(reach, len(sub([x, y, z], frame.o)));
+    const pts = face.edges.flatMap((e) => Array.from({ length: 17 }, (_, i) => vec(e.pointAt(i / 16))));
+    return { frame, faceProfile: true, regions: [], drawing, text: null, gears: [], reach, pts };
+  };
+  const isFaceProfile = (ref) => !!ref && typeof ref === 'object' && ref.kind === 'modelFace';
+  const sectionOf = (ref, thin) => (isFaceProfile(ref) ? faceSection(ref, thin) : getSketch(ref, thin));
   // The solid a feature makes from a sketch profile: make(drawing) for the outlines and for the text,
   // combined so text inside an outline is cut out of it (and text outside it is added).
   const profileSolid = (sk, make) => {
@@ -3119,6 +3149,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       if (!ax) throw new Error('The axis face could not be found (use a cylindrical or conical face)');
       return ax;
     }
+    if (sk.faceProfile) throw new Error('To revolve a model face, choose a reference axis, a model edge or face, or a sketch line as the axis');
     const fr = sk.frame, ax = S.revolveAxis(f, sk.sourceSketch || sk.sk);
     return { o: S.fromFrame2D(fr, ax.a[0], ax.a[1]), d: add(mul(fr.u, ax.d[0]), mul(fr.v, ax.d[1])) };
   };
@@ -3134,8 +3165,72 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const n=sk.frame.n;
     if(Math.abs(dot(axis.d,n))>1e-7||Math.abs(dot(sub(axis.o,sk.frame.o),n))>1e-5)return;
     const across=unit(cross(axis.d,n));
-    const polygons=sk.regions?.length?sk.regions.map(r=>r.outer.poly):sk.sk.curves.filter(c=>!c.construction&&!c.ctrlOf).map(c=>S.curvePoints(sk.sk,c));
-    for(const polygon of polygons){const distances=polygon.map(p=>dot(sub(S.fromFrame2D(sk.frame,...p),axis.o),across));if(Math.min(...distances)<-1e-6&&Math.max(...distances)>1e-6)throw new Error('A revolution profile must not cross its axis');}
+    const polygons=sk.pts?[sk.pts]:(sk.regions?.length?sk.regions.map(r=>r.outer.poly):sk.sk.curves.filter(c=>!c.construction&&!c.ctrlOf).map(c=>S.curvePoints(sk.sk,c))).map(poly=>poly.map(p=>S.fromFrame2D(sk.frame,...p)));
+    for(const polygon of polygons){const distances=polygon.map(p=>dot(sub(p,axis.o),across));if(Math.min(...distances)<-1e-6&&Math.max(...distances)>1e-6)throw new Error('A revolution profile must not cross its axis');}
+  };
+
+  // A revolve's extent up to a vertex or a surface (extent 'upToVertex' / 'upToSurface', toPoint / toVertex,
+  // toPlane / toFace): the angle round the axis from the profile to it (the other way round with reverse). An end
+  // plane through the axis stops it at the half of the plane it reaches first; any other plane trims it instead
+  // (clip: the plane, the revolution taken nearly all the way round and cut there, see clipRevolution)
+  // (a profile's middle: its box's, of a thin slab of it, or of its curves' points for a surface's open contours)
+  const profileCentre = (sk) => {
+    if (sk.drawing || sk.text || sk.gears?.length) {
+      const probe = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(sk.frame)).extrude(1e-3));
+      try { return sub(bbox(probe).center, mul(sk.frame.n, 5e-4)); } finally { probe.delete(); }
+    }
+    const pts = sk.sk.curves.filter((c) => !c.construction).flatMap((c) => S.curvePoints(sk.sk, c));
+    if (!pts.length) throw new Error('The profile has no curves');
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    return S.fromFrame2D(sk.frame, (Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2);
+  };
+  const revolveExtent = (f, sk, axis) => {
+    if (!['upToVertex', 'upToSurface'].includes(f.extent)) return revolutionInterval(f, ev);
+    const s = f.reverse ? -1 : 1, perp = (q) => { const r = sub(q, axis.o); return sub(r, mul(axis.d, dot(r, axis.d))); };
+    const r0 = perp(profileCentre(sk));
+    if (len(r0) < 1e-9) throw new Error('The profile lies on the revolution axis');
+    const angleTo = (q) => {
+      const r = perp(q);
+      if (len(r) < 1e-9) return Infinity;
+      let t = (s * Math.atan2(dot(cross(r0, r), axis.d), dot(r0, r)) * 180) / Math.PI;
+      if (t <= 1e-7) t += 360;
+      return t;
+    };
+    const span = (t) => ({ start: s < 0 ? -t : 0, angle: t });
+    if (f.extent === 'upToVertex') {
+      const p = resolvePoint(f.toPoint, f.toVertex);
+      if (f.toVertex) res.features[f.id] = { ...(res.features[f.id] || {}), toVertex: f.toVertex };
+      const t = angleTo(p);
+      if (!Number.isFinite(t)) throw new Error('The vertex lies on the revolution axis');
+      if (t >= 360 - 1e-7) throw new Error('The vertex lies on the profile’s side of the axis in its plane: it does not stop the revolution');
+      return span(t);
+    }
+    const pl = resolveSurface(f.toPlane, f.toFace);
+    if (f.toFace) res.features[f.id] = { ...(res.features[f.id] || {}), toFace: f.toFace };
+    if (Math.abs(dot(pl.n, axis.d)) < 1e-9 && Math.abs(dot(sub(axis.o, pl.p), pl.n)) < 1e-6) {
+      const w = unit(cross(pl.n, axis.d)), ts = [angleTo(add(axis.o, w)), angleTo(sub(axis.o, w))];
+      if (ts.some((t) => t >= 360 - 1e-7)) throw new Error('The end surface passes through the profile');
+      return span(Math.min(...ts));
+    }
+    return { ...span(359), clip: pl };
+  };
+  // The revolution (359° from the profile) cut by the end plane: of what lies on the profile's side of it, the pieces
+  // that start at the profile; a piece that also reaches the far end goes all the way round without meeting the plane
+  const clipRevolution = (tool, sections, axis, pl, reverse) => {
+    const s = reverse ? -1 : 1, c = profileCentre(sections[0]), side = Math.sign(dot(sub(c, pl.p), pl.n));
+    if (!side) throw new Error('The end surface passes through the profile');
+    const nIn = mul(unit(pl.n), side), b = bbox(tool), big = b.diag + len(sub(b.center, pl.p)) + 100;
+    const u = unit(cross(nIn, Math.abs(nIn[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    const kept = solidsOf(tool.intersect(R.drawRectangle(2 * big, 2 * big).sketchOnPlane(new R.Plane(pl.p, u, nIn)).extrude(2 * big)));
+    // (thin slabs on each profile, just outside where the revolution starts, and the same where it ends)
+    const r = sub(c, axis.o), sweep = mul(cross(axis.d, sub(r, mul(axis.d, dot(r, axis.d)))), s);
+    const slabs = sections.map((sk) => profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(sk.frame)).extrude(-1e-4 * (Math.sign(dot(sweep, sk.frame.n)) || 1))));
+    const start = slabs.length > 1 ? compoundOf(slabs.map((shape) => ({ shape }))) : slabs[0], end = start.clone().rotate(s * 359, axis.o, axis.d);
+    const touches = (piece, slab) => { const q = new R.DistanceQuery(piece); try { return q.distanceTo(slab) < 1e-7; } finally { q.delete(); } };
+    const pieces = kept.filter((piece) => touches(piece, start));
+    if (!pieces.length) throw new Error('The end surface leaves nothing of the revolution');
+    if (pieces.some((piece) => touches(piece, end))) throw new Error('The end surface does not stop the revolution all the way round (a profile on the axis needs an end plane through it)');
+    return pieces.length > 1 ? compoundOf(pieces.map((shape) => ({ shape }))) : pieces[0];
   };
 
   // consecutive fillets (or chamfers) applied since the last other solid feature
@@ -3784,7 +3879,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if(f.op==='cut'&&!solids.length)throw new Error('A cut requires an existing solid body');
           const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [];
           if (!refs.length) throw new Error('Select one or more sketch profiles');
-          const sections = refs.map((ref) => getSketch(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
+          const sections = refs.map((ref) => sectionOf(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
+          if (refs.some(isFaceProfile)) res.features[f.id] = { ...(res.features[f.id] || {}), profiles: refs };
           const firstFrame = sections[0].frame;
           for (const sk of sections) {
             if (Math.abs(dot(sk.frame.n, firstFrame.n)) < 1 - 1e-7 || Math.abs(dot(sub(sk.frame.o, firstFrame.o), firstFrame.n)) > 1e-5) throw new Error('Extrude profiles must lie in the same plane');
@@ -3794,9 +3890,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const extrusions = [];
           // (draft: the side walls tilted about the profile's plane by the angle, narrowing away from it, or widening
           // with draftOutward; the walls of holes tilt with them. Each side of the profile drafted away from it)
-          const draftAng = ev(f.draft ?? 0);
-          if (!Number.isFinite(draftAng) || Math.abs(draftAng) >= 89) throw new Error('The draft angle must be between 0° and 89°');
-          const drafted = Math.abs(draftAng) > 1e-9, ang = f.draftOutward ? -draftAng : draftAng;
+          // (draft2Own: the second side — side2, or Two sides' second depth — drafted by draft2 / draftOutward2 instead)
+          const draftOf = (g) => {
+            const a = ev(g.draft ?? 0);
+            if (!Number.isFinite(a) || Math.abs(a) >= 89) throw new Error('The draft angle must be between 0° and 89°');
+            return { drafted: Math.abs(a) > 1e-9, ang: g.draftOutward ? -a : a };
+          };
+          const draft2 = f.draft2Own ? { draft: f.draft2 ?? 0, draftOutward: !!f.draftOutward2 } : { draft: f.draft, draftOutward: f.draftOutward };
+          draftOf(f); draftOf(draft2);
           const startMode=f.startFrom||'profile';
           if(!['profile','offset','surface'].includes(startMode))throw new Error('Select a supported extrusion start');
           const startSurface=startMode==='surface'?resolveSurface(f.startPlane,f.startFace):null;
@@ -3809,7 +3910,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const SIDE_ENDS=['blind','through','upToVertex','upToSurface','offsetSurface'];
           const twoEnds=!!f.side2&&SIDE_ENDS.includes(f.end||'blind');
           if(twoEnds&&!SIDE_ENDS.includes(f.end2||'blind'))throw new Error('Select a supported end for the second side');
-          const second=twoEnds?{...f,end:f.end2||'blind',depth:f.depth2,toPlane:f.toPlane2,toFace:f.toFace2,toPoint:f.toPoint2,toVertex:f.toVertex2,toOffset:f.toOffset2,toFlip:f.toFlip2,refKey:'2'}:null;
+          const second=twoEnds?{...f,...draft2,end:f.end2||'blind',depth:f.depth2,toPlane:f.toPlane2,toFace:f.toFace2,toPoint:f.toPoint2,toVertex:f.toVertex2,toOffset:f.toOffset2,toFlip:f.toFlip2,refKey:'2'}:null;
           // which way along `axis` a side goes from o: +1 or -1
           const sideDir=(g,axis,o)=>{
             if(g.end==='upToVertex'){const d=dot(sub(resolvePoint(g.toPoint,g.toVertex),o),axis);if(Math.abs(d)<1e-6)throw new Error('The vertex lies in the sketch plane');return Math.sign(d);}
@@ -3840,6 +3941,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const height=(surface,p)=>dot(sub(surface.p,p),surface.n)/dot(axis,surface.n);
               const atStart=height(startSurface,fr.o),startCenter=add(fr.o,mul(axis,atStart));
               for(const g of sidesOf(axis,startCenter)){
+                const {drafted,ang}=draftOf(g);
                 let lower,upper;
                 if(['blind','midplane','twoSides'].includes(g.end||'blind')){
                   const interval=extrusionInterval(g,ev);lower={p:add(startSurface.p,mul(axis,interval.start)),n:startSurface.n};upper={p:add(startSurface.p,mul(axis,interval.end)),n:startSurface.n};
@@ -3869,6 +3971,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               continue;
             }
             for (const g of sidesOf(axis, sk.frame.o)) {
+              const { drafted, ang } = draftOf(g);
               let z0 = 0, z1 = 0;
               if(['blind','midplane','twoSides'].includes(g.end||'blind'))({start:z0,end:z1}=extrusionInterval(g,ev));
               else if(g.end==='through'||g.end==='through2'){
@@ -3902,7 +4005,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 } else {
                   // angled surface: extrude past it, then keep the part on the sketch's side
                   const dir = Math.sign(t) || 1;
-                  let rProf = 0;
+                  let rProf = sk.reach || 0;
                   for (const r of sk.regions) for (const q of r.outer.poly) rProf = Math.max(rProf, Math.hypot(q[0], q[1]));
                   const tan = Math.sqrt(1 - cosA * cosA) / Math.abs(cosA);
                   const L = Math.abs(t) + rProf * tan + 10;
@@ -3921,10 +4024,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
               }
               if (!tool) {
                 if (z1 - z0 <= 1e-9) throw new Error('Depth must be greater than zero');
-                if (drafted && z0 < -1e-9 && z1 > 1e-9) {
+                // (Two sides: the second depth drafted as the second side; the first depth lies along the extrusion)
+                const other = g.end === 'twoSides' ? draftOf({ ...f, ...draft2 }) : { drafted, ang };
+                const [dUp, dDown] = sk.extrudeSign < 0 !== !!(g.reverse && g.end !== 'midplane') ? [other, { drafted, ang }] : [{ drafted, ang }, other];
+                if ((dUp.drafted || dDown.drafted) && z0 < -1e-9 && z1 > 1e-9) {
                   // (both sides of the profile: each drafted away from it, then joined)
-                  const up = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1)), fr.o, fr.n, ang);
-                  const down = draftPrism(profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0)), fr.o, mul(fr.n, -1), ang);
+                  let up = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr)).extrude(z1));
+                  let down = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(-z0));
+                  if (dUp.drafted) up = draftPrism(up, fr.o, fr.n, dUp.ang);
+                  if (dDown.drafted) down = draftPrism(down, fr.o, mul(fr.n, -1), dDown.ang);
                   tool = up.fuse(down);
                 } else {
                   tool = profileSolid(sk, (dr) => dr.sketchOnPlane(rPlane(fr, add(fr.o, mul(fr.n, z0)))).extrude(z1 - z0));
@@ -3946,13 +4054,16 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if(f.op==='cut'&&!solids.length)throw new Error('A cut requires an existing solid body');
           const refs=Array.isArray(f.profiles)?f.profiles:f.sketch?[f.sketch]:[];
           if(!refs.length)throw new Error('Select one or more revolution profiles');
-          const sections=refs.map(ref=>getSketch(ref,f.thin?{t:ev(f.thinT),dir:f.thinDir||'one'}:null)),first=sections[0];
+          const sections=refs.map(ref=>sectionOf(ref,f.thin?{t:ev(f.thinT),dir:f.thinDir||'one'}:null)),first=sections[0];
+          if(refs.some(isFaceProfile))res.features[f.id]={...(res.features[f.id]||{}),profiles:refs};
           for(const sk of sections)if(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Revolve profiles must lie in the same plane');
-          const {angle,start}=revolutionInterval(f,ev),{o:origin,d:dir}=revolveAxisOf(f,first);
-          sections.forEach(sk=>checkRevolveAxis(sk,{o:origin,d:dir}));
+          const revAxis=revolveAxisOf(f,first),{o:origin,d:dir}=revAxis;
+          sections.forEach(sk=>checkRevolveAxis(sk,revAxis));
+          const extent=revolveExtent(f,first,revAxis),{angle,start}=extent;
           const revolutions=sections.map(sk=>profileSolid(sk,dr=>dr.sketchOnPlane(rPlane(sk.frame)).revolve(dir,{origin,angle})));
           let tool=revolutions[0];for(const next of revolutions.slice(1))tool=tool.fuse(next);
           if(start)tool=tool.rotate(start,origin,dir);
+          if(extent.clip)tool=clipRevolution(tool,sections,revAxis,extent.clip,f.reverse);
           tool = unify(tool);
           const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
@@ -4383,7 +4494,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
             return {...source,sk:subset,sourceSketch:source.sk,id:LR.sourceId(ref)};
           });
           const first=sections[0];for(const sk of sections)if(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5)throw new Error('Surface profiles must lie in the same plane');
-          const oc=R.getOC(),parts=[],extrusion=f.type==='surfExtrude'?extrusionInterval(f,ev):null,revolution=f.type==='surfRevolve'?revolutionInterval(f,ev):null,axis=revolution?revolveAxisOf(f,first):null;
+          const oc=R.getOC(),parts=[],extrusion=f.type==='surfExtrude'?extrusionInterval(f,ev):null,axis=f.type==='surfRevolve'?revolveAxisOf(f,first):null,revolution=axis?revolveExtent(f,first,axis):null;
+          if(revolution?.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
           for(const sk of sections){
             if(axis)checkRevolveAxis(sk,axis);
             const axisLine=f.axis==='sketchLine'?(f.axisSketch?.sketch===sk.id?f.axisSketch.curve:null):f.axis;

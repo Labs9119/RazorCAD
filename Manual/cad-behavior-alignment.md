@@ -32,10 +32,10 @@ instead of changing the resulting geometry.
 
 | Family | Existing behavior | Remaining alignment work |
 | --- | --- | --- |
-| Extrude | Region selection, Thin, through/up-to/offset and scoped cuts, start from an offset or a plane, draft (each side from the profile plane, to angled ends, from angled starts), a second side with its own end condition, Intersect | Direct face inputs (a model face as the profile); a draft of its own for the second side |
-| Revolve | Features listed above, Intersect | To Object extent; direct planar-face inputs |
+| Extrude | Region selection and flat model faces as profiles, Thin, through/up-to/offset and scoped cuts, start from an offset or a plane, draft (each side from the profile plane, to angled ends, from angled starts; the second side drafted on its own), a second side with its own end condition, Intersect | None known |
+| Revolve | Features listed above, Intersect, flat model faces as profiles, Up To Vertex / Up To Surface (planes through the axis exactly, other planes and faces trimming the revolution) | None known |
 | Surface Extrude | Features listed above | Start offsets/objects, To Object termination, direct model-edge/face inputs and draft |
-| Surface Revolve | Features listed above | To Object extent and direct model-edge/face inputs |
+| Surface Revolve | Features listed above, Up To Vertex and Up To Surface (a plane through the axis) | Up to a plane beside the axis; direct model-edge/face inputs |
 | Sweep / Surface Sweep | Contour slots and path/guide modes listed above | Guide surfaces, broader scale/twist controls and direct model-edge/face inputs; guided solid holes/Thin remain unsupported |
 | Loft / Surface Loft | Canvas profiles, guides, endpoint conditions through G2, and manual sketch-profile connectors (start vertex, circular seam and traversal) | Split-free interior attachments, manual hole/Thin/3D-curve correspondence and broader guide/endpoint combinations |
 | Patch | Per-edge G0/G1/G2 and connected model-edge selection already exist | Tangency weights, interior rails/points; sketch inputs need an explicit product decision (planar sketch creation currently belongs to Planar Surface) |

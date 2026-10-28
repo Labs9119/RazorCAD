@@ -209,6 +209,8 @@ const isSurfEnd = (f) => f.end === 'upToSurface' || f.end === 'offsetSurface';
 // An extrusion's second side: offered with a one-sided end condition
 const hasSide2 = (f) => ['blind', 'through', 'upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end || 'blind');
 const side2On = (f) => !!f.side2 && hasSide2(f);
+// ... and a draft of its own for it (or for Two sides' second depth)
+const hasDraft2 = (f) => side2On(f) || f.end === 'twoSides';
 // The picked model face or vertex a reference field stands for, and the pick slot it fills
 const REF_PICKED = { startPlane: 'startFace', toPlane: 'toFace', toPlane2: 'toFace2', toPoint: 'toVertex', toPoint2: 'toVertex2' };
 const REF_SLOT = { startPlane: 'start', toPlane: 'end', toPoint: 'end', toPlane2: 'end2', toPoint2: 'end2' };
@@ -258,12 +260,16 @@ const REVOLUTION_AXIS = {title:'Axis of Revolution',fields:[
   {key:'axisPick',type:'axisPick'},
   {key:'projectAxis',type:'check',label:'Project axis into profile plane'},
 ]};
+// (a revolve up to a vertex or a surface: kernel.worker.js revolveExtent)
+const revUpTo=f=>['upToVertex','upToSurface'].includes(f.extent),revAngle=f=>f.extent!=='full'&&!revUpTo(f);
 const REVOLUTION_DIRECTIONS = {title:'Revolution',fields:[
-  {key:'extent',type:'select',label:'Extent',options:[['full','Full (360°)'],['angle','Angle']]},
-  {key:'end',type:'select',label:'Direction',show:f=>f.extent!=='full',options:[['oneway','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
-  {key:'angle',type:'expr',label:'Angle',unit:'°',show:f=>f.extent!=='full'},
-  {key:'angle2',type:'expr',label:'Second angle',unit:'°',default:0,show:f=>f.extent!=='full'&&f.end==='twoSides'},
-  {key:'reverse',type:'check',label:'Reverse direction',show:f=>f.extent!=='full'&&f.end!=='midplane'},
+  {key:'extent',type:'select',label:'Extent',options:[['full','Full (360°)'],['angle','Angle'],['upToVertex','Up To Vertex'],['upToSurface','Up To Surface']]},
+  {key:'end',type:'select',label:'Direction',show:revAngle,options:[['oneway','One side'],['twoSides','Two sides'],['midplane','Symmetric']]},
+  {key:'angle',type:'expr',label:'Angle',unit:'°',show:revAngle},
+  {key:'angle2',type:'expr',label:'Second angle',unit:'°',default:0,show:f=>revAngle(f)&&f.end==='twoSides'},
+  {key:'toPoint',type:'pointRef',label:'Vertex',show:f=>f.extent==='upToVertex'},
+  {key:'toPlane',type:'surfaceRef',label:'Surface',show:f=>f.extent==='upToSurface'},
+  {key:'reverse',type:'check',label:'Reverse direction',show:f=>revUpTo(f)||revAngle(f)&&f.end!=='midplane'},
 ]};
 const THIN_GROUP = {
   title: 'Thin Feature', fields: [
@@ -837,6 +843,9 @@ const PM_SCHEMAS = {
       title: 'Draft', fields: [
         { key: 'draft', type: 'expr', label: 'Draft angle', unit: '°', default: 0 },
         { key: 'draftOutward', type: 'check', label: 'Draft outward (wider away from the profile)', show: (f) => !!f.draft && String(f.draft).trim() !== '0' },
+        { key: 'draft2Own', type: 'check', label: 'Second side drafted on its own', show: hasDraft2 },
+        { key: 'draft2', type: 'expr', label: 'Second side draft angle', unit: '°', default: 0, show: (f) => hasDraft2(f) && f.draft2Own },
+        { key: 'draftOutward2', type: 'check', label: 'Second side drafted outward', show: (f) => hasDraft2(f) && f.draft2Own && !!f.draft2 && String(f.draft2).trim() !== '0' },
       ],
     },
     {
@@ -3576,7 +3585,7 @@ export class UI {
           select.onchange=()=>{f.op=['cut','intersect'].includes(select.value)?select.value:'add';f.merge=select.value!=='new';pm.scopePick=false;this.renderPM();a.preview(true);};
           body.appendChild(this.row('Operation',select));
         } else if(fd.type==='axisPick'){
-          body.appendChild(el('button',{class:'pm-btn'+(pm.profilePick===false&&!pm.scopePick?' on':''),'data-profile-axis':'',onclick:()=>{pm.profilePick=false;pm.scopePick=false;pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Select axis in canvas'));
+          body.appendChild(el('button',{class:'pm-btn'+(pm.profilePick===false&&!pm.scopePick&&!pm.revolveEndPick?' on':''),'data-profile-axis':'',onclick:()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Select axis in canvas'));
         } else if (fd.type === 'edges') {
           this.renderEdgeList(body, f);
         } else if (fd.type === 'points3d') {
@@ -3739,12 +3748,13 @@ export class UI {
           }
           if (['sweep','surfSweep'].includes(f.type)) s.dataset.sweepField = fd.key;
           if (['loft', 'surfLoft'].includes(f.type) && /^(start|end)/.test(fd.key)) { s.dataset.loftEndField = fd.key; if (fd.type === 'direction') s.onfocus = () => { pm.loftEndAxis = fd.key; }; }
-          if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
           if(f.referenceDefinition)s.dataset.datumField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity') s.dataset.patchContinuity = '';
           if (['sweep','surfSweep'].includes(f.type) && ['profile','path','guide'].includes(fd.key)) s.onfocus = () => { pm.sweepSlot = fd.key; };
           if(f.type==='extrude'&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+          if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))s.onfocus=()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
           s.onchange = () => {
             f[fd.key] = s.value || null;
             if(f.type==='extrude'){
@@ -3753,9 +3763,13 @@ export class UI {
               if(fd.key==='end')pm.extrudeSurfaceSlot='end';
               if(fd.key==='end2')pm.extrudeSurfaceSlot='end2';
             }
+            if(['revolve','surfRevolve'].includes(f.type)){
+              if(['surfaceRef','pointRef'].includes(fd.type)){pm.revolveEndPick=true;f[REF_PICKED[fd.key]]=null;}
+              if(fd.key==='extent'&&revUpTo(f)){pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;}
+            }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
-            if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;a.updateSketchDisplay();};
+            if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
           if (f.type === 'surfFill' && fd.key === 'continuity' && s.value === 'G0' && !f.edges.some(e => e.continuity && e.continuity !== 'G0')) pm.patchSupportPick = false;
             if (['loft', 'surfLoft'].includes(f.type) && /^(start|end)Condition$/.test(fd.key)) { pm.loftConnector=null; pm.loftEndSlot = ['tangent', 'curvature'].includes(s.value) ? fd.key.replace('Condition', 'Faces') : null; pm.loftDraft = null; a.updateSketchDisplay(); }
@@ -3767,6 +3781,7 @@ export class UI {
           const wrap = el('div', { class: 'pm-input' });
           wrap.appendChild(s);
           body.appendChild(this.row(fd.label, wrap));
+          if(['revolve','surfRevolve'].includes(f.type)&&['surfaceRef','pointRef'].includes(fd.type))body.appendChild(el('button',{class:'pm-btn'+(pm.revolveEndPick?' on':''),'data-revolve-end-pick':fd.key,onclick:()=>{pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(fd.type==='pointRef'?'Click the vertex the revolution goes up to.':'Select the plane or flat face the revolution goes up to.');}},fd.type==='pointRef'?'Pick end vertex in canvas':'Pick end surface in canvas'));
           if(f.type==='extrude'&&fd.type==='surfaceRef')body.appendChild(el('button',{class:'pm-btn'+(pm.extrudeSurfaceSlot===REF_SLOT[fd.key]?' on':''),'data-extrude-surface-pick':fd.key,onclick:()=>{pm.extrudeSurfaceSlot=REF_SLOT[fd.key];pm.extrudePick=false;pm.scopePick=false;this.renderPM();a.updateSketchDisplay();a.updatePlanes();a.status(`Select a plane or planar face for the ${{start:'start',end:'end',end2:'second side’s end'}[pm.extrudeSurfaceSlot]} of the extrusion.`);}},{startPlane:'Pick start surface in canvas',toPlane:'Pick end surface in canvas',toPlane2:'Pick second side surface in canvas'}[fd.key]));
         }
       }
@@ -5242,7 +5257,7 @@ export class UI {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
       if (extrude) pm.extrudePick = !active;
       if (planar) pm.planarEdges = active;
-      if (common) pm.profilePick=!active;
+      if (common) { pm.profilePick=!active; pm.revolveEndPick=false; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
     if (!guide) {
@@ -5251,7 +5266,7 @@ export class UI {
       const label = el('label'); label.append(cb, document.createTextNode(' Chain selection'));
       body.appendChild(this.row(null, label, 'check'));
     }
-    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
+    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
     const ul = el('div', { class: 'pm-list', 'data-loft-list': key });
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, guide ? 'No guides selected' : 'No profiles selected'));
     f[key].forEach((ref, i) => {

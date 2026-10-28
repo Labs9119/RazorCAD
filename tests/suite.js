@@ -4925,6 +4925,51 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (second side ends, drafts to and from angled planes, Intersect; angled, against the integrated volumes: ${angled}); the panel's Second Side and Intersect`};
   },
 
+  async 'profile-faces-and-second-draft'() {
+    const {run,base}=await import('/tests/profile-face-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const {fixture}=await import('/tests/extrusion-sides-cases.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const labels=()=>[...document.querySelectorAll('#pm label, #pm .pm-label, #pm span')].map((x)=>x.textContent.trim());
+    // (the second side's own draft: offered with a second side)
+    const d=fixture({draft:5});await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    if(labels().some((t)=>t.startsWith('Second side drafted on its own')))return {ok:false,detail:'Second side draft offered without a second side'};
+    a.pm.feature.side2=true;a.pm.feature.depth2=3;a.ui.renderPM();await settle();
+    if(!labels().some((t)=>t.startsWith('Second side drafted on its own')))return {ok:false,detail:'No draft of its own for the second side'};
+    a.pm.feature.draft2Own=true;a.ui.renderPM();await settle();
+    if(!labels().some((t)=>t.startsWith('Second side draft angle')))return {ok:false,detail:'No second side draft angle'};
+    a.cancelPM?.();await settle();
+    // (a model face clicked while choosing profiles)
+    const b=base('extrude',{depth:5});b.feature.profiles=[];await a.setDoc(b.doc);a.editFeature(b.feature.id);await settle();
+    if(!a.faceProfilePicking())return {ok:false,detail:'Extrude profile picking does not take model faces'};
+    const vp=a.viewport,i=vp.faceIndexNear([0,5,20]);if(i<0)return {ok:false,detail:'Top face not found in the view'};
+    a.addFaceProfile({hit:{face:i,point:{toArray:()=>[0,5,20]}}});await settle();
+    if(a.pm.feature.profiles.length!==1||a.pm.feature.profiles[0].kind!=='modelFace')return {ok:false,detail:`Profiles after the face pick: ${JSON.stringify(a.pm.feature.profiles)}`};
+    if(!document.querySelector('[data-loft-list="profiles"]')?.textContent.includes('Model face'))return {ok:false,detail:'The face profile is not listed as a model face'};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+    if(a.result.errors.size||!m||Math.abs(m.volume-10000)>1e-4)return {ok:false,detail:`Face extrusion's volume ${m?.volume} (expected 10000), errors ${JSON.stringify([...a.result.errors])}`};
+    return {ok:true,detail:`${native.results.length} kernel cases (faces extruded, cut, drafted, up to a plane, with a hole, revolved; second side and Two sides drafted on their own); the panel's second-side draft and a face picked as a profile`};
+  },
+
+  async 'revolve-up-to'() {
+    const {run,fixture}=await import('/tests/revolve-upto-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    const field=(key)=>document.querySelector(`[data-feature-field="${key}"]`),extent=field('extent');
+    if(!extent||![...extent.options].some((o)=>o.value==='upToSurface'))return {ok:false,detail:'No Up To Surface extent for Revolve'};
+    extent.value='upToSurface';extent.dispatchEvent(new Event('change'));await settle();
+    if(!document.querySelector('[data-revolve-end-pick="toPlane"]'))return {ok:false,detail:'No end surface pick for Revolve'};
+    if(a.pickMode()!=='face')return {ok:false,detail:`Pick mode for the end surface: ${a.pickMode()}`};
+    a.pmPick('plane','right');await settle();
+    if(a.pm.feature.toPlane!=='right')return {ok:false,detail:`End surface after the tree pick: ${a.pm.feature.toPlane}`};
+    document.querySelector('[data-profile-axis]')?.click();await settle();
+    if(a.pickMode()!=='revaxis')return {ok:false,detail:`Pick mode after Select axis: ${a.pickMode()}`};
+    await a.okPM();await settle();
+    const body=a.result?.bodies?.at(-1),m=body&&(await a.kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+    if(a.result.errors.size||!m||Math.abs(m.volume-750*Math.PI/4)>1e-4)return {ok:false,detail:`Revolve up to Right: volume ${m?.volume} (expected ${750*Math.PI/4}), errors ${JSON.stringify([...a.result.errors])}`};
+    return {ok:true,detail:`${native.results.length} kernel cases (up to vertices either way, planes through the axis, a plane beside it trimming it, surface revolve; rejections); the panel's Up To Surface and its pick`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

@@ -209,8 +209,8 @@ export function createFeature(doc, type, props = {}) {
     // thin: a wall of thickness thinT along the sketch curves (open sketches are always thin);
     // thinDir: 'one' (outside a closed profile / left of an open one), 'other' or 'mid'.
     // scopeAll: a cut acts on every body it reaches (off: only the bodies in scope)
-    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, side2: false, end2: 'blind', toPoint2: null, toVertex2: null, toPlane2: null, toFace2: null, toOffset2: 5, toFlip2: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
-    revolve: { sketch: null, profiles: null, extent: 'angle', angle2: 0, projectAxis: false, axisSketch: null, thin: false, thinT: 2, thinDir: 'one', op: 'add', merge: true, axis: 'v', end: 'oneway', angle: 360, reverse: false, axisEdge: null, axisFace: null, scopeAll: true, scope: [] },
+    extrude: { sketch: null, op: 'add', merge: true, startFrom:'profile',startOffset:0,startPlane:null,startFace:null,end: 'blind', depth: 10, depth2: 0, reverse: false, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 5, toFlip: false, side2: false, end2: 'blind', toPoint2: null, toVertex2: null, toPlane2: null, toFace2: null, toOffset2: 5, toFlip2: false, draft2Own: false, draft2: 0, draftOutward2: false, thin: false, thinT: 2, thinDir: 'one', scopeAll: true, scope: [] },
+    revolve: { sketch: null, profiles: null, extent: 'angle', angle2: 0, projectAxis: false, axisSketch: null, thin: false, thinT: 2, thinDir: 'one', op: 'add', merge: true, axis: 'v', end: 'oneway', angle: 360, reverse: false, axisEdge: null, axisFace: null, toPoint: null, toVertex: null, toPlane: null, toFace: null, scopeAll: true, scope: [] },
     // axis: 'v' (sketch vertical), 'u' (sketch horizontal), the id of a line in the sketch, an axis
     // feature, or 'edge' / 'face' (a straight model edge / cylindrical face picked on the model)
     // refs: up to three references (see refgeom.js); the plane type is inferred from them
@@ -263,7 +263,7 @@ export function createFeature(doc, type, props = {}) {
     // mode 'mates': mates [{ type, a, b, value, flip }] between the moving bodies and fixed geometry
     moveBody: { bodies: [], copy: false, copies: 1, mode: 'translate', dx: 0, dy: 0, dz: 0, rotAxis: 'none', angle: 0, rotCenter: 'origin', mates: [] },
     surfExtrude: { sketch: null, profiles: null, depth2: 0, end: 'blind', depth: 10, reverse: false },
-    surfRevolve: { sketch: null, profiles: null, end: 'oneway', extent: 'angle', angle2: 0, reverse: false, projectAxis: false, axisSketch: null, axis: 'v', angle: 360 },
+    surfRevolve: { sketch: null, profiles: null, end: 'oneway', extent: 'angle', angle2: 0, reverse: false, projectAxis: false, axisSketch: null, axis: 'v', angle: 360, toPoint: null, toVertex: null, toPlane: null, toFace: null },
     surfPlanar: { sketch: null, profiles: null, edges: [], chainSelection: true },
     surfOffset: { faces: [], distance: 5, flip: false },
     // profiles: sketches / 3D sketches (one chain each, all open or all closed), in order; guides: guide curves
