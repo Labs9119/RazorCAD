@@ -7006,6 +7006,132 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = `${f.cuts.length} cut${f.cuts.length === 1 ? '' : 's'} made in the assembly${through ? ', through all' : ''}`;
           break;
         }
+        case 'boss':
+        case 'snapHook': {
+          // Plastic part features at points (clicked on flat faces, or a sketch's points / circle centres), rising out of
+          // the face along its normal (reverse: the other way). boss: a post outerD across, height high, its wall drafted
+          // by draft, a hole holeD × holeDepth down from its top, ribs (count, ribWidth, ribLength, ribHeight) out from
+          // its foot. snapHook: a beam (thickness across, width wide, length high) with a hook at its tip, overhang out,
+          // its lead-in at insertAngle from the beam and its catch at retainAngle (90: square); turned angle about the
+          // normal from the face's X direction
+          const locs = [];
+          if (f.sketch) {
+            const s = sketches.get(f.sketch);
+            if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
+            const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
+            const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
+            for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: S.fromFrame2D(s.frame, pt.x, pt.y), n: mul(s.frame.n, f.reverse ? -1 : 1) });
+          }
+          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, n: mul(unit(fc.n), f.reverse ? -1 : 1) });
+          if (!locs.length) throw new Error('Click points on a flat face for them, or select a sketch with points on the face');
+          if (!body) throw new Error('There is no body to put them on');
+          const poly = (fr, pts) => R.makePolygon(pts.map(([x, y]) => add(add(fr.o, mul(fr.x, x)), mul(fr.z, y))));
+          let tool = null;
+          for (const { p, n } of locs) {
+            const base = frameOnPlane(p, n), a = ((ev(f.angle ?? 0) || 0) * Math.PI) / 180;
+            const X = add(mul(base.u, Math.cos(a)), mul(base.v, Math.sin(a))), Y = cross(n, X);
+            let one;
+            if (f.type === 'boss') {
+              const D = ev(f.outerD), H = ev(f.height), d = ev(f.holeD ?? 0), hd = f.holeDepth === '' || f.holeDepth == null ? H : ev(f.holeDepth), dr = ev(f.draft ?? 0);
+              if (!(D > 0 && H > 0)) throw new Error('The boss needs a diameter and a height');
+              if (!(d >= 0 && d < D)) throw new Error('The boss’s hole must be narrower than the boss');
+              if (!(hd > 0 && hd <= H + 1e-9) && d > 0) throw new Error('The boss’s hole depth must be more than zero and no more than its height');
+              if (!(dr >= 0 && dr < 45)) throw new Error('The boss’s draft must be from 0° to 45°');
+              const R0 = D / 2, Rt = R0 - H * Math.tan((dr * Math.PI) / 180);
+              if (!(Rt > d / 2 + 1e-6)) throw new Error('The boss’s draft leaves no wall round its hole at the top');
+              const fr = { o: p, x: X, z: n };
+              one = R.revolution(poly(fr, [[0, -0.05], [R0, -0.05], [R0, 0], [Rt, H], [0, H]]), p, n, 360);
+              const nr = Math.round(ev(f.ribs ?? 0) || 0);
+              if (nr > 0) {
+                const w = ev(f.ribWidth), L = ev(f.ribLength), h = ev(f.ribHeight ?? H * 0.75);
+                if (!(w > 0 && L > 0 && h > 0 && h <= H)) throw new Error('The ribs need a width, a length out from the boss and a height up to the boss’s');
+                for (let i = 0; i < nr; i++) {
+                  const t = (2 * Math.PI * i) / nr, rx = add(mul(X, Math.cos(t)), mul(Y, Math.sin(t))), side = cross(n, rx), rf = { o: add(p, mul(side, -w / 2)), x: rx, z: n };
+                  const tri = poly(rf, [[0, -0.05], [R0 + L, -0.05], [R0 + L, 0], [R0 - h * Math.tan((dr * Math.PI) / 180), h], [0, h]]);
+                  const v = new R.Vector(mul(side, w));
+                  try { one = one.fuse(R.basicFaceExtrusion(tri, v)); } finally { v.delete(); }
+                }
+              }
+              if (d > 0) one = one.cut(R.revolution(poly(fr, [[0, H + 0.05], [d / 2, H + 0.05], [d / 2, H - hd], [0, H - hd]]), p, n, 360));
+            } else {
+              const L = ev(f.length), t = ev(f.thickness), w = ev(f.width), h = ev(f.overhang), ai = ev(f.insertAngle ?? 30), ar = ev(f.retainAngle ?? 90);
+              if (!(L > 0 && t > 0 && w > 0 && h > 0)) throw new Error('The snap hook needs a length, a thickness, a width and an overhang');
+              if (!(ai > 0 && ai < 90) || !(ar > 0 && ar <= 90)) throw new Error('The snap hook’s lead-in angle must be between 0° and 90°, its catch angle above 0° and up to 90°');
+              const hh = h / Math.tan((ai * Math.PI) / 180), dd = ar >= 90 ? 0 : h / Math.tan((ar * Math.PI) / 180);
+              if (!(hh + dd < L - 1e-6)) throw new Error('The hook is taller than the beam: make the beam longer or the lead-in steeper');
+              const fr = { o: add(p, mul(Y, -w / 2)), x: X, z: n };
+              const prof = poly(fr, [[-t / 2, -0.05], [t / 2, -0.05], [t / 2, L - hh - dd], [t / 2 + h, L - hh], [t / 2, L], [-t / 2, L]]);
+              const v = new R.Vector(mul(Y, w));
+              try { one = R.basicFaceExtrusion(prof, v); } finally { v.delete(); }
+            }
+            tool = tool ? tool.fuse(one) : one;
+          }
+          tools.set(f.id, { shape: tool, op: 'add', merge: true, scope: null });
+          apply('add', tool, true, null);
+          res.features[f.id] = { faces: f.faces || [] };
+          res.notes[f.id] = `${locs.length} ${f.type === 'boss' ? 'boss' : 'snap hook'}${locs.length === 1 ? '' : f.type === 'boss' ? 'es' : 's'}`;
+          break;
+        }
+        case 'lipGroove': {
+          // A lip (raised) or a groove (sunk) along a flat rim face (a shelled part's open edge): the band of the face
+          // width wide along its inner edge (side 'inner') or its outer one, raised height or sunk that deep
+          if (!f.face?.n) throw new Error('Click the flat rim face for the lip or groove');
+          const hit = findFaceAny(solids, f.face);
+          if (!hit || hit.face.geomType !== 'PLANE') throw new Error('The rim face could not be found (a flat face)');
+          const w = ev(f.width), h = ev(f.height);
+          if (!(w > 0 && h > 0)) throw new Error('The lip or groove needs a width and a height');
+          const n = unit(vec(hit.face.normalAt())), outer = hit.face.clone().outerWire(), inners = hit.face.clone().innerWires();
+          const area = (wire) => { const fc = R.makeFace(wire.clone()); try { return R.measureArea(fc); } finally { fc.delete(); } };
+          let band;
+          if ((f.side || 'inner') === 'inner') {
+            if (!inners.length) throw new Error('The rim face has no inner edge (choose the outer side)');
+            const inner = inners[0], a0 = area(inner);
+            // (the inner edge offset out into the face)
+            const bigger = [w, -w].map((d) => { try { return inner.clone().offset2D(d, 'intersection'); } catch (e) { if (isFatal(e)) throw e; return null; } }).filter(Boolean).sort((x, y) => area(y) - area(x))[0];
+            if (!bigger || !(area(bigger) > a0)) throw new Error('The lip is wider than the rim');
+            band = R.addHolesInFace(R.makeFace(bigger), [inner]);
+          } else {
+            const a0 = area(outer);
+            const smaller = [w, -w].map((d) => { try { return outer.clone().offset2D(d, 'intersection'); } catch (e) { if (isFatal(e)) throw e; return null; } }).filter(Boolean).sort((x, y) => area(x) - area(y))[0];
+            if (!smaller || !(area(smaller) < a0)) throw new Error('The lip is wider than the rim');
+            band = R.addHolesInFace(R.makeFace(outer), [smaller]);
+          }
+          // (the band must lie on the rim face)
+          const onRim = Math.abs(R.measureArea(band) - R.measureArea(boolByList('common', band, [hit.face]))) < 1e-6 * R.measureArea(band);
+          if (!onRim) throw new Error('The band runs off the rim face: make the lip narrower');
+          const groove = f.kind === 'groove', v = new R.Vector(mul(n, groove ? -(h + 0.05) : h + 0.05));
+          let tool;
+          try { tool = R.basicFaceExtrusion(groove ? band.clone().translate(mul(n, 0.05)) : band.clone().translate(mul(n, -0.05)), v); } finally { v.delete(); }
+          tools.set(f.id, { shape: tool, op: groove ? 'cut' : 'add', merge: true, scope: null });
+          apply(groove ? 'cut' : 'add', tool, true, null);
+          res.features[f.id] = { face: f.face };
+          break;
+        }
+        case 'vent': {
+          // A vent: slots slotWidth wide, barWidth apart, at angle, across a sketch's closed outline kept margin in from
+          // it, cut depth deep into the body (through: right through), along the sketch's normal (reverse: the other way)
+          const sk = getSketch(f.sketch);
+          if (!sk.drawing) throw new Error('The vent sketch needs a closed outline');
+          const sw = ev(f.slotWidth), bw = ev(f.barWidth), m = ev(f.margin ?? 0), ang = ev(f.angle ?? 0) || 0;
+          if (!(sw > 0 && bw > 0 && m >= 0)) throw new Error('The vent needs a slot width and a bar width (and a margin of zero or more)');
+          let zone = m > 0 ? sk.drawing.offset(-m) : sk.drawing;
+          const pts = sk.regions.flatMap((r) => r.outer.poly), cx = pts.reduce((s, q) => s + q[0], 0) / pts.length, cy = pts.reduce((s, q) => s + q[1], 0) / pts.length;
+          const span = 2 * Math.max(...pts.map((q) => Math.hypot(q[0] - cx, q[1] - cy))) + 2 * (sw + bw), pitch = sw + bw, count = Math.ceil(span / pitch) + 1;
+          let strips = null;
+          for (let i = 0; i < count; i++) {
+            const off = (i - (count - 1) / 2) * pitch, rect = R.drawRectangle(span, sw).translate(0, off).rotate(ang, [0, 0]).translate(cx, cy);
+            strips = strips ? strips.fuse(rect) : rect;
+          }
+          const slots = zone.intersect(strips);
+          const n = mul(sk.frame.n, f.reverse ? 1 : -1), through = f.end === 'through';
+          const bb = body ? bbox(body) : null, depth = through ? 2 * (bb?.diag || 100) + len(sub(bb?.center || [0, 0, 0], sk.frame.o)) : ev(f.depth);
+          if (!(depth > 0)) throw new Error('The vent depth must be greater than zero');
+          const start = through ? add(sk.frame.o, mul(n, -depth / 2)) : add(sk.frame.o, mul(n, -0.05));
+          const tool = slots.sketchOnPlane(rPlane(sk.frame, start)).extrude((through ? depth : depth + 0.05) * (dot(n, sk.frame.n) > 0 ? 1 : -1));
+          tools.set(f.id, { shape: tool, op: 'cut', merge: true, scope: null });
+          apply('cut', tool, true, null);
+          break;
+        }
         case 'hole': {
           // Hole: simple, counterbored, countersunk or tapped holes at sketch points / circle centres
           // or clicked points on a flat face, square into the material

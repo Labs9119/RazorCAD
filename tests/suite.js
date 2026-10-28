@@ -5339,6 +5339,17 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (bend allowance and deduction against the K-factor's flat, partial flanges centred and offset, swapped ends; rejections); the panels' bend calculation and flange width`};
   },
 
+  async 'plastic-features'() {
+    const {run,fixture}=await import('/tests/plastic-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    for(const [type,title] of [['boss','Boss'],['snapHook','Beam and Hook'],['lipGroove','Lip / Groove'],['vent','Slots']]){
+      const d=fixture(type,{});await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+      if(!(document.querySelector('#pm')?.textContent||'').includes(title))return {ok:false,detail:`No ${title} in the ${type} panel`};
+      a.cancelPM?.();await settle();
+    }
+    return {ok:true,detail:`${native.results.length} kernel cases (bosses with draft, holes and ribs, snap hooks, a lip and a groove on a rim, a vent; rejections); the four panels`};
+  },
+
   async 'extrusion-start-controls'() {
     const {run,fixture,base}=await import('/tests/extrusion-start-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();const d=fixture();await a.setDoc(d.doc);a.editFeature(d.feature.id);const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};await settle();

@@ -103,6 +103,10 @@ export const TYPE_INFO = {
   loft: { base: 'Loft', cutBase: 'Loft Cut', icon: 'loft', cutIcon: 'cutLoft' },
   helix: { base: 'Helix', icon: 'helix' },
   hole: { base: 'Hole', icon: 'hole' },
+  boss: { base: 'Mounting Boss', icon: 'hole' },
+  snapHook: { base: 'Snap Hook', icon: 'rib' },
+  lipGroove: { base: 'Lip-Groove', icon: 'shell' },
+  vent: { base: 'Vent', icon: 'fillPattern' },
   draft: { base: 'Draft', icon: 'draft' },
   spattern: { base: 'Sketch Driven Pattern', icon: 'spattern' },
   curvePattern: { base: 'Curve Driven Pattern', icon: 'curvePattern' },
@@ -323,6 +327,10 @@ export function createFeature(doc, type, props = {}) {
     // Hole: holeType 'simple' | 'cbore' | 'csink' | 'tapped'; size a standard screw size (or
     // 'custom': diameter / cboreD / cboreDepth / csinkD / csinkAngle), fit 'close' | 'normal' | 'loose';
     // tapped: system + thread (cosmetic, threadDepth for the callout); end 'blind' (depth, drill point) | 'through'
+    boss: { faces: [], sketch: null, outerD: 8, height: 10, holeD: 3, holeDepth: '', draft: 0.5, ribs: 0, ribWidth: 1.2, ribLength: 4, ribHeight: 7, reverse: false },
+    snapHook: { faces: [], sketch: null, length: 12, thickness: 1.5, width: 6, overhang: 1, insertAngle: 30, retainAngle: 90, angle: 0, reverse: false },
+    lipGroove: { face: null, kind: 'lip', side: 'inner', width: 1, height: 1 },
+    vent: { sketch: null, slotWidth: 2, barWidth: 2, angle: 0, margin: 1, end: 'through', depth: 2, reverse: false },
     hole: { holeType: 'simple', size: 'M6', fit: 'normal', diameter: 6.6, cboreD: 11, cboreDepth: 6.5, csinkD: 13.7, csinkAngle: 90, system: 'metric', thread: 'M6', threadDepth: '', end: 'blind', depth: 10, drillPoint: true, drillAngle: 118, farCsink: false, farCsinkD: 12, farCsinkAngle: 90, slotLength: 10, slotAngle: 0, toPoint: null, toVertex: null, toPlane: null, toFace: null, toOffset: 2, toFlip: false, reverse: false, sketch: null, faces: [] },
     // pts: [{ x, y, z }] (expressions); kind 'lines' (rounded by radius at the corners) | 'spline'
     sketch3d: { pts: [], segs: [], rels: [], nextId: 1, kind: 'lines', radius: 0 },

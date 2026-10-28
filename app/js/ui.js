@@ -774,6 +774,64 @@ const PM_SCHEMAS = {
       { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
     ] },
   ],
+  boss: [
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the bosses, or select a sketch on the face with points or circles: each gets one.', itemLabel: 'Boss' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+    { title: 'Boss', fields: [
+      { key: 'outerD', type: 'expr', label: 'Outer diameter', unit: 'mm' },
+      { key: 'height', type: 'expr', label: 'Height', unit: 'mm' },
+      { key: 'draft', type: 'expr', label: 'Draft on the outside', unit: '°' },
+      { key: 'holeD', type: 'expr', label: 'Hole diameter (0: none)', unit: 'mm' },
+      { key: 'holeDepth', type: 'expr', label: 'Hole depth (empty: the height)', unit: 'mm', optional: true },
+    ] },
+    { title: 'Ribs', fields: [
+      { key: 'ribs', type: 'expr', label: 'Ribs (0: none)', unit: '#' },
+      { key: 'ribWidth', type: 'expr', label: 'Rib width', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+      { key: 'ribLength', type: 'expr', label: 'Rib length (out from the boss)', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+      { key: 'ribHeight', type: 'expr', label: 'Rib height', unit: 'mm', show: (f) => Number(f.ribs) > 0 },
+    ] },
+  ],
+  snapHook: [
+    { title: 'Positions', fields: [
+      { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the snap hooks, or select a sketch on the face with points.', itemLabel: 'Hook' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch (points)' },
+      { key: 'angle', type: 'expr', label: 'Hook faces (° from the face’s X)', unit: '°' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+    { title: 'Beam and Hook', fields: [
+      { key: 'length', type: 'expr', label: 'Beam length', unit: 'mm' },
+      { key: 'thickness', type: 'expr', label: 'Beam thickness', unit: 'mm' },
+      { key: 'width', type: 'expr', label: 'Width', unit: 'mm' },
+      { key: 'overhang', type: 'expr', label: 'Hook overhang', unit: 'mm' },
+      { key: 'insertAngle', type: 'expr', label: 'Lead-in angle (from the beam)', unit: '°' },
+      { key: 'retainAngle', type: 'expr', label: 'Catch angle (90: square)', unit: '°' },
+    ] },
+  ],
+  lipGroove: [
+    { title: 'Rim Face', fields: [{ key: 'face', type: 'pick', label: 'Face', what: 'flatface' }, { key: 'lgHint', type: 'hint', text: 'The flat face along the open edge of a shelled part, where its two halves meet.' }] },
+    { title: 'Lip / Groove', fields: [
+      { key: 'kind', type: 'select', label: 'Type', options: [['lip', 'Lip (raised)'], ['groove', 'Groove (sunk)']] },
+      { key: 'side', type: 'select', label: 'Along', options: [['inner', 'The inner edge'], ['outer', 'The outer edge']] },
+      { key: 'width', type: 'expr', label: 'Width', unit: 'mm' },
+      { key: 'height', type: 'expr', label: (f) => (f.kind === 'groove' ? 'Depth' : 'Height'), unit: 'mm' },
+      { key: 'lg2Hint', type: 'hint', text: 'For a matching pair: a lip on one half, and on the other a groove a little wider and deeper (the clearance).' },
+    ] },
+  ],
+  vent: [
+    { title: 'Boundary', fields: [{ key: 'sketch', type: 'sketch', label: 'Sketch (a closed outline on the face)' }] },
+    { title: 'Slots', fields: [
+      { key: 'slotWidth', type: 'expr', label: 'Slot width', unit: 'mm' },
+      { key: 'barWidth', type: 'expr', label: 'Bar width (between slots)', unit: 'mm' },
+      { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
+      { key: 'margin', type: 'expr', label: 'Margin from the outline', unit: 'mm' },
+      { key: 'end', type: 'select', label: 'Depth', options: [['through', 'Through all'], ['blind', 'Blind']] },
+      { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.end === 'blind' },
+      { key: 'reverse', type: 'check', label: 'Reverse direction' },
+    ] },
+  ],
   sketch3d: [
     { title: 'Points', fields: [
       { key: 'pts', type: 'points3d' },
@@ -1744,6 +1802,10 @@ export class UI {
         { icon: 'draft', label: 'Draft', action: () => a.startFeature('draft') },
         { icon: 'rib', label: 'Rib', action: () => a.startFeature('rib') },
         { icon: 'dome', label: 'Dome', action: () => a.startFeature('dome') },
+        { icon: 'hole', label: 'Mounting Boss', action: () => a.startFeature('boss') },
+        { icon: 'rib', label: 'Snap Hook', action: () => a.startFeature('snapHook') },
+        { icon: 'shell', label: 'Lip / Groove', action: () => a.startFeature('lipGroove') },
+        { icon: 'fillPattern', label: 'Vent', action: () => a.startFeature('vent') },
         { icon: 'moveFace', label: 'Move Face', action: () => a.startFeature('moveFace') },
         { icon: 'scale', label: 'Scale', action: () => a.startFeature('scale') },
         'sep',

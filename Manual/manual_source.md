@@ -972,6 +972,15 @@ An open sketch line is thickened and filled out until it meets the model, either
 
 A spherical cap or half ellipsoid on round faces, or a smooth dome filled over any other flat outline. **Reverse** presses it in. {idx:dome}
 
+## Plastic part features
+
+Four features for moulded parts (Features tab). {idx:plastic features}
+
+- **Mounting Boss** {idx:Mounting Boss}: posts at clicked points on a flat face (or at a sketch's points and circle centres), rising out of the face: **Outer diameter**, **Height**, a **Draft on the outside**, a **Hole** (diameter, and a depth: empty for the full height), and **Ribs**: how many, their width, how far out from the boss and how high.
+- **Snap Hook** {idx:Snap Hook}: a cantilever beam (**length**, **thickness**, **width**) with a hook at its tip: its **overhang**, its **lead-in angle** from the beam (the slope it slides in on) and its **catch angle** (90°: square, holding; less: it lets go when pulled). **Hook faces** turns it about the face's normal.
+- **Lip / Groove** {idx:Lip / Groove}: click the flat rim face along the open edge of a shelled part: a **lip** (raised) or **groove** (sunk), along its **inner** or **outer** edge, of a width and height (depth). For two halves that fit: a lip on one, on the other a groove a little wider and deeper.
+- **Vent** {idx:Vent}: slots across a sketch's closed outline on a face, of a **slot width** with **bars** between them, at an angle, kept a **margin** in from the outline, cut through or to a depth.
+
 ## Move Face
 
 Push or pull flat faces along their normal, or turn a face about one of its edges. The neighbouring faces follow. {idx:Move Face}
