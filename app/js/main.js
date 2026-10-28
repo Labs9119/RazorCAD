@@ -4023,6 +4023,12 @@ class App {
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
       if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
     }
+    if (type === 'pipeRoute' || type === 'cable') {
+      const isPath = (x) => x && (x.type === 'sketch' || x.type === 'sketch3d') && !x.suppressed;
+      const src = isPath(selF) ? selF : [...doc.features].reverse().find(isPath);
+      if (!src) { this.toast(`Draw the route first: a sketch or 3D sketch${type === 'pipeRoute' ? ' of straight lines' : ''}`, true); return; }
+      props.path = src.id;
+    }
     if (type === 'draft' || type === 'dome' || type === 'moveFace') {
       if (!this.result.body) { this.toast('There is no solid body', true); return; }
       const fr = sel?.kind === 'face' && sel.face.planar ? { p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() } : null;

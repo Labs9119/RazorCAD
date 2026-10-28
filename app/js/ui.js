@@ -23,6 +23,7 @@ import { platform } from './platform.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
+import { PIPE_SIZES, pipeLabel } from './routing.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
@@ -1063,6 +1064,31 @@ const PM_SCHEMAS = {
       { key: 'cpHint', type: 'hint', text: 'The copies start at the point of the curve nearest the feature (a sketch, 3D sketch or helix).' },
     ] },
   ],
+  pipeRoute: [
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch (straight lines)' }] },
+    { title: 'Pipe', fields: [
+      { key: 'size', type: 'select', label: 'Size (Schedule 40)', options: [...PIPE_SIZES.map((s) => [String(s.dn), pipeLabel(s)]), ['custom', 'Tube: outside diameter and wall']] },
+      { key: 'od', type: 'expr', label: 'Outside diameter', unit: 'mm', show: (f) => f.size === 'custom' },
+      { key: 'wall', type: 'expr', label: 'Wall', unit: 'mm', show: (f) => f.size === 'custom' },
+      { key: 'corner', type: 'select', label: 'Corners', options: [['elbow', 'Elbows (fittings)'], ['bend', 'Bends (one bent tube)']] },
+      { key: 'radius', type: 'expr', label: 'Bend radius (auto: 1.5 × the size for elbows, 3 × OD for bends)', unit: 'mm' },
+      { key: 'flanges', type: 'check', label: 'Flanges at the ends' },
+      { key: 'flangeD', type: 'expr', label: 'Flange outside diameter', unit: 'mm', show: (f) => !!f.flanges },
+      { key: 'flangeT', type: 'expr', label: 'Flange thickness', unit: 'mm', show: (f) => !!f.flanges },
+      { key: 'prHint', type: 'hint', text: 'Straight pipes run between the corners of the route, each corner an elbow (or a bend of one tube). The pipes are on the weldment Cut List with their lengths; the elbows and flanges are bodies of their own.' },
+    ] },
+  ],
+  cable: [
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch' }] },
+    { title: 'Cable', fields: [
+      { key: 'sizeBy', type: 'select', label: 'Size', options: [['diameter', 'Diameter'], ['wires', 'From its wires']] },
+      { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.sizeBy !== 'wires' },
+      { key: 'wires', type: 'expr', label: 'Wires', unit: '#', show: (f) => f.sizeBy === 'wires' },
+      { key: 'wireD', type: 'expr', label: 'Wire diameter (with insulation)', unit: 'mm', show: (f) => f.sizeBy === 'wires' },
+      { key: 'slack', type: 'expr', label: 'Slack (added to the cut length)', unit: '%' },
+      { key: 'cHint', type: 'hint', text: 'A round cable or bundle along the route (a 3D sketch spline through the points it must pass is best). The message gives its cut length.' },
+    ] },
+  ],
   tablePattern: [
     patternSources('Features to Pattern'),
     { title: 'Table', fields: [
@@ -1952,6 +1978,8 @@ export class UI {
       weldments: [
         { icon: 'sketch3d', label: '3D Sketch', action: () => a.startFeature('sketch3d') },
         { icon: 'structMember', label: 'Structural Member', action: () => a.startFeature('structMember') },
+        { icon: 'sweep', label: 'Pipe Route', action: () => a.startFeature('pipeRoute') },
+        { icon: 'sweep', label: 'Cable', action: () => a.startFeature('cable') },
         { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },

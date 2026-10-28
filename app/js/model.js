@@ -112,6 +112,8 @@ export const TYPE_INFO = {
   spattern: { base: 'Sketch Driven Pattern', icon: 'spattern' },
   curvePattern: { base: 'Curve Driven Pattern', icon: 'curvePattern' },
   tablePattern: { base: 'Table Driven Pattern', icon: 'spattern' },
+  pipeRoute: { base: 'Pipe Route', icon: 'sweep' },
+  cable: { base: 'Cable', icon: 'sweep' },
   fillPattern: { base: 'Fill Pattern', icon: 'fillPattern' },
   rib: { base: 'Rib', icon: 'rib' },
   dome: { base: 'Dome', icon: 'dome' },
@@ -236,6 +238,8 @@ export function createFeature(doc, type, props = {}) {
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
+    pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18 },
+    cable: { path: null, sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
     tablePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', plane: null, table: '20, 0; 0, 20; 20, 20, 45' },
     curvePattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', path: null, count: 4, spacing: 'equal', distance: 20, reverse: false, align: 'translate' },
     // Fill: copies on a 'square' | 'staggered' grid over a flat face, margin from its edges

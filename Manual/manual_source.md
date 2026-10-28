@@ -1491,6 +1491,12 @@ Set the weld size and click the bodies to weld (none: every weldment member). A 
 
 **Cut List** lists identical members together, with their profile, length, end angles, quantity, total length and mass (from the bodies' materials), then plates and welds (with the total weld length). It also gives the total length of each profile. **Export CSV…** saves it for a spreadsheet. A drawing can show it as a **Cut List Table** (Drawings chapter). {idx:cut list}
 
+## Pipe Route and Cable
+
+**Pipe Route** {idx:Pipe Route}{idx:routing, pipes}{idx:elbows} runs a pipe along the straight lines of a sketch or 3D sketch (one run, without branches). Choose a size (DN15 to DN300, Schedule 40 walls) or a tube of your own outside diameter and wall. **Corners**: **Elbows** puts a long radius elbow at each corner (1.5 × the nominal size, or the **Bend radius** you give), each elbow a body of its own; **Bends** makes one bent tube (3 × its diameter, or your radius). **Flanges at the ends** adds a flange ring at each open end. The straight pipes are weldment members, so the **Cut List** gives their lengths; the message sums them up. A line too short for the elbows at its ends is reported.
+
+**Cable** {idx:Cable}{idx:harness}{idx:routing, cables} sweeps a round cable or bundle along a sketch or 3D sketch (a 3D sketch spline through the points it must pass follows them smoothly). Give its **Diameter**, or the number of **Wires** and their diameter (the bundle is about 1.15 × d × √n across). The message gives the route length and the cut length with the **Slack** added.
+
 # Configurations
 
 A configuration is a variant of a part or assembly: other values for the global variables and other features suppressed in a part, other part configurations and components shown in an assembly. {idx:configurations}

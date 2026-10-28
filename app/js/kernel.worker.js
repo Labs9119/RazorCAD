@@ -19,6 +19,7 @@ import * as SM from './sheetmetal.js';
 import { holeSpec, holeProfile } from './holes.js';
 import { asmPartFeatures } from './asmcuts.js';
 import { profileDims, profileSection, piercePoint } from './profiles.js';
+import { pipeOf, bundleDiameter } from './routing.js';
 import { normalize3d, solve3d, splineGeom } from './sketch3dmodel.js';
 import { decimate } from './meshdecimate.js';
 import { installRealDelete, freeStats } from './ocfree.js';
@@ -5889,6 +5890,91 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           body = compoundOf(solids);
           res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}`;
+          break;
+        }
+        case 'pipeRoute': {
+          // Pipe / tube route along the straight lines of a sketch or 3D sketch: straight pipes between the corners, the
+          // corners long radius elbows (fittings, each a body of its own) or bends (one bent tube); flanges at the open
+          // ends if asked. The straight pipes are weldment members, so they are on the cut list with their lengths
+          const segs = memberPath(f.path);
+          if (!segs.length) throw new Error('Select the sketch or 3D sketch of the route (straight lines)');
+          if (segs.some((g) => g.type !== 'line')) throw new Error('Draw the route with straight lines: its corners get the elbows or bends');
+          const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7);
+          // (the route's points in order, from an end)
+          const near = (x, y) => len(sub(x, y)) < tol, ends = segs.flatMap((g) => [g.a, g.b]);
+          const deg = (q) => ends.filter((x) => near(x, q)).length;
+          if (ends.some((q) => deg(q) > 2)) throw new Error('The route must be one run without branches (tees are not made)');
+          let P = [ends.find((q) => deg(q) === 1) || segs[0].a];
+          const left = [...segs];
+          while (left.length) {
+            const last = P.at(-1), i = left.findIndex((g) => near(g.a, last) || near(g.b, last));
+            if (i < 0) throw new Error('The route’s lines must join end to end');
+            const g = left.splice(i, 1)[0];
+            P.push(near(g.a, last) ? g.b : g.a);
+          }
+          const closed = P.length > 3 && near(P[0], P.at(-1));
+          if (closed) throw new Error('The route must have two ends (not a closed loop)');
+          // (each corner: its turn and how far the elbow / bend reaches along the lines either side)
+          const n = P.length, dirs = [], cut = new Array(n).fill(0);
+          for (let i = 0; i + 1 < n; i++) dirs.push(unit(sub(P[i + 1], P[i])));
+          const corners = [];
+          for (let i = 1; i + 1 < n; i++) {
+            const c = Math.max(-1, Math.min(1, dot(dirs[i - 1], dirs[i]))), th = Math.acos(c);
+            if (th < 1e-9) continue;
+            if (th > Math.PI - 1e-6) throw new Error('The route turns back on itself at a corner');
+            cut[i] = pipe.R * Math.tan(th / 2);
+            corners.push({ i, th });
+          }
+          for (let i = 0; i + 1 < n; i++) if (len(sub(P[i + 1], P[i])) < cut[i] + cut[i + 1] - 1e-9) throw new Error(`Line ${i + 1} of the route is too short for the ${f.corner === 'bend' ? 'bends' : 'elbows'} at its ends (the bend radius ${+pipe.R.toFixed(3)} needs ${+(cut[i] + cut[i + 1]).toFixed(3)})`);
+          const tube = (A, B) => { const L = len(sub(B, A)), d = unit(sub(B, A)); return R.makeCylinder(ro, L, A, d).cut(R.makeCylinder(ri, L + 2, sub(A, d), d)); };
+          const disc = (r, p, d) => { const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])); return R.drawCircle(r).sketchOnPlane(new R.Plane(p, u, d)).face(); };
+          const elbow = ({ i, th }) => {
+            const d1 = dirs[i - 1], d2 = dirs[i], T1 = sub(P[i], mul(d1, cut[i])), ax = unit(cross(d1, d2)), C = add(T1, mul(unit(cross(ax, d1)), pipe.R)), a = (th * 180) / Math.PI;
+            return R.revolution(disc(ro, T1, d1), C, ax, a).cut(R.revolution(disc(ri, T1, d1), C, ax, a));
+          };
+          const add1 = (shape, name, member) => { const rec = bodyRec(newId(f.id), shape, f.id); rec.name = name; if (member) rec.member = member; solids.push(rec); applied.push({ op: 'add', tool: shape }); };
+          const straights = [];
+          for (let i = 0; i + 1 < n; i++) { const A = add(P[i], mul(dirs[i], cut[i])), B = sub(P[i + 1], mul(dirs[i], cut[i + 1])); if (len(sub(B, A)) > 1e-6) straights.push({ A, B, L: len(sub(B, A)) }); }
+          const fits = corners.map(elbow);
+          if (f.corner === 'bend') {
+            let all = null;
+            for (const s of [...straights.map((s) => tube(s.A, s.B)), ...fits]) all = all ? all.fuse(s) : s;
+            const L = straights.reduce((t, s) => t + s.L, 0) + corners.reduce((t, c) => t + pipe.R * c.th, 0);
+            add1(unify(all), `${pipe.label} bent`, { label: `${pipe.label}, ${corners.length} bend${corners.length === 1 ? '' : 's'} R${+pipe.R.toFixed(3)}`, type: 'chs', length: +L.toFixed(3), angles: [null, null], feature: f.id, size: pipe.D });
+          } else {
+            for (const s of straights) add1(tube(s.A, s.B), `${pipe.label} ${+s.L.toFixed(1)}`, { label: pipe.label, type: 'chs', length: +s.L.toFixed(3), angles: [0, 0], feature: f.id, size: pipe.D, axis: { a: s.A, b: s.B } });
+            corners.forEach((c, k) => add1(fits[k], `Elbow ${+((c.th * 180) / Math.PI).toFixed(1)}° ${pipe.label.replace(/^Pipe |^Tube /, '')}`));
+          }
+          // (flanges at the two ends: rings on the pipe, flush with its end)
+          if (f.flanges) {
+            const FD = ev(f.flangeD), FT = ev(f.flangeT);
+            if (!(FD > pipe.D) || !(FT > 0)) throw new Error('The flanges need an outside diameter bigger than the pipe’s and a thickness');
+            for (const [E, d] of [[P[0], dirs[0]], [P[n - 1], mul(dirs[n - 2], -1)]]) add1(R.makeCylinder(FD / 2, FT, E, d).cut(R.makeCylinder(ro, FT + 2, sub(E, d), d)), `Flange ${pipe.label.replace(/^Pipe |^Tube /, '')}`);
+          }
+          body = compoundOf(solids);
+          const total = straights.reduce((t, s) => t + s.L, 0);
+          res.notes[f.id] = `${pipe.label}: ${f.corner === 'bend' ? `one tube, ${corners.length} bend${corners.length === 1 ? '' : 's'}` : `${straights.length} straight pipe${straights.length === 1 ? '' : 's'} (${+total.toFixed(1)} mm in all), ${corners.length} elbow${corners.length === 1 ? '' : 's'}`}${f.flanges ? ', 2 flanges' : ''}`;
+          break;
+        }
+        case 'cable': {
+          // Cable / harness: a round bundle swept along a sketch or 3D sketch (a spline route follows its curves): its
+          // diameter given, or from its wires (count, wire diameter); its length with slack added in the note
+          let w = null;
+          const c3 = curves.get(f.path), s2 = sketches.get(f.path);
+          if (c3?.wire) w = c3.wire;
+          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed?.()) || sketchWires(s2.sk, s2.frame)[0];
+          if (!w) throw new Error('Select the sketch or 3D sketch of the cable’s route');
+          const D = f.sizeBy === 'wires' ? bundleDiameter(Math.round(ev(f.wires)), ev(f.wireD)) : ev(f.diameter);
+          if (!(D > 0)) throw new Error('The cable needs a diameter (or wires of a diameter)');
+          const st = vec(w.startPoint), t0 = unit(vec(w.tangentAt(0))), prof = R.assembleWire([R.makeCircle(D / 2, st, t0)]);
+          let sh = null;
+          for (const tm of ['round', 'right', 'transformed']) { try { sh = R.genericSweep(prof, w, { frenet: false, transitionMode: tm }); break; } catch (e) { if (isFatal(e)) throw e; } }
+          if (!sh || !solidsOf(sh).length) throw new Error('The cable could not follow the route (a corner tighter than its radius?)');
+          const L = R.measureLength(w), slack = ev(f.slack ?? 0) / 100;
+          const rec = bodyRec(newId(f.id), sh, f.id); rec.name = `Cable Ø${+D.toFixed(2)}`;
+          solids.push(rec); applied.push({ op: 'add', tool: sh });
+          body = compoundOf(solids);
+          res.notes[f.id] = `Cable Ø${+D.toFixed(2)}${f.sizeBy === 'wires' ? ` (${Math.round(ev(f.wires))} wires Ø${ev(f.wireD)})` : ''}: route ${+L.toFixed(1)} mm, cut length ${+(L * (1 + slack)).toFixed(1)} mm${slack ? ` with ${+(slack * 100).toFixed(2)} % slack` : ''}`;
           break;
         }
         case 'surfOffset': {

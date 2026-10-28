@@ -5439,6 +5439,20 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (kept with its sketch and variable; inserted turned and deeper; two copies with variables of their own; a reference outside refused); saved and inserted in the app`};
   },
 
+  async 'pipe-and-cable-routing'() {
+    const {run,fixture}=await import('/tests/routing-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture('pipeRoute',{size:'50'});await a.setDoc(d.doc);await settle();
+    const list=await a.kernel.request('cutList',{});
+    if(list.length!==3||!list.every(m=>/DN50/.test(m.label)))return {ok:false,detail:'The straight pipes are not on the cut list',list};
+    for(const [type,title] of [['pipeRoute','Pipe'],['cable','Cable']]){
+      const e=fixture(type,{});await a.setDoc(e.doc);a.editFeature(e.feature.id);await settle();
+      if(!(document.querySelector('#pm')?.textContent||'').includes(title))return {ok:false,detail:`No ${title} in the ${type} panel`};
+      a.cancelPM?.();await settle();
+    }
+    return {ok:true,detail:`${native.results.length} kernel cases (elbows, bends, flanges, a custom tube at 45°, too short and branching routes refused, a cable and a bundle of wires); the pipes on the cut list; the two panels`};
+  },
+
   async 'core-and-cavity'() {
     const {run}=await import('/tests/mold-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, with shrinkage, without the part; a plane off the part refused)`}:{ok:false,detail:native};
