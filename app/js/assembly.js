@@ -2676,6 +2676,7 @@ export class AssemblyEditor {
         'sep',
         { icon: 'bom', label: 'Bill of Materials', action: () => this.showBOM() },
         { icon: 'interference', label: 'Interference Check', action: () => this.checkInterference() },
+        { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.app.ui.showStackUp(this.doc, () => this.commit('Tolerance stack-up')) },
         { icon: 'section', label: 'Section View', action: () => this.toggleSection(), active: !!this.vp.section },
         { icon: 'collide', label: 'Collision Detection', action: () => this.setCollideMode(this.collideMode === 'off' ? 'stop' : 'off'), active: this.collideMode !== 'off' },
         { icon: 'speed', label: 'Speed Mode', action: () => this.setSpeedMode(!this.doc.speedMode), active: !!this.doc.speedMode },

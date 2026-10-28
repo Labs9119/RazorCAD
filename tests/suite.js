@@ -5453,6 +5453,20 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (elbows, bends, flanges, a custom tube at 45°, too short and branching routes refused, a cable and a bundle of wires); the pipes on the cut list; the two panels`};
   },
 
+  async 'tolerance-stack-up'() {
+    const {stackUp}=await import('/js/stackup.js');
+    // (a housing 50 +0.1/−0 holding two parts 20 ± 0.05 and 29.8 ± 0.05: the end gap)
+    const rows=[{name:'Housing',nominal:50,plus:0.1,minus:0,dir:1},{name:'A',nominal:20,plus:0.05,minus:0.05,dir:-1},{name:'B',nominal:29.8,plus:0.05,minus:0.05,dir:-1}];
+    const r=stackUp(rows,{min:0.15,max:''}),near=(x,y)=>Math.abs(x-y)<1e-12;
+    const ok=near(r.nominal,0.2)&&near(r.mean,0.25)&&near(r.worst.min,0.1)&&near(r.worst.max,0.4)&&near(r.rss.min,0.25-0.05*Math.sqrt(3))&&near(r.rss.max,0.25+0.05*Math.sqrt(3))&&r.shares.every(s=>near(s.share,1/3))&&!r.pass.worst&&r.pass.rss;
+    if(!ok)return {ok:false,detail:r};
+    const a=window.app;await a.newDocument?.();closeModals();
+    const dlg=a.ui.showStackUp();a.doc.stackups[0].rows=rows.map(x=>({...x}));a.doc.stackups[0].req={min:'0.15',max:''};dlg.render();
+    const text=dlg.box.textContent;closeModals();
+    if(!/Worst case: 0\.1 to 0\.4/.test(text)||!/✘ outside the requirement/.test(text)||!/33\.3 %/.test(text))return {ok:false,detail:'The dialog does not show the results',text};
+    return {ok:true,detail:'worst case 0.1 to 0.4 (fails a 0.15 minimum), RSS 0.163 to 0.337 (passes), equal shares; the dialog shows them, kept in the part'};
+  },
+
   async 'core-and-cavity'() {
     const {run}=await import('/tests/mold-cases.js'),native=await run({threads:threadsPerKernel()});
     return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, with shrinkage, without the part; a plane off the part refused)`}:{ok:false,detail:native};

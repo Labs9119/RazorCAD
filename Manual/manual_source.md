@@ -1870,6 +1870,10 @@ DWG import and export: DWG is a closed format with no free reader or writer that
 - **Keep the first item** measures from the first item to each next click (a third click replaces the second, not the first).
 - **Measured** lists the distances measured so far, most recent first.
 
+## Tolerance Stack-Up
+
+**Evaluate ▸ Tolerance Stack-Up** (also in an assembly's ribbon, and Tools ▸ Tolerance Stack-Up…) works out a gap from a chain of dimensions in one direction {idx:tolerance stack-up}{idx:worst case}{idx:RSS}. Each row is a dimension: its nominal size, its upper and lower tolerance (both as positive numbers: 50 +0.1 / −0) and whether it **adds to** or **takes from** the gap. The results update as you type: the gap's nominal and mean, its **worst case** limits (every tolerance at its limit together) and its **statistical** limits (root sum of squares: what most assemblies see when the parts vary independently), checked against the gap required (at least / at most). The share column shows which tolerances matter most. Stack-ups are kept in the part or assembly; New stack-up adds another.
+
 ## Mass Properties
 
 **Evaluate ▸ Mass Properties** shows mass, volume, surface area and centre of mass. It adds up every body with its own density and lists the bodies. A body with no material uses 1.00 g/cm³. {idx:mass properties}

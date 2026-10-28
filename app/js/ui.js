@@ -24,6 +24,7 @@ import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
 import { PIPE_SIZES, pipeLabel } from './routing.js';
+import { stackUp } from './stackup.js';
 import { cutListRows, cutListCSV } from './weldments.js';
 import { ACI, aciColor, LTYPES, OPTION_LABELS, loadDxfSettings, saveDxfSettings, selectEnts } from './dxf.js';
 import { CLAUDE_MODELS } from './claudespec.js';
@@ -1726,6 +1727,7 @@ export class UI {
         { label: 'Measure…', icon: 'measure', action: () => a.startMeasure() },
         { label: 'Equations…', icon: 'equations', action: () => this.showEquations() },
         { label: 'Mass Properties…', icon: 'mass', action: () => this.showMassProps() },
+        { label: 'Tolerance Stack-Up…', icon: 'measure', action: () => this.showStackUp() },
         { label: 'Section View…', icon: 'section', action: () => a.startSection() },
         { label: 'Edit Material…', icon: 'material', action: () => this.showMaterial() },
         { label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences() },
@@ -2026,6 +2028,7 @@ export class UI {
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
+        { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.showStackUp() },
         { icon: 'section', label: 'Section View', action: () => a.startSection(), active: !!a.viewport.section },
         { icon: 'equations', label: 'Equations', action: () => this.showEquations() },
         { icon: 'material', label: 'Edit Material', action: () => this.showMaterial() },
@@ -4850,6 +4853,62 @@ export class UI {
   }
 
   // ------------------------------------------------------------ dialogs
+  // Tolerance Stack-Up: the stack-ups kept in a part or an assembly (doc.stackups), edited in a table with the results
+  // worked out as you type. commit: saves the change in that document.
+  showStackUp(doc = this.app.doc, commit = () => this.app.commit()) {
+    const list = (doc.stackups ||= []);
+    if (!list.length) list.push({ name: 'Stack-Up 1', req: { min: '', max: '' }, rows: [{ name: 'A', nominal: 10, plus: 0.1, minus: 0.1, dir: 1 }] });
+    let cur = list[0];
+    const box = el('div', { class: 'dw-form', style: 'min-width:640px' });
+    const num = (v) => { const n = this.app.result?.ev ? (() => { try { return this.app.result.ev(String(v)); } catch { return NaN; } })() : +v; return Number.isFinite(n) ? n : NaN; };
+    const f4 = (x) => (Number.isFinite(x) ? fmt(x, 4) : '—');
+    const render = () => {
+      box.innerHTML = '';
+      const top = el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:6px' });
+      const pick = el('select');
+      list.forEach((s, i) => { const o = el('option', { value: i }, esc(s.name)); if (s === cur) o.selected = true; pick.appendChild(o); });
+      pick.onchange = () => { cur = list[+pick.value]; render(); };
+      const name = el('input', { type: 'text', style: 'width:140px' }); name.value = cur.name; name.onchange = () => { cur.name = name.value.trim() || cur.name; commit(); render(); };
+      const add = el('button', {}, 'New stack-up'); add.onclick = () => { list.push((cur = { name: `Stack-Up ${list.length + 1}`, req: { min: '', max: '' }, rows: [] })); commit(); render(); };
+      const del = el('button', {}, 'Delete'); del.onclick = () => { list.splice(list.indexOf(cur), 1); if (!list.length) list.push({ name: 'Stack-Up 1', req: { min: '', max: '' }, rows: [] }); cur = list[0]; commit(); render(); };
+      top.append(pick, name, add, del);
+      box.appendChild(top);
+      const t = el('table', { class: 'bom-table', style: 'width:100%' });
+      t.innerHTML = '<tr><th>Dimension</th><th>Nominal</th><th>+ Tol.</th><th>− Tol.</th><th>Sense</th><th>Share (RSS)</th><th></th></tr>';
+      let res = null;
+      try { res = stackUp(cur.rows.map((r) => ({ ...r, nominal: num(r.nominal), plus: num(r.plus), minus: num(r.minus) })), { min: cur.req?.min === '' ? '' : num(cur.req?.min), max: cur.req?.max === '' ? '' : num(cur.req?.max) }); } catch { res = null; }
+      cur.rows.forEach((r, i) => {
+        const tr = el('tr');
+        const cell = (key, w) => { const inp = el('input', { type: 'text', style: `width:${w}px` }); inp.value = r[key]; inp.onchange = () => { r[key] = key === 'name' ? inp.value : inp.value.trim(); commit(); render(); }; const td = el('td'); td.appendChild(inp); return td; };
+        const sense = el('select'); for (const [v, l] of [[1, '+ adds to the gap'], [-1, '− takes from it']]) { const o = el('option', { value: v }, l); if (+r.dir === v) o.selected = true; sense.appendChild(o); }
+        sense.onchange = () => { r.dir = +sense.value; commit(); render(); };
+        const sd = el('td'); sd.appendChild(sense);
+        const share = el('td', {}, res ? `${(res.shares[i].share * 100).toFixed(1)} %` : '—');
+        const x = el('button', { title: 'Remove' }, '✕'); x.onclick = () => { cur.rows.splice(i, 1); commit(); render(); };
+        const xd = el('td'); xd.appendChild(x);
+        tr.append(cell('name', 120), cell('nominal', 80), cell('plus', 60), cell('minus', 60), sd, share, xd);
+        t.appendChild(tr);
+      });
+      box.appendChild(t);
+      const addRow = el('button', { style: 'margin:6px 0' }, 'Add dimension');
+      addRow.onclick = () => { cur.rows.push({ name: String.fromCharCode(65 + (cur.rows.length % 26)), nominal: 0, plus: 0.1, minus: 0.1, dir: 1 }); commit(); render(); };
+      box.appendChild(addRow);
+      const req = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:4px 0' });
+      const rq = (key, label) => { const inp = el('input', { type: 'text', style: 'width:70px' }); inp.value = cur.req?.[key] ?? ''; inp.onchange = () => { (cur.req ||= {})[key] = inp.value.trim(); commit(); render(); }; req.append(el('span', {}, label), inp); };
+      rq('min', 'Gap required: at least'); rq('max', 'at most');
+      box.appendChild(req);
+      const out = el('div', { class: 'pm-hint', style: 'margin-top:6px;line-height:1.5' });
+      out.innerHTML = res
+        ? `Gap: nominal <b>${f4(res.nominal)}</b>, mean ${f4(res.mean)}<br>Worst case: ${f4(res.worst.min)} to ${f4(res.worst.max)} ${cur.req?.min !== '' || cur.req?.max !== '' ? (res.pass.worst ? '✔ within the requirement' : '✘ outside the requirement') : ''}<br>Statistical (RSS): ${f4(res.rss.min)} to ${f4(res.rss.max)} ${cur.req?.min !== '' || cur.req?.max !== '' ? (res.pass.rss ? '✔' : '✘') : ''}`
+        : 'Give each dimension a nominal size (numbers or expressions).';
+      box.appendChild(out);
+      box.appendChild(el('div', { class: 'pm-hint', style: 'margin-top:4px' }, 'One direction: each dimension adds to or takes from the gap. Worst case adds up every tolerance; statistical (root sum of squares) is what most assemblies see when the parts vary independently. The share shows which tolerances matter most.'));
+    };
+    render();
+    this.modal('Tolerance Stack-Up', 'measure', box, [{ label: 'Close', primary: true }]);
+    return { box, render, get current() { return cur; } };
+  }
+
   modal(title, ic, body, buttons) {
     const back = el('div', { class: 'modal-back' });
     const m = el('div', { class: 'modal' });
