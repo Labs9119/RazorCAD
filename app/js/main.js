@@ -2480,7 +2480,7 @@ class App {
     if (f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange') return 'edge';
     if (f.type === 'surfFill') return this.pm.patchSupportPick ? 'faces' : 'edge';
     if (f.type === 'surfExtend') return 'edge';
-    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet' || f.type === 'moldSide') return 'faces';
+    if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet' || f.type === 'moldSide' || f.type === 'freeform') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
     if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
@@ -2652,6 +2652,10 @@ class App {
     if (mode !== 'edge') vp.setEdgeHighlights(null);
     if (mode !== 'vertex') vp.setVertexMarkers(null);
     const f = this.pm.feature;
+    if (f.type === 'freeform') {
+      const hs = this.freeformHandles(f);
+      vp.setVertexMarkers(hs?.length ? { selected: hs.map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
+    }
     if (mode === 'edge') {
       const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
       const selected = refs.map((e) => vp.edgeIndexForPoint(e.p)).filter((i) => i >= 0);
@@ -3317,9 +3321,9 @@ class App {
     const vp = this.viewport;
     const asm = () => (this.mode === 'drawing' && this.drawing?.vpEvent ? this.drawing : null);
     const exT = () => (this.pm?.kind === 'explode' ? this.explodeTool : null);
-    vp.onPointerDown = (e) => { if (this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
-    vp.onPointerMoveImmediate = (e) => { if (this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
-    vp.onPointerUp = (e) => { if (this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
+    vp.onPointerDown = (e) => { if (this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e) || this.freeformDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
+    vp.onPointerMoveImmediate = (e) => { if (this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e) || this.freeformMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
+    vp.onPointerUp = (e) => { if (this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e) || this.freeformUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
     vp.onDoubleClick = (e) => { if (asm()) asm().vpEvent('dbl', e); else if (this.mode === 'sketch') this.sketcher.doubleClick(); else if (this.mode === 'sketch3d') this.sketch3d.doubleClick(); };
     vp.onLeave = () => {
       if (asm()) { asm().vpEvent('leave'); return; }
@@ -3498,6 +3502,7 @@ class App {
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
       else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
+      if (f.type === 'freeform' && f.faces.length > 1) f.faces.splice(0, f.faces.length - 1); // (one face: the last clicked)
       this.ui.renderPM();
       this.updateEdgeHighlights();
       this.preview();
@@ -4991,6 +4996,52 @@ class App {
   filletPointUp() {
     if (!this._fpDrag) return false;
     this._fpDrag = null;
+    this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
+    return true;
+  }
+
+  // ------------------------------------------------------------ a freeform face's handles, dragged along the face's normal
+  // Each handle of the open Freeform feature: { p (world, at its height in the panel), n, at (where the last build put
+  // it), h (its height then) }, from the last build; null before one.
+  freeformHandles(f) {
+    const hs = this.result?.detected?.get(f?.id)?.handles;
+    if (f?.type !== 'freeform' || !hs?.length) return null;
+    return hs.map((x, i) => {
+      const h = Number(this.result.ev(f['h' + i] ?? 0));
+      const d = Number.isFinite(h) ? h - x.h : 0;
+      return { p: x.p.map((c, k) => c + x.n[k] * d), n: x.n, at: x.p, h: x.h };
+    });
+  }
+  freeformDown(e) {
+    if (this.mode !== 'part' || this.pm?.kind !== 'feature' || e.button !== 0) return false;
+    const f = this.pm.feature, hs = this.freeformHandles(f);
+    if (!hs) return false;
+    const vp = this.viewport, m = vp.screenPos(e);
+    let best = -1, bd = 9;
+    hs.forEach((x, i) => { const s = vp.project(new THREE.Vector3(...x.p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < bd) { bd = d; best = i; } });
+    if (best < 0) return false;
+    vp.controls.drag = null; // (the press moves the handle: no view rotation)
+    try { vp.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    const x = hs[best], h0 = Number(this.result.ev(f['h' + best] ?? 0)) || 0;
+    this._ffDrag = { i: best, n: new THREE.Vector3(...x.n).normalize(), o: new THREE.Vector3(...x.p), from: { clientX: e.clientX, clientY: e.clientY }, h0 };
+    this.status('Drag the handle in or out of the face; let go to rebuild.');
+    return true;
+  }
+  freeformMove(e) {
+    const d = this._ffDrag;
+    if (!d) return false;
+    const f = this.pm?.feature;
+    if (f?.type !== 'freeform') return true;
+    const vp = this.viewport, step = 10 ** Math.ceil(Math.log10(Math.max(1e-6, vp.worldPerPixel())));
+    const h = Math.round(Math.round((d.h0 + vp.dragAlong(d.n, d.o, d.from, e)) / step) * step * 1e6) / 1e6;
+    f['h' + d.i] = h;
+    this.updateEdgeHighlights();
+    this.status(`Handle ${d.i + 1}: ${h} mm`);
+    return true;
+  }
+  freeformUp() {
+    if (!this._ffDrag) return false;
+    this._ffDrag = null;
     this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
     return true;
   }

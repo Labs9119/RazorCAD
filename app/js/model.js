@@ -141,6 +141,7 @@ export const TYPE_INFO = {
   deleteFace: { base: 'Delete-Face', icon: 'deleteFace' },
   editFillet: { base: 'Edit-Fillet', icon: 'fillet' },
   defeature: { base: 'Defeature', icon: 'deleteFace' },
+  freeform: { base: 'Freeform', icon: 'surfFill' },
   replaceFace: { base: 'Replace-Face', icon: 'replaceFace' },
   ruledSurface: { base: 'Ruled-Surface', icon: 'ruledSurface' },
   untrim: { base: 'Untrim-Surface', icon: 'untrim' },
@@ -299,6 +300,8 @@ export function createFeature(doc, type, props = {}) {
     // mode 'delete' (leave the hole) | 'patch' (fill each hole; tangent: G1 to the faces round it)
     deleteFace: { faces: [], mode: 'delete', tangent: false },
     editFillet: { faces: [], mode: 'delete', radius: 1 },
+    // a face reshaped by nu × nv handles, h0.. their heights (mm, out of the face), row by row; keep: what its edges keep
+    freeform: { faces: [], nu: 3, nv: 3, keep: 'G1', ...Object.fromEntries(Array.from({ length: 36 }, (_, i) => ['h' + i, 0])) },
     defeature: { body: null, fillets: true, filletR: 2, holes: true, holeD: 6 },
     // flat faces of a solid moved onto surface body `tool`
     replaceFace: { faces: [], tool: null },

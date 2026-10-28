@@ -5353,6 +5353,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = note;
           break;
         }
+        case 'freeform': {
+          // A face reshaped by a grid of handles across it (freeformFace): the face passes through each handle at its
+          // height off the face as it was; its edges stay where they are, and with them the tangent plane (G1) or the
+          // curvature too (G2) the face had along them, so it meets the faces round it as before
+          const ref = (f.faces || [])[0];
+          if (!ref) throw new Error('Click the face to reshape');
+          const hit = findFaceAny([...solids, ...surfaces], ref);
+          if (!hit) throw new Error('The face could not be found in the model');
+          const rec = hit.body, nu = Math.max(1, Math.min(6, Math.round(ev(f.nu ?? 3)))), nv = Math.max(1, Math.min(6, Math.round(ev(f.nv ?? 3))));
+          const heights = Array.from({ length: nu * nv }, (_, i) => ev(f['h' + i] ?? 0));
+          const ff = freeformFace(hit.face, nu, nv, heights, f.keep || 'G1');
+          const keep = rec.shape.faces.filter((fc) => !fc.isSame(hit.face));
+          const sewn = keep.length ? sewShapes([...keep, ff.face], 1e-5) : ff.face;
+          if (solids.includes(rec)) {
+            const sol = solidFromSewn(sewn);
+            if (!sol || !solidsOf(sol).length) throw new Error('The reshaped face could not be closed into the solid (does it run through another face?)');
+            replaceSolid(rec, sol, f.id);
+          } else surfaces = surfaces.map((r) => (r === rec ? bodyRec(rec.id, sewn, f.id) : r));
+          res.detected[f.id] = { handles: ff.handles };
+          const kept = { G0: 'its edges kept', G1: `tangent (G1) kept at its edges: within ${+ff.angle.toFixed(6)}°`, G2: `tangent and curvature (G2) kept at its edges: within ${+ff.angle.toFixed(6)}° and ${ff.curvature.toExponential(2)} /mm` }[f.keep || 'G1'];
+          res.notes[f.id] = `Face reshaped by ${nu} × ${nv} handles (met to ${ff.miss.toExponential(1)} mm), ${kept}`;
+          break;
+        }
         case 'editFillet': {
           // Delete Fillet / Resize Fillet (direct editing, e.g. of an imported part): each picked fillet or chamfer face
           // taken back to the sharp edge its neighbours meet at (mode 'delete'), or then rounded or chamfered again at
@@ -10161,6 +10184,127 @@ function g2Blends(before, after, edges, r) {
   }
   if (n && !checked) throw new Error('The curvature continuous (G2) round could not be checked against the faces beside it');
   return { shape, n, angle, curvature, checked };
+}
+
+// A face reshaped by an nu × nv grid of handles, evenly across it, each at its height (mm) along the face's normal there
+// (outward): the face as an exact B-spline (a flat face with four straight edges: a bilinear patch through its corners;
+// an untrimmed B-spline face: itself), refined, its control points moved, the outer 1 (G0), 2 (G1) or 3 (G2) rows of
+// them held so its edges and the tangent plane / curvature along them stay as they were. The moves are solved so the
+// face passes through each handle. { face, handles: [{ p, n, h }], miss (mm), angle (°), curvature (/mm) }
+function freeformFace(F, nu, nv, heights, keep) {
+  const oc = R.getOC(), k = { G0: 1, G1: 2, G2: 3 }[keep] || 2, owned = [];
+  const own = (x) => (owned.push(x), x);
+  const P = (q) => { try { return [q.X(), q.Y(), q.Z()]; } finally { q.delete(); } };
+  const N = Math.max(10, 2 * k + 2 * Math.max(nu, nv) + 2);
+  let srf, u0 = 0, u1 = 1, v0 = 0, v1 = 1, outward;
+  try {
+    if (F.clone().innerWires().length) throw new Error('The face to reshape has holes in it: reshape a face without holes');
+    const gf = new oc.BRepGProp_Face(F.wrapped, false);
+    const normalAt = (u, v) => { const p = new oc.gp_Pnt(), n = new oc.gp_Vec(); try { gf.Normal(u, v, p, n); return unit([n.X(), n.Y(), n.Z()]); } finally { p.delete(); n.delete(); } };
+    owned.push(gf);
+    if (F.geomType === 'PLANE') {
+      // (its corners in order round its outer wire)
+      const es = F.edges;
+      if (es.length !== 4 || es.some((e) => e.geomType !== 'LINE')) throw new Error('A flat face to reshape has four straight edges (or reshape a freeform face)');
+      const segs = es.map((e) => [vec(e.startPoint), vec(e.endPoint)]), C = [segs[0][0], segs[0][1]], used = [0];
+      while (C.length < 4) {
+        const last = C[C.length - 1], j = segs.findIndex((s, i) => !used.includes(i) && (len(sub(s[0], last)) < 1e-7 || len(sub(s[1], last)) < 1e-7));
+        if (j < 0) throw new Error('The face\'s edges do not close');
+        used.push(j); C.push(len(sub(segs[j][0], last)) < 1e-7 ? segs[j][1] : segs[j][0]);
+      }
+      const b = F.UVBounds, n0 = normalAt((b.uMin + b.uMax) / 2, (b.vMin + b.vMax) / 2);
+      outward = () => n0;
+      const m = N - 3, pts = own(new oc.NCollection_Array2_gp_Pnt(1, N, 1, N));
+      const kn = () => { const kk = own(new oc.NCollection_Array1_double(1, m + 1)), mm = own(new oc.NCollection_Array1_int(1, m + 1)); for (let i = 0; i <= m; i++) { kk.SetValue(i + 1, i / m); mm.SetValue(i + 1, i === 0 || i === m ? 4 : 1); } return [kk, mm]; };
+      const flat = [0, 0, 0, ...Array.from({ length: m + 1 }, (_, i) => i / m), 1, 1, 1];
+      const grev = (i) => (flat[i + 1] + flat[i + 2] + flat[i + 3]) / 3;
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const s = grev(i), t = grev(j), q = add(add(mul(C[0], (1 - s) * (1 - t)), mul(C[1], s * (1 - t))), add(mul(C[2], s * t), mul(C[3], (1 - s) * t)));
+        const g = new oc.gp_Pnt(...q); try { pts.SetValue(i + 1, j + 1, g); } finally { g.delete(); }
+      }
+      const [uk, um] = kn(), [vk, vm] = kn();
+      srf = new oc.Geom_BSplineSurface(pts, uk, vk, um, vm, 3, 3, false, false);
+    } else if (F.geomType === 'BSPLINE_SURFACE') {
+      const ad = new oc.BRepAdaptor_Surface(F.wrapped, false);
+      try { srf = new oc.Geom_BSplineSurface(ad.BSpline()); } finally { ad.delete(); }
+      const bb = srf.Bounds(0, 0, 0, 0), b = F.UVBounds;
+      ({ U1: u0, U2: u1, V1: v0, V2: v1 } = bb);
+      const tol = 1e-7 * Math.max(1, Math.abs(u1 - u0), Math.abs(v1 - v0));
+      if (srf.IsUPeriodic() || srf.IsVPeriodic() || [b.uMin - u0, b.uMax - u1, b.vMin - v0, b.vMax - v1].some((x) => Math.abs(x) > tol))
+        throw new Error('The freeform face is trimmed (it does not cover its whole surface): untrim it first, or reshape a face that is not');
+      // (refined: enough control points for the held rows and the handles)
+      for (const [U, ins, nb, a0, a1] of [[true, (x) => srf.InsertUKnot(x, 1, 1e-9, false), () => srf.NbUPoles(), u0, u1], [false, (x) => srf.InsertVKnot(x, 1, 1e-9, false), () => srf.NbVPoles(), v0, v1]]) {
+        for (let M = 4; nb() < N && M < 256; M *= 2) for (let i = 1; i < M; i++) ins(a0 + ((a1 - a0) * i) / M);
+        void U;
+      }
+      outward = (u, v) => normalAt(u, v);
+    } else throw new Error('Freeform reshapes flat faces with four straight edges and untrimmed freeform (B-spline) faces');
+    // (the parameters of the control points: Greville abscissae)
+    const greville = (U) => {
+      const deg = U ? srf.UDegree() : srf.VDegree(), nk = U ? srf.NbUKnots() : srf.NbVKnots(), flat = [];
+      for (let i = 1; i <= nk; i++) { const x = U ? srf.UKnot(i) : srf.VKnot(i), m = U ? srf.UMultiplicity(i) : srf.VMultiplicity(i); for (let j = 0; j < m; j++) flat.push(x); }
+      const np = U ? srf.NbUPoles() : srf.NbVPoles();
+      return Array.from({ length: np }, (_, i) => { let s = 0; for (let j = 1; j <= deg; j++) s += flat[i + j]; return s / deg; });
+    };
+    const gu = greville(true), gv = greville(false), NU = gu.length, NV = gv.length;
+    const S = (x, a, b) => (x - a) / (b - a);
+    // (each handle's influence on the control points: a tent over the grid of handles, 0 on the held rows)
+    const tent = (x, H, a) => { const nodes = [0, ...Array.from({ length: H }, (_, i) => (i + 1) / (H + 1)), 1], c = nodes[a + 1], l = nodes[a], r = nodes[a + 2]; return x <= l || x >= r ? 0 : x < c ? (x - l) / (c - l) : (r - x) / (r - c); };
+    const base = [], nrm = [];
+    for (let i = 0; i < NU; i++) { base.push([]); nrm.push([]); for (let j = 0; j < NV; j++) { base[i].push(P(srf.Pole(i + 1, j + 1))); nrm[i].push(outward(gu[i], gv[j])); } }
+    const free = (i, j) => i >= k && i < NU - k && j >= k && j < NV - k;
+    const setPoles = (c) => {
+      for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) {
+        if (!free(i, j)) continue;
+        let d = 0;
+        for (let a = 0; a < nu; a++) { const wa = tent(S(gu[i], u0, u1), nu, a); if (!wa) continue; for (let b = 0; b < nv; b++) d += c[a + nu * b] * wa * tent(S(gv[j], v0, v1), nv, b); }
+        const g = new oc.gp_Pnt(...add(base[i][j], mul(nrm[i][j], d))); try { srf.SetPole(i + 1, j + 1, g); } finally { g.delete(); }
+      }
+    };
+    const hUV = [];
+    for (let b = 0; b < nv; b++) for (let a = 0; a < nu; a++) hUV.push([u0 + ((u1 - u0) * (a + 1)) / (nu + 1), v0 + ((v1 - v0) * (b + 1)) / (nv + 1)]);
+    const H = hUV.length, at = hUV.map(([u, v]) => P(srf.Value(u, v))), hn = hUV.map(([u, v]) => outward(u, v));
+    const rise = () => hUV.map(([u, v], i) => dot(sub(P(srf.Value(u, v)), at[i]), hn[i]));
+    // (the moves are linear in the coefficients: solved, A c = heights)
+    const A = [];
+    for (let q = 0; q < H; q++) { const c = Array(H).fill(0); c[q] = 1; setPoles(c); const r = rise(); r.forEach((x, i) => { (A[i] ||= [])[q] = x; }); }
+    const c = solveLinear(A, heights);
+    if (!c) throw new Error('The handles are too close to the held edges to move the face: use fewer handles or keep less at the edges');
+    setPoles(c);
+    const miss = Math.max(0, ...rise().map((x, i) => Math.abs(x - heights[i])));
+    const mk = new oc.BRepBuilderAPI_MakeFace(srf, 1e-7);
+    let face;
+    try { if (!mk.IsDone()) throw new Error('The reshaped face could not be made'); face = R.cast(mk.Face()); } finally { mk.delete(); }
+    // (checked against the face as it was, along its edges: the tangent plane, and the curvature)
+    let angle = 0, curvature = 0;
+    if (k > 1) {
+      const nf = new oc.BRepGProp_Face(face.wrapped, false);
+      owned.push(nf);
+      for (const x of [0.13, 0.31, 0.5, 0.69, 0.87]) for (const [u, v, tg] of [[u0 + (u1 - u0) * x, v0, 0], [u0 + (u1 - u0) * x, v1, 0], [u0, v0 + (v1 - v0) * x, 1], [u1, v0 + (v1 - v0) * x, 1]]) {
+        const p = P(srf.Value(u, v)), uvOld = F.geomType === 'PLANE' ? F.uvCoordinates(p) : [u, v];
+        const d1u = new oc.gp_Pnt(), du = new oc.gp_Vec(), dv = new oc.gp_Vec();
+        let dir;
+        try { srf.D1(u, v, d1u, du, dv); dir = tg ? [dv.X(), dv.Y(), dv.Z()] : [du.X(), du.Y(), du.Z()]; } finally { d1u.delete(); du.delete(); dv.delete(); }
+        const q = compareSurfaceContinuity(R, F, face, p, dir, { leftUV: uvOld, rightUV: [u, v] });
+        angle = Math.max(angle, q.angle);
+        if (k > 2) curvature = Math.max(curvature, q.curvatureError);
+      }
+    }
+    const handles = hUV.map(([u, v], i) => ({ p: P(srf.Value(u, v)), n: hn[i], h: heights[i] }));
+    return { face, handles, miss, angle, curvature };
+  } finally { srf?.delete(); owned.reverse().forEach((x) => x.delete()); }
+}
+// x for A x = b (Gaussian elimination, partial pivoting); null: singular
+function solveLinear(A, b) {
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (!(Math.abs(M[p][c]) > 1e-12)) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < n; r++) { if (r === c) continue; const f = M[r][c] / M[c][c]; if (f) for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j]; }
+  }
+  return M.map((r, i) => r[n] / r[i]);
 }
 
 // (Kernel Lab k14) faces taken out of a solid by OpenCascade's defeaturing: their neighbours grown or shrunk to close the

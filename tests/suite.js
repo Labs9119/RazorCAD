@@ -1642,6 +1642,43 @@ const UI = {
     return { ok, detail: `dragged from 50 % to ${t1} % (the mark ${moved.toFixed(2)} mm from the quarter point while dragging); volume ${v0?.toFixed(2)} → ${v1?.toFixed(2)} mm³${a.result.errors?.length ? ' ' + JSON.stringify(a.result.errors) : ''}` };
   },
 
+  // A freeform face's handle dragged on the model: a 100 × 60 × 10 block, its top face reshaped by one handle 2 mm up;
+  // pressed on the handle's mark and dragged up the screen, the handle's height grows, the mark follows while dragging
+  // and the face rebuilds through it (more volume)
+  async 'freeform-handle-drag'() {
+    const a = window.app;
+    if (a.mode === 'drawing') { const i = a.tabs.findIndex((t) => t.kind !== 'drawing'); if (i >= 0) await a.activateTab(i); }
+    await a.newDocument?.();
+    closeModals();
+    const d = a.doc, S = await import('/js/sketchmodel.js');
+    const s0 = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    S.buildCenterRect(s0, 'O', 0, 0, 50, 30);
+    const ex = M.createFeature(d, 'extrude', { sketch: s0.id, depth: 10 });
+    const ff = M.createFeature(d, 'freeform', { faces: [{ p: [0, 10, 0] }], nu: 1, nv: 1, h0: 2 });
+    for (const x of [s0, ex, ff]) M.insertFeature(d, x);
+    a.commit(); await a.rebuild();
+    const vol = async () => ((await a.kernel.request('measure', { refs: [{ kind: 'body', id: a.result.bodies[0].id }] })).items?.[0] || {}).volume;
+    const v0 = await vol();
+    a.editFeature(ff.id);
+    await until(() => (a.pm?.feature && !a.kernel.pending && a.freeformHandles(a.pm.feature)?.[0]) || null, 20000);
+    const vp = a.viewport;
+    vp.setStandardView('iso', false); vp.zoomToFit(null, false); await wait(300);
+    const { fire, toScreen } = viewEvents();
+    const f = a.pm.feature, at = a.freeformHandles(f)?.[0];
+    if (!at) return { ok: false, detail: 'the handle was not shown' };
+    const from = toScreen(vp.camera.position.clone().set(...at.p)), to = [from[0], from[1] - 60];
+    fire('pointerdown', ...from, { button: 0, buttons: 1 }); await wait(40);
+    for (let k = 1; k <= 5; k++) { fire('pointermove', from[0], from[1] - 12 * k, { button: 0, buttons: 1 }); await wait(30); }
+    const h1 = Number(f.h0), during = a.freeformHandles(f)?.[0]?.p || [NaN, NaN, NaN];
+    fire('pointerup', ...to, { button: 0, buttons: 0 }); await wait(100);
+    await until(() => !a.kernel.pending, 30000);
+    await wait(300);
+    a.okPM?.(); await wait(200); await a.rebuild();
+    const v1 = await vol(), note = a.result.notes.get(ff.id) || '';
+    const ok = h1 > 2.5 && Math.abs(during[1] - (10 + h1)) < 1e-6 && v1 > v0 + 1 && /met to/.test(note) && !a.result.errors?.size;
+    return { ok, detail: `handle dragged from 2 to ${h1} mm (its mark at y ${during[1]?.toFixed?.(3)} while dragging); volume ${v0?.toFixed(2)} → ${v1?.toFixed(2)} mm³; ${note}${a.result.errors?.size ? ' ' + JSON.stringify([...a.result.errors]) : ''}` };
+  },
+
   // An assembly's own up axis: chosen Z up from its Origin's right-click menu, it is kept with the assembly (undo
   // takes it back), the tree shows the Top plane as XY and the status bar "Z up"; its STEP file is written Z up (a
   // 100 × 60 × 10 plate lying on RazorCAD's Top plane is 10 along Z in the file, as a part's export would be)
@@ -1964,6 +2001,11 @@ const UI = {
     const {run}=await import('/tests/k14-cases.js'),native=await run({threads:threadsPerKernel()});
     if(!native.ok)return {ok:false,detail:native};
     return {ok:true,detail:native.skipped?'skipped: this geometry kernel has no defeaturing or PMI (Kernel Lab k14 has)':`${native.results.length} cases (every edge rounded taken out exactly, a round resized, a boss deleted and healed; STEP with semantic PMI written and read back)`};
+  },
+
+  async 'freeform-face'() {
+    const {run}=await import('/tests/freeform-cases.js'),native=await run({threads:threadsPerKernel()});
+    return native.ok?{ok:true,detail:`${native.results.length} cases (one handle with the edges kept G0 / G1 / G2: through it, tangent plane and curvature kept, less bulge the more is held; a reshaped face reshaped again; a round refused)`}:{ok:false,detail:native};
   },
 
   async 'fillet-g2'() {

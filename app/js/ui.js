@@ -1375,6 +1375,19 @@ const PM_SCHEMAS = {
       { key: 'dHint', type: 'hint', text: (f) => (f.mode === 'patch' ? 'Each hole left by the deleted faces gets a smooth patch: good for taking out fillets, small features and bad faces of imported parts.' : 'The faces are taken out; the rest stays as a surface body (e.g. to rebuild them with other surface tools).') },
     ] },
   ],
+  freeform: [
+    { title: 'Face to Reshape', fields: [{ key: 'faces', type: 'faceList', hint: 'Click a flat face with four straight edges, or a freeform (B-spline) face that is not trimmed.' }] },
+    { title: 'Handles', fields: [
+      { key: 'nu', type: 'expr', label: 'Across (U)' },
+      { key: 'nv', type: 'expr', label: 'Along (V)' },
+      ...Array.from({ length: 36 }, (_, i) => ({ key: 'h' + i, type: 'expr', unit: 'mm', label: `Handle ${i + 1}`, show: (f) => i < Math.max(1, Math.min(6, Math.round(Number(f.nu) || 1))) * Math.max(1, Math.min(6, Math.round(Number(f.nv) || 1))) })),
+      { key: 'hHint', type: 'hint', text: 'Handles sit evenly across the face, row by row; each is how far the face is pushed out (or in, below 0) there, and the face passes through it. Drag a handle on the model to move it.' },
+    ] },
+    { title: 'Edges', fields: [
+      { key: 'keep', type: 'select', label: 'Keep at the edges', options: [['G0', 'Contact (G0): the edges stay'], ['G1', 'Tangent (G1): and the tangent plane'], ['G2', 'Curvature (G2): and the curvature']] },
+      { key: 'kHint', type: 'hint', text: 'What the face keeps along its edges, so it meets the faces round it as before. The more is kept, the closer to the middle the shape changes.' },
+    ] },
+  ],
   editFillet: [
     { title: 'Fillet / Chamfer Faces', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the fillet or chamfer faces of a solid (e.g. an imported part).' }] },
     { title: 'Options', fields: [
@@ -2030,6 +2043,7 @@ export class UI {
         { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
         { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
         { icon: 'replaceFace', label: 'Replace Face', action: () => a.startFeature('replaceFace') },
+        { icon: 'surfFill', label: 'Freeform', action: () => a.startFeature('freeform') },
         { icon: 'surfPlanar', label: 'Fit Surface to Points', action: () => a.startFeature('fitSurface') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },

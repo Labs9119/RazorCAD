@@ -1165,12 +1165,19 @@ The resulting CAD face is checked for validity and sampled at 33 positions on ea
 | **Thicken** | Gives a surface a wall thickness (one side or both) and makes it a solid |
 | **Delete Face** | Takes faces out of a solid or surface. Either leave the hole (the body becomes a surface body) or patch each hole smoothly, optionally tangent, so the solid stays solid. Good for removing fillets and bad faces from imported parts. |
 | **Replace Face** | Moves flat faces of a solid onto a surface body, so the body grows or shrinks to meet it (for example a curved top). The surface must reach past the faces all round. |
+| **Freeform** | Reshapes one face of a solid or surface by handles you push in or out (see below) |
 | **Flatten Surface** | Unrolls faces of a surface or solid flat beside the model as a surface body (see below) |
 | **Split (with a surface)** | Splits solid bodies with a surface body |
 | **Move/Copy Surfaces** | As Move/Copy Bodies, for surfaces |
 | **Delete Surface** | Removes a surface body |
 
 {idx:Trim Surface}{idx:Extend Surface}{idx:Untrim Surface}{idx:knit}{idx:thicken}{idx:Delete Face}{idx:Replace Face}
+
+### Freeform {idx:Freeform}{idx:freeform face}{idx:push and pull a face}
+
+**Surfaces ▸ Freeform** reshapes one face by a grid of handles. Click the face: a flat face with four straight edges (the top of a block, the side of a plate) or a freeform face that covers its whole surface (a lofted or fitted face, or one Freeform has already reshaped; untrim a trimmed one first). Set how many handles there are **Across** and **Along** the face (1 to 6 each): they sit evenly across it, and each **Handle** is how far the face is pushed out there (below 0, in), along its normal. The face passes through every handle exactly. **Drag a handle** on the model, in or out of the face, to move it; the face rebuilds when you let go.
+
+**Keep at the edges** says what the face keeps where it meets the faces round it: **Contact (G0)** (only the edges stay where they are), **Tangent (G1)** (the tangent plane along them too, so a face that ran smoothly into its neighbours still does; the default) or **Curvature (G2)** (the curvature as well). The more is kept, the closer to the middle the shape changes and the less it bulges. The face is made an exact B-spline surface and its control points are moved (the outer one, two or three rows of them held); the note gives how closely the handles are met and, measured on the CAD faces, how closely the tangent plane and curvature along the edges are kept. A face that would run through another face cannot be closed into the solid: use smaller heights.
 
 ## Curves and split lines
 
