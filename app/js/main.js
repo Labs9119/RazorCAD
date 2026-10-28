@@ -968,6 +968,45 @@ class App {
     try { await platform.openWith(prog, path); this.status(`Opened ${String(path).split(/[\\/]/).pop()} in the slicer`); } catch (e) { this.toast('Could not start the slicer: ' + e.message, true); }
   }
 
+  // Auto-Orient: the best three build orientations (least support, then most on the bed, then lowest), one picked
+  async autoOrient() {
+    if (!this.result?.body?.bodies?.some((b) => b.kind !== 'surface')) { this.toast('There is no solid body to orient', true); return null; }
+    const prof = this.printProfile();
+    let cands;
+    try { cands = await this.withProgress('Trying build orientations…', async () => P3.autoOrient(this.result.body, prof)); } catch (e) { this.toast('Auto-Orient failed: ' + e.message, true); return null; }
+    this.lastAutoOrient = cands;
+    this.ui.showAutoOrient(cands, (c) => { this.doc.print = { ...(this.doc.print || {}), R: P3.faceDown(c.n) }; this.commit(); this.printBedOn = true; this.drawPrintBed(); if (this.analysis?.kind === 'overhang') this.overhangMap(true); this.status(`Build orientation set: ${+c.support.toFixed(2)} cm³ of support, ${+c.contact.toFixed(0)} mm² on the bed`); });
+    return cands;
+  }
+  // Calibrate Fits: a test piece (a plate with four Ø6 holes, and pegs for the profile's press, snug, sliding and loose
+  // fits) exported for printing, then the profile's fits set from how they fitted. Built on a kernel of its own, so the
+  // open part stays as it is.
+  async calibrateFits() {
+    const prof = this.printProfile(), pegs = P3.calibrationPegs(prof), doc = M.newDoc();
+    doc.name = 'Fit test';
+    const plate = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }), pts = [[-30, -7.5], [30, -7.5], [30, 7.5], [-30, 7.5]].map((q) => S.addPoint(plate, ...q));
+    pts.forEach((id, i) => S.addLine(plate, id, pts[(i + 1) % 4]));
+    for (const g of pegs) S.addCircle(plate, S.addPoint(plate, g.x, 0), P3.CALIBRATION_HOLE / 2);
+    const strip = M.createFeature(doc, 'sketch', { plane: { ref: 'top' } }), sp = [[-30, 12.5], [30, 12.5], [30, 22.5], [-30, 22.5]].map((q) => S.addPoint(strip, ...q));
+    sp.forEach((id, i) => S.addLine(strip, id, sp[(i + 1) % 4]));
+    const pl = M.createFeature(doc, 'plane', { refs: [{ kind: 'plane', id: 'top' }], offset: 2 }), pins = M.createFeature(doc, 'sketch', { plane: { ref: pl.id } });
+    for (const g of pegs) S.addCircle(pins, S.addPoint(pins, g.x, 17.5), g.d / 2);
+    doc.features.push(plate, M.createFeature(doc, 'extrude', { sketch: plate.id, depth: 4 }), strip, M.createFeature(doc, 'extrude', { sketch: strip.id, depth: 2 }), pl, pins, M.createFeature(doc, 'extrude', { sketch: pins.id, depth: 8 }));
+    const k = new KernelClient({ threads: 1 });
+    let bytes;
+    try {
+      bytes = await this.withProgress('Making the fit test piece…', async () => {
+        await k.ready;
+        const r = await k.rebuild(doc);
+        if (r.errors?.length) throw new Error(r.errors.map((e) => e[1]).join('; '));
+        return k.exportBody('3mf', null, {}, { print: { R: P3.Y_UP, bed: prof.bed } });
+      });
+    } catch (e) { this.toast('Calibrate Fits failed: ' + e.message, true); return null; } finally { k.dispose?.() ?? k.worker?.terminate(); }
+    const path = await platform.saveBinary('fit-test.3mf', bytes, '3mf');
+    this.ui.showCalibrateFits(prof, pegs, path);
+    return { pegs, bytes };
+  }
+
   // ---- interference: where solid bodies overlap
   async checkInterference() {
     if ((this.result?.bodies || []).filter((b) => b.kind !== 'surface').length < 2) { this.toast('Interference Check needs two or more solid bodies', true); return; }
@@ -2561,7 +2600,9 @@ class App {
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
-    if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer'].includes(f.type)) return 'faces';
+    if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
+    if (f.type === 'printHinge') return 'edge';
+    if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
     if (f.type === 'hole' && this.pm.holeEndPick && f.end === 'upToVertex') return 'vertex';
     if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
     if (f.type === 'boss' || f.type === 'snapHook') return 'faces';
@@ -2670,7 +2711,7 @@ class App {
       else if (f.type === 'chamfer' && f.chamferType === 'vertex') { const p = hit.point.toArray(), L = (f.vertices ||= []), i = L.findIndex((v) => Math.hypot(...v.p.map((x, k) => x - p[k])) < 1e-4); if (i >= 0) L.splice(i, 1); else L.push({ p }); }
       else f.vertex = { p: hit.point.toArray() };
     } else if (mode === 'face') {
-      if (f.type === 'split') f.toolFace = { p: hit.p, n: hit.n };
+      if (f.type === 'split' || f.type === 'printSplit') { f.toolFace = { p: hit.p, n: hit.n }; if (f.type === 'printSplit') f.tool = null; }
       else if(['extrude','surfExtrude'].includes(f.type)&&this.pm.extrudeSurfaceSlot==='start'){f.startFace={p:hit.p,n:hit.n};f.startPlane=null;}
       else if(f.type==='extrude'&&this.pm.extrudeSurfaceSlot==='end2'&&f.side2){f.toFace2={p:hit.p,n:hit.n};f.toPlane2=null;}
       else { f.toFace = { p: hit.p, n: hit.n }; f.toPlane = null; }
@@ -3326,7 +3367,7 @@ class App {
     }
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot && ['plane', 'axis', 'point'].includes(kind)) return this.pmPickMate({ kind, id });
     let key = null;
-    if (kind === 'plane' && f.type === 'split') { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (kind === 'plane' && (f.type === 'split' || f.type === 'printSplit')) { f.toolFace = null; f.tool = id; this.preview(true); return true; }
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';

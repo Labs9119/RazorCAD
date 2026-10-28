@@ -227,3 +227,41 @@ export function checkPrintability(m, prof, extra = {}) {
   if (!out.some((x) => x.level === 'fail' || x.level === 'warn')) out.unshift({ check: 'all', level: 'pass', text: 'Printable as it stands: nothing over the profile’s limits', p: null });
   return { findings: out, stats };
 }
+
+// ------------------------------------------------------------ auto-orient
+// How a build orientation prints: { R, support (cm³), contact (mm² on the bed), height (mm) }
+export function orientationScore(body, R, prof) {
+  const m = printMesh(body, R);
+  if (!m.P.length) return { R, support: Infinity, contact: 0, height: Infinity };
+  const zBed = m.lo[2], tolZ = 1e-3 * (1 + (m.hi[2] - m.lo[2])), lim = Math.sin(((90 - prof.overhang) * Math.PI) / 180);
+  const onBed = (k) => m.T[k].every((i) => m.P[i][2] < zBed + tolZ), over = [];
+  let contact = 0;
+  m.tris.forEach((t, k) => {
+    if (!(t.n[2] < 0) || t.a < 1e-12) return;
+    const bed = onBed(k);
+    if (bed && t.n[2] < -Math.cos((1 * Math.PI) / 180)) contact += t.a;
+    // (facing down steeper than the limit from vertical: −n·z more than cos of the limit from horizontal)
+    if (!bed && -t.n[2] > lim + 1e-9) over.push(k);
+  });
+  return { R, support: supportVolume(m, over) / 1000, contact, height: m.hi[2] - m.lo[2] };
+}
+// The best build orientations: each outer flat face down and the 26 directions of a cube's faces, edges and corners,
+// ranked by support needed (to 0.001 cm³), then the most on the bed, then the lowest. The first `count`.
+export function autoOrient(body, prof, count = 3) {
+  const dirs = [];
+  for (const g of body.faceGroups || []) if (g.surf?.t === 'PLANE') dirs.push(g.surf.n);
+  for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) if (x || y || z) dirs.push(unit([x, y, z]));
+  const seen = [];
+  for (const d of dirs) if (!seen.some((e) => dot(e, d) > Math.cos(Math.PI / 180))) seen.push(unit(d));
+  const scored = seen.map((n) => ({ n, ...orientationScore(body, faceDown(n), prof) }));
+  scored.sort((a, b) => Math.round(a.support * 1000) - Math.round(b.support * 1000) || b.contact - a.contact || a.height - b.height);
+  return scored.slice(0, count);
+}
+
+// ------------------------------------------------------------ calibration
+// The fit test piece: a plate 4 thick with four Ø6 holes, and beside it four pegs, each 6 less twice a fit (press,
+// snug, sliding, loose, left to right): [{ kind: 'plate' | 'peg', x, d, fit }]
+export const CALIBRATION_HOLE = 6;
+export function calibrationPegs(prof) {
+  return ['press', 'snug', 'sliding', 'loose'].map((fit, i) => ({ fit, x: -22.5 + 15 * i, d: CALIBRATION_HOLE - 2 * (prof.fits?.[fit] ?? FITS[fit]) }));
+}

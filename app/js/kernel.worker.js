@@ -7785,6 +7785,100 @@ async function rebuild(doc, previewId = null, opts = {}) {
           apply('cut', tool, true, null);
           break;
         }
+        case 'fitClearance':
+        case 'printHinge':
+        case 'printSplit': {
+          // 3D printing fits and joints (the 3D Print tab), sized from the part's print profile unless given:
+          // - Fit Clearance: picked faces moved back by a fit's gap: flat faces in along their normal, round faces (a
+          //   pin, a hole) by a ring the gap thick over their length (a pin thinner, a hole wider)
+          // - Print-in-Place Hinge: along a straight edge, knuckles round it in two interleaved bodies, one carrying the
+          //   pin through all of them, the other's bores the gap wider all round, the knuckles the gap apart
+          // - Split for Printing: a body cut in two at a plane, with dowel holes across the cut (the dowel's diameter and
+          //   the profile's clearance), spaced along the cut's longest side and kept clear of its edges
+          const prof = P3.profileFor(doc, null), blank = (x) => x === '' || x == null;
+          if (f.type === 'fitClearance') {
+            const g = blank(f.gap) ? prof.fits?.[f.fit || 'sliding'] : ev(f.gap);
+            if (!(g > 0)) throw new Error('The fit’s gap must be greater than zero');
+            if (!(f.faces || []).length) throw new Error('Click the faces that fit against another part');
+            let n = 0;
+            for (const r0 of f.faces) {
+              const hit = findFaceAny(solids, r0);
+              if (!hit) throw new Error('A picked face could not be found in the model');
+              const rec = solids.find((x) => x.id === hit.body.id), F = hit.face, sf = surfOf(F);
+              let tool;
+              if (sf.t === 'PLANE') { const v = new R.Vector(mul(unit(vec(F.normalAt())), -g)); try { tool = R.basicFaceExtrusion(F, v); } finally { v.delete(); } }
+              else if (sf.t === 'CYLINDER') {
+                const d = unit(sf.d), mid = vec(F.pointOnSurface(0.5, 0.5)), ax = add(sf.p, mul(d, dot(sub(mid, sf.p), d))), out = unit(sub(mid, ax));
+                const pin = dot(unit(vec(F.normalAt(mid))), out) > 0, ts = edgeEnds(F.edges).map((q) => dot(sub(q, sf.p), d)), t0 = Math.min(...ts), t1 = Math.max(...ts);
+                const r1 = pin ? sf.r - g : sf.r, r2 = pin ? sf.r : sf.r + g;
+                if (!(r1 > 0)) throw new Error('The gap is bigger than the pin');
+                const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), o = add(sf.p, mul(d, t0)), L = t1 - t0;
+                tool = R.revolution(R.makePolygon([[r1, 0], [r2, 0], [r2, L], [r1, L]].map(([rr, z]) => add(add(o, mul(u, rr)), mul(d, z)))), o, d, 360);
+              } else throw new Error('Fit Clearance moves flat and round faces');
+              replaceSolid(rec, unify(rec.shape.cut(tool)), f.id);
+              n++;
+            }
+            res.notes[f.id] = `${n} face${n === 1 ? '' : 's'} moved back ${g} mm (${blank(f.gap) ? `${f.fit || 'sliding'} fit, ${prof.name}` : 'a gap of your own'})`;
+          } else if (f.type === 'printHinge') {
+            if (!f.edge) throw new Error('Click the straight edge the hinge turns about');
+            needEdges('Print-in-Place Hinge');
+            const eh = findEdgeInfo(body, f.edge);
+            if (!eh || eh.e.geomType !== 'LINE') throw new Error('The hinge needs a straight edge');
+            const a0 = vec(eh.e.startPoint), b0 = vec(eh.e.endPoint), d = unit(sub(b0, a0)), L = len(sub(b0, a0));
+            const D = ev(f.outer ?? 8), dp = ev(f.pin ?? 4), g = blank(f.gap) ? 0.4 : ev(f.gap), n = Math.max(2, Math.round(ev(f.knuckles ?? 5)));
+            if (!(D > dp + 2 * g && dp > 0 && g > 0)) throw new Error('The knuckles must be wider than the pin and its gap');
+            const k = (L - (n - 1) * g) / n;
+            if (!(k > g)) throw new Error('The edge is too short for that many knuckles');
+            const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+            const tube = (z0, z1, r1, r2) => R.revolution(R.makePolygon([[r1, z0], [r2, z0], [r2, z1], [r1, z1]].map(([rr, z]) => add(add(a0, mul(u, rr)), mul(d, z)))), a0, d, 360);
+            let A = null, B = null;
+            for (let i = 0; i < n; i++) {
+              const z0 = i * (k + g), z1 = z0 + k;
+              if (i % 2 === 0) { const t = tube(z0, z1, 0, D / 2); A = A ? A.fuse(t) : t; } else { const t = tube(z0, z1, dp / 2 + g, D / 2); B = B ? B.fuse(t) : t; }
+            }
+            // (the pin through the other knuckles too, inside their bores)
+            A = A.fuse(tube(0, L, 0, dp / 2));
+            apply('add', A, false); apply('add', B, false);
+            res.notes[f.id] = `A hinge of ${n} knuckles Ø${D} × ${+k.toFixed(3)} on a Ø${dp} pin, ${g} mm apart and round: the pin's knuckles one body, each of the others a body of its own (join each to its part with Combine)`;
+          } else {
+            const rec = solids.length === 1 ? solids[0] : solids.find((x) => x.id === f.body);
+            if (!rec) throw new Error(solids.length ? 'Choose the body to split' : 'There is no body to split');
+            if (!f.tool && !f.toolFace?.n) throw new Error('Choose the plane (or click a flat face) to split at');
+            const fr = f.tool ? resolveFrame(f.tool) : { o: f.toolFace.p, n: f.toolFace.n }, n0 = unit(fr.n), bb = bbox(rec.shape), big = bb.diag + len(sub(bb.center, fr.o)) + 10;
+            const u = unit(cross(n0, Math.abs(n0[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), v = cross(n0, u);
+            const half = R.drawRectangle(4 * big, 4 * big).sketchOnPlane(new R.Plane(fr.o, u, n0)).extrude(2 * big);
+            let A = rec.shape.cut(half), B = rec.shape.intersect(half);
+            if (!solidsOf(A).length || !solidsOf(B).length) throw new Error('The plane does not cut through the body');
+            // (dowel holes across the cut: along the cut's longest side, inside it by the hole's radius and 1 mm more)
+            const dd = ev(f.dowel ?? 3), depth = ev(f.dowelDepth ?? 6), cnt = Math.max(0, Math.round(ev(f.dowels ?? 2))), c = blank(f.clearance) ? (prof.fits?.snug ?? 0.15) : ev(f.clearance);
+            const hd = dd + 2 * c; // (a dowel's hole: the profile's snug fit each side)
+            let placed = 0;
+            if (cnt > 0) {
+              if (!(dd > 0 && depth > 0)) throw new Error('The dowels need a diameter and a depth');
+              const sec = rec.shape.intersect(R.drawRectangle(4 * big, 4 * big).sketchOnPlane(new R.Plane(add(fr.o, mul(n0, -1e-3)), u, n0)).extrude(2e-3));
+              const pts = sec.faces.flatMap((fc) => fc.edges.flatMap((e) => [0, 0.25, 0.5, 0.75, 1].map((t) => vec(e.pointAt(t))))), loc = (q) => [dot(sub(q, fr.o), u), dot(sub(q, fr.o), v)];
+              const P2 = pts.map(loc), lo = [Math.min(...P2.map((q) => q[0])), Math.min(...P2.map((q) => q[1]))], hi = [Math.max(...P2.map((q) => q[0])), Math.max(...P2.map((q) => q[1]))];
+              const along = hi[0] - lo[0] >= hi[1] - lo[1] ? 0 : 1, mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+              let holes = null;
+              {
+                for (let i = 0; i < cnt; i++) {
+                  const t = lo[along] + ((hi[along] - lo[along]) * (i + 1)) / (cnt + 1), q2 = along ? [mid[0], t] : [t, mid[1]], q = add(add(fr.o, mul(u, q2[0])), mul(v, q2[1]));
+                  // (inside the body, clear of its sides: the body's surface no nearer than the hole's radius + 1)
+                  if (!solidAt(rec.shape, q)) continue;
+                  const ring = R.drawCircle(hd / 2 + 1).sketchOnPlane(new R.Plane(add(q, mul(n0, -1e-3)), u, n0)).extrude(2e-3);
+                  if (solidsOf(rec.shape.intersect(ring)).reduce((x, y) => x + Math.abs(preciseVolume(y)), 0) < Math.PI * (hd / 2 + 1) ** 2 * 2e-3 * (1 - 1e-6)) continue;
+                  const cyl = R.drawCircle(hd / 2).sketchOnPlane(new R.Plane(add(q, mul(n0, -depth)), u, n0)).extrude(2 * depth);
+                  holes = holes ? holes.fuse(cyl) : cyl; placed++;
+                }
+              }
+              if (holes) { A = A.cut(holes); B = B.cut(holes); }
+            }
+            replaceSolid(rec, unify(A), f.id);
+            apply('add', unify(B), false);
+            res.notes[f.id] = `Split in two at the plane${placed ? `, ${placed} dowel hole${placed === 1 ? '' : 's'} Ø${+hd.toFixed(3)} × ${depth} each side (for Ø${dd} dowels)` : ''}${cnt > placed ? ` (${cnt - placed} would not fit inside the cut)` : ''}`;
+          }
+          break;
+        }
         case 'printableHole':
         case 'bridgingLayer':
         case 'bedChamfer':
@@ -7808,8 +7902,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
             let n = 0, shape = rec.shape;
             for (const fc of cyl) {
               const s0 = surfOf(fc), d = unit(s0.d), mid = vec(fc.pointOnSurface(0.5, 0.5));
-              // (a hole, not a pin: material outside the round face)
-              if (solidAt(shape, add(mid, mul(unit(sub(mid, add(s0.p, mul(d, dot(sub(mid, s0.p), d))))), -s0.r * 0.5)))) continue;
+              // (a hole, not a pin: the face facing its axis)
+              if (dot(unit(vec(fc.normalAt(mid))), unit(sub(mid, add(s0.p, mul(d, dot(sub(mid, s0.p), d)))))) > 0) continue;
               const ts = edgeEnds(fc.edges).map((q) => dot(sub(q, s0.p), d)), t0 = Math.min(...ts), t1 = Math.max(...ts), r = s0.r;
               const w = unit(sub(up, mul(d, dot(up, d)))), x = cross(d, w), o = add(s0.p, mul(d, t0));
               const at = (a, b) => add(add(o, mul(x, a)), mul(w, b)), c45 = Math.SQRT1_2;

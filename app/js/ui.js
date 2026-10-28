@@ -740,6 +740,31 @@ const PM_SCHEMAS = {
     ...SCOPE_GROUP,
   ],
   // (3D printing fasteners: sizes from the part's print profile unless given; 3D Print tab)
+  fitClearance: [
+    { title: 'Fit Clearance', fields: [
+      { key: 'fit', type: 'select', label: 'Fit', options: [['press', 'Press'], ['snug', 'Snug'], ['sliding', 'Sliding'], ['loose', 'Loose']] },
+      { key: 'gap', type: 'expr', label: 'Gap (empty: the print profile’s for that fit)', unit: 'mm', optional: true },
+      { key: 'faces', type: 'faceList', hint: 'Click the faces that fit against another part: flat faces move in, a pin gets thinner, a hole wider, by the gap.' },
+    ] },
+  ],
+  printHinge: [
+    { title: 'Print-in-Place Hinge', fields: [
+      { key: 'knuckles', type: 'expr', label: 'Knuckles' },
+      { key: 'outer', type: 'expr', label: 'Knuckle diameter', unit: 'mm' },
+      { key: 'pin', type: 'expr', label: 'Pin diameter', unit: 'mm' },
+      { key: 'gap', type: 'expr', label: 'Gap (empty: 0.4)', unit: 'mm', optional: true },
+      { key: 'hHint', type: 'hint', text: 'Click the straight edge it turns about. Two bodies are made, printed together and turning on the pin: join each to its part with Combine.' },
+    ] },
+  ],
+  printSplit: [
+    { title: 'Split for Printing', fields: [
+      { key: 'tool', type: 'splitTool', label: 'Split at (a plane)' },
+      { key: 'dowels', type: 'expr', label: 'Dowels' },
+      { key: 'dowel', type: 'expr', label: 'Dowel diameter', unit: 'mm', show: (f) => +f.dowels !== 0 },
+      { key: 'dowelDepth', type: 'expr', label: 'Hole depth each side', unit: 'mm', show: (f) => +f.dowels !== 0 },
+      { key: 'clearance', type: 'expr', label: 'Clearance each side (empty: the profile’s snug fit)', unit: 'mm', optional: true, show: (f) => +f.dowels !== 0 },
+    ] },
+  ],
   printableHole: [
     { title: 'Printable Hole', fields: [
       { key: 'shape', type: 'select', label: 'Top', options: [['teardrop', 'Teardrop (45°)'], ['flattop', 'Teardrop cut flat at the top of the hole']] },
@@ -2193,6 +2218,7 @@ export class UI {
         { icon: 'gear', label: 'Print Profile', action: () => this.showPrintProfiles() },
         { icon: 'body', label: 'Place on Bed', action: () => a.placeOnBed() },
         { icon: 'eye', label: 'Show Bed', action: () => a.togglePrintBed(), active: !!a.printBedOn },
+        { icon: 'views', label: 'Auto-Orient', action: () => a.autoOrient() },
         'sep',
         { icon: 'hole', label: 'Nut Pocket', action: () => a.startFeature('nutPocket') },
         { icon: 'hole', label: 'Insert Hole', action: () => a.startFeature('insertHole') },
@@ -2203,6 +2229,10 @@ export class UI {
         { icon: 'chamfer', label: 'First-Layer Chamfer', action: () => a.startFeature('bedChamfer') },
         { icon: 'chamfer', label: 'Printable Overhangs', action: () => a.startFeature('printableOverhangs') },
         'sep',
+        { icon: 'offset', label: 'Fit Clearance', action: () => a.startFeature('fitClearance') },
+        { icon: 'axis', label: 'Print-in-Place Hinge', action: () => a.startFeature('printHinge') },
+        { icon: 'split', label: 'Split for Printing', action: () => a.startFeature('printSplit') },
+        'sep',
         { icon: 'measure', label: 'Check Printability', action: () => a.checkPrintability() },
         { icon: 'draftAnalysis', label: 'Overhang Map', action: () => a.overhangMap(), active: a.analysis?.kind === 'overhang' },
         { icon: 'measure', label: 'Thickness Map', action: () => a.printThicknessMap(), active: a.analysis?.kind === 'thickness' },
@@ -2210,6 +2240,7 @@ export class UI {
         { icon: 'threemf', label: 'Export for Printing', action: () => a.exportForPrinting('3mf') },
         { icon: 'stl', label: 'Export STL for Printing', action: () => a.exportForPrinting('stl') },
         { icon: 'open', label: 'Open in Slicer', action: () => a.openInSlicer() },
+        { icon: 'cpattern', label: 'Calibrate Fits', action: () => a.calibrateFits() },
       ],
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
@@ -6241,6 +6272,38 @@ export class UI {
     render();
     this.modal('Print Profile', 'gear', box, [{ label: 'Close', primary: true }]);
   }
+  // ---- 3D Print tab: Auto-Orient's best three, each with its numbers, one to use
+  showAutoOrient(cands, use) {
+    const box = el('div', { 'data-auto-orient': '' }), f2 = (x) => +x.toFixed(2);
+    box.appendChild(el('div', { class: 'pm-hint' }, 'Ranked by support needed, then by how much sits on the bed, then by height.'));
+    let close = null;
+    cands.forEach((c, i) => {
+      const row = el('div', { class: 'print-finding' }, `<b>${i + 1}</b> support ${f2(c.support)} cm³ · on the bed ${f2(c.contact)} mm² · ${f2(c.height)} mm high `);
+      row.appendChild(el('button', { class: 'pm-btn', 'data-auto-orient-use': i, onclick: () => { use(c); close?.(); } }, 'Use'));
+      box.appendChild(row);
+    });
+    close = this.modal('Auto-Orient', 'views', box, [{ label: 'Close', primary: true }]).close;
+  }
+  // ---- 3D Print tab: Calibrate Fits: how to use the test piece, and the profile's fits set from it
+  showCalibrateFits(prof, pegs, path) {
+    const a = this.app, prefs = (this.prefs ||= {}), box = el('div', { 'data-calibrate-fits': '' });
+    box.appendChild(el('div', { class: 'pm-hint' }, `${path ? `Saved ${esc(String(path).split(/[\\/]/).pop())}. ` : ''}Print it, then try each peg (left to right: press, snug, sliding, loose) in the holes. Set each fit to the gap of the peg that fitted that way (a peg's gap is (6 − its diameter) / 2): the profile's fits change, and Fit Clearance uses them.`));
+    const fits = { ...(prof.fits || {}) };
+    for (const g of pegs) {
+      const input = el('input', { type: 'number', step: 'any', value: fits[g.fit], 'data-fit': g.fit, 'aria-label': `${g.fit} fit gap` });
+      input.onchange = () => { fits[g.fit] = +input.value; };
+      box.appendChild(this.row(`${g.fit[0].toUpperCase() + g.fit.slice(1)} (peg Ø${+g.d.toFixed(3)})`, input));
+    }
+    this.modal('Calibrate Fits', 'cpattern', box, [
+      { label: 'Save the fits', primary: true, action: () => {
+        // (a starting profile is kept as it is: the fits go into a copy of your own, used by this part)
+        const name = prof.builtIn ? `${prof.name} (calibrated)` : prof.name, next = { ...prof, name, fits, builtIn: undefined };
+        prefs.printProfiles = [...(prefs.printProfiles || []).filter((x) => x.name !== name), next]; this.savePrefs();
+        a.setPrintProfile(name);
+      } },
+      { label: 'Close' },
+    ]);
+  }
   // ---- 3D Print tab: Check Printability's findings (numbered as on the model) and the part's print numbers
   showPrintCheck(res, prof) {
     const box = el('div', { class: 'print-check', 'data-print-check': '' }), s = res.stats, f1 = (x) => +x.toFixed(1), f2 = (x) => +x.toFixed(2);
@@ -6255,7 +6318,13 @@ export class UI {
     box.appendChild(list);
     const facts = [`Volume ${f2(s.volume)} cm³`, `mass ${f1(s.mass)} g in ${esc(prof.material || prof.name)}`, s.filament != null ? `${f2(s.filament)} m of ${prof.filament} mm filament` : null, `on the bed ${f1(s.contact)} mm²`].filter(Boolean);
     box.appendChild(el('div', { class: 'pm-hint', 'data-print-stats': '' }, facts.join(' · ')));
+    // (findings a print feature fixes: offered)
+    const fails = new Set(res.findings.filter((x) => x.level === 'fail').map((x) => x.check)), fix = [];
+    if (fails.has('overhang')) fix.push({ label: 'Printable Overhangs', action: () => { this.app.startFeature('printableOverhangs'); } });
+    if (fails.has('bed')) fix.push({ label: 'Split for Printing', action: () => { this.app.startFeature('printSplit'); } });
+    if (fails.has('contact') || fails.has('overhang') || fails.has('bridge')) fix.push({ label: 'Auto-Orient', action: () => { this.app.autoOrient(); } });
     this.modal(`Check Printability — ${res.findings.filter((x) => x.level === 'fail').length} fails, ${res.findings.filter((x) => x.level === 'warn').length} warnings`, 'measure', box, [
+      ...fix,
       { label: 'Clear the marks', action: () => { this.app.viewport.setPointMarks('print', null); } },
       { label: 'Close', primary: true },
     ]);

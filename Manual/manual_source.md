@@ -1544,6 +1544,113 @@ Set the weld size and click the bodies to weld (none: every weldment member). A 
 
 **Harness Formboard** {idx:formboard}{idx:harness, formboard} lays the part's cables flat at their cut lengths, joined where their ends meet: each cable straight on from the one before it, branches fanned out at 45° steps. It shows the board with each cable's name and length and the points where cables meet, and **Export DXF…** writes it to lay out the board full size.
 
+# Designing for 3D Printing
+
+The **3D Print** tab {idx:3D printing}{idx:3D Print tab} has what a part made on a 3D printer needs: features that add a nut pocket or a printable hole in a click or two, a check of the part against what the printer can do, and an export laid out on the printer's bed. Every size it uses comes from the part's **print profile**: a printer and a material.
+
+Its buttons run left to right in the order you work: set up (profile, orientation), add features, check, export.
+
+## Print Profile
+
+**3D Print ▸ Print Profile** {idx:print profile} picks the profile this part uses and edits your own. A profile holds:
+
+| Setting | What it sets |
+|---|---|
+| Bed X × Y × Z | The printer's build volume: the bed check, Show Bed, Split for Printing |
+| Nozzle diameter, extrusion width, layer height | The smallest walls (2 extrusion widths), the bridging steps |
+| Overhang limit | How steep a face may face down, from vertical, without support (45° on FDM printers) |
+| Longest bridge | The widest ceiling the printer can bridge |
+| Hole clearance | Added each side to nut pockets |
+| Fits: press, snug, sliding, loose | The gaps Fit Clearance uses (0.05, 0.15, 0.3, 0.5 mm to start) |
+| Density, filament diameter | The mass and filament length in the check |
+| Smallest hole, pin and gap | The small-feature checks |
+| The material shrinks | A warning about warping on long bases (ABS, ASA, nylon) |
+
+Four profiles come with RazorCAD: PLA, PETG and ABS on a 0.4 mm nozzle, and a resin printer. They can't be changed: **Copy…** one and change the copy. **Use for this part** keeps the choice with the part (a copy of the profile is saved in the part file too); **Make default** is the profile for parts that have none. A change to one of your profiles applies to every part that uses it.
+
+**Slicer program** (Windows app): **Choose slicer program…** picks the program **Open in Slicer** starts.
+
+## Place on Bed, Auto-Orient and Show Bed
+
+The checks, the overhang map and the export all use the part's **build orientation** {idx:build orientation}: which way up it prints. Until you set one, the part's biggest flat outside face lies on the bed.
+
+- **Place on Bed** {idx:Place on Bed}: select a flat face, then click it: that face goes down on the bed.
+- **Auto-Orient** {idx:Auto-Orient}: tries the part with each of its outside flat faces down, and in the 26 directions of a cube's faces, edges and corners, and lists the best three: least support first, then the most on the bed, then the lowest. **Use** sets one.
+- **Show Bed** {idx:Show Bed}: draws the printer's bed (a 10 mm grid) and its build volume under the part.
+
+Features that depend on which way is up (Printable Hole, Bridging Layer, First-Layer Chamfer, Printable Overhangs) keep the orientation the part had when they were added.
+
+## Check Printability
+
+**Check Printability** {idx:Check Printability}{idx:printability} checks the solid bodies in their build orientation against the profile, numbers what it finds on the model, and lists it:
+
+| Check | Fails when |
+|---|---|
+| Overhangs | A face facing down steeper than the overhang limit, off the bed (amber within 10° of it) |
+| Bridges | A flat ceiling wider, the narrow way across, than the longest bridge |
+| Walls | Thinner than 2 extrusion widths (amber under 3) |
+| Holes and pins | A hole standing up under the smallest hole, a pin under the smallest pin |
+| Closed hollows | A void sealed inside the part (a warning on FDM printers; a fail on resin, which is trapped in it) |
+| Bed contact | Less than 5 % of the part's footprint on the bed |
+| Bed fit | Bigger than the printer |
+| Warping | A base over 150 mm long in a material that shrinks (a warning) |
+
+Below the list: the support it would need (an estimate: columns from each overhang down to the part or the bed), the part's volume, its mass in the profile's material, and the filament it takes. Where a print feature fixes what was found, a button starts it: **Printable Overhangs**, **Split for Printing**, **Auto-Orient**.
+
+## Overhang Map and Thickness Map
+
+**Overhang Map** {idx:Overhang Map} colours the model up its build direction: green fine (or on the bed), amber within 10° of the profile's overhang limit, red over it (needs support). **Thickness Map** colours walls red under 2 extrusion widths, green to yellow above. Click again to turn them off.
+
+## Nut Pocket
+
+**Nut Pocket** {idx:Nut Pocket}{idx:captive nut} makes a hex pocket for an ISO 4032 nut, with the screw's clearance hole through (ISO 273 normal fit; untick it to leave it out). Click points on a face, or pick a sketch with points: each gets one. The pocket is the nut's size plus the profile's clearance each side, as deep as the nut plus the clearance (or **Pocket depth**). **Turn the flats by** turns it.
+
+**Captive slot**: the pocket starts **Slot below the face** inside the part and a slot as wide as the nut runs out sideways past the part's edge (**Slot direction**), to slide the nut in from the side.
+
+## Insert Hole
+
+**Insert Hole** {idx:Insert Hole}{idx:threaded insert} makes a hole for a threaded insert pressed or melted in (heat-set): the insert's hole diameter, as deep as the insert plus a **Relief** below it, with a lead-in **Chamfer** at the top. The sizes come from a table of typical inserts; makers' sizes differ, so check yours and type its **Hole diameter** and **Insert length** if they do.
+
+## Screw Hole for Plastic
+
+**Screw Hole for Plastic** {idx:Screw Hole for Plastic} makes a pilot hole for a screw cut straight into the print: 0.85 × the screw's size (or a **Pilot hole** of your own), to a **Depth**, with a cap screw's **Counterbore** or a **Countersink** if wanted (ISO sizes).
+
+## Printable Hole
+
+**Printable Hole** {idx:Printable Hole}{idx:teardrop hole} reshapes holes lying on their side so they print without support: their top comes to a 45° point up the build direction (a **Teardrop**), or the point is cut flat at the top of the hole. Every hole whose axis lies within **Holes within this of level** is changed, or click the holes to change only those.
+
+## Bridging Layer
+
+**Bridging Layer** {idx:Bridging Layer} helps a counterbore or pocket printed upside down: the printer can't bridge round the smaller hole above it. Click the flat face round the hole (the counterbore's floor). **Steps**: that face is stepped up one layer at a time, first a strip as wide as the hole across the opening, then a square, so each layer bridges onto the one before. **A skin**: one layer closes the hole; drill it out after printing.
+
+## First-Layer Chamfer
+
+**First-Layer Chamfer** {idx:First-Layer Chamfer}{idx:elephant foot} chamfers every edge on the bed (0.4 mm to start), so the first layer, squashed wider, doesn't stick out.
+
+## Printable Overhangs
+
+**Printable Overhangs** {idx:Printable Overhangs} turns rounds facing down, up the build direction, into 45° chamfers of the same size, which print without support.
+
+## Fit Clearance
+
+**Fit Clearance** {idx:Fit Clearance} moves the faces of a part that fit against another part back by a fit's gap: **Press**, **Snug**, **Sliding** or **Loose** from the profile, or a **Gap** of your own. A flat face moves in; a pin gets thinner and a hole wider, by the gap all round.
+
+## Print-in-Place Hinge
+
+**Print-in-Place Hinge** {idx:Print-in-Place Hinge}{idx:hinge} makes a hinge that prints assembled. Click the straight edge it turns about: knuckles (**Knuckle diameter**) are spaced along it, the gap apart; the first, third… carry the **Pin** all along, the others are bored the gap wider all round and turn on it. Each set is a body of its own: join each to its part with **Combine**.
+
+## Split for Printing
+
+**Split for Printing** {idx:Split for Printing} cuts a part too big for the printer in two at a plane (choose a plane, or click a flat face), with **Dowels** across the cut: holes for dowels (**Dowel diameter**, the profile's snug fit each side, **Hole depth each side**), spaced along the cut's longest side and kept clear of its edges. Glue the halves on the dowels.
+
+## Export for Printing and Open in Slicer
+
+**Export for Printing** {idx:Export for Printing} writes the solid bodies as 3MF (it keeps millimetres and each body as its own object), turned into their build orientation, their lowest point on the bed, over the bed's middle. **Export STL for Printing** does the same as STL. **Open in Slicer** (Windows app) opens the last export, or a new one, in the slicer program named in Print Profile; RazorCAD only starts the program with the file.
+
+## Calibrate Fits
+
+**Calibrate Fits** {idx:Calibrate Fits} saves a test piece (3MF): a plate with four Ø6 holes and four pegs, 6 mm less twice the profile's press, snug, sliding and loose gaps, left to right. Print it, try the pegs in the holes, and set each fit to the gap of the peg that fitted that way. **Save the fits** keeps them in the profile (a starting profile: in a copy of it, used by this part).
+
 # Configurations
 
 A configuration is a variant of a part or assembly: other values for the global variables and other features suppressed in a part, other part configurations and components shown in an assembly. {idx:configurations}

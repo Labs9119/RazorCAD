@@ -6,6 +6,24 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 08:46 — The 3D Print tab, and limits lifted (spline intersections, curved reference points, outward shells, G2 rings, loft connectors, freeform on any face, dished ends)
+
+- **3D Print tab**: print profiles (printer and material: bed, nozzle, layer, overhang limit, bridge, clearances and
+  fits, density; PLA, PETG, ABS and resin to start from, copies of your own), the build orientation (**Place on Bed**,
+  **Auto-Orient** by least support, **Show Bed**), **Check Printability** (overhangs, bridges, walls, small holes and
+  pins, closed hollows, bed contact and fit, warping, the support estimate, mass and filament; numbered on the model),
+  **Overhang Map** and **Thickness Map**, **Export for Printing** (3MF or STL, laid out on the bed) and **Open in
+  Slicer**.
+- Print features: **Nut Pocket** (and captive slots), **Insert Hole**, **Screw Hole for Plastic**, **Printable Hole**
+  (teardrop or flat top), **Bridging Layer** (steps or a skin), **First-Layer Chamfer**, **Printable Overhangs** (rounds
+  facing down to 45° chamfers), **Fit Clearance**, **Print-in-Place Hinge**, **Split for Printing** (with dowel holes),
+  **Calibrate Fits** (a test piece, the fits kept in the profile). A new manual chapter: Designing for 3D Printing.
+- Limits lifted: Intersection Curve finds where a spline crosses the sketch plane; reference points where curved edges
+  and faces meet; Shell hollows outward and has walls of their own thickness outward; G2 fillets on circular edges (a
+  boss's foot or rim); lofts take several connectors per profile (a square's corners to a hexagon's); Freeform reshapes
+  flat faces of any outline, with holes, and trimmed freeform faces; Convert to Sheet Metal lays a dished end (curved
+  both ways) out flat as a blank, its stretch reported.
+
 ## 2026-10-29 06:12 — Version 0.19.0-beta
 - Installer, user manual (107 pages) and website for 0.19.0-beta.
 

@@ -776,6 +776,20 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  async 'print-joints'() {
+    const {run}=await import('/tests/print-joint-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
+    // (Calibrate Fits: the test piece made on its own kernel, saved, the fits typed and kept in a copy of the profile)
+    const a=window.app,prefs=a.ui.prefs;await a.newDocument?.();closeModals();
+    const before=JSON.stringify(prefs.printProfiles||[]),cal=await a.calibrateFits();
+    if(!cal||cal.bytes[0]!==0x50)return {ok:false,detail:'No fit test piece made'};
+    const box=document.querySelector('[data-calibrate-fits]');if(!box)return {ok:false,detail:'No Calibrate Fits dialog'};
+    const loose=box.querySelector('[data-fit="loose"]');loose.value='0.45';loose.dispatchEvent(new Event('change'));
+    [...document.querySelectorAll('.modal-f button')].find(b=>/Save the fits/.test(b.textContent)).click();await wait(100);
+    const p=a.printProfile(),ok=p.name==='PLA, 0.4 mm nozzle (calibrated)'&&p.fits.loose===0.45;
+    prefs.printProfiles=JSON.parse(before);a.ui.savePrefs();delete a.doc.print;closeModals();
+    return {ok,detail:ok?`${native.results.length} kernel cases (fit clearances on a pin, a hole and a face; a hinge; a bar split with dowels; Auto-Orient; the pegs), each to its numbers; Calibrate Fits kept in a copy of the profile`:`profile after calibrating: ${JSON.stringify(p)}`};
+  },
+
   async 'print-shapes'() {
     const {run}=await import('/tests/print-shape-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     return {ok:true,detail:`${native.results.length} kernel cases (teardrop and flat-topped holes, the first-layer chamfer, a round facing down turned into a chamfer, bridging steps and a skin over a counterbore), each to its volume`};
