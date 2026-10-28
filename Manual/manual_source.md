@@ -1852,7 +1852,6 @@ These displays colour the model to show the quality of its faces. Click the butt
 | **Zebra Stripes** | Reflected stripes on every body. Across a smooth join the stripes run on without a kink. |
 | **Curvature** | Bodies coloured from blue (flat) through green and yellow to red (tightest). The status bar gives the radius red stands for. |
 | **Draft Analysis** | Choose a pull direction (an axis or a selected face's normal) and the draft needed. Faces turn green with enough draft, yellow where they need more, and red with draft the other way. |
-
 | **Thickness Analysis** | Give the thinnest and thickest walls allowed. Each point is coloured by the wall thickness measured from it straight in through the material: red thinner than allowed, blue thicker (sinks and voids in a moulding), green to yellow between, grey where no wall was found. The status bar gives the thinnest and thickest walls and the share of the surface outside the limits. |
 | **Undercut Check** | Choose a pull direction. Each point is looked at along it and against it: green can be pulled out along it (one mould half), blue against it (the other), red neither way (an undercut, needing a side action or a change). The status bar gives the share of the surface undercut. |
 
