@@ -1892,6 +1892,27 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'gltf-export'() {
+    const S = await import('/js/sketchmodel.js');
+    const a = window.app; await a.newDocument?.(); closeModals();
+    const doc = M.newDoc(), sk = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } });
+    const P = [[0, 0], [40, 0], [40, 20], [0, 20]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4]));
+    const s2 = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); S.addCircle(s2, S.addPoint(s2, 100, 0), 5);
+    doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 10 }), s2, M.createFeature(doc, 'extrude', { sketch: s2.id, depth: 30 }));
+    doc.material = 'brass';
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    const b = a.glbBytes(), dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    if (dv.getUint32(0, true) !== 0x46546c67 || dv.getUint32(4, true) !== 2 || dv.getUint32(8, true) !== b.length) return { ok: false, detail: 'Not a glTF 2 binary' };
+    const jl = dv.getUint32(12, true), json = JSON.parse(new TextDecoder().decode(b.subarray(20, 20 + jl))), bin = b.subarray(28 + jl);
+    if (json.meshes.length !== 2 || bin.length !== json.buffers[0].byteLength) return { ok: false, detail: 'Meshes or buffer', json };
+    // (each body's box from its points, in mm before the root's 0.001 scale)
+    const acc = json.accessors[0], ok1 = Math.abs(acc.max[0] - acc.min[0] - 40) < 1e-4 && Math.abs(acc.max[2] - acc.min[2] - 10) < 1e-4;
+    const m = json.materials[0], ok2 = m.pbrMetallicRoughness.metallicFactor === 1 && json.nodes[0].scale[0] === 0.001;
+    const idx = new Uint32Array(bin.buffer, bin.byteOffset + json.bufferViews[2].byteOffset, json.accessors[2].count);
+    const ok3 = idx.every((i) => i < acc.count) && json.accessors[2].count % 3 === 0;
+    return ok1 && ok2 && ok3 ? { ok: true, detail: `2 bodies, ${json.accessors[2].count / 3 + json.accessors[5].count / 3} triangles, brass polished (metallic), in metres` } : { ok: false, detail: { ok1, ok2, ok3, acc, m } };
+  },
+
   async 'dfm-check'() {
     const {run,fixture}=await import('/tests/dfm-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     const a=window.app;await a.newDocument?.();closeModals();await a.setDoc(fixture());await wait(300);await until(()=>!a.kernel.pending);

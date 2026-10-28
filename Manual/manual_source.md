@@ -23,7 +23,7 @@ Main capabilities:
 - Assemblies with mates (including gear and rack-pinion mates), sub-assemblies, configurations, standard parts and fastener sets, equations shared with the parts, holes and cuts made in the assembly, exploded views, motion studies, collision detection, an interference check, a bill of materials with mass and cost, and STEP export
 - 2D drawings of parts and assemblies, with projected, section, detail, auxiliary, broken, exploded and flat pattern views, dimensions (also made automatically), GD&T, cosmetic threads, balloons, bill-of-materials tables, a drawing check, DXF drawings placed on the sheet, and PDF and DXF export
 - Millimetres or inches, chosen for each document
-- STEP, IGES, STL, OBJ and 3MF import; STEP, STL, OBJ and 3MF export; DXF import into sketches and drawings, and DXF export of faces and flat patterns
+- STEP, IGES, STL, OBJ and 3MF import; STEP, STL, OBJ, 3MF and glTF export; DXF import into sketches and drawings, and DXF export of faces and flat patterns
 - Macros, recorded or written, that drive RazorCAD
 - English, German, French or Spanish, a light or dark theme, and keyboard use of the panels
 - An **Ask Claude** panel that builds features from a plain-language description
@@ -286,6 +286,7 @@ Volumes of bodies with B-spline faces (imported NURBS, IGES) are measured exactl
 |---|---|
 | **File ▸ Export ▸ STEP…** | An exact B-rep. Each body is written as its own named, coloured solid. |
 | **File ▸ Export ▸ STL…** | A binary mesh |
+| **File ▸ Export ▸ glTF (.glb)…** | The bodies as the view shows them, for web viewers and AR {idx:glTF}: each a mesh with its colour and its render look's metalness and roughness, in metres, Y up |
 | Evaluate ▸ **Export OBJ** / **Export 3MF** | A mesh; 3MF is written in millimetres |
 | Right-click a body ▸ **Export Body as STEP…** | One body only |
 | **File ▸ Export ▸ Face as DXF…** | The outline of a flat face (see below) |

@@ -38,6 +38,7 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
+import { glb, viewportBodies } from './gltf.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -4481,6 +4482,12 @@ class App {
     ui.modal('3D Annotations', 'measure', box, [{ label: 'Close', primary: true }]);
   }
 
+  // (a glTF binary of the bodies as shown: colours and render looks, in metres)
+  glbBytes() {
+    const st = this.renderSetup();
+    return glb(viewportBodies(this.viewport, { names: (this.result?.bodies || []).map((b) => b.name), colors: st.colors, looks: st.looks }), this.doc.name || 'Part');
+  }
+
   // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
   async stepBytes(bodyId = null) {
     const ann = this.doc.annotations || [];
@@ -5099,7 +5106,7 @@ class App {
     if (!this.result?.body) { this.toast('There is no solid body to export', true); return; }
     try {
       this.status(`Exporting ${format.toUpperCase()}…`);
-      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
+      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : format === 'glb' ? this.glbBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
       const ext = format === 'step' ? 'step' : format;
       const path = await platform.saveBinary(`${this.safeName()}.${ext}`, bytes, format);
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');
