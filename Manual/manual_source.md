@@ -997,7 +997,11 @@ Four features for moulded parts (Features tab). {idx:plastic features}
 
 ## Core and Cavity
 
-**Core and Cavity** (Features tab) makes the two halves of a simple mould for the part {idx:Core and Cavity}{idx:mould}: a block round it (**Block margin** beyond it every way), the part taken out of it grown by the **Shrinkage** (the plastic shrinks as it cools), split at a parting plane square to the **Pull direction**. The plane goes at the part's largest section along the pull (or **At a height up the part**). The half the pull direction points into is the **Cavity**, the other the **Core**; holes along the pull become shut-offs where the plane crosses them. Check the part with Draft Analysis and Undercut Check first: undercuts need side actions, which this does not make.
+**Core and Cavity** (Features tab) makes the two halves of a simple mould for the part {idx:Core and Cavity}{idx:mould}: a block round it (**Block margin** beyond it every way), the part taken out of it grown by the **Shrinkage** (the plastic shrinks as it cools), split at a parting plane square to the **Pull direction**. The plane goes at the part's largest section along the pull (or **At a height up the part**). The half the pull direction points into is the **Cavity**, the other the **Core**; holes along the pull become shut-offs where the plane crosses them. **Parting** can also be **a parting surface** of your own (a surface body reaching past the block all round, made with the surface tools along the part's parting line): the block is split by it, the side the pull points into the cavity. Check the part with Draft Analysis and Undercut Check first.
+
+**Side Core** {idx:side core}{idx:slide, mould} (after Core and Cavity) makes a side action for an undercut: click its faces on the part (a side hole, a catch) and the direction it is pulled (the first face's normal, or an axis). A block round the faces (grown by the margin), from the part out past the mould block, is taken out of the core and the cavity and made a body of its own, **Side core**.
+
+**Sprue and Runners** {idx:runners}{idx:sprue} cuts round runners along the lines of a sketch on the parting plane (half in the core, half in the cavity; they gate into the part where they meet it) and a tapered sprue from the back of the cavity down to the start of the first line.
 
 ## Move Face
 

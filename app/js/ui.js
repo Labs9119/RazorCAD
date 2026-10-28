@@ -826,12 +826,31 @@ const PM_SCHEMAS = {
   mold: [
     { title: 'Mould', fields: [
       { key: 'dir', type: 'select', label: 'Pull direction (the cavity side)', options: [['y', '+Y'], ['-y', '−Y'], ['x', '+X'], ['-x', '−X'], ['z', '+Z'], ['-z', '−Z']] },
-      { key: 'parting', type: 'select', label: 'Parting plane', options: [['auto', 'At the largest section'], ['at', 'At a height up the part']] },
+      { key: 'parting', type: 'select', label: 'Parting', options: [['auto', 'A plane at the largest section'], ['at', 'A plane at a height up the part'], ['surface', 'A parting surface (a surface body)']] },
+      { key: 'partingSurface', type: 'bodySel', label: 'Parting surface', kinds: ['surface'], show: (f) => f.parting === 'surface' },
       { key: 'partingAt', type: 'expr', label: 'Height (from the part’s lowest point)', unit: 'mm', show: (f) => f.parting === 'at' },
       { key: 'margin', type: 'expr', label: 'Block margin (round the part)', unit: 'mm' },
       { key: 'shrink', type: 'expr', label: 'Shrinkage', unit: '%' },
       { key: 'keepPart', type: 'check', default: true, label: 'Keep the part as a body too' },
       { key: 'mHint', type: 'hint', text: 'A block round the part is split into a core and a cavity at a parting plane square to the pull direction, the part (grown by the shrinkage) taken out of both. Check the part first with Draft Analysis and Undercut Check: undercuts need side actions this does not make.' },
+    ] },
+  ],
+  moldSide: [
+    { title: 'Undercut', fields: [{ key: 'faces', type: 'faceList', hint: 'Click the faces of the undercut on the part (a side hole, a catch).' }] },
+    { title: 'Side Core', fields: [
+      { key: 'dir', type: 'select', label: 'Pulled', options: [['normal', 'Along the first face’s normal'], ['x', '+X'], ['-x', '−X'], ['y', '+Y'], ['-y', '−Y'], ['z', '+Z'], ['-z', '−Z']] },
+      { key: 'reverse', type: 'check', label: 'The other way' },
+      { key: 'margin', type: 'expr', label: 'Margin round the faces', unit: 'mm' },
+      { key: 'scHint', type: 'hint', text: 'A block round the faces, from the part out past the mould block, taken out of the core and cavity as a side core (a slide) of its own.' },
+    ] },
+  ],
+  moldRunner: [
+    { title: 'Runners', fields: [
+      { key: 'sketch', type: 'sketch', label: 'Sketch on the parting plane (lines)' },
+      { key: 'runnerD', type: 'expr', label: 'Runner diameter', unit: 'mm' },
+      { key: 'sprueD', type: 'expr', label: 'Sprue diameter (at the runner)', unit: 'mm' },
+      { key: 'taper', type: 'expr', label: 'Sprue taper (each side)', unit: '°' },
+      { key: 'rnHint', type: 'hint', text: 'Round runners along the lines (half in the core, half in the cavity, a gate where they meet the part) and a tapered sprue from the cavity’s back down to the first line’s start.' },
     ] },
   ],
   vent: [
@@ -1913,6 +1932,8 @@ export class UI {
         { icon: 'shell', label: 'Lip / Groove', action: () => a.startFeature('lipGroove') },
         { icon: 'fillPattern', label: 'Vent', action: () => a.startFeature('vent') },
         { icon: 'split', label: 'Core and Cavity', action: () => a.startFeature('mold') },
+        { icon: 'split', label: 'Side Core', action: () => a.startFeature('moldSide') },
+        { icon: 'sweep', label: 'Sprue and Runners', action: () => a.startFeature('moldRunner') },
         { icon: 'moveFace', label: 'Move Face', action: () => a.startFeature('moveFace') },
         { icon: 'scale', label: 'Scale', action: () => a.startFeature('scale') },
         'sep',

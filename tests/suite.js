@@ -5873,7 +5873,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
 
   async 'core-and-cavity'() {
     const {run}=await import('/tests/mold-cases.js'),native=await run({threads:threadsPerKernel()});
-    return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, with shrinkage, without the part; a plane off the part refused)`}:{ok:false,detail:native};
+    return native.ok?{ok:true,detail:`${native.results.length} kernel cases (parted at the largest section, at a height, by a parting surface, with shrinkage, without the part; a plane off the part refused; a side core; runners and a sprue)`}:{ok:false,detail:native};
   },
 
   async 'extrusion-start-controls'() {

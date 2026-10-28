@@ -2502,6 +2502,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // (import features holding other parts of an assembly, for reference: Edit in Context; from the list, as features
   // restored from the rebuild cache are not run again)
   const contextFeats = new Set((doc.features || []).filter((f) => f.type === 'import' && f.context).map((f) => f.id));
+  let moldInfo = null; // (the last Core and Cavity: its pull, block, part and bodies, for side cores and runners)
   let applied = []; // tools applied by the current feature (for previews)
   let blendPair = null; // a fillet/chamfer on one body: that body before and after (for its preview)
   let body = null;    // all bodies together (one solid, or a compound of several)
@@ -3519,7 +3520,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // preview or an edit only recomputes the feature being changed and what comes after it.
   const copyMap = (to, from) => { to.clear(); for (const [a, b] of from) to.set(a, b); };
   const takeSnap = () => ({
-    body, solids: [...solids], surfaces: [...surfaces], dense, blendChain, steps: [...steps], pending: [...pending],
+    body, solids: [...solids], surfaces: [...surfaces], dense, blendChain, steps: [...steps], pending: [...pending], moldInfo,
     planes: new Map(planes), sketches: new Map(sketches), axes: new Map(axes), points: new Map(points), tools: new Map(tools), curves: new Map(curves),
     usedIds: new Set(usedIds), featureDiffs: new Map(featureDiffs), sketchBodies: new Map(sketchBodies),
     res: { info:{...res.info}, errors: [...res.errors], sketches: { ...res.sketches }, planes: { ...res.planes }, axes: { ...res.axes }, points: { ...res.points }, curves: { ...res.curves }, notes: { ...res.notes }, detected: { ...res.detected }, features: { ...res.features }, threads: { ...res.threads }, missing: { ...res.missing } },
@@ -3527,6 +3528,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   });
   const restoreSnap = (s) => {
     ({ body, dense, blendChain } = s);
+    moldInfo = s.moldInfo || null;
     solids = [...s.solids]; surfaces = [...s.surfaces];
     pending = [...(s.pending || [])];
     steps.length = 0; steps.push(...s.steps);
@@ -7425,7 +7427,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
           for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) corners.push([x, y, z]);
           const lo = Math.min(...corners.map((q) => dot(q, d))), hi = Math.max(...corners.map((q) => dot(q, d)));
           let h;
-          if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
+          const partingBody = f.parting === 'surface' ? surfaces.find((x) => x.id === f.partingSurface) : null;
+          if (f.parting === 'surface' && !partingBody) throw new Error('Choose the parting surface (a surface body reaching past the block all round)');
+          if (partingBody) h = (lo + hi) / 2;
+          else if ((f.parting || 'auto') === 'at') h = lo + ev(f.partingAt);
           else {
             // (the largest section: the part's area in slabs across the pull direction, the middle of the largest run)
             const u = unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), big = b.diag + 10, N = 40, areas = [];
@@ -7443,14 +7448,94 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const spans = (v) => [Math.min(...corners.map((q) => dot(q, v))) - margin, Math.max(...corners.map((q) => dot(q, v))) + margin];
           const [u0, u1] = spans(ub), [v0, v1] = spans(vb), base = (t) => add(add(mul(ub, (u0 + u1) / 2), mul(vb, (v0 + v1) / 2)), mul(d, t));
           const half = (t0, t1) => R.drawRectangle(u1 - u0, v1 - v0).sketchOnPlane(new R.Plane(base(t0), ub, d)).extrude(t1 - t0);
-          const cavity = half(h, hi + margin).cut(part), core = half(lo - margin, h).cut(part);
+          let cavity, core;
+          if (partingBody) {
+            // (a parting surface of its own: the block less the part split by it, each piece by which side of it it is on
+            // along the pull)
+            const pieces = splitBy(half(lo - margin, hi + margin).cut(part), partingBody.shape);
+            if (pieces.length < 2) throw new Error('The parting surface does not cut the block in two (it must reach past the block all round)');
+            const along = (sh) => dot(bbox(sh).center, d);
+            const mid = pieces.map(along).reduce((a, b) => a + b, 0) / pieces.length;
+            const up = pieces.filter((x) => along(x) >= mid), down = pieces.filter((x) => along(x) < mid);
+            const join = (l) => l.reduce((a, b) => (a ? a.fuse(b) : b), null);
+            cavity = join(up); core = join(down);
+            applied.push({ op: 'add', tool: partingBody.shape });
+          } else { cavity = half(h, hi + margin).cut(part); core = half(lo - margin, h).cut(part); }
           const recs = [bodyRec(newId(f.id + 'cav'), cavity, f.id), bodyRec(newId(f.id + 'core'), core, f.id)];
           recs[0].name = 'Cavity'; recs[1].name = 'Core';
           if (f.keepPart === false) solids = solids.filter((s) => s !== rec);
           solids.push(...recs);
           body = compoundOf(solids);
           applied.push({ op: 'add', tool: cavity }, { op: 'add', tool: core });
-          res.notes[f.id] = `Core and cavity, parting ${+(h - lo).toFixed(3)} mm up the part along the pull${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          res.notes[f.id] = `Core and cavity, ${partingBody ? `parted by ${partingBody.id}` : `parting ${+(h - lo).toFixed(3)} mm up the part along the pull`}${shrink ? `, ${+(shrink * 100).toFixed(3)} % shrinkage` : ''}`;
+          moldInfo = { d, h, block: { lo: lo - margin, hi: hi + margin }, part, recs };
+          break;
+        }
+        case 'moldSide': {
+          // Side core for an undercut: the picked faces of the part (a side hole, a snap's catch) and a pull direction
+          // across the main one (the faces' normal by default): a block round them, grown by the margin, from the part out
+          // past the mould block, less the part: taken out of the cavity and the core and made a body of its own
+          if (!moldInfo) throw new Error('Make the core and cavity first (Core and Cavity, above this)');
+          // (the faces of the mould's part nearest the points picked: the part as moulded, grown by its shrinkage)
+          const pfaces = moldInfo.part.faces, ptol = Math.max(1e-3, bbox(moldInfo.part).diag * 0.02);
+          const hits = (f.faces || []).map((r) => {
+            let best = null, bd = ptol;
+            for (const fc of pfaces) { const dd = new R.DistanceQuery(R.makeVertex(r.p)).distanceTo(fc); if (dd < bd) { bd = dd; best = fc; } }
+            return best && { face: best };
+          });
+          if (!hits.length || hits.some((x) => !x)) throw new Error('Click the faces of the undercut on the part');
+          const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, key = f.dir || 'normal';
+          let sd = key === 'normal' ? unit(f.faces[0].n || vec(hits[0].face.normalAt())) : key.startsWith('-') ? mul(AX[key[1]], -1) : AX[key];
+          if (f.reverse) sd = mul(sd, -1);
+          const m2 = ev(f.margin ?? 2), bb = bboxOfAll(hits.map((x) => x.face)), big = bbox(moldInfo.part).diag * 3 + 50;
+          const u = unit(cross(sd, Math.abs(sd[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), w = cross(sd, u);
+          const corners = [];
+          for (const x of [bb.min[0], bb.max[0]]) for (const y of [bb.min[1], bb.max[1]]) for (const z of [bb.min[2], bb.max[2]]) corners.push([x, y, z]);
+          const span = (v) => [Math.min(...corners.map((q) => dot(q, v))) - m2, Math.max(...corners.map((q) => dot(q, v))) + m2];
+          const [u0, u1] = span(u), [w0, w1] = span(w), [s0] = span(sd);
+          const base = add(add(mul(u, (u0 + u1) / 2), mul(w, (w0 + w1) / 2)), mul(sd, s0));
+          const tool = R.drawRectangle(u1 - u0, w1 - w0).sketchOnPlane(new R.Plane(base, u, sd)).extrude(big).cut(moldInfo.part);
+          const [cav, cor] = moldInfo.recs.map((r) => solids.find((x) => x.id === r.id)).filter(Boolean);
+          let side = null;
+          for (const r of [cav, cor]) {
+            if (!r) continue;
+            const piece = r.shape.intersect(tool);
+            if (piece && solidsOf(piece).length) side = side ? side.fuse(piece) : piece;
+            replaceSolid(r, unify(r.shape.cut(tool)), f.id);
+          }
+          if (!side) throw new Error('The side core does not reach the mould block (check the faces and the direction)');
+          const rec = bodyRec(newId(f.id + 'side'), unify(side), f.id);
+          rec.name = 'Side core';
+          solids.push(rec);
+          applied.push({ op: 'add', tool: side });
+          body = compoundOf(solids);
+          moldInfo.recs = moldInfo.recs.map((r) => solids.find((x) => x.id === r.id) || r);
+          res.notes[f.id] = `Side core pulled along (${sd.map((x) => +x.toFixed(3)).join(', ')})`;
+          break;
+        }
+        case 'moldRunner': {
+          // Sprue and runners: round runners along the lines of a sketch on the parting plane (half in the cavity, half in
+          // the core), a gate where each meets the part, and a tapered sprue from the cavity's back down to the sketch's
+          // first point: cut from the mould's bodies
+          if (!moldInfo) throw new Error('Make the core and cavity first (Core and Cavity, above this)');
+          const s = sketches.get(f.sketch);
+          if (!s) throw new Error('Select the sketch of the runners (lines on the parting plane)');
+          const D = ev(f.runnerD ?? 6), sd = ev(f.sprueD ?? 4), dd = moldInfo.d;
+          if (!(D > 0 && sd > 0)) throw new Error('The runner and sprue need diameters');
+          const lines = s.sk.curves.filter((c) => c.type === 'line' && !c.construction).map((c) => [c.p1, c.p2].map((id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); }));
+          if (!lines.length) throw new Error('The runner sketch needs lines');
+          let tool = null;
+          const addT = (x) => { tool = tool ? tool.fuse(x) : x; };
+          for (const [a, b] of lines) { const L = len(sub(b, a)); if (L < 1e-6) continue; addT(R.makeCylinder(D / 2, L, a, unit(sub(b, a)))); for (const q of [a, b]) addT(R.makeSphere(D / 2).translate(q)); }
+          // (the sprue: from the sketch's first point to the back of the cavity, wider there by its taper)
+          const p0 = lines[0][0], top = moldInfo.block.hi - dot(p0, dd), r1 = sd / 2 + top * Math.tan(((ev(f.taper ?? 1)) * Math.PI) / 180);
+          const P = (rho, z) => add(add(p0, mul(unit(cross(dd, Math.abs(dd[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])), rho)), mul(dd, z));
+          addT(R.revolution(R.makePolygon([P(0, 0), P(sd / 2, 0), P(r1, top + 1), P(0, top + 1)]), p0, dd, 360));
+          let cut = 0;
+          for (const r0 of moldInfo.recs) { const r = solids.find((x) => x.id === r0.id); if (!r) continue; replaceSolid(r, unify(r.shape.cut(tool)), f.id); cut++; }
+          applied.push({ op: 'cut', tool });
+          body = compoundOf(solids);
+          res.notes[f.id] = `${lines.length} runner${lines.length === 1 ? '' : 's'} Ø${D}, a sprue Ø${sd} (${ev(f.taper ?? 1)}° taper), cut in ${cut} mould bod${cut === 1 ? 'y' : 'ies'}`;
           break;
         }
         case 'lipGroove': {
