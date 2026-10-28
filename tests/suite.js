@@ -5453,6 +5453,31 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return {ok:true,detail:`${native.results.length} kernel cases (elbows, bends, flanges, a custom tube at 45°, too short and branching routes refused, a cable and a bundle of wires); the pipes on the cut list; the two panels`};
   },
 
+  async '3d-annotations-and-step-ap242'() {
+    const A=await import('/js/annotations3d.js'),S=await import('/js/sketchmodel.js');
+    const a=window.app;await a.newDocument?.();closeModals();const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const doc=M.newDoc(),sk=M.createFeature(doc,'sketch',{plane:{ref:'front'}});const P=[[-10,-10],[10,-10],[10,10],[-10,10]].map(q=>S.addPoint(sk,...q));P.forEach((id,i)=>S.addLine(sk,id,P[(i+1)%4]));
+    doc.features.push(sk,M.createFeature(doc,'extrude',{sketch:sk.id,depth:20}));
+    doc.annotations=[{id:'an1',kind:'gdt',symbol:'flatness',tol:0.02,datums:'',p:[0,0,20],at:[5,5,30]},{id:'an2',kind:'dim',value:20,plus:0.1,minus:0.05,p:[0,0,0],q:[0,0,20],at:[15,0,10]},{id:'an3',kind:'note',text:'Deburr – 0.5 × 45°',p:[10,0,10],at:[20,5,10]},{id:'an4',kind:'datum',letter:'A',p:[0,0,0],at:[-5,-5,-5]}];
+    await a.setDoc(doc);await settle();
+    const shown=[...document.querySelectorAll('#labels .annot3d')].map(x=>x.textContent);
+    if(shown.length!==4||!shown.includes('20 +0.1/−0.05')||!shown.some(t=>t.includes('⏥'))||!shown.includes('A'))return {ok:false,detail:'The annotations are not shown',shown};
+    if(document.querySelectorAll('#labels .annot3d-leaders line').length!==5)return {ok:false,detail:'Leaders'};
+    const text=new TextDecoder().decode(await a.stepBytes());
+    const okSchema=/FILE_SCHEMA\s*\(\s*\(\s*'AP242/i.test(text),props=(text.match(/PROPERTY_DEFINITION\('PMI /g)||[]).length;
+    const note=text.includes("Deburr \\X2\\2013\\X0\\ 0.5 \\X2\\00D7\\X0\\ 45\\X2\\00B0\\X0\\");
+    if(!okSchema||props!==4||!note)return {ok:false,detail:`STEP: schema ${okSchema}, ${props} annotations, note text ${note}`,head:text.slice(0,600)};
+    // (made with the command: a dimension between two clicked points, its value measured)
+    {const keepP=a.ui.promptFields,keepF=a.faceAt;const pts=[[0,0,0],[0,0,20]];let k=0;
+     a.ui.promptFields=async()=>({value:'',plus:'0.2',minus:'0.2'});a.faceAt=()=>({hit:{point:{toArray:()=>pts[k++]}}});
+     try{await a.startAnnotation('dim');a.annotateClick({});a.annotateClick({});}finally{a.ui.promptFields=keepP;a.faceAt=keepF;}
+     const d=a.doc.annotations.at(-1);if(!d||d.kind!=='dim'||d.value!==20||d.plus!==0.2||a.pm)return {ok:false,detail:'The command did not make the dimension',d};}
+    // (a part without annotations: no annotation properties)
+    a.doc.annotations=[];const plain=new TextDecoder().decode(await a.stepBytes());
+    if(/PROPERTY_DEFINITION\('PMI /.test(plain)||!/FILE_SCHEMA/.test(plain))return {ok:false,detail:'A part without annotations got some in its STEP file'};
+    return {ok:true,detail:'a flatness frame, a toleranced dimension, a note and a datum shown with leaders; the STEP export (AP242) has the four as properties of the part (texts encoded); without annotations none'};
+  },
+
   async 'tolerance-stack-up'() {
     const {stackUp}=await import('/js/stackup.js');
     // (a housing 50 +0.1/−0 holding two parts 20 ± 0.05 and 29.8 ± 0.05: the end gap)

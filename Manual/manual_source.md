@@ -1870,6 +1870,12 @@ DWG import and export: DWG is a closed format with no free reader or writer that
 - **Keep the first item** measures from the first item to each next click (a third click replaces the second, not the first).
 - **Measured** lists the distances measured so far, most recent first.
 
+## 3D Annotations
+
+**Evaluate ▸ 3D Annotation** puts product and manufacturing information on the model itself (model based definition) {idx:3D annotations}{idx:MBD}{idx:PMI}{idx:GD&T}: a **Note**, a **Dimension** between two points (its value measured, or given) with its tolerances, a **Geometric tolerance** (a feature control frame: the characteristic, a Ø zone if ticked, the tolerance and the datums), a **Datum** letter or a **Surface finish** (Ra). Fill in the dialog, then click the point on the model it is about (two points for a dimension). Each shows as a label with a leader to its point and follows the view. **Tools ▸ 3D Annotations…** lists them, to delete them or hide them all.
+
+They are saved with the part, and a **STEP export** of the part carries them: each annotation is written as a property of the part with its kind, its text and the points it refers to (the file is AP242). Programs that read STEP properties show them; they are not semantic GD&T that a measuring machine program can use directly. {idx:STEP, AP242}
+
 ## Tolerance Stack-Up
 
 **Evaluate ▸ Tolerance Stack-Up** (also in an assembly's ribbon, and Tools ▸ Tolerance Stack-Up…) works out a gap from a chain of dimensions in one direction {idx:tolerance stack-up}{idx:worst case}{idx:RSS}. Each row is a dimension: its nominal size, its upper and lower tolerance (both as positive numbers: 50 +0.1 / −0) and whether it **adds to** or **takes from** the gap. The results update as you type: the gap's nominal and mean, its **worst case** limits (every tolerance at its limit together) and its **statistical** limits (root sum of squares: what most assemblies see when the parts vary independently), checked against the gap required (at least / at most). The share column shows which tolerances matter most. Stack-ups are kept in the part or assembly; New stack-up adds another.

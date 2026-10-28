@@ -35,6 +35,7 @@ import { machineInfo, kernelBudget, memoryFor, threadsPerKernel } from './machin
 import * as W from './wcs.js';
 import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
+import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -52,6 +53,7 @@ const $ = (s) => document.querySelector(s);
 class App {
   constructor() {
     this.viewport = new Viewport($('#viewport'), $('#c'), $('#labels'));
+    this.annot3d = new Annotations3D(this);
     this.history = new M.History();
     this.sketcher = new Sketcher(this);
     this.sketch3d = new Sketcher3D(this);
@@ -641,6 +643,7 @@ class App {
 
   applyResult(r) {
     const doc = this.doc;
+    this.annot3d?.refresh();
     if (this.flatView) this.exitFlatten(); // the model changed: back to the model view
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -2991,7 +2994,7 @@ class App {
     if (!b) { this.toast('That body no longer exists', true); return; }
     try {
       this.status(`Exporting ${b.name} as STEP…`);
-      const bytes = await this.withProgress(`Exporting ${b.name}…`, () => this.kernel.exportBody('step', id, this.exportInfo()));
+      const bytes = await this.withProgress(`Exporting ${b.name}…`, () => this.stepBytes(id));
       const file = (b.name.replace(/[^\w\- \[\]]+/g, '_') || 'Body') + '.step';
       const path = await platform.saveBinary(file, bytes, 'step');
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');
@@ -3171,6 +3174,7 @@ class App {
       return;
     }
     if (this.pickMode() === 'measure') { this.measureClick(e); return; }
+    if (this.pm?.kind === 'annotate') { this.annotateClick(e); return; }
     // cycling through overlapping bodies: Shift+left-click steps back, a plain click on the spot selects
     if (this.cycleAllowed()) {
       const c = this._cycle;
@@ -4116,7 +4120,7 @@ class App {
     if (pm.kind === 'sketch') return this.exitSketch(true);
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(true);
-    if (pm.kind === 'selectPlane' || pm.kind === 'measure') return this.cancelPM();
+    if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate') return this.cancelPM();
     if (pm.kind === 'section') {
       // (a view of the model only: the cut stays, its arrow goes; nothing is built again)
       this.pm = null;
@@ -4171,6 +4175,7 @@ class App {
     if (pm.kind === 'section') this.clearSection();
     if (pm.kind === 'measure') { this.viewport.setMeasure(null); this.viewport.setPointMarks('measure-picks', null); this.viewport.setPointMarks('measure-hover', null); }
     if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.showBanner(null); }
+    if (pm.kind === 'annotate') this.showBanner(null);
     this.hoverEdge = null;
     this.hoverVertex = null;
     this.refresh();
@@ -4237,6 +4242,81 @@ class App {
     this.commit();
     this.refresh();
     this.status(doc.rollbackAt ? `Rolled back to before ${M.findFeature(doc, doc.rollbackAt).name}. New features are inserted above the bar; drag it to the bottom to roll forward.` : 'Rolled forward to the end.');
+  }
+
+  // ------------------------------------------------------------ 3D annotations (annotations3d.js), in doc.annotations
+  async startAnnotation(kind0 = null) {
+    const ui = this.ui;
+    const kind = kind0 || (await ui.promptFields('3D Annotation', 'measure', [{ key: 'kind', label: 'Kind', type: 'select', options: [['note', 'Note'], ['dim', 'Dimension (between two points)'], ['gdt', 'Geometric tolerance'], ['datum', 'Datum'], ['finish', 'Surface finish']], value: 'note' }]))?.kind;
+    if (!kind) return;
+    const fields = {
+      note: [{ key: 'text', label: 'Note', type: 'text', value: '' }],
+      dim: [{ key: 'value', label: 'Value (empty: as measured)', type: 'expr', value: '' }, { key: 'plus', label: '+ Tolerance', type: 'expr', value: '0.1' }, { key: 'minus', label: '− Tolerance', type: 'expr', value: '0.1' }],
+      gdt: [{ key: 'symbol', label: 'Characteristic', type: 'select', options: GDT_SYMBOLS.map(([k, s, l]) => [k, `${s} ${l}`]), value: 'position' }, { key: 'dia', label: 'Diameter zone (Ø)', type: 'check', value: false }, { key: 'tol', label: 'Tolerance', type: 'expr', value: '0.05' }, { key: 'datums', label: 'Datums (e.g. A B C)', type: 'text', value: '' }],
+      datum: [{ key: 'letter', label: 'Datum letter', type: 'text', value: String.fromCharCode(65 + (this.doc.annotations || []).filter((x) => x.kind === 'datum').length % 26) }],
+      finish: [{ key: 'ra', label: 'Roughness Ra (µm)', type: 'expr', value: '1.6' }, { key: 'text', label: 'Process / note', type: 'text', value: '' }],
+    }[kind];
+    if (!fields) return;
+    const v = await ui.promptFields('3D Annotation', 'measure', fields, kind === 'dim' ? 'Then click the two points on the model.' : 'Then click the point on the model it is about.');
+    if (!v) return;
+    const draft = { kind, ...v };
+    for (const k of ['plus', 'minus', 'tol', 'ra']) if (k in draft) draft[k] = this.result.ev(String(draft[k] || 0));
+    if (this.pm) this.cancelPM();
+    this.pm = { kind: 'annotate', draft, pts: [], need: kind === 'dim' ? 2 : 1 };
+    this.showBanner(kind === 'dim' ? 'Click the first point of the dimension on the model' : 'Click the point on the model for the annotation');
+    this.ui.renderPM();
+  }
+
+  annotateClick(e) {
+    const fh = this.faceAt(e), pm = this.pm;
+    if (!fh) { this.toast('Click on the model'); return; }
+    pm.pts.push(fh.hit.point.toArray());
+    if (pm.pts.length < pm.need) { this.showBanner('Click the second point of the dimension'); return; }
+    const d = pm.draft, [p, q] = pm.pts, list = (this.doc.annotations ||= []);
+    const a = { id: 'an' + (list.reduce((m, x) => Math.max(m, +String(x.id).slice(2) || 0), 0) + 1), ...d, p, ...(q ? { q } : {}) };
+    if (a.kind === 'dim') { const m = Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]); a.value = String(d.value).trim() ? this.result.ev(String(d.value)) : +m.toFixed(4); }
+    a.at = this.annot3d.labelAt(p, q);
+    list.push(a);
+    this.pm = null;
+    this.showBanner(null);
+    this.commit();
+    this.ui.renderPM();
+    this.annot3d.refresh();
+    this.status(`${annotationText(a)} added. Tools ▸ 3D Annotations… lists them (to delete or hide them); a STEP export of the part carries them.`);
+    return a;
+  }
+
+  manageAnnotations() {
+    const ui = this.ui, list = this.doc.annotations || [];
+    if (!list.length) { this.toast('No 3D annotations yet: Evaluate ▸ 3D Annotation adds them', true); return; }
+    const box = document.createElement('div');
+    const render = () => {
+      box.innerHTML = '';
+      for (const a of [...(this.doc.annotations || [])]) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:3px 0';
+        const t = document.createElement('span'); t.style.flex = '1'; t.textContent = `${a.kind}: ${annotationText(a)}`;
+        const x = document.createElement('button'); x.textContent = 'Delete';
+        x.onclick = () => { this.doc.annotations = this.doc.annotations.filter((y) => y !== a); if (!this.doc.annotations.length) delete this.doc.annotations; this.commit(); this.annot3d.refresh(); render(); };
+        row.append(t, x);
+        box.appendChild(row);
+      }
+      const hide = document.createElement('label');
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!this.doc.annotationsHidden;
+      cb.onchange = () => { if (cb.checked) this.doc.annotationsHidden = true; else delete this.doc.annotationsHidden; this.commit(); this.annot3d.refresh(); };
+      hide.append(cb, document.createTextNode(' Hide the annotations in the view'));
+      box.appendChild(hide);
+    };
+    render();
+    ui.modal('3D Annotations', 'measure', box, [{ label: 'Close', primary: true }]);
+  }
+
+  // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
+  async stepBytes(bodyId = null) {
+    const ann = this.doc.annotations || [];
+    const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo());
+    if (!ann.length) return bytes;
+    return new TextEncoder().encode(stepWithAnnotations(new TextDecoder().decode(bytes), ann));
   }
 
   // ------------------------------------------------------------ library features (libfeatures.js), kept in the settings
@@ -4849,7 +4929,7 @@ class App {
     if (!this.result?.body) { this.toast('There is no solid body to export', true); return; }
     try {
       this.status(`Exporting ${format.toUpperCase()}…`);
-      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => this.kernel.exportBody(format, null, this.exportInfo()));
+      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
       const ext = format === 'step' ? 'step' : format;
       const path = await platform.saveBinary(`${this.safeName()}.${ext}`, bytes, format);
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');

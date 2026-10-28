@@ -1728,6 +1728,7 @@ export class UI {
         { label: 'Equations…', icon: 'equations', action: () => this.showEquations() },
         { label: 'Mass Properties…', icon: 'mass', action: () => this.showMassProps() },
         { label: 'Tolerance Stack-Up…', icon: 'measure', action: () => this.showStackUp() },
+        { label: '3D Annotations…', icon: 'measure', action: () => a.manageAnnotations() },
         { label: 'Section View…', icon: 'section', action: () => a.startSection() },
         { label: 'Edit Material…', icon: 'material', action: () => this.showMaterial() },
         { label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences() },
@@ -2029,6 +2030,7 @@ export class UI {
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
         { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.showStackUp() },
+        { icon: 'measure', label: '3D Annotation', action: () => a.startAnnotation(), active: a.pm?.kind === 'annotate' },
         { icon: 'section', label: 'Section View', action: () => a.startSection(), active: !!a.viewport.section },
         { icon: 'equations', label: 'Equations', action: () => this.showEquations() },
         { icon: 'material', label: 'Edit Material', action: () => this.showMaterial() },
@@ -3571,6 +3573,7 @@ export class UI {
     if (pm.kind === 'sketch') return this.renderSketchPM(root);
     if (pm.kind === 'sketch3d') return a.sketch3d.renderPM(root, { el, esc, icon, pmGroup: (...x) => this.pmGroup(...x), exprInput: (...x) => this.exprInput(...x) });
     if (pm.kind === 'selectPlane') return this.renderSelectPlanePM(root);
+    if (pm.kind === 'annotate') { root.appendChild(el('div', { class: 'pm-hint', style: 'margin:10px' }, esc(`3D annotation (${pm.draft.kind}): click ${pm.need - pm.pts.length === 2 ? 'the two points' : 'the point'} on the model. Esc cancels.`))); return; }
     if (pm.kind === 'section') return this.renderSectionPM(root);
     if (pm.kind === 'measure') return this.renderMeasurePM(root);
     if (pm.kind === 'feature') return this.renderFeaturePM(root);

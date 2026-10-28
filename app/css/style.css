@@ -608,6 +608,14 @@ svg.ref-arrows { position: absolute; left: 0; top: 0; pointer-events: none; z-in
 .settings-btns .pm-btn { width: auto; }
 /* Measure: the snap point under the cursor, and the items picked (numbered) */
 .point-mark { position: absolute; pointer-events: none; z-index: 3; }
+/* 3D annotations: labels with leaders to the model */
+.annot3d-leaders { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 2; }
+.annot3d-leaders line { stroke: #0b6bcb; stroke-width: 1.2; }
+.annot3d { position: absolute; transform: translate(-50%, -50%); pointer-events: none; z-index: 3; background: rgba(255, 255, 255, 0.92); color: #0b3d75; border: 1px solid #0b6bcb; font: 12px/1.3 sans-serif; padding: 1px 5px; white-space: nowrap; border-radius: 2px; }
+.annot3d-gdt { padding: 0; display: flex; }
+.annot3d-gdt b { font-weight: normal; padding: 1px 5px; border-left: 1px solid #0b6bcb; }
+.annot3d-gdt b:first-child { border-left: 0; }
+.annot3d-datum { font-weight: bold; }
 .point-mark i { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #d97706; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
 .point-mark span { position: absolute; left: 9px; top: -9px; background: rgba(29, 36, 48, 0.9); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
 .point-mark.pick i { left: -8px; top: -8px; width: 16px; height: 16px; background: #1d4ed8; }
