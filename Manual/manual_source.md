@@ -1385,6 +1385,9 @@ Click the edge of one sheet metal part where it sits on another, then the face o
 | **Dimple** | Diameter, depth |
 | **Extruded (flanged) hole** | Hole diameter inside the collar, collar height, bend radius |
 | **Louver** | Width back from the slit, opening height, hood side; drawn as a line on the face (the slit) |
+| **Bead** {idx:bead, sheet metal} | A round-topped stiffening rib along each sketch line, its width and height (at most half its width), its ends rounded |
+| **Lance** {idx:lance} | A bridge: slits along the sketch line and its width from it, the strip between pressed out by the height and ramped back at 45° at its ends; both slits are cut lines in the flat pattern |
+| **Emboss** {idx:emboss, sheet metal} | Each closed outline of the sketch raised (or pressed, with Flip) by the height, with straight walls the sheet's thickness; its outline is marked in the flat pattern |
 
 The flat pattern gets a centre mark and a note for each form, an extruded hole's pre-hole (the collar laid flat) and a louver's slit as a cut. Forms stay with the part through later sheet metal features and are left off, rather than breaking the part, if one can't be made.
 

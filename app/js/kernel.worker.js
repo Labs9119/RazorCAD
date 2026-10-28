@@ -6135,7 +6135,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           let w = null;
           const c3 = curves.get(f.path), s2 = sketches.get(f.path);
           if (c3?.wire) w = c3.wire;
-          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed?.()) || sketchWires(s2.sk, s2.frame)[0];
+          else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed) || sketchWires(s2.sk, s2.frame)[0];
           if (!w) throw new Error('Select the sketch or 3D sketch of the cable’s route');
           const D = f.sizeBy === 'wires' ? bundleDiameter(Math.round(ev(f.wires)), ev(f.wireD)) : ev(f.diameter);
           if (!(D > 0)) throw new Error('The cable needs a diameter (or wires of a diameter)');
@@ -7660,16 +7660,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
         case 'smForm': {
           // dimples / extruded holes at sketch points or clicked points, louvers on sketch lines
           const kind = f.formType || 'dimple', flip = !!f.flip;
+          const lined = kind === 'louver' || kind === 'bead' || kind === 'lance';
           const par = kind === 'dimple' ? { D: ev(f.diameter), h: ev(f.depth) }
-            : kind === 'louver' ? { W: ev(f.width), H: ev(f.height), side: !!f.side }
-              : { D: ev(f.holeDiameter), h: ev(f.collarHeight), R: f.useDefaultRadius !== false ? 0 : ev(f.radius) };
+            : kind === 'louver' || kind === 'lance' ? { W: ev(f.width), H: ev(f.height), side: !!f.side }
+              : kind === 'bead' ? { W: ev(f.width), H: ev(f.height) }
+                : kind === 'emboss' ? { H: ev(f.height) }
+                  : { D: ev(f.holeDiameter), h: ev(f.collarHeight), R: f.useDefaultRadius !== false ? 0 : ev(f.radius) };
           const items = [];
           if (f.sketch) {
             const s = sketches.get(f.sketch);
             if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
             const P3 = (id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); };
-            if (kind === 'louver') {
+            if (lined) {
               for (const c of s.sk.curves) if (c.type === 'line' && !c.construction) items.push({ kind, line: { a: P3(c.p1), b: P3(c.p2) }, ...par, flip });
+            } else if (kind === 'emboss') {
+              // (each closed outline of the sketch: its corners, curves by points along them)
+              for (const w of sketchWires(s.sk, s.frame)) {
+                if (!w.isClosed) continue;
+                const poly = [];
+                for (const e of w.edges) { const n = e.geomType === 'LINE' ? 1 : 24; for (let k = 0; k < n; k++) { const q = vec(e.pointAt(k / n)); if (!poly.length || len(sub(q, poly.at(-1))) > 1e-6) poly.push(q); } }
+                if (poly.length >= 3) items.push({ kind, poly, ...par, flip });
+              }
             } else {
               // circle centres, and points of their own (not the ends of lines or arcs)
               const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
@@ -7677,14 +7688,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
               for (const pt of s.sk.points) if (pt.id !== 'O' && (at.has(pt.id) || !used.has(pt.id))) items.push({ kind, p: P3(pt.id), ...par, flip });
             }
           }
-          if (kind !== 'louver') for (const fc of f.faces || []) items.push({ kind, p: fc.p, ...par, flip });
-          if (!items.length) throw new Error(kind === 'louver' ? 'Select a sketch with lines on a face of the sheet: each line is a louver\'s slit' : 'Click points on a flat face of the sheet, or select a sketch with points (or circles) on it');
+          if (!lined && kind !== 'emboss') for (const fc of f.faces || []) items.push({ kind, p: fc.p, ...par, flip });
+          if (!items.length) throw new Error(lined ? 'Select a sketch with lines on a face of the sheet: each line is a slit or a bead\'s path' : kind === 'emboss' ? 'Select a sketch on a face of the sheet with closed outlines to emboss' : 'Click points on a flat face of the sheet, or select a sketch with points (or circles) on it');
           const first = items[0];
-          const rec = sheetRecs().find((r) => !r.sheet.stale && (first.line ? SM.lineOnSheet(r.sheet, first.line.a, first.line.b) : SM.pointOnSheet(r.sheet, first.p)));
+          const rec = sheetRecs().find((r) => !r.sheet.stale && (first.line ? SM.lineOnSheet(r.sheet, first.line.a, first.line.b) : SM.pointOnSheet(r.sheet, first.p || first.poly[0])));
           if (!rec) throw new Error('The form is not on a flat face of a sheet metal body');
           setSheet(rec, SM.addForms(sheetChecked(rec), items));
           res.features[f.id] = { faces: f.faces || [] };
-          res.notes[f.id] = `${items.length} ${{ dimple: 'dimple', louver: 'louver', exthole: 'extruded hole' }[kind]}${items.length === 1 ? '' : 's'}`;
+          res.notes[f.id] = `${items.length} ${{ dimple: 'dimple', louver: 'louver', exthole: 'extruded hole', bead: 'bead', lance: 'lance', emboss: 'emboss' }[kind]}${items.length === 1 ? '' : kind === 'emboss' ? 'es' : 's'}`;
           break;
         }
         case 'smGusset': {

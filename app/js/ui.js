@@ -456,12 +456,12 @@ const PM_SCHEMAS = {
   ],
   smForm: [
     { title: 'Form', fields: [
-      { key: 'formType', type: 'select', label: 'Type', options: [['dimple', 'Dimple'], ['louver', 'Louver'], ['exthole', 'Extruded (flanged) hole']] },
+      { key: 'formType', type: 'select', label: 'Type', options: [['dimple', 'Dimple'], ['louver', 'Louver'], ['exthole', 'Extruded (flanged) hole'], ['bead', 'Bead (stiffening rib)'], ['lance', 'Lance (bridge)'], ['emboss', 'Emboss (raised outline)']] },
       { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.formType === 'dimple' },
       { key: 'depth', type: 'expr', label: 'Depth', unit: 'mm', show: (f) => f.formType === 'dimple' },
-      { key: 'width', type: 'expr', label: 'Width (back from the slit)', unit: 'mm', show: (f) => f.formType === 'louver' },
-      { key: 'height', type: 'expr', label: 'Height (opening)', unit: 'mm', show: (f) => f.formType === 'louver' },
-      { key: 'side', type: 'check', label: 'Hood on the other side of the line', show: (f) => f.formType === 'louver' },
+      { key: 'width', type: 'expr', label: (f) => (f.formType === 'bead' ? 'Width' : 'Width (back from the slit)'), unit: 'mm', show: (f) => ['louver', 'lance', 'bead'].includes(f.formType) },
+      { key: 'height', type: 'expr', label: (f) => (f.formType === 'louver' ? 'Height (opening)' : 'Height'), unit: 'mm', show: (f) => ['louver', 'lance', 'bead', 'emboss'].includes(f.formType) },
+      { key: 'side', type: 'check', label: (f) => (f.formType === 'lance' ? 'On the other side of the line' : 'Hood on the other side of the line'), show: (f) => f.formType === 'louver' || f.formType === 'lance' },
       { key: 'holeDiameter', type: 'expr', label: 'Hole diameter (inside the collar)', unit: 'mm', show: (f) => f.formType === 'exthole' },
       { key: 'collarHeight', type: 'expr', label: 'Collar height (overall)', unit: 'mm', show: (f) => f.formType === 'exthole' },
       { key: 'useDefaultRadius', type: 'check', default: true, label: 'Use the part\'s bend radius', show: (f) => f.formType === 'exthole' },
@@ -469,8 +469,8 @@ const PM_SCHEMAS = {
       { key: 'flip', type: 'check', label: 'Pressed the other way' },
     ] },
     { title: 'Placement', fields: [
-      { key: 'sketch', type: 'sketch', label: (f) => (f.formType === 'louver' ? 'Sketch (lines: the slits)' : 'Sketch (points / circle centres)') },
-      { key: 'faces', type: 'faceList', show: (f) => f.formType !== 'louver', hint: 'Click points on a flat face of the sheet (or use a sketch on the face for exact places).', itemLabel: 'Point' },
+      { key: 'sketch', type: 'sketch', label: (f) => (f.formType === 'louver' || f.formType === 'lance' ? 'Sketch (lines: the slits)' : f.formType === 'bead' ? 'Sketch (lines: the beads)' : f.formType === 'emboss' ? 'Sketch (closed outlines)' : 'Sketch (points / circle centres)') },
+      { key: 'faces', type: 'faceList', show: (f) => !['louver', 'lance', 'bead', 'emboss'].includes(f.formType), hint: 'Click points on a flat face of the sheet (or use a sketch on the face for exact places).', itemLabel: 'Point' },
       { key: 'plHint', type: 'hint', text: (f) => (f.formType === 'louver' ? 'Draw a line on a flat face for each louver: the line is the slit (its length is the louver\'s), the hood rises behind it.' : 'Each point on a flat face gets one. The flat pattern gets a centre mark and a note' + (f.formType === 'exthole' ? ', and the pre-hole (the collar laid flat).' : '.')) },
     ] },
   ],

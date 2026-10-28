@@ -2385,8 +2385,21 @@ export function addForms(sheet, items) {
       marks.push(markLine(id, c, a2(c, m2(b.d, b.ba)), `GUSSET ${+it.L.toFixed(2)} × ${+it.w.toFixed(2)}`));
       return;
     }
+    if (it.kind === 'emboss') {
+      // (a closed outline raised (or pressed) by H with straight walls: its corners on one flat face)
+      const hits = it.poly.map((p) => pointOnSheet(sheet, p));
+      if (hits.some((h) => !h) || hits.some((h) => h.panel !== hits[0].panel)) throw new Error(`${what} must lie on one flat face of the sheet`);
+      if (!(it.H > 0)) throw new Error('The emboss height must be greater than zero');
+      const poly = hits.map((h) => h.q), up = hits[0].top !== !!it.flip;
+      const area = Math.abs(poly.reduce((s, p, k) => { const q = poly[(k + 1) % poly.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+      if (!(area > 4 * t * t)) throw new Error(`${what} is too small for the sheet's thickness`);
+      footprintInside(hits[0].panel, polyFace(poly), what);
+      forms.push({ kind: 'emboss', id, poly, H: it.H, up });
+      poly.forEach((p, k) => marks.push(markLine(id, p, poly[(k + 1) % poly.length], k === 0 ? `EMBOSS ${+it.H.toFixed(2)} ${up ? 'UP' : 'DOWN'}` : null)));
+      return;
+    }
     // a point (or line) on a flat face: the panel and flat coordinates
-    const hit = it.kind === 'louver' ? lineOnSheet(sheet, it.line.a, it.line.b) : pointOnSheet(sheet, it.p);
+    const hit = it.kind === 'louver' || it.kind === 'bead' || it.kind === 'lance' ? lineOnSheet(sheet, it.line.a, it.line.b) : pointOnSheet(sheet, it.p);
     if (!hit) throw new Error(`${what} is not on a flat face of the sheet`);
     const P = hit.panel;
     const up = hit.top !== !!it.flip; // (toward the face it was placed on, unless flipped)
@@ -2408,6 +2421,23 @@ export function addForms(sheet, items) {
       marks.push({ kind: 'slit', id, a: hit.pa, b: hit.pb });
       const c = [hit.pa, a2(hit.pa, m2(nn, it.W)), a2(hit.pb, m2(nn, it.W)), hit.pb];
       for (let k = 0; k < 3; k++) marks.push(markLine(id, c[k], c[k + 1], k === 1 ? `LOUVER ${+L.toFixed(2)} × ${+it.W.toFixed(2)} × ${+it.H.toFixed(2)} ${up ? 'UP' : 'DOWN'}` : null));
+    } else if (it.kind === 'bead') {
+      // (a stiffening bead along the line: a round-topped rib W wide, H high, its ends rounded)
+      const L = l2(s2(hit.pb, hit.pa)), e = u2(s2(hit.pb, hit.pa)), nn = [-e[1], e[0]], r = it.W / 2;
+      if (!(r > 0 && it.H > 0)) throw new Error('The bead width and height must be greater than zero');
+      if (it.H > r) throw new Error('A bead can be at most half its width high');
+      footprintInside(P, rectFace(a2(a2(hit.pa, m2(e, -r - t)), m2(nn, -r - t)), e, nn, L + 2 * r + 2 * t, 2 * r + 2 * t), what);
+      forms.push({ kind: 'bead', id, q: hit.pa, e, n: nn, L, r, h: it.H, up });
+      marks.push(markLine(id, hit.pa, hit.pb, `BEAD ${+it.W.toFixed(2)} × ${+it.H.toFixed(2)} ${up ? 'UP' : 'DOWN'}`));
+    } else if (it.kind === 'lance') {
+      // (a bridge lance: slits along the line and W from it, the strip between pressed out H, ramped at 45° at its ends)
+      const L = l2(s2(hit.pb, hit.pa)), e = u2(s2(hit.pb, hit.pa)), nn = it.side ? [e[1], -e[0]] : [-e[1], e[0]];
+      if (!(it.W > 0 && it.H > 0)) throw new Error('The lance width and height must be greater than zero');
+      if (!(L > 2 * it.H + t)) throw new Error('A lance must be longer than twice its height (its ramps)');
+      footprintInside(P, rectFace(a2(a2(hit.pa, m2(e, -t)), m2(nn, -t)), e, nn, L + 2 * t, it.W + 2 * t), what);
+      forms.push({ kind: 'lance', id, q: hit.pa, e, n: nn, L, W: it.W, H: it.H, up });
+      marks.push({ kind: 'slit', id, a: hit.pa, b: hit.pb }, { kind: 'slit', id, a: a2(hit.pa, m2(nn, it.W)), b: a2(hit.pb, m2(nn, it.W)) });
+      marks.push(markLine(id, hit.pa, a2(hit.pa, m2(nn, it.W)), `LANCE ${+L.toFixed(2)} × ${+it.W.toFixed(2)} × ${+it.H.toFixed(2)} ${up ? 'UP' : 'DOWN'}`));
     } else if (it.kind === 'exthole') {
       const R0 = it.R > 0 ? it.R : sheet.R, D = it.D, h = it.h;
       if (!(D > 0)) throw new Error('The hole diameter must be greater than zero');
@@ -2424,7 +2454,7 @@ export function addForms(sheet, items) {
   });
   return { ...sheet, region, forms, marks, nextMark: n };
 }
-const FORM_NAMES = { dimple: 'Dimple', louver: 'Louver', exthole: 'Extruded hole', gusset: 'Gusset' };
+const FORM_NAMES = { dimple: 'Dimple', louver: 'Louver', exthole: 'Extruded hole', gusset: 'Gusset', bead: 'Bead', lance: 'Lance', emboss: 'Emboss' };
 
 // The bend a model point (on a bend's round face) is on, and how far along it.
 function locateOnBend(sheet, p) {
@@ -2468,9 +2498,19 @@ function formSolid(sheet, sol) {
         continue;
       }
       // (an extruded hole's centre is in its pre-hole: the panel round it)
-      const P = panels.find((x) => faceAt([x.face], f.q, f.kind === 'exthole' ? f.rPre + 1e-4 : 1e-7));
+      const P = panels.find((x) => faceAt([x.face], f.kind === 'emboss' ? f.poly[0] : f.q, f.kind === 'exthole' ? f.rPre + 1e-4 : f.kind === 'emboss' ? 1e-4 : 1e-7));
       if (!P) continue;
       let cutTool = null, addTool = null;
+      if (f.kind === 'emboss') {
+        // (the footprint moved out by H: its top a thickness thick, its walls a thickness thick, straight)
+        const prism = (pts, z0, z1) => R.basicFaceExtrusion(R.makePolygon(pts.map(([x, y]) => [x, y, z0])), new R.Vector([0, 0, z1 - z0]));
+        const cw = f.poly.reduce((s, p, k) => { const q = f.poly[(k + 1) % f.poly.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0) > 0 ? 1 : -1;
+        // (the outline moved in by a thickness: each side's line moved in, corners where they meet)
+        const m = f.poly.length, lines = f.poly.map((p, k) => { const q = f.poly[(k + 1) % m], d = u2(s2(q, p)), nin = cw > 0 ? [-d[1], d[0]] : [d[1], -d[0]]; return { p: a2(p, m2(nin, t)), d }; });
+        const inner = lines.map((l, k) => { const o = lines[(k + m - 1) % m], den = o.d[0] * l.d[1] - o.d[1] * l.d[0]; if (Math.abs(den) < 1e-12) return l.p; const w = s2(l.p, o.p), s = (w[0] * l.d[1] - w[1] * l.d[0]) / den; return a2(o.p, m2(o.d, s)); });
+        cutTool = prism(f.poly, -1e-3, t + 1e-3);
+        addTool = prism(f.poly, 0, f.H + t).cut(prism(inner, -1e-3, f.H));
+      }
       if (f.kind === 'dimple') {
         // the material pushed out: lose the cap under the inner surface, gain the cap under the outer one
         const rho = (f.r * f.r + f.h * f.h) / (2 * f.h);
@@ -2500,6 +2540,29 @@ function formSolid(sheet, sol) {
           face = R.makeFace(R.assembleWire([sp(bot3), R.makeLine(bot3[N], top3[N]), sp([...top3].reverse()), R.makeLine(top3[0], bot3[0])]));
         } catch { face = R.makePolygon([...bot3, ...[...top3].reverse()]); }
         addTool = R.basicFaceExtrusion(face, new R.Vector([f.e[0] * f.L, f.e[1] * f.L, 0]));
+        const foot = rectFace(f.q, f.e, f.n, f.L, f.W);
+        cutTool = R.basicFaceExtrusion(facesOf(applyM(foot, transM([0, 0, -1e-3])))[0], new R.Vector([0, 0, t + 2e-3]));
+      } else if (f.kind === 'bead') {
+        // (like a dimple drawn along the line: a cap's cross-section swept along it, a dimple cap at each end)
+        const rho = (f.r * f.r + f.h * f.h) / (2 * f.h);
+        const capAlong = (z0) => {
+          const N = 24, pts = [];
+          for (let k = 0; k <= N; k++) { const x = -f.r + (2 * f.r * k) / N, z = Math.sqrt(Math.max(0, rho * rho - x * x)) - (rho - f.h); pts.push([x, z]); }
+          const sec = R.makePolygon(pts.map(([x, z]) => [f.q[0] + f.n[0] * x, f.q[1] + f.n[1] * x, z0 + Math.max(0, z)]));
+          let s3 = R.basicFaceExtrusion(sec, new R.Vector([f.e[0] * f.L, f.e[1] * f.L, 0]));
+          // (each end rounded: half the cross-section turned about the end's upright, a spherical cap)
+          for (const end of [f.q, a2(f.q, m2(f.e, f.L))]) {
+            const half = pts.filter(([x]) => x >= -1e-12).map(([x, z]) => [end[0] + f.n[0] * x, end[1] + f.n[1] * x, z0 + Math.max(0, z)]);
+            s3 = s3.fuse(R.revolution(R.makePolygon([[end[0], end[1], z0], ...half.slice(0, -1), [half.at(-1)[0], half.at(-1)[1], z0]].filter((q, k, l) => k === 0 || Math.hypot(q[0] - l[k - 1][0], q[1] - l[k - 1][1], q[2] - l[k - 1][2]) > 1e-9)), [end[0], end[1], z0], [0, 0, 1], 360));
+          }
+          return s3;
+        };
+        cutTool = capAlong(0); addTool = capAlong(t);
+      } else if (f.kind === 'lance') {
+        // (the strip: pressed out H, ramped at 45° to the panel at each end, a thickness thick; its footprint out)
+        const a = f.H, prof = [[0, 0], [a, f.H], [f.L - a, f.H], [f.L, 0], [f.L, t], [f.L - a, f.H + t], [a, f.H + t], [0, t]];
+        const sec = R.makePolygon(prof.map(([u, z]) => [f.q[0] + f.e[0] * u, f.q[1] + f.e[1] * u, z]));
+        addTool = R.basicFaceExtrusion(sec, new R.Vector([f.n[0] * f.W, f.n[1] * f.W, 0]));
         const foot = rectFace(f.q, f.e, f.n, f.L, f.W);
         cutTool = R.basicFaceExtrusion(facesOf(applyM(foot, transM([0, 0, -1e-3])))[0], new R.Vector([0, 0, t + 2e-3]));
       } else if (f.kind === 'exthole') {
