@@ -1808,6 +1808,7 @@ A flat pattern view shows a sheet metal body unfolded with its outline and holes
 | **Center Mark** | Click circles or arcs |
 | **Centerline** | Click two lines (or two points); the centerline runs between them |
 | **Revision Table** | Rows edited in one dialog; the latest revision goes into the title block |
+| **Table** | A general table {idx:table, drawing}: a title, rows (one a line, cells split by `|`, or pasted from a spreadsheet with tabs), the first row a bold header if ticked; each column as wide as its widest cell. `{material}`, `{title}` and the drawing's other properties fill in. Double-click it to change it or delete it |
 | **Cut List Table** | The cut list of the part in the selected view (see the Fast Structure chapter); it updates when the part changes |
 | **Hole Table** {idx:Hole Table} | The holes of the selected view (circles seen end on) tagged in it, a letter for each size, largest first, numbered from the bottom left (A1, A2… B1), with their X and Y from the view's lower-left corner and their size; it updates when the part changes |
 | **Balloon** | Click a part in a view, then where the balloon goes. The number is that part's item in the bill of materials, found from the part under the click (in a sub-assembly, the sub-assembly's item). Keep clicking for more; [[Esc]] ends. Where the part can't be told, it asks for the number. Right-click a balloon ▸ **Item Number…** to change it. |

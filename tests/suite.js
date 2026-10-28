@@ -1892,6 +1892,31 @@ const UI = {
   },
 
   // an assembly drawing: a BOM table (2 blocks, 1 plate) and balloons whose numbers come from the part clicked
+  async 'drawing-general-table'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
+    await a.newDocument?.(); closeModals();
+    const doc = M.newDoc(), sk = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }); S.addCircle(sk, 'O', 10); doc.features.push(sk, M.createFeature(doc, 'extrude', { sketch: sk.id, depth: 5 }));
+    await a.setDoc(doc); await wait(300); await until(() => !a.kernel.pending);
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Table drawing', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing; ed.doc.props.material = 'Steel S355';
+    const kf = a.ui.promptFields, kt = a.ui.promptText;
+    let t;
+    try {
+      a.ui.promptFields = async () => ({ title: 'NOTES', header: true, del: false });
+      a.ui.promptText = async () => 'ITEM\tVALUE\nMaterial\t{material}\nFinish | Zinc plated';
+      t = await ed.generalTable();
+    } finally { a.ui.promptFields = kf; a.ui.promptText = kt; }
+    if (!t || t.rows.length !== 3 || t.rows[1][0] !== 'Material') return { ok: false, detail: 'The table was not made from the rows', t };
+    const texts = Dm.annPrims(ed.doc, t, {}).filter((p) => p.t === 'text');
+    const ok = texts.some((p) => p.text === 'NOTES' && p.bold) && texts.some((p) => p.text === 'Steel S355') && texts.some((p) => p.text === 'ITEM' && p.bold) && texts.some((p) => p.text === 'Zinc plated' && !p.bold);
+    if (!ok) return { ok: false, detail: 'The table does not show as set', texts: texts.map((p) => p.text) };
+    const lines = Dm.annPrims(ed.doc, t, {}).filter((p) => p.t === 'line').length;
+    if (lines !== 5 + 3) return { ok: false, detail: `Grid lines: ${lines}` };
+    return { ok: true, detail: 'a titled table from rows pasted with tabs and |, the header bold, a drawing property filled in, its grid' };
+  },
+
   async 'drawing-alternate-position'() {
     const a = window.app, S = await import('/js/sketchmodel.js'), Dm = await import('/js/drawing.js');
     const box = (name, w, h) => { const p = M.newDoc(); p.name = name; const s = M.createFeature(p, 'sketch', { plane: { ref: 'front' } }); const P = [[-w / 2, 0], [w / 2, 0], [w / 2, h], [-w / 2, h]].map((q) => S.addPoint(s, ...q)); P.forEach((id, i) => S.addLine(s, id, P[(i + 1) % 4])); p.features.push(s, M.createFeature(p, 'extrude', { sketch: s.id, depth: 10 })); return p; };
