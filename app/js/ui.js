@@ -5660,6 +5660,19 @@ export class UI {
             select.value=control.curve?'@curve':control.point||'';
             select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
             if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
+            // (more connectors after the start, in order round the profile: as many on every profile, vertex to vertex)
+            if(control.point&&options.closed&&!f.thin){
+              const extra=control.extra||[];
+              extra.forEach((id,k)=>{
+                const pick=el('select',{'data-loft-connector-extra':`${i}:${k}`,'aria-label':`Connector ${k+2} vertex`});
+                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+                pick.value=id;pick.onchange=()=>a.setLoftConnection(ref,{...control,extra:extra.map((x,j)=>j===k?pick.value:x)});
+                const drop=el('button',{class:'pm-btn','data-loft-connector-extra-remove':`${i}:${k}`,title:'Remove this connector','aria-label':'Remove this connector',onclick:()=>a.setLoftConnection(ref,{...control,extra:extra.filter((_,j)=>j!==k)})},'✕');
+                const row=this.row(`Connector ${k+2}`,pick);row.appendChild(drop);body.appendChild(row);
+              });
+              const used=new Set([control.point,...extra]),free=options.points.filter(p=>!used.has(p.id));
+              if(free.length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-extra-add':i,onclick:()=>a.setLoftConnection(ref,{...control,extra:[...extra,free[0].id]})},'Add connector'));
+            }
           }
           if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;

@@ -776,6 +776,23 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  async 'loft-more-connectors-panel'() {
+    // the Profile Correspondence panel's Add connector / remove buttons: one more connector on each square profile
+    // builds (the same square, 2000 mm³), one removed again leaves the counts unequal and the loft says so
+    const {fixture}=await import('/tests/loft-correspondence-cases.js'),LC=await import('/js/loftcorrespondence.js'),LR=await import('/js/loftrefs.js');
+    const a=window.app,settle=async()=>{await wait(180);await until(()=>!a.kernel.pending);};
+    const d=fixture();d.profiles.forEach((ref,i)=>{d.feature.loftCorrespondence[LR.refKey(ref)]={point:d.sources[i].points[0]};});
+    await a.newDocument?.();closeModals();await a.setDoc(d.doc);a.editFeature(d.feature.id);await settle();
+    for(const i of [0,1]){const add=document.querySelector(`[data-loft-connector-extra-add="${i}"]`);if(!add)return {ok:false,detail:`No Add connector for profile ${i+1}`};add.click();await settle();}
+    const counts=d.profiles.map(ref=>LC.connectionFor(a.pm.feature,ref)?.extra?.length);
+    if(counts.join()!=='1,1'||a.result.errors.size)return {ok:false,detail:`After adding: ${counts} extra connectors, errors ${JSON.stringify([...a.result.errors])}`};
+    const built=await a.kernel.rebuild(a.doc),m=(await a.kernel.request('measure',{refs:[{kind:'body',id:built.body.bodies.at(-1).id}]})).items[0];
+    if(Math.abs(m.volume-2000)>1e-6)return {ok:false,detail:`Volume ${m.volume}, not 2000`};
+    document.querySelector('[data-loft-connector-extra-remove="0:0"]').click();await settle();
+    const err=[...a.result.errors.values()].join(' ');a.cancelPM();
+    return {ok:/same number of connectors/.test(err),detail:`a connector added on each square (2000 mm³ as before); one removed: "${err}"`};
+  },
+
   async 'loft-manual-correspondence'() {
     const {run,fixture}=await import('/tests/loft-correspondence-cases.js'),LC=await import('/js/loftcorrespondence.js'),S=await import('/js/sketchmodel.js');
     const native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:JSON.stringify(native)};

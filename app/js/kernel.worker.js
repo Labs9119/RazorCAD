@@ -3172,8 +3172,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
     return ids.map(ref=>{
       const source=sketches.get(LR.sourceId(ref));if(!source||curves.has(ref))throw new Error('Manual connectors require sketch profile contours; use Automatic for 3D curve profiles');
       const control=LC.connectionFor(f,ref);
-      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),reverse:!!control?.reverse,control,source,ref};
+      return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),extra:LC.connectionExtras(source.sk,ref,source.frame,control),reverse:!!control?.reverse,control,source,ref};
     });
+  };
+  // (several connectors on each profile: the sections split at them and matched stretch by stretch)
+  const connectorChainSections=(secs,controls,names)=>{
+    if(controls.some(c=>!!c.reverse!==!!controls[0].reverse))throw new Error('Invalid loft correspondence: closed profiles must share the same traversal direction; reverse all profiles together or change their start points');
+    const out=LC.connectorChains(LC.orientAlike(secs),controls.map(c=>[c.anchor,...c.extra]),names);
+    return controls[0].reverse?out.map(LC.reverseSection):out;
   };
   const loftConnectionInfo=(f,ids,sections,closed)=>{
     if(!LC.hasManualConnections(f))return;
@@ -5118,9 +5124,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
               return loftSection(sk.frame, S.chainSegs(subset, ch));
             });
             if (secs.every(Boolean)) {
-              if (connectorControls) secs.forEach((s, i) => { secs[i] = LC.splitSectionAt(s, connectorControls[i].anchor); });
-              closedSecs = matchLoftSections(secs, ids.map((id) => sketches.get(LR.sourceId(id)).sk.name));
-              if(connectorControls)closedSecs=LC.applySectionConnections(closedSecs,secs,connectorControls,true);
+              const names = ids.map((id) => sketches.get(LR.sourceId(id)).sk.name);
+              if (connectorControls?.some((c) => c.extra.length)) closedSecs = connectorChainSections(secs, connectorControls, names);
+              else {
+                if (connectorControls) secs.forEach((s, i) => { secs[i] = LC.splitSectionAt(s, connectorControls[i].anchor); });
+                closedSecs = matchLoftSections(secs, names);
+                if(connectorControls)closedSecs=LC.applySectionConnections(closedSecs,secs,connectorControls,true);
+              }
               list = closedSecs.map(sectionWire);
               if(connectorControls)loftConnectionInfo(f,ids,closedSecs,true);
             }
@@ -6736,6 +6746,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (connectorControls) profs.forEach((p, i) => {
             const c = connectorControls[i];
             if (thin) {
+              if (c.extra.length) throw new Error('More than one connector on a profile needs a loft that is not a thin feature');
               const nearest = (sec, q) => (q && sec.segs ? sec.segs.reduce((b, g) => (len(sub(g.a, q)) < len(sub(b, q)) ? g.a : b), sec.segs[0].a) : null);
               if (c.anchor) { holeControls[i] = p.holes.map((h) => ({ anchor: nearest(h, c.anchor), reverse: c.reverse })); connectorControls[i] = { ...c, anchor: nearest(p.outer, c.anchor) }; }
               return;
@@ -6777,8 +6788,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const names = profs.map((p) => p.name);
           const nh = profs[0].holes.length;
           if (profs.some((p) => p.holes.length !== nh)) throw new Error('Every profile needs the same number of holes (inner loops)');
-          let outerM = matchLoftSections(profs.map((p) => p.outer), names);
-          if(connectorControls){outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
+          const chained = !thin && connectorControls?.some((c) => c.extra.length);
+          let outerM = chained ? connectorChainSections(profs.map((p) => p.outer), connectorControls, names) : matchLoftSections(profs.map((p) => p.outer), names);
+          if(connectorControls){if(!chained)outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
           const holesM = Array.from({ length: nh }, (_, i) => {
             const m = matchLoftSections(profs.map((p) => p.holes[i]), names), cs = holeControls.map((h) => h[i] || { anchor: null, reverse: false });
             return cs.some((c) => c.anchor) ? LC.applySectionConnections(m, profs.map((p) => p.holes[i]), cs.map((c) => ({ ...c, reverse: cs[0].reverse })), true) : m;

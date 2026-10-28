@@ -2227,7 +2227,7 @@ class App {
     const pm=this.pm,f=pm.feature,key=LR.refKey(ref);
     try{
       const source=this.result.sketches.get(LR.sourceId(ref));if(!source)throw new Error('The profile sketch is unavailable');
-      if(control)LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));
+      if(control){LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));LC.connectionExtras(source.sketch,ref,source.frame,control);}
       f.loftCorrespondence={...(f.loftCorrespondence||{})};
       if(control)Object.defineProperty(f.loftCorrespondence,key,{value:{...control},enumerable:true,writable:true,configurable:true});else delete f.loftCorrespondence[key];
       f.correspondenceMode='manual';pm.loftConnector=null;pm.loftHover=null;this.preview(rerender);this.updateSketchDisplay();return true;

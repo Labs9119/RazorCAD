@@ -60,6 +60,32 @@ export async function run({threads=1}={}){
     }
     const {curvatureFixture}=await import('./loft-end-cases.js'),g2=curvatureFixture({both:true});g2.loft.correspondenceMode='manual';g2.loft.loftCorrespondence={[LR.refKey(g2.loft.profiles[1])]:{circle:g2.profiles[1].curves[0].id,angle:15}};
     const endResult=await kernel.rebuild(g2.doc);results.push({name:'manual circular seam with G2 at both ends',ok:!endResult.errors.length&&endResult.body?.bodies?.some(b=>b.kind==='solid'),errors:endResult.errors});
+    // several connectors: a square (corners at 0°, 90°, 180°, 270°, radius 14) lofted ruled to a hexagon (radius 12) 20
+    // above, corners 1 to 4 of the square to the hexagon's 0, 1, 3 and 4. The square's sides between corners 2 and 3 and
+    // between corners 4 and 1 are halved (the hexagon has two sides there), so the vertices pair as listed below; the
+    // sides are bilinear, the section's area quadratic in height: Simpson gives the volume exactly
+    const polygonLoft=({hexExtra=[1,3,4],squareExtra=[1,2,3]}={})=>{
+      const doc=M.newDoc(),plane=M.createFeature(doc,'plane',{refs:[{kind:'plane',id:'front'}],offset:20}),sks=[],refs=[];
+      for(const [ref,n,R] of [['front',4,14],[plane.id,6,12]]){
+        const sk=M.createFeature(doc,'sketch',{plane:{ref}}),pts=Array.from({length:n},(_,i)=>S.addPoint(sk,R*Math.cos(2*Math.PI*i/n),R*Math.sin(2*Math.PI*i/n)));
+        pts.forEach((q,i)=>S.addLine(sk,q,pts[(i+1)%n]));sks.push({sk,pts});
+      }
+      doc.features.push(sks[0].sk,plane,sks[1].sk);
+      for(const {sk} of sks)refs.push(LR.regionRef(sk.id,LR.selectableRegions(sk)[0]));
+      const feature=M.createFeature(doc,'loft',{profiles:refs,correspondenceMode:'manual',ruled:true,loftCorrespondence:{
+        [LR.refKey(refs[0])]:{point:sks[0].pts[0],extra:squareExtra.map(i=>sks[0].pts[i])},[LR.refKey(refs[1])]:{point:sks[1].pts[0],extra:hexExtra.map(i=>sks[1].pts[i])}}});
+      doc.features.push(feature);return {doc,feature};
+    };
+    {
+      const sq=i=>[14*Math.cos(Math.PI*i/2),14*Math.sin(Math.PI*i/2)],hx=i=>[12*Math.cos(Math.PI*i/3),12*Math.sin(Math.PI*i/3)],mid=(p,q)=>[(p[0]+q[0])/2,(p[1]+q[1])/2];
+      const P=[sq(0),sq(1),mid(sq(1),sq(2)),sq(2),sq(3),mid(sq(3),sq(0))],Q=[0,1,2,3,4,5].map(hx),Mm=P.map((p,i)=>mid(p,Q[i]));
+      const area=V=>Math.abs(V.reduce((s,p,i)=>{const q=V[(i+1)%V.length];return s+p[0]*q[1]-q[0]*p[1];},0))/2,want=20/6*(area(P)+4*area(Mm)+area(Q));
+      const d=polygonLoft(),r=await kernel.rebuild(d.doc),body=r.body?.bodies?.at(-1),m=body&&(await kernel.request('measure',{refs:[{kind:'body',id:body.id}]})).items[0];
+      results.push({name:'four connectors pair a square with a hexagon',ok:!r.errors.length&&!!m&&m.solid&&Math.abs(m.volume-want)<1e-6*want,volume:m?.volume,expected:want,errors:r.errors});
+      for(const [name,o,re] of [['crossed connectors rejected',{hexExtra:[4,3,1]},/same order/],['unequal connector counts rejected',{squareExtra:[1,2]},/same number of connectors/]]){
+        const e=polygonLoft(o),x=await kernel.rebuild(e.doc);results.push({name,ok:x.errors.some(([,msg])=>re.test(msg)),errors:x.errors});
+      }
+    }
     const health=await kernel.stats();return {ok:results.every(r=>r.ok)&&!kernel.restarts,results,health};
   }finally{kernel.dispose();}
 }

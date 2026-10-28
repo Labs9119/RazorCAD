@@ -851,7 +851,7 @@ Manual connectors support sketch profiles. **Start vertex → Inside a curve…*
 
 Profiles with holes list each hole: **Hole 1**, **Hole 2**… choose which of this profile's holes goes with the other profiles' hole of that number (pair them by hand when the automatic pairing joins the wrong ones), and **Hole … start** sets where each hole starts (a vertex, inside a curve, or a seam angle for a circle), as for the outline. {idx:loft, holes paired by hand}
 
-Thin lofts take the connectors too: each wall starts at its vertex nearest the profile's start. 3D curve profiles use automatic matching. Arbitrary crossed vertex mappings are not supported. Surface Loft uses the same controls.
+Thin lofts take the connectors too: each wall starts at its vertex nearest the profile's start. 3D curve profiles use automatic matching. **More connectors**: after a profile's start vertex, **Add connector** adds another vertex to pair (Connector 2, 3…), so profiles with different numbers of corners can be matched corner to corner as you choose (a square's four corners to four of a hexagon's six). Every profile needs the same number of connectors, in the same order round it; between two connectors, the profile with fewer sides has its longest ones halved until the sides pair one to one. Connectors in a different order round one profile would make the loft's sides cross, and are refused. Surface Loft uses the same controls.
 
 ### Start and end conditions
 
