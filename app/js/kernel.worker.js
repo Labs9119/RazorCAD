@@ -25,6 +25,7 @@ import { installRealDelete, freeStats } from './ocfree.js';
 import { compareSurfaceContinuity, surfaceNormalAtUV } from './surfacecontinuity.js';
 import { guideScaleLaw } from './sweepguides.js';
 import { sweepWithOrientation, scaleLaw } from './sweepoptions.js';
+import * as SO from './sketchoffset.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
@@ -2760,7 +2761,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
       const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
       const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
-      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
+      out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, chains, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
     }
     if (f.edges?.length) out.push(edgeSection(f));
     return out;
@@ -4858,17 +4859,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 [lower,upper]=he>hs?[start,E]:[E,start];
               }
               const flat=(pl)=>Math.abs(dot(unit(pl.n),n))>1-1e-12;
-              for(const {wire,closed} of s.wires){
+              for(const [wi,{wire,closed}] of s.wires.entries()){
                 const b=bbox(wire),corners=[];
                 for(const x of [b.min[0],b.max[0]])for(const y of [b.min[1],b.max[1]])for(const z of [b.min[2],b.max[2]]){const p=[x,y,z];corners.push(sub(p,mul(a,dot(sub(p,fr.o),n)/dot(a,n))));}
                 for(const p of corners)if(height(upper,p)-height(lower,p)<=1e-6)throw new Error('The start and end cross or leave no extrusion height over the contour');
                 const parallel=flat(lower)&&flat(upper),low=Math.min(...corners.map(p=>height(lower,p))),high=Math.max(...corners.map(p=>height(upper,p)));
                 const [h0,h1]=parallel?[height(lower,fr.o),height(upper,fr.o)]:[low-5,high+5];
                 // (the wire's plane: its contour's, at height 0; moved to h0 and swept to h1)
-                const sweep=(shape)=>{const v=new R.Vector(mul(a,h1-h0)),moved=shape.clone().translate(mul(a,h0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
+                const sweep=(shape,g0=h0,g1=h1)=>{const v=new R.Vector(mul(a,g1-g0)),moved=shape.clone().translate(mul(a,g0)),mk=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);try{return R.cast(mk.Shape());}finally{mk.delete();v.delete();moved.delete();}};
                 const big=b.diag+Math.max(Math.abs(low),Math.abs(high))+len(fr.o)+100;
-                const trim=(shape)=>{
-                  if(parallel)return shape;
+                const trim=(shape,always=false)=>{
+                  if(parallel&&!always)return shape;
                   for(const [pl,sign] of [[lower,1],[upper,-1]]){
                     const nn=mul(pl.n,(dot(pl.n,a)>0?1:-1)*sign),u=unit(cross(nn,Math.abs(nn[0])<.9?[1,0,0]:[0,1,0]));
                     const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(add(fr.o,mul(a,height(pl,fr.o))),u,nn)).extrude(2*big);
@@ -4877,7 +4878,35 @@ async function rebuild(doc, previewId = null, opts = {}) {
                   return shape;
                 };
                 if(!drafted){parts.push(trim(sweep(wire)));continue;}
-                if(!closed)throw new Error('A draft needs closed contours (an open one has no inside to narrow towards)');
+                if(!closed){
+                  // (an open contour, lines and arcs of a sketch: leaning to its left as drawn (Draft outward: its right)
+                  // away from where it starts; the contour offset in its plane by the height times the angle's tangent,
+                  // below and above the start (sketchoffset.js: lines stay lines, arcs arcs), joined by ruled faces (flat
+                  // and conical), then trimmed to the ends)
+                  const chain=s.chains?.[wi];
+                  if(!chain||!s.sk)throw new Error('A draft of an open contour takes a sketch’s lines and arcs (not model edges)');
+                  if(chain.items.some((it)=>!['line','arc'].includes(it.c.type)))throw new Error('A draft of an open contour takes lines and arcs');
+                  if(along&&Math.abs(Math.abs(dot(a,n))-1)>1e-9)throw new Error('A draft of an open contour extrudes square to it (Along: None)');
+                  if(!flat(start))throw new Error('A draft of an open contour starts from a plane parallel to it');
+                  const hs=height(start,fr.o),tn=Math.tan((ang*Math.PI)/180),sgn=dot(a,n)>0?1:-1;
+                  const level=(h)=>{
+                    const d=Math.abs(h-hs)*tn,pl=rPlane(fr,add(fr.o,mul(fr.n,sgn*h)));
+                    const pieces=Math.abs(d)<1e-12?null:SO.geometry(s.sk,chain,d).pieces;
+                    if(!pieces)return wire.clone().translate(mul(a,h));
+                    let pen=R.draw(pieces[0].a);
+                    for(const g of pieces){
+                      if(g.type==='line')pen=pen.lineTo(g.b);
+                      else{const a0=Math.atan2(g.a[1]-g.c[1],g.a[0]-g.c[0]),sw=g.span*(g.rev?-1:1);pen=pen.threePointsArcTo(g.b,[g.c[0]+g.r*Math.cos(a0+sw/2),g.c[1]+g.r*Math.sin(a0+sw/2)]);}
+                    }
+                    return pen.done().sketchOnPlane(pl).wire;
+                  };
+                  let shell;
+                  const ws=[level(low-5),level(hs),level(high+5)];
+                  try{shell=R.loft(ws,{ruled:true},true);}catch(e){if(isFatal(e))throw e;throw new Error('The open contour could not be drafted at this angle (an arc would shrink to nothing?)');}
+                  finally{ws.forEach((w)=>w.delete());}
+                  parts.push(trim(shell,true));
+                  continue;
+                }
                 const face=R.makeFace(wire);let solid;
                 try{solid=trim(sweep(face));}finally{face.delete();}
                 if(!solidsOf(solid).length)throw new Error('The start and end leave no extrusion');
@@ -4903,13 +4932,31 @@ async function rebuild(doc, previewId = null, opts = {}) {
             for(const sk of sections)if(sk.planar&&first.planar&&(Math.abs(dot(sk.frame.n,first.frame.n))<1-1e-7||Math.abs(dot(sub(sk.frame.o,first.frame.o),first.frame.n))>1e-5))throw new Error('Surface profiles must lie in the same plane');
             if(!first.planar&&f.projectAxis)throw new Error('Model edges that do not lie in one plane cannot have the axis projected into their plane');
             const oc=R.getOC(),axis=revolveAxisOf(f,first),revolution=revolveExtent(f,first,axis);
-            if(revolution.clip)throw new Error('A surface revolve goes up to a vertex or up to a plane through its axis');
             for(const sk of sections){
               if(sk.planar)checkRevolveAxis(sk,axis);
               for(const {wire} of sk.wires){
                 const ax=R.makeAx1(axis.o,axis.d),maker=new oc.BRepPrimAPI_MakeRevol(wire.wrapped,ax,revolution.angle*Math.PI/180,false);
                 try{let shape=R.cast(maker.Shape());if(revolution.start)shape=shape.rotate(revolution.start,axis.o,axis.d);parts.push(shape);}finally{maker.delete();ax.delete();}
               }
+            }
+            if(revolution.clip){
+              // (up to a plane beside the axis: the surface turned 359°, cut by the plane; of what lies on the profile's side,
+              // the pieces (faces joined by edges) that start at the profile and do not reach the far end)
+              const pl=revolution.clip,c=profileCentre(first),side=Math.sign(dot(sub(c,pl.p),pl.n)),sgn=f.reverse?-1:1;
+              if(!side)throw new Error('The end surface passes through the profile');
+              const nIn=mul(unit(pl.n),side),all=asShape(parts),b=bbox(all),big=b.diag+len(sub(b.center,pl.p))+100,u=unit(cross(nIn,Math.abs(nIn[0])<.9?[1,0,0]:[0,1,0]));
+              const block=R.drawRectangle(2*big,2*big).sketchOnPlane(new R.Plane(pl.p,u,nIn)).extrude(2*big);
+              let kept;try{kept=boolByList('common',all,[block]);}finally{block.delete();}
+              const faces=kept.faces,group=faces.map((_,i)=>i),root=(i)=>(group[i]===i?i:(group[i]=root(group[i])));
+              const edgesOf=faces.map((fc)=>fc.edges);
+              for(let i=0;i<faces.length;i++)for(let j=i+1;j<faces.length;j++)if(edgesOf[i].some((e)=>edgesOf[j].some((x)=>x.isSame(e))))group[root(i)]=root(j);
+              const pieces=new Map();faces.forEach((fc,i)=>{const r=root(i);if(!pieces.has(r))pieces.set(r,[]);pieces.get(r).push(fc);});
+              const start=asShape(sections.flatMap((s)=>s.wires.map((w)=>w.wire))),end=start.clone().rotate(sgn*359,axis.o,axis.d);
+              const touches=(shape,other)=>{const q=new R.DistanceQuery(shape);try{return q.distanceTo(other)<1e-7;}finally{q.delete();}};
+              const keep=[...pieces.values()].map((fs)=>asShape(fs)).filter((p)=>touches(p,start));
+              if(!keep.length)throw new Error('The end surface leaves nothing of the revolution');
+              if(keep.some((p)=>touches(p,end)))throw new Error('The end surface does not stop the revolution all the way round');
+              parts.length=0;parts.push(...keep);
             }
             for(const part of parts){const check=new oc.BRepCheck_Analyzer(part.wrapped,true);try{if(!check.IsValid())throw new Error('The selected contour cannot form a valid surface with this axis and direction');}finally{check.delete();}}
           }finally{sections.forEach(s=>s.wires.forEach(w=>w.wire.delete()));}

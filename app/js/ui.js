@@ -1141,7 +1141,7 @@ const PM_SCHEMAS = {
     {title:'Draft',fields:[
       {key:'draft',type:'expr',label:'Draft angle',unit:'°',default:0},
       {key:'draftOutward',type:'check',label:'Draft outward (wider away from the contour)',show:f=>!!f.draft&&String(f.draft).trim()!=='0'},
-      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'Closed contours only: each narrows away from where it starts (or widens).'},
+      {key:'draftHint',type:'hint',show:f=>!!f.draft&&String(f.draft).trim()!=='0',text:'A closed contour narrows away from where it starts (or widens drafted outward); an open one leans towards the side its surface faces away from (drafted outward: towards the side it faces).'},
     ]},
   ],
   surfRevolve: [

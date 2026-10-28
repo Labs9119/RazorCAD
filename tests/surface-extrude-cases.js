@@ -39,7 +39,8 @@ export async function run({threads=1}={}){
       {name:'drafted',options:{draft:5},area:4*d5,probes:[[10-5*T(5),0,15]]},
       {name:'drafted outward',options:{draft:5,draftOutward:true},area:4*(20+20+10*T(5))/2*sl,probes:[[10+5*T(5),0,15]]},
       {name:'drafted from an angled start',options:{startFrom:'surface',depth:10,draft:5},edit:d=>{d.feature.startPlane=tilt(d,20);},area:null,slope:true},
-      {name:'drafted open contour rejected',open:true,options:{draft:5},reject:true},
+      {name:'drafted open contour (leaning one way)',open:true,options:{draft:5},area:null,oneOf:[[10-5*T(5),0,15],[10+5*T(5),0,15]],probes:[[10,0,10]]},
+      {name:'drafted open contour outward (the other way)',open:true,options:{draft:5,draftOutward:true},area:null,oneOf:[[10-5*T(5),0,15],[10+5*T(5),0,15]],probes:[[10,0,10]],pair:true},
       {name:'along an axis of its own',options:{direction:'ax'},edit:d=>{const a=point(d,0,0,0),b=point(d,5,0,10);before(d,{...M.createFeature(d.doc,'axis',{axisType:'twoPoints',pointA:a,pointB:b}),id:'ax'});},area:200+200*10/Math.hypot(5,10),probes:[[10+5*dir[0],10,10+5*dir[2]]]},
       {name:'along the contours’ plane rejected',options:{direction:'x'},reject:true},
       // (model edges and faces)
@@ -61,6 +62,7 @@ export async function run({threads=1}={}){
       let ok=c.area==null?m.area>0:Math.abs(m.area-c.area)<1e-4,probes=c.probes||[];
       if(c.slope){const fr=r.planes?.[d.feature.toPlane||d.feature.startPlane],s=fr?-fr.n[0]/fr.n[2]:null;if(s==null)ok=false;else probes=d.feature.toPlane?[[10,10,C+10*s],[-10,-10,C-10*s]]:[[10,10,C+10*s],[-10,-10,C-10*s]];}
       const missed=[];for(const p of probes)if(!(await on(p,body.id))){ok=false;missed.push(p);}
+      if(c.oneOf){const ins=[];for(const p of c.oneOf)ins.push(await on(p,body.id));if(ins.filter(Boolean).length!==1)ok=false;if(c.pair){if(!run.lean||run.lean.join()===ins.join())ok=false;}else run.lean=ins;missed.push({oneOf:ins});}
       results.push({name:c.name,ok,area:m.area,expected:c.area,...(missed.length?{missed}:{})});
     }
     // (Surface Revolve: a block's top edge at x = 10, turned a quarter about its vertical edge at x = y = 10: a quarter disc)

@@ -32,7 +32,8 @@ export async function run({threads=1}={}){
       {name:'up to a plane it never reaches rejected',options:{extent:'upToSurface'},edit:d=>{d.feature.toPlane=plane(d,-20);},reject:true},
       {name:'up to a vertex on the axis rejected',options:{extent:'upToVertex'},edit:d=>{d.feature.toPoint=point(d,0,3,0);},reject:true},
       {name:'surface revolve up to a vertex',open:true,options:{extent:'upToVertex'},edit:d=>{d.feature.toPoint=point(d,0,0,-8);},area:25*Math.PI},
-      {name:'surface revolve trimmed by a plane rejected',open:true,options:{extent:'upToSurface'},edit:d=>{d.feature.toPlane=plane(d,-3);},reject:true},
+      {name:'surface revolve trimmed by a plane beside the axis',open:true,options:{extent:'upToSurface'},edit:d=>{d.feature.toPlane=plane(d,-3);},area:5*Math.asin(3/5)*10},
+      {name:'surface revolve to a plane it never reaches rejected',open:true,options:{extent:'upToSurface'},edit:d=>{d.feature.toPlane=plane(d,-20);},reject:true},
     ];
     for(const c of cases){
       const d=fixture(c.options,{open:c.open});c.edit?.(d);
