@@ -42,9 +42,14 @@ export function nest(parts, { W, H, margin = 10, gap = 5, rotate = true } = {}) 
   return sheets.map((s) => ({ placed: s.placed, used: s.placed.reduce((t, q) => t + (parts[q.i].area ?? q.w * q.h), 0) / (W * H) }));
 }
 
-// A part's flat entities where the nest puts it (x, y the lower left corner of its rectangle; rot 90: a quarter turn).
-export function placeEnts(ents, size, { x, y, rot }) {
-  const T = rot ? (p) => [x + size[1] - p[1], y + p[0]] : (p) => [x + p[0], y + p[1]];
+// A part's flat entities where the nest puts it: x, y the lower left corner of its rectangle, turned rot (90: a
+// quarter turn); a true-shape placement (dx, dy) instead: turned rot° about the part's origin, then moved by dx, dy.
+export function placeEnts(ents, size, { x, y, rot, dx, dy }) {
+  let T;
+  if (dx != null) {
+    const a = (rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    T = (p) => [x + dx + p[0] * c - p[1] * s, y + dy + p[0] * s + p[1] * c];
+  } else T = rot ? (p) => [x + size[1] - p[1], y + p[0]] : (p) => [x + p[0], y + p[1]];
   return ents.map((e) => {
     const r = { ...e };
     if (e.a) r.a = T(e.a);
@@ -52,10 +57,126 @@ export function placeEnts(ents, size, { x, y, rot }) {
     if (e.c) r.c = T(e.c);
     if (e.p) r.p = T(e.p);
     if (e.pts) r.pts = e.pts.map(T);
-    if (rot && e.type === 'ARC') { r.a0 = e.a0 + 90; r.a1 = e.a1 + 90; }
-    if (rot && e.type === 'TEXT') r.rot = (e.rot || 0) + 90;
+    if (rot && e.type === 'ARC') { r.a0 = e.a0 + rot; r.a1 = e.a1 + rot; }
+    if (rot && e.type === 'TEXT') r.rot = (e.rot || 0) + rot;
     return r;
   });
+}
+
+// ------------------------------------------------------------ true-shape nesting
+// The closed loops of a part's outline and holes (lines, arcs, circles and polylines joined end to end), as points.
+export function outlineLoops(ents, tol = 1e-4) {
+  const segs = [];
+  for (const e of ents) {
+    if (e.layer !== 'OUTLINE' && e.layer !== 'HOLES') continue;
+    if (e.type === 'CIRCLE') { segs.push({ pts: Array.from({ length: 49 }, (_, i) => [e.c[0] + e.r * Math.cos((i / 48) * 2 * Math.PI), e.c[1] + e.r * Math.sin((i / 48) * 2 * Math.PI)]) }); continue; }
+    if (e.type === 'LINE') { segs.push({ pts: [e.a, e.b] }); continue; }
+    if (e.type === 'ARC') {
+      let a0 = (e.a0 * Math.PI) / 180, a1 = (e.a1 * Math.PI) / 180;
+      while (a1 <= a0) a1 += 2 * Math.PI;
+      const n = Math.max(4, Math.ceil(((a1 - a0) * 24) / Math.PI));
+      segs.push({ pts: Array.from({ length: n + 1 }, (_, i) => { const t = a0 + ((a1 - a0) * i) / n; return [e.c[0] + e.r * Math.cos(t), e.c[1] + e.r * Math.sin(t)]; }) });
+      continue;
+    }
+    if (e.pts?.length > 1) segs.push({ pts: e.closed ? [...e.pts, e.pts[0]] : [...e.pts] });
+  }
+  const near = (p, q) => Math.abs(p[0] - q[0]) < tol && Math.abs(p[1] - q[1]) < tol, loops = [], left = [...segs];
+  while (left.length) {
+    let loop = [...left.shift().pts];
+    for (let grew = true; grew && !near(loop[0], loop.at(-1)); ) {
+      grew = false;
+      for (let i = 0; i < left.length; i++) {
+        const p = left[i].pts;
+        if (near(p[0], loop.at(-1))) loop.push(...p.slice(1));
+        else if (near(p.at(-1), loop.at(-1))) loop.push(...[...p].reverse().slice(1));
+        else continue;
+        left.splice(i, 1); grew = true; break;
+      }
+    }
+    if (loop.length > 2) loops.push(loop);
+  }
+  return loops;
+}
+// A part turned rot° as a raster (rows of 32-bit words, 1 = taken), grown by half the gap all round, and where its
+// cells start: { w, h, words, rows, ox, oy } (ox, oy: the turned part's lower left, in mm, at cell 0, 0).
+function partMask(loops, rot, cell, gap) {
+  const a = (rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a), R = loops.map((l) => l.map(([x, y]) => [x * c - y * s, x * s + y * c]));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const l of R) for (const [x, y] of l) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const g = gap / 2, w = Math.max(1, Math.ceil((x1 - x0 + gap) / cell) + 1), h = Math.max(1, Math.ceil((y1 - y0 + gap) / cell) + 1);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(1 / cell, 0, 0, 1 / cell, (-x0 + g) / cell, (-y0 + g) / cell);
+  ctx.beginPath();
+  for (const l of R) { ctx.moveTo(...l[0]); for (const p of l.slice(1)) ctx.lineTo(...p); ctx.closePath(); }
+  ctx.fillStyle = '#000'; ctx.fill('evenodd');
+  ctx.lineWidth = Math.max(gap, cell * 0.5); ctx.lineJoin = 'round'; ctx.strokeStyle = '#000'; ctx.stroke();
+  const px = ctx.getImageData(0, 0, w, h).data, nw = Math.ceil(w / 32), words = new Uint32Array(nw * h);
+  for (let r = 0; r < h; r++) for (let x = 0; x < w; x++) if (px[(r * w + x) * 4 + 3] > 0) words[r * nw + (x >> 5)] |= 1 << (x & 31);
+  return { w, h, nw, words, ox: x0 - g, oy: y0 - g };
+}
+// Each part placed by its true outline (its holes free for smaller parts), bottom left first, the biggest first,
+// turned by any of `rotations` (degrees); cell: the raster size in mm (by default about a 700th of the sheet).
+// Same result shape as nest(): [{ placed: [{ i, x, y, rot, dx, dy, w, h }], used }].
+export function nestShapes(parts, { W, H, margin = 10, gap = 5, rotations = [0, 90, 180, 270], cell = null } = {}) {
+  if (!(W > 0 && H > 0)) throw new Error('The sheet needs a width and a height');
+  cell ||= Math.max(W, H) / 700;
+  const gw = Math.ceil(W / cell), gh = Math.ceil(H / cell), nw = Math.ceil(gw / 32);
+  const masks = parts.map((p) => { const loops = outlineLoops(p.ents); if (!loops.length) throw new Error(`${p.name} has no closed outline`); return rotations.map((r) => ({ rot: r, ...partMask(loops, r, cell, gap) })); });
+  const items = [];
+  parts.forEach((p, i) => { for (let k = 0; k < Math.max(0, Math.round(p.qty ?? 1)); k++) items.push(i); });
+  items.sort((a, b) => (parts[b].area ?? 0) - (parts[a].area ?? 0) || b - a);
+  const blank = () => {
+    const g = new Uint32Array(nw * gh), m = Math.max(0, Math.ceil((margin - gap / 2) / cell));
+    const set = (x, y) => { g[y * nw + (x >> 5)] |= 1 << (x & 31); };
+    for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) if (x < m || y < m || x >= gw - m || y >= gh - m) set(x, y);
+    for (let y = 0; y < gh; y++) for (let x = gw; x < nw * 32; x++) set(x, y); // (past the sheet's right edge)
+    return { grid: g, placed: [] };
+  };
+  const fits = (g, M, X, Y) => {
+    if (X + M.w > gw || Y + M.h > gh) return false;
+    const wi = X >> 5, sh = X & 31;
+    for (let r = 0; r < M.h; r++) {
+      const row = (Y + r) * nw, mr = r * M.nw;
+      for (let k = 0; k < M.nw; k++) {
+        const m = M.words[mr + k];
+        if (!m) continue;
+        if (g[row + wi + k] & (m << sh)) return false;
+        if (sh && wi + k + 1 < nw && g[row + wi + k + 1] & (m >>> (32 - sh))) return false;
+      }
+    }
+    return true;
+  };
+  const mark = (g, M, X, Y) => {
+    const wi = X >> 5, sh = X & 31;
+    for (let r = 0; r < M.h; r++) {
+      const row = (Y + r) * nw, mr = r * M.nw;
+      for (let k = 0; k < M.nw; k++) { const m = M.words[mr + k]; if (!m) continue; g[row + wi + k] |= m << sh; if (sh && wi + k + 1 < nw) g[row + wi + k + 1] |= m >>> (32 - sh); }
+    }
+  };
+  // (the lowest place, then the leftmost, over the turns)
+  const place = (s, i) => {
+    let best = null;
+    for (const M of masks[i]) {
+      for (let Y = 0; Y + M.h <= gh && (!best || Y <= best.Y); Y++) {
+        let X = 0;
+        for (; X + M.w <= gw; X++) if (fits(s.grid, M, X, Y)) break;
+        if (X + M.w <= gw) { if (!best || Y < best.Y || (Y === best.Y && X < best.X)) best = { M, X, Y }; break; }
+      }
+    }
+    if (!best) return false;
+    mark(s.grid, best.M, best.X, best.Y);
+    const { M, X, Y } = best;
+    s.placed.push({ i, x: X * cell, y: Y * cell, rot: M.rot, dx: -M.ox, dy: -M.oy, w: (M.w - 1) * cell - gap, h: (M.h - 1) * cell - gap });
+    return true;
+  };
+  const sheets = [];
+  for (const i of items) {
+    if (sheets.some((s) => place(s, i))) continue;
+    const s = blank(); sheets.push(s);
+    if (!place(s, i)) throw new Error(`${parts[i].name} does not fit on the sheet inside its margin`);
+  }
+  return sheets.map((s) => ({ placed: s.placed, used: s.placed.reduce((t, q) => t + (parts[q.i].area ?? 0), 0) / (W * H) }));
 }
 
 // The nest as DXF entities: the sheets side by side (`apart` between them), each with its outline (layer SHEET) and

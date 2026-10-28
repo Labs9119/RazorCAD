@@ -19,7 +19,7 @@ import { platform } from './platform.js';
 import { RELATION_INFO } from './solver.js';
 import { FONTS, fontFile, fontKey, BUNDLED_FAMILIES, fallbackFamily } from './fonts.js';
 import { loadDxfSettings, saveDxfSettings, selectEnts, buildDXF, dxfFileName } from './dxf.js';
-import { nest, nestEnts } from './nest.js';
+import { nest, nestShapes, nestEnts, placeEnts, outlineLoops } from './nest.js';
 import { CLAUDE_MODELS, RAZORCAD_GUIDE, describePart, parseReply, applyPlan } from './claudespec.js';
 import { DrawingEditor } from './drawingeditor.js';
 import { AssemblyEditor, isAssembly, newAssembly } from './assembly.js';
@@ -1187,14 +1187,16 @@ class App {
   async nestFlatPatterns(opts = null) {
     const sheets = (this.result?.bodies || []).filter((b) => b.sheet);
     if (!sheets.length) { this.toast('There are no sheet metal bodies to nest', true); return null; }
-    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1 };
+    const prev = this._nestOpts || { W: 2500, H: 1250, margin: 10, gap: 5, rotate: true, sets: 1, method: 'shape', turns: '90' };
     const v = opts || (await this.ui.promptFields('Nest Flat Patterns', 'dxfAll', [
       { key: 'W', label: 'Sheet width', type: 'expr', value: prev.W }, { key: 'H', label: 'Sheet height', type: 'expr', value: prev.H },
       { key: 'margin', label: 'Margin (round the sheet)', type: 'expr', value: prev.margin }, { key: 'gap', label: 'Gap between parts', type: 'expr', value: prev.gap },
-      { key: 'rotate', label: 'Parts may be turned 90°', type: 'check', value: prev.rotate }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
-    ], 'Each part is placed as the rectangle round its flat pattern.'));
+      { key: 'method', label: 'Parts placed by', type: 'select', options: [['shape', 'Their true outlines (into each other’s gaps and holes)'], ['rect', 'The rectangles round them (fast)']], value: prev.method },
+      { key: 'turns', label: 'Turned', type: 'select', options: [['none', 'Not at all'], ['90', 'By 90° steps'], ['45', 'By 45° steps (outlines)'], ['15', 'By 15° steps (outlines)']], value: prev.turns }, { key: 'sets', label: 'Sets (each part’s quantity times this)', type: 'expr', value: prev.sets },
+    ], 'True outlines take longer and use the sheet better on parts that are not rectangles.'));
     if (!v) return null;
-    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: !!v.rotate, sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))) };
+    const turns = v.turns ?? (v.rotate === false ? 'none' : '90'), step = turns === 'none' ? 360 : +turns;
+    const o = { W: this.result.ev(String(v.W)), H: this.result.ev(String(v.H)), margin: this.result.ev(String(v.margin)), gap: this.result.ev(String(v.gap)), rotate: turns !== 'none', sets: Math.max(1, Math.round(this.result.ev(String(v.sets)))), method: v.method || 'rect', turns, rotations: Array.from({ length: Math.round(360 / step) }, (_, i) => i * step) };
     this._nestOpts = o;
     const parts = [];
     for (const g of groupBodies(sheets)) {
@@ -1204,7 +1206,7 @@ class App {
       parts.push({ name: g.rep.name, qty: g.members.length * each * o.sets, size: data.size, area: data.area, ents: data.ents });
     }
     let laid;
-    try { laid = nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
+    try { laid = o.method === 'shape' ? await this.withProgress('Nesting…', async () => nestShapes(parts, o)) : nest(parts, o); } catch (e) { this.toast(e.message, true); return null; }
     const n = parts.reduce((t, p) => t + p.qty, 0), useAll = laid.reduce((t, s) => t + s.used, 0) / laid.length;
     const result = { parts, sheets: laid, opts: o };
     if (opts?.quiet) return result;
@@ -1214,7 +1216,13 @@ class App {
     laid.forEach((s, j) => {
       const oy = j * (o.H * k + 14);
       svg += `<rect x="1" y="${oy + 1}" width="${o.W * k}" height="${o.H * k}" fill="#f4f6f8" stroke="#555"/>`;
-      for (const q of s.placed) svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8"><title>${parts[q.i].name.replace(/[&<>]/g, '')}</title></rect>`;
+      for (const q of s.placed) {
+        const title = `<title>${parts[q.i].name.replace(/[&<>]/g, '')}</title>`;
+        if (q.dx == null) { svg += `<rect x="${1 + q.x * k}" y="${oy + 1 + (o.H - q.y - q.h) * k}" width="${q.w * k}" height="${q.h * k}" fill="#cfe0f5" stroke="#1f5fa8">${title}</rect>`; continue; }
+        // (the true outline, its holes cut out)
+        const loops = outlineLoops(placeEnts(parts[q.i].ents.filter((e) => e.layer === 'OUTLINE' || e.layer === 'HOLES'), parts[q.i].size, q));
+        svg += `<path fill-rule="evenodd" fill="#cfe0f5" stroke="#1f5fa8" stroke-width="0.6" d="${loops.map((l) => 'M' + l.map(([x, y]) => `${(1 + x * k).toFixed(1)},${(oy + 1 + (o.H - y) * k).toFixed(1)}`).join('L') + 'Z').join('')}">${title}</path>`;
+      }
     });
     svg += '</svg>';
     const box = document.createElement('div');

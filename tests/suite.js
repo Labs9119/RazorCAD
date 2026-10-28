@@ -1955,6 +1955,35 @@ const UI = {
     return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); the decal kept out of the kernel` };
   },
 
+  async 'nest-true-shapes'() {
+    const N = await import('/js/nest.js');
+    const poly = (pts, layer = 'OUTLINE') => pts.map((p, i) => ({ type: 'LINE', layer, a: p, b: pts[(i + 1) % pts.length] }));
+    const L = poly([[0, 0], [200, 0], [200, 50], [50, 50], [50, 200], [0, 200]]);
+    const frame = [...poly([[0, 0], [330, 0], [330, 330], [0, 330]]), ...poly([[50, 50], [280, 50], [280, 280], [50, 280]], 'HOLES')];
+    const sq = poly([[0, 0], [100, 0], [100, 100], [0, 100]]);
+    const inPoly = (p, loops) => { let c = false; for (const l of loops) for (let i = 0, j = l.length - 1; i < l.length; j = i++) { const [xi, yi] = l[i], [xj, yj] = l[j]; if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) c = !c; } return c; };
+    const check = (parts, sheets, W, H) => {
+      for (const s of sheets) {
+        const placed = s.placed.map((q) => N.outlineLoops(N.placeEnts(parts[q.i].ents, parts[q.i].size, q)));
+        for (const [i, a] of placed.entries()) {
+          for (const l of a) for (const p of l) if (p[0] < 10 - 1e-6 || p[1] < 10 - 1e-6 || p[0] > W - 10 + 1e-6 || p[1] > H - 10 + 1e-6) return 'outside the margin';
+          for (const [j, b] of placed.entries()) if (i !== j) for (const l of a) for (let k = 0; k < l.length - 1; k++) { const m = [(l[k][0] + l[k + 1][0]) / 2, (l[k][1] + l[k + 1][1]) / 2]; if (inPoly(m, b) || inPoly(l[k], b)) return `parts ${i} and ${j} overlap`; }
+        }
+      }
+      return null;
+    };
+    const Ls = [{ name: 'L', qty: 6, size: [200, 200], area: 17500, ents: L }];
+    const rect = N.nest(Ls, { W: 600, H: 400, margin: 10, gap: 5 }), shape = N.nestShapes(Ls, { W: 600, H: 400, margin: 10, gap: 5 });
+    const e1 = check(Ls, shape, 600, 400);
+    if (e1 || shape.length >= rect.length) return { ok: false, detail: `L shapes: ${rect.length} sheets by rectangles, ${shape.length} by outlines; ${e1}` };
+    const fp = [{ name: 'Frame', qty: 1, size: [330, 330], area: 330 * 330 - 230 * 230, ents: frame }, { name: 'Square', qty: 4, size: [100, 100], area: 10000, ents: sq }];
+    const r2 = N.nest(fp, { W: 400, H: 400, margin: 10, gap: 5 }), s2 = N.nestShapes(fp, { W: 400, H: 400, margin: 10, gap: 5 }), e2 = check(fp, s2, 400, 400);
+    if (e2 || s2.length !== 1 || r2.length < 2) return { ok: false, detail: `frame: ${r2.length} sheets by rectangles, ${s2.length} by outlines; ${e2}` };
+    const turned = N.nestShapes([{ name: 'Bar', qty: 1, size: [500, 20], area: 10000, ents: poly([[0, 0], [500, 0], [500, 20], [0, 20]]) }], { W: 400, H: 400, margin: 10, gap: 5, rotations: [0, 45] });
+    if (turned[0]?.placed[0]?.rot !== 45 || check([{ ents: poly([[0, 0], [500, 0], [500, 20], [0, 20]]), size: [500, 20] }], turned, 400, 400)) return { ok: false, detail: 'A bar too long for the sheet was not turned 45° to fit' };
+    return { ok: true, detail: `6 L shapes on ${shape.length} sheets by their outlines (${rect.length} by rectangles); 4 squares inside a frame's hole on one sheet (${r2.length} by rectangles); a long bar turned 45° to fit; no overlaps, inside the margin` };
+  },
+
   async 'nest-flat-patterns'() {
     const N = await import('/js/nest.js'), {fixture} = await import('/tests/sheet-options-cases.js'), {buildDXF} = await import('/js/dxf.js');
     const rect = (w, h) => [[0, 0], [w, 0], [w, h], [0, h]].map((p, i, a) => ({ type: 'LINE', layer: 'OUTLINE', a: p, b: a[(i + 1) % 4] }));
@@ -1973,6 +2002,8 @@ const UI = {
     const d = fixture(); await a.setDoc(d.doc); await wait(300); await until(() => !a.kernel.pending);
     const r = await a.nestFlatPatterns({ W: 500, H: 300, margin: 10, gap: 5, rotate: true, sets: 2, quiet: true });
     if (!r || r.sheets.length !== 1 || r.sheets[0].placed.length !== 2) return { ok: false, detail: 'The part was not nested', r };
+    const rs = await a.nestFlatPatterns({ W: 500, H: 300, margin: 10, gap: 5, turns: '90', method: 'shape', sets: 2, quiet: true });
+    if (!rs || rs.sheets.length !== 1 || rs.sheets[0].placed.length !== 2 || rs.sheets[0].placed[0].dx == null) return { ok: false, detail: 'The part was not nested by its outline', rs };
     const dxf = buildDXF(N.nestEnts(r.parts, r.sheets, r.opts), { OUTLINE: { color: 7, ltype: 'CONTINUOUS' }, SHEET: { color: 8, ltype: 'CONTINUOUS' }, NOTES: { color: 7, ltype: 'CONTINUOUS' } });
     const lines = dxf.split(/\r?\n/).map((x) => x.trim());
     if (!lines.includes('SHEET') || lines.filter((x) => x === 'OUTLINE').length < 8) return { ok: false, detail: 'The nest DXF lacks the sheet or the outlines' };
