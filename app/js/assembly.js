@@ -279,6 +279,57 @@ export const originRef = (key) => (key === 'origin'
 const ORIGIN_POSE = { p: [0, 0, 0], q: new THREE.Quaternion() };
 
 // Solve the mates: components not fixed (and not pinned) move as little as they must. Returns { ok, residual }.
+// Component patterns (doc.compPatterns: { id, name, kind: 'linear' | 'circular' | 'mirror', seeds: [component ids],
+// linear: dir (world, unit), dist, count, dir2?, dist2, count2; circular: axis { p, d } (world), angle, count, equal;
+// mirror: plane { p, n } (world)). Each copy is a component of its own ({ patternOf, seed, k }), fixed, placed from
+// its seed after every solve: moved, turned about the axis, or placed as the seed's mirror image (the part itself is
+// not mirrored: for parts the same both ways round). Adds and removes copies as counts change; returns whether any did.
+export function applyCompPatterns(doc, newId = (b) => b + Math.random().toString(36).slice(2, 8)) {
+  const pats = doc.compPatterns || [];
+  let changed = false;
+  const keep = new Set();
+  for (const pt of pats) {
+    const seeds = pt.seeds.map((id) => doc.components.find((c) => c.id === id)).filter(Boolean);
+    const xs = compPatternTransforms(pt);
+    for (const s of seeds) xs.forEach((X, k) => {
+      let c = doc.components.find((x) => x.patternOf === pt.id && x.seed === s.id && x.k === k);
+      if (!c) { c = { id: newId('c'), part: s.part, name: `${s.name} (${pt.name} ${k + 2})`, config: s.config ?? null, pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true, hidden: false, patternOf: pt.id, seed: s.id, k }; doc.components.push(c); changed = true; }
+      c.part = s.part; c.config = s.config ?? null; c.fixed = true;
+      const ps = X(poseOf(s));
+      c.pos = ps.p.map(r6); c.rot = [ps.q.x, ps.q.y, ps.q.z, ps.q.w].map((x) => Math.round(x * 1e12) / 1e12);
+      keep.add(c.id);
+    });
+  }
+  const before = doc.components.length;
+  doc.components = doc.components.filter((c) => !c.patternOf || keep.has(c.id));
+  if (doc.components.length !== before) { changed = true; const ids = new Set(doc.components.map((c) => c.id)); doc.mates = (doc.mates || []).filter((m) => (m.a.comp === ORIGIN || ids.has(m.a.comp)) && (m.b.comp === ORIGIN || ids.has(m.b.comp))); }
+  return changed;
+}
+// A pattern's placements for each copy: functions of a pose { p, q } to the copy's
+export function compPatternTransforms(pt) {
+  const out = [], n = Math.max(1, Math.round(Number(pt.count) || 1));
+  if (pt.kind === 'linear') {
+    const d = unit(pt.dir), s = Number(pt.dist) || 0, two = pt.dir2 && Number(pt.count2) > 1;
+    const d2 = two ? unit(pt.dir2) : [0, 0, 0], s2 = Number(pt.dist2) || 0, n2 = two ? Math.round(Number(pt.count2)) : 1;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n2; j++) if (i || j) { const v = add(mul(d, i * s), mul(d2, j * s2)); out.push((ps) => ({ p: add(ps.p, v), q: ps.q.clone() })); }
+  } else if (pt.kind === 'circular') {
+    const total = Number(pt.angle) || 0, step = pt.equal === false ? total : Math.abs(total) >= 360 ? total / n : total / Math.max(1, n - 1);
+    const o = pt.axis.p, d = unit(pt.axis.d);
+    for (let i = 1; i < n; i++) {
+      const R = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...d), (step * i * Math.PI) / 180);
+      out.push((ps) => ({ p: add(o, applyQ(R, sub(ps.p, o))), q: R.clone().multiply(ps.q) }));
+    }
+  } else if (pt.kind === 'mirror') {
+    const o = pt.plane.p, nn = unit(pt.plane.n), M = new THREE.Matrix4().set(1 - 2 * nn[0] * nn[0], -2 * nn[0] * nn[1], -2 * nn[0] * nn[2], 0, -2 * nn[1] * nn[0], 1 - 2 * nn[1] * nn[1], -2 * nn[1] * nn[2], 0, -2 * nn[2] * nn[0], -2 * nn[2] * nn[1], 1 - 2 * nn[2] * nn[2], 0, 0, 0, 0, 1);
+    out.push((ps) => {
+      // (the turn M·R·M, a true rotation: the copy faces as the mirror image does, its own part the same way round)
+      const Rm = new THREE.Matrix4().makeRotationFromQuaternion(ps.q), T = M.clone().multiply(Rm).multiply(M);
+      return { p: sub(ps.p, mul(nn, 2 * dot(sub(ps.p, o), nn))), q: new THREE.Quaternion().setFromRotationMatrix(T) };
+    });
+  }
+  return out;
+}
+
 // Limited distance and angle mates by active sets: each held free inside its limits or exactly at the one it is
 // past, the assembly solved, then each checked again where it ended up (a free one now past a limit held there)
 export function solveAssembly(doc, opts = {}) {
@@ -1199,6 +1250,8 @@ export class AssemblyEditor {
   // ---------------------------------------------------------------- solving
   solve(opts) {
     const r = solveAssembly(this.view(), opts);
+    // (pattern copies placed from their seeds, where these are now)
+    if (this.doc.compPatterns?.length && applyCompPatterns(this.doc, (b) => this.uid(b))) this.loadParts?.();
     this.solveOk = r.ok;
     if (r.ok) this.dofs = r.dofs || new Map();
     return r;
@@ -1981,6 +2034,58 @@ export class AssemblyEditor {
     ];
   }
 
+  // ---------------------------------------------------------------- component patterns
+  // The components selected (or the one), and a picked edge, axis or face for the direction, axis or mirror plane
+  async startCompPattern(kind, edit = null) {
+    const pt0 = edit ? this.doc.compPatterns.find((x) => x.id === edit) : null;
+    const seeds = pt0 ? pt0.seeds : [...new Set([this.selComp()?.id, ...(this.sel?.kind === 'refs' ? this.sel.refs.map((r) => r.comp) : [])].filter((id) => id && id !== ORIGIN && !this.comp(id)?.patternOf))];
+    if (!seeds.length) { this.app.toast('Select the component to pattern first', true); return; }
+    kind = pt0?.kind || kind;
+    const ref = this.sel?.kind === 'refs' ? this.sel.refs.map((r) => this.worldRef(r)).find((r) => r && (kind === 'mirror' ? r.kind === 'plane' : r.kind === 'axis')) : null;
+    const axes = [['x', 'X axis'], ['y', 'Y axis'], ['z', 'Z axis'], ...(ref ? [['ref', kind === 'mirror' ? 'The selected face' : 'The selected edge / axis']] : [])];
+    const planes = [['yz', 'YZ plane (x = 0)'], ['xz', 'XZ plane (y = 0)'], ['xy', 'XY plane (z = 0)'], ...(ref ? [['ref', 'The selected face']] : [])];
+    const fields = kind === 'linear' ? [
+      { key: 'dir', label: 'Direction', type: 'select', options: axes, value: pt0 ? 'keep' : ref ? 'ref' : 'x' }, { key: 'dist', label: 'Spacing (mm)', value: pt0?.dist ?? 50 }, { key: 'count', label: 'Instances', value: pt0?.count ?? 3 },
+      { key: 'dir2', label: 'Second direction', type: 'select', options: [['none', 'None'], ...axes.filter(([k]) => k !== 'ref')], value: pt0?.dir2 ? 'keep' : 'none' }, { key: 'dist2', label: 'Second spacing (mm)', value: pt0?.dist2 ?? 50 }, { key: 'count2', label: 'Second instances', value: pt0?.count2 ?? 2 },
+    ] : kind === 'circular' ? [
+      { key: 'axis', label: 'Axis', type: 'select', options: axes, value: pt0 ? 'keep' : ref ? 'ref' : 'z' }, { key: 'angle', label: 'Angle (°)', value: pt0?.angle ?? 360 }, { key: 'count', label: 'Instances', value: pt0?.count ?? 4 }, { key: 'equal', label: 'Equal spacing (angle is total)', type: 'check', value: pt0 ? pt0.equal !== false : true },
+    ] : [{ key: 'plane', label: 'Mirror plane', type: 'select', options: planes, value: pt0 ? 'keep' : ref ? 'ref' : 'yz' }];
+    if (pt0) for (const f of fields) if (f.type === 'select' && f.value === 'keep') f.options = [['keep', 'As it is'], ...f.options];
+    const title = { linear: 'Component Pattern', circular: 'Circular Component Pattern', mirror: 'Mirror Components' }[kind];
+    const v = await this.app.ui.promptFields(title, { linear: 'lpattern', circular: 'cpattern', mirror: 'mirror' }[kind], fields, `${seeds.length} component${seeds.length === 1 ? '' : 's'}: ${seeds.map((id) => this.comp(id)?.name).join(', ')}. Copies are fixed and follow their seeds.${kind === 'mirror' ? ' Mirror places copies as the mirror image (the parts are not mirrored: for parts the same both ways round).' : ''}`);
+    if (!v) return;
+    const AX = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, PL = { yz: [1, 0, 0], xz: [0, 1, 0], xy: [0, 0, 1] };
+    const num = (x, name) => { const n = Number(x); if (!Number.isFinite(n)) throw new Error(`${name} must be a number`); return n; };
+    try {
+      const pt = pt0 ? { ...pt0 } : { id: this.uid('cp'), name: `${{ linear: 'Pattern', circular: 'Circular Pattern', mirror: 'Mirror' }[kind]}${(this.doc.compPatterns || []).length + 1}`, kind, seeds };
+      if (kind === 'linear') {
+        if (v.dir !== 'keep') pt.dir = v.dir === 'ref' ? ref.d : AX[v.dir];
+        pt.dist = num(v.dist, 'The spacing'); pt.count = Math.round(num(v.count, 'The instances'));
+        if (v.dir2 === 'none') { delete pt.dir2; } else if (v.dir2 !== 'keep') pt.dir2 = AX[v.dir2];
+        pt.dist2 = num(v.dist2, 'The second spacing'); pt.count2 = Math.round(num(v.count2, 'The second instances'));
+      } else if (kind === 'circular') {
+        if (v.axis !== 'keep') pt.axis = v.axis === 'ref' ? { p: ref.p, d: ref.d } : { p: [0, 0, 0], d: AX[v.axis] };
+        pt.angle = num(v.angle, 'The angle'); pt.count = Math.round(num(v.count, 'The instances')); pt.equal = !!v.equal;
+      } else if (v.plane !== 'keep') pt.plane = v.plane === 'ref' ? { p: ref.p, n: ref.n } : { p: [0, 0, 0], n: PL[v.plane] };
+      if (!(pt.count >= 1) || (pt.count || 1) * (pt.count2 || 1) > 400) throw new Error('Between 1 and 400 instances');
+      this.begin();
+      this.doc.compPatterns = [...(this.doc.compPatterns || []).filter((x) => x.id !== pt.id), pt];
+      applyCompPatterns(this.doc, (b) => this.uid(b));
+      await this.loadParts();
+      this.solve();
+      this.change(`${pt.name}: ${this.doc.components.filter((c) => c.patternOf === pt.id).length} copies`);
+    } catch (e) { this.app.toast(e.message, true); }
+  }
+  deleteCompPattern(id) {
+    const pt = (this.doc.compPatterns || []).find((x) => x.id === id);
+    if (!pt) return;
+    this.begin();
+    this.doc.compPatterns = this.doc.compPatterns.filter((x) => x !== pt);
+    applyCompPatterns(this.doc, (b) => this.uid(b));
+    this.doc.parts = this.doc.parts.filter((p) => this.doc.components.some((x) => x.part === p.id));
+    this.change(`${pt.name} deleted (with its copies).`);
+  }
+
   // ---------------------------------------------------------------- mates
   startMate(edit = null) {
     if (!this.doc.components.length) { this.app.toast('Insert a component first'); return; }
@@ -2415,6 +2520,9 @@ export class AssemblyEditor {
         { icon: 'asmHole', label: 'Assembly Hole', action: () => this.startAsmFeature('hole'), active: this.holeTool?.f?.type === 'hole' },
         { icon: 'asmCut', label: 'Assembly Cut', action: () => this.startAsmFeature('cut'), active: this.holeTool?.f?.type === 'cut' },
         { icon: 'mate', label: 'Mate', key: 'M', action: () => this.startMate(), active: !!this.pm },
+        { icon: 'lpattern', label: 'Component Pattern', action: () => this.startCompPattern('linear') },
+        { icon: 'cpattern', label: 'Circular Component Pattern', action: () => this.startCompPattern('circular') },
+        { icon: 'mirror', label: 'Mirror Components', action: () => this.startCompPattern('mirror') },
         'sep',
         { icon: 'fix', label: 'Fix', action: () => selC && this.setFixed(selC.id, true), disabled: !selC || selC.fixed },
         { icon: 'float', label: 'Float', action: () => selC && this.setFixed(selC.id, false), disabled: !selC || !selC.fixed },
@@ -2592,6 +2700,12 @@ export class AssemblyEditor {
       });
       if (isSub && open) subRows(p.doc, e.config, c, c.id, 2);
     }
+    for (const pt of this.doc.compPatterns || []) row({
+      ic: { linear: 'lpattern', circular: 'cpattern', mirror: 'mirror' }[pt.kind], label: pt.name, depth: 1,
+      sub: `(${pt.seeds.map((id) => this.comp(id)?.name || '?').join(', ')} · ${this.doc.components.filter((c) => c.patternOf === pt.id).length} copies)`,
+      onDbl: () => this.startCompPattern(pt.kind, pt.id),
+      menu: () => [{ label: 'Edit Pattern', icon: 'edit', action: () => this.startCompPattern(pt.kind, pt.id) }, 'sep', { label: 'Delete', icon: 'trash', action: () => this.deleteCompPattern(pt.id) }],
+    });
     const open = !this._matesClosed;
     row({ ic: 'mate', label: `Mates (${this.doc.mates.length})`, depth: 1, cls: 'tree-folder', twisty: this.doc.mates.length ? (open ? '▼' : '▶') : '', onTwisty: () => { this._matesClosed = open; this.renderTree(); } });
     if (open) for (const m0 of this.doc.mates) {

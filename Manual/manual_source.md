@@ -1564,6 +1564,16 @@ Left-drag a component to move it, [[Alt]]+drag to turn it. It moves only as its 
 
 Selecting works as in a part and follows the **selection filter**: with no filter a click picks the vertex, edge, face or plane under the cursor; with the Bodies filter it picks whole components. [[Ctrl]]+click adds or takes away. Right-click a face, edge or vertex for **Mate…** and the component's commands; whatever is selected goes into the mate. Dragging a component moves it, whatever is selected. {idx:assembly, selecting}
 
+## Component patterns and mirrors
+
+**Component Pattern**, **Circular Component Pattern** and **Mirror Components** (Assembly tab) copy the selected component (or the components of the selected faces and edges) {idx:component pattern}{idx:mirror components}:
+
+- **Component Pattern**: along X, Y, Z or a selected straight edge or axis, a spacing and a number of instances, and optionally a second direction.
+- **Circular Component Pattern**: round X, Y, Z or a selected axis (a cylinder, a circular edge), a total angle (equal spacing) or the angle between copies.
+- **Mirror Components**: about the YZ, XZ or XY plane or a selected flat face. The copy is placed as the mirror image, the part itself the same way round (for parts that are the same both ways round, such as screws, pins and brackets symmetric about the plane).
+
+The copies are components of their own (in the bill of materials, mateable), fixed, and follow their seed when it moves. The pattern is listed in the tree: double-click it to change it, or delete it with its copies.
+
 ## Collision detection
 
 **Collision Detection** on the Assembly tab (or **Tools ▸ Collision Detection Off / Show Collisions While Dragging / Stop at Collisions While Dragging**) checks for parts running into each other as you drag. {idx:collision detection}

@@ -2104,6 +2104,60 @@ const UI = {
     return ok ? { ok: true, detail: out.map((x) => `${x.name} ✓`).join(', ') } : { ok: false, detail: out };
   },
 
+  // component patterns: linear, circular and mirror copies placed from their seed, following it, and dropped (with
+  // their mates) when the count goes down
+  async 'assembly-component-patterns'() {
+    const A = await import('/js/assembly.js'), THREE = await import('three');
+    const qz = (deg) => { const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), (deg * Math.PI) / 180); return [q.x, q.y, q.z, q.w]; };
+    const near = (a, b, tol = 1e-9) => a.every((x, i) => Math.abs(x - b[i]) < tol);
+    const sameRot = (a, b) => Math.abs(Math.abs(a.reduce((s, x, i) => s + x * b[i], 0)) - 1) < 1e-9;
+    let n = 0; const id = (b) => b + ++n;
+    const out = [];
+    {
+      const doc = { components: [{ id: 's', part: 'p', name: 'S', pos: [1, 2, 3], rot: qz(20), fixed: false }], mates: [], compPatterns: [{ id: 'L', name: 'L', kind: 'linear', seeds: ['s'], dir: [1, 0, 0], dist: 10, count: 3 }] };
+      A.applyCompPatterns(doc, id);
+      const cs = doc.components.filter((c) => c.patternOf === 'L').sort((a, b) => a.k - b.k);
+      out.push({ name: 'linear', ok: cs.length === 2 && near(cs[0].pos, [11, 2, 3]) && near(cs[1].pos, [21, 2, 3]) && cs.every((c) => sameRot(c.rot, qz(20)) && c.fixed) });
+      doc.components[0].pos = [1, 5, 3]; A.applyCompPatterns(doc, id);
+      out.push({ name: 'follows its seed', ok: near(doc.components.find((c) => c.patternOf && c.k === 1).pos, [21, 5, 3]) });
+      doc.mates.push({ id: 'm', type: 'coincident', a: { comp: 's', kind: 'point', p: [0, 0, 0] }, b: { comp: cs[1].id, kind: 'point', p: [0, 0, 0] } });
+      doc.compPatterns[0].count = 2; A.applyCompPatterns(doc, id);
+      out.push({ name: 'fewer copies, their mates gone', ok: doc.components.filter((c) => c.patternOf).length === 1 && !doc.mates.length });
+    }
+    {
+      const doc = { components: [{ id: 's', part: 'p', name: 'S', pos: [10, 0, 0], rot: [0, 0, 0, 1] }], mates: [], compPatterns: [{ id: 'C', name: 'C', kind: 'circular', seeds: ['s'], axis: { p: [0, 0, 0], d: [0, 0, 1] }, angle: 360, count: 4 }] };
+      A.applyCompPatterns(doc, id);
+      const cs = doc.components.filter((c) => c.patternOf).sort((a, b) => a.k - b.k);
+      out.push({ name: 'circular', ok: cs.length === 3 && near(cs[0].pos, [0, 10, 0], 1e-6) && near(cs[1].pos, [-10, 0, 0], 1e-6) && sameRot(cs[0].rot, qz(90)) && sameRot(cs[2].rot, qz(270)) });
+    }
+    {
+      const doc = { components: [{ id: 's', part: 'p', name: 'S', pos: [5, 1, 1], rot: qz(30) }], mates: [], compPatterns: [{ id: 'M', name: 'M', kind: 'mirror', seeds: ['s'], plane: { p: [0, 0, 0], n: [1, 0, 0] } }] };
+      A.applyCompPatterns(doc, id);
+      const c = doc.components.find((x) => x.patternOf);
+      out.push({ name: 'mirror', ok: !!c && near(c.pos, [-5, 1, 1]) && sameRot(c.rot, qz(-30)) });
+    }
+    const ok = out.every((x) => x.ok);
+    return ok ? { ok: true, detail: out.map((x) => x.name + ' ✓').join(', ') } : { ok: false, detail: out };
+  },
+
+  // the Component Pattern command in an assembly: three copies made, shown in the tree, deleted again
+  async 'assembly-component-pattern-command'() {
+    const made = await UI['assembly-two-components']();
+    if (!made.ok) return { ok: false, detail: 'the assembly: ' + made.detail };
+    const a = window.app, ed = a.drawing, c = ed.doc.components[1];
+    ed.sel = { kind: 'comp', id: c.id };
+    const keep = a.ui.promptFields;
+    a.ui.promptFields = async () => ({ dir: 'x', dist: '40', count: '4', dir2: 'none', dist2: '0', count2: '1' });
+    try { await ed.startCompPattern('linear'); } finally { a.ui.promptFields = keep; }
+    const copies = ed.doc.components.filter((x) => x.patternOf);
+    const x0 = c.pos[0], xs = copies.map((x) => x.pos[0] - x0).sort((p, q) => p - q);
+    const inTree = [...document.querySelectorAll('#tree .tl')].some((n) => /^Pattern1$/.test(n.textContent));
+    if (copies.length !== 3 || xs.some((x, i) => Math.abs(x - 40 * (i + 1)) > 1e-6) || !inTree) return { ok: false, detail: `copies ${copies.length} at ${xs}, in the tree ${inTree}` };
+    ed.deleteCompPattern(ed.doc.compPatterns[0].id);
+    if (ed.doc.components.some((x) => x.patternOf)) return { ok: false, detail: 'copies left after deleting the pattern' };
+    return { ok: true, detail: `3 copies 40, 80, 120 mm along X, in the tree; deleted with the pattern` };
+  },
+
   // the Getting Started Tour: steps with → and ←, each pointing at its part of the window; done at the end
   async 'getting-started-tour'() {
     const ui = window.app.ui;
