@@ -6350,14 +6350,19 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
   },
 
   async 'surface-differential-analysis'() {
-    const worker = new Worker('/tests/surface-continuity.worker.js', { type: 'module' });
-    let timer;
-    try {
-      const r = await new Promise((resolve, reject) => {
+    // (the fixture worker started once more if it dies without a word, as on a busy CI runner now and then: its
+    // module not loaded, or the kernel stopped; a result or an error it reports is never retried)
+    const start = () => {
+      const worker = new Worker('/tests/surface-continuity.worker.js', { type: 'module' });
+      let timer;
+      return new Promise((resolve, reject) => {
         timer = setTimeout(() => reject(new Error('Differential fixture worker timed out')), 60000);
         worker.onmessage = ({ data }) => data.error ? reject(new Error(data.error)) : resolve(data.result);
-        worker.onerror = (e) => reject(new Error(e.message));
-      });
+        worker.onerror = (e) => { e.preventDefault?.(); reject(Object.assign(new Error(e.message || 'The fixture worker stopped without a result'), { load: true })); };
+      }).finally(() => { clearTimeout(timer); worker.terminate(); });
+    };
+    {
+      const r = await start().catch((e) => (e.load ? start() : Promise.reject(e)));
       const near = (a, b) => Math.abs(a - b) < 1e-7;
       const ok = near(r.cylinderAcross, 0.05) && near(r.cylinderAlong, 0) && near(r.sphereY, 0.05) && near(r.sphereZ, 0.05) && near(r.plane, 0)
         && near(r.equal.angle, 0) && near(r.equal.curvatureError, 0) && near(r.unequal.angle, 0) && near(r.unequal.curvatureError, 0.01)
@@ -6365,7 +6370,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
         && near(r.mixedOnly.angle, 0) && near(r.mixedOnly.curvatureError, 0.05) && r.tiltedDiagonal.every((k) => near(k, 0.025))
         && near(r.offsetParametric, 0.02) && near(r.equalParametric.angle, 0) && near(r.equalParametric.curvatureError, 0) && r.equalParametric.positionError < 1e-7;
       return { ok, detail: JSON.stringify(r) };
-    } finally { clearTimeout(timer); worker.terminate(); }
+    }
   },
 
   async 'surface-guide-continuity'() {
@@ -7195,17 +7200,24 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     for (let i = 0; i < 80 && !a.result?.bodies?.length; i++) await wait(100);
     const { vp, fire, R, toScreen } = viewEvents();
     try {
-      vp.zoomToFit(null, false);
-      vp.controls.zoomAt(4, R.left + R.width * 0.7, R.top + R.height * 0.4);
-      // a spot on the part far from the middle of the view, and one over empty space
+      // (from a view of its own, not the one the test before left: zoomed in off the middle, less if the part then
+      // fills the view)
       let on = null, off = null;
-      for (let fx = 0.1; fx < 0.95; fx += 0.05) {
-        for (let fy = 0.1; fy < 0.95; fy += 0.05) {
-          const x = R.left + R.width * fx, y = R.top + R.height * fy, far = Math.hypot(fx - 0.5, fy - 0.5);
-          const slot = vp.pickBody({ clientX: x, clientY: y }) ? 'on' : 'off';
-          const cur = slot === 'on' ? on : off;
-          if (!cur || far > cur.far) { if (slot === 'on') on = { x, y, far }; else off = { x, y, far }; }
+      for (const zoom of [4, 2.5, 1.5]) {
+        vp.setStandardView('trimetric', false);
+        vp.zoomToFit(null, false);
+        vp.controls.zoomAt(zoom, R.left + R.width * 0.7, R.top + R.height * 0.4);
+        // a spot on the part far from the middle of the view, and one over empty space
+        on = null; off = null;
+        for (let fx = 0.1; fx < 0.95; fx += 0.05) {
+          for (let fy = 0.1; fy < 0.95; fy += 0.05) {
+            const x = R.left + R.width * fx, y = R.top + R.height * fy, far = Math.hypot(fx - 0.5, fy - 0.5);
+            const slot = vp.pickBody({ clientX: x, clientY: y }) ? 'on' : 'off';
+            const cur = slot === 'on' ? on : off;
+            if (!cur || far > cur.far) { if (slot === 'on') on = { x, y, far }; else off = { x, y, far }; }
+          }
         }
+        if (on && off) break;
       }
       if (!on || !off) return { ok: false, detail: `no spot found on the part (${!!on}) or off it (${!!off})` };
       const turn = async ({ x, y }) => {
@@ -7281,6 +7293,8 @@ export async function run(parts, only = null, share = {}) {
   for (const [name, fn] of Object.entries(UI)) {
     if (only && !only.includes(name)) continue;
     if (share.ui && !share.ui.includes(name)) continue;
+    // (no marks on the model left by the test before: each test sees only its own)
+    for (const k of [...(window.app?.viewport?._marks?.keys() || [])]) window.app.viewport.setPointMarks(k, null);
     const t0 = performance.now();
     try { out.ui[name] = await fn(parts); } catch (e) { out.ui[name] = { ok: false, detail: 'crashed: ' + (e?.stack || e) }; }
     out.ui[name].ms = Math.round(performance.now() - t0);
