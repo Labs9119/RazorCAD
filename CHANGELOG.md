@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 16:59 — Tests: about 15 minutes on GitHub, and steadier
+
+- The regression tests on GitHub run on 6 machines side by side (`run_tests.py --shard`), some 15 minutes instead of
+  an hour; a release runs them once (the Tests workflow's), not twice.
+- Tests no longer see what an earlier test left: marks on the model are cleared before each one, Rotate about the
+  cursor sets its own view, and the surface curvature test starts its worker again if it stops without a result.
+
 ## 2026-10-29 14:09 — Version 0.20.0-beta
 - Installer, user manual (113 pages) and website for 0.20.0-beta.
 - Fixed: Check Printability's and DFM Check's numbered marks stayed on the screen when another part came to the front.

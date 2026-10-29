@@ -2220,7 +2220,7 @@ python tests/run_tests.py
 This rebuilds the test parts in `tests/parts` with the real geometry kernel in headless Microsoft Edge. It compares every body's volume, area, faces and edges (and flat patterns) with `tests/expected.json`, and the drawings of six test parts with their stored line counts and sizes. It also runs checks done as a user does them: sketching, dimensioning and extruding, drawings, assemblies, mates, references, standard parts, collisions, assembly features, macros, accessibility and more. It needs Python's playwright package and exits with 1 on any difference. `--update` stores new expected results, `--only` runs some of them, and `--make-parts` makes the test parts again from `tests/make_parts.js`. On a PC with 12 or more processor threads the run is split over several pages side by side (`--jobs N`; `--jobs 1` runs everything in one page): about 27 s instead of 65 s on 24 threads. See `tests/README.md`. {idx:regression tests}
 
 - **Timings**: every run's times are kept per machine in `tests/perf-history.json` (not in git). A test markedly slower than its usual time is listed under **Performance**; `--perf` lists every time and `--perf-strict` fails the run on a slowdown.
-- **On GitHub** the tests run for every push and pull request (`.github/workflows/tests.yml`).
+- **On GitHub** the tests run for every push and pull request (`.github/workflows/tests.yml`), split over 6 machines side by side (`--shard I/N`, shared out by the times in `tests/test-weights.json`): some 15 minutes.
 
 ## Releases
 

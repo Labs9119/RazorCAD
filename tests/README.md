@@ -41,10 +41,18 @@ request too (`.github/workflows/tests.yml`, on Windows with Edge; there the soft
 | `--make-parts` | rebuild `tests/parts/*.rcad` from `tests/make_parts.js` |
 | `--headed` | show the browser window |
 | `--jobs N` | pages run side by side (default: one per 6 processor threads, at most 4; `--jobs 1`: one page, everything in turn) |
+| `--shard I/N` | only share I of N (GitHub: 6 machines side by side); share 1 also runs the parts, drawings and desktop tests |
+| `--weights LOG` | write `tests/test-weights.json` from a run's output (a GitHub run's log), and stop |
 
 With several jobs, each page has its own storage and kernels and is told its share of the processor threads; the first
 runs the parts and drawings, and the UI tests are shared out by their usual times. A UI test must not need what an
 earlier one left behind (or must make it itself, as drawing-from-part does). Times are kept apart per number of jobs.
+
+On GitHub the run is split over 6 machines (`--shard 1/6` to `6/6`), some 15 minutes instead of an hour on one. Every
+machine has to share the tests out the same way, so the shares come from `tests/test-weights.json` (each UI test's time
+on a GitHub runner, in git), not from a machine's own history; a test not in it counts as the median. Refresh it now and
+then: `gh run view <run> --log > ci.log`, then `python tests/run_tests.py --weights ci.log`. Before each UI test, marks
+an earlier test left on the model are cleared.
 
 To cover a new feature, add a part to `make_parts.js`, run `python tests/run_tests.py --make-parts --only <name> --update`,
 and check the recorded numbers by hand (for example a plate's volume) before committing them.

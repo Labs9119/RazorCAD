@@ -12,7 +12,7 @@ A release is made on GitHub when a version tag is pushed. The workflow is `.gith
 
 3. On GitHub (Actions ▸ Release), the workflow then:
    - checks that the tag matches `version.txt`;
-   - runs the regression tests (`tests/run_tests.py`); the release stops if one fails;
+   - runs the regression tests (`tests/run_tests.py`, the Tests workflow's 6 machines side by side, some 15 minutes); the release stops if one fails;
    - builds `RazorCAD.exe` and `RazorCAD-Setup-<version>.exe` (`installer/build_installer.bat`), signed when signing is set up;
    - drafts a release named "RazorCAD <version>" with the setup, `Read-me-first.txt` and `SHA256SUMS.txt` attached. A version with a `-` (a beta) is marked as a pre-release. The notes come from `CHANGELOG.md`: the entries added since the previous tag (`tools/release_notes.py`).
 4. Read the draft over, edit the notes if needed, and publish it. Nothing is published until you do.

@@ -1,18 +1,30 @@
 # The regression tests (tests/run_tests.py) on every push and pull request: the test parts rebuilt with the real
 # geometry kernel, the drawings compared with the stored ones, and the UI checks, in headless Microsoft Edge on
 # Windows (the runner has Edge installed, so Playwright needs no browser download).
+#
+# The run is split over 6 machines side by side (run_tests.py --shard: the UI tests shared out by the CI times in
+# tests/test-weights.json; the first also runs the parts, drawings and desktop tests), so it takes some 15 minutes,
+# not the hour one runner takes. A version tag's release runs these same tests itself (release.yml calls this
+# workflow), so they are not run again for the tag.
 name: Tests
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   tests:
+    name: tests (${{ matrix.shard }} of 6)
     runs-on: windows-latest
-    # (the runner takes some 40 times as long as a desktop PC: the whole run, about 85 s on one, took near 30 min)
-    timeout-minutes: 90
+    # (the runner takes some 40 times as long as a desktop PC: a share, about 11 minutes of tests, is given 45)
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -21,14 +33,15 @@ jobs:
       - name: Install Playwright
         run: python -m pip install --upgrade pip playwright
       - name: Check updater handoff
+        if: matrix.shard == 1
         run: python -m unittest discover -s tests -p test_updater.py -v
-      # (the test times of earlier runs, so slowdowns are reported; each run stores its own)
+      # (the test times of earlier runs, so slowdowns are reported; each share stores its own)
       - uses: actions/cache@v5
         with:
           path: tests/perf-history.json
-          key: perf-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: perf-${{ runner.os }}-
+          key: perf-${{ runner.os }}-${{ matrix.shard }}of6-${{ github.run_id }}
+          restore-keys: perf-${{ runner.os }}-${{ matrix.shard }}of6-
       - name: Run the regression tests
-        run: python tests/run_tests.py
+        run: python tests/run_tests.py --shard ${{ matrix.shard }}/6
         env:
           CI: 'true'

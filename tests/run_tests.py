@@ -9,6 +9,10 @@ checks, in headless Microsoft Edge, then compares the results with tests/expecte
     python tests/run_tests.py --perf-strict   exit code 1 when something got slower too
     python tests/run_tests.py --jobs N        split the run over N pages at once (default: by the PC's threads, at
                                               most 4; --jobs 1 runs everything in one page, one after another)
+    python tests/run_tests.py --shard I/N     run only share I of N (CI: N machines side by side): the UI tests
+                                              shared out by tests/test-weights.json; share 1 also runs the parts,
+                                              drawings and desktop tests
+    python tests/run_tests.py --weights LOG   write tests/test-weights.json from a run's output (a CI log)
 
 Every run's times (part rebuilds, drawings, UI tests) are kept in tests/perf-history.json, per machine (the last
 10 of each; not in git): a test markedly slower than its usual time (the median of those, 1.5x and 300 ms more)
@@ -16,6 +20,10 @@ is reported under Performance. Times are kept apart per number of jobs (tests ru
 
 With several jobs, each is a page of its own (its own storage, its own geometry kernels) in one browser: the first
 runs the parts and drawings, and the UI tests are shared out by their usual times so the pages finish together.
+
+With --shard, every machine must share the tests out the same way, so the shares come from the times kept in
+tests/test-weights.json (in git; the UI tests' times on a CI runner), not from each machine's own history. A test not
+in it counts as the median of those that are. Refresh it now and then from a CI run's log (--weights).
 
 Needs Python's playwright package (pip install playwright); it uses the Edge already on the PC.
 """
@@ -39,6 +47,7 @@ PARTS = os.path.join(HERE, 'parts')
 EXPECTED = os.path.join(HERE, 'expected.json')
 REL = 1e-6  # relative tolerance for volumes, areas and flat sizes
 PERF = os.path.join(HERE, 'perf-history.json')
+WEIGHTS = os.path.join(HERE, 'test-weights.json')
 PERF_RUNS, PERF_MIN_RUNS = 10, 3   # times kept per test; runs needed before a time is judged
 SLOW_RATIO, SLOW_MS = 1.5, 300     # slower than usual: this many times the median, and this much more
 
@@ -177,6 +186,39 @@ def share_out(names, jobs, usual, first_extra):
     return [[n for n in names if n in sh] for sh in shares]
 
 
+def shard_weights(names):
+    """Each UI test's weight for --shard (ms on a CI runner, tests/test-weights.json): the same on every machine."""
+    try:
+        with open(WEIGHTS, encoding='utf-8') as f:
+            w = json.load(f)
+    except (OSError, ValueError):
+        w = {}
+    known = [w[n] for n in names if isinstance(w.get(n), (int, float))]
+    rest = statistics.median(known) if known else 1000
+    return {n: w.get(n, rest) for n in names}
+
+
+def save_weights(log):
+    """tests/test-weights.json from a run's output: each UI line's time ("  PASS  name  1234 ms  ...")."""
+    import re
+    out, ui = {}, False
+    with open(log, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if re.search(r'\bUI \(\d+\):', line):
+                ui = True
+            elif re.search(r'\b(Desktop|Performance) \(', line):
+                ui = False
+            m = ui and re.search(r'\s(?:PASS|FAIL)\s+(\S+)\s+(\d+) ms', line)
+            if m:
+                out[m.group(1)] = int(m.group(2))
+    if not out:
+        sys.exit(f'No UI test times found in {log}')
+    with open(WEIGHTS, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(dict(sorted(out.items())), f, indent=1)
+        f.write('\n')
+    print(f'{len(out)} UI test times written to {WEIGHTS} ({sum(out.values()) / 1000:.0f} s in all)')
+
+
 def timings(results):
     """Every timed test: {key: ms} (parts per configuration, drawings, UI tests)."""
     out = {}
@@ -247,9 +289,24 @@ def main():
     ap.add_argument('--perf', action='store_true', help='list every test time against its usual time')
     ap.add_argument('--perf-strict', action='store_true', help='fail when something got markedly slower')
     ap.add_argument('--jobs', type=int, default=0, help="pages run at once (default: by the PC's threads)")
+    ap.add_argument('--shard', help='I/N: run only share I of N (the UI tests shared out by tests/test-weights.json)')
+    ap.add_argument('--weights', metavar='LOG', help="write tests/test-weights.json from a run's output, and stop")
     args = ap.parse_args()
     try: sys.stdout.reconfigure(encoding='utf-8')
     except Exception: pass
+    if args.weights:
+        save_weights(args.weights)
+        return
+    shard = None
+    if args.shard:
+        try:
+            shard = tuple(int(x) for x in args.shard.split('/'))
+            assert len(shard) == 2 and 1 <= shard[0] <= shard[1]
+        except (ValueError, AssertionError):
+            sys.exit(f'--shard takes I/N (1 <= I <= N), not {args.shard}')
+        if args.only:
+            sys.exit('--shard and --only do not go together')
+    first = not shard or shard[0] == 1  # (the parts, drawings and desktop tests: on the first share only)
 
     from playwright.sync_api import sync_playwright
     httpd = serve()
@@ -323,15 +380,20 @@ def main():
 
         # the jobs: the UI tests shared out (one page with --only or --jobs 1)
         names = page.evaluate("async () => (await import('/tests/suite.js')).uiTests()")
+        if shard:
+            # (this machine's share; the parts and drawings, on the first, weigh about 3 minutes on a CI runner)
+            mine = share_out(names, shard[1], shard_weights(names), 180000)[shard[0] - 1]
+            print(f'Share {shard[0]} of {shard[1]}: {len(mine)} of {len(names)} UI tests' + (', the parts and drawings' if first else ''))
+            names = mine
         jobs = min(jobs, len(names) or 1)
-        shares = share_out(names, jobs, usual_times(jobs), 5000) if jobs > 1 else [None]  # (parts and drawings: about 4 s)
+        shares = share_out(names, jobs, usual_times(jobs), 5000) if jobs > 1 else ([names] if shard else [None])  # (parts and drawings: about 4 s)
         pages = [page] + [open_page(f'[job {j + 1}] ', share_threads) for j in range(1, jobs)]
         for pg in pages[1:]:
             wait_ready(pg)
         # every page started, then each waited for (they run side by side in the browser)
         for j, pg in enumerate(pages):
             pg.set_default_timeout(0)
-            share = {} if shares[j] is None else {'parts': j == 0, 'ui': shares[j]}
+            share = {} if shares[j] is None else {'parts': j == 0 and first, 'ui': shares[j]}
             pg.evaluate("([parts, only, share]) => { import('/tests/suite.js').then((m) => m.run(parts, only, share)).then((r) => { window.__testResult = r; }, (e) => { window.__testResult = { crash: String(e && (e.stack || e)) }; }).finally(() => { window.__testDone = performance.timeOrigin + performance.now(); }); }", [parts, args.only, share])
         started, runs, done = time.time() - t0, [], []
         for pg in pages:
@@ -391,7 +453,7 @@ def main():
         print(f'  {"PASS" if r.get("ok") else "FAIL"}  {name:24} {r.get("ms", "?")} ms  {r.get("detail", "")}')
         failures += not r.get('ok')
     # the desktop app's own tests (Python: the updater's hand-over to the setup), with the whole run or --only updater
-    if not args.only or 'updater' in args.only:
+    if (not args.only and first) or (args.only and 'updater' in args.only):
         import unittest
         suite = unittest.defaultTestLoader.discover(os.path.dirname(os.path.abspath(__file__)), pattern='test_updater.py')
         ids = [x.id() for g in suite for s in g for x in s]  # (a suite lets go of its tests once run)
@@ -422,7 +484,7 @@ def main():
             json.dump(merged, f, indent=1)
             f.write('\n')
         print(f'\nexpected.json updated ({len(results["parts"])} parts, {len(drawings)} drawings).')
-    slower = perf_report(perf_times, time.time() - t0, args.perf, whole=not args.only, jobs=jobs)
+    slower = perf_report(perf_times, time.time() - t0, args.perf, whole=not args.only and not shard, jobs=jobs)
     if args.perf_strict and slower:
         failures += slower
     print(f'\n{"ALL PASSED" if not failures else f"{failures} FAILED"}  ({time.time() - t0:.0f} s' + (f', {jobs} jobs side by side)' if jobs > 1 else ')'))
