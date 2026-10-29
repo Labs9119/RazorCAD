@@ -1024,6 +1024,8 @@ export class Sketcher3D {
         : ks === 'circle' ? { type: 'diameter', refs: ids, axis: null }
           : ks === 'pt,pt' ? { type: 'distance', refs: ids, axis: null }
             : ks === 'seg,seg' ? { type: 'angle', refs: ids, axis: null } : null;
+    // (shown at once, where the mouse is, as in a 2D sketch)
+    if (this.dimPending) this.dimPending.off = this.dimOffset(e, this.dimPending);
     this.app.status(ks === 'seg' ? 'Click where to place the length (Tab: along X, Y or Z), or another line for the angle.'
       : ks === 'pt' ? 'Click another point for the distance.' : this.dimPending?.type === 'distance' ? 'Click where to place the distance (Tab: along X, Y or Z).' : 'Click where to place it.');
     this.redraw();
@@ -1058,6 +1060,8 @@ export class Sketcher3D {
       this.redraw();
       return;
     }
+    // a dimension being placed follows the mouse
+    if (this.tool === 'dim' && this.dimPending) this.dimPending.off = this.dimOffset(e, this.dimPending);
     if (DRAW_TOOLS.has(this.tool)) {
       this.cand = this.snap(e);
       // an arc follows the mouse round (which way it goes)
@@ -1227,7 +1231,7 @@ export class Sketcher3D {
     if (old) { this.redraw(); this.editDim(old.id); return; }
     const v = this.currentValue(type, refs, axis);
     if (axis && Math.abs(v) < 1e-9) { this.app.toast(`Those are level along ${axis.toUpperCase()} (0 mm): use a relation instead, or Tab to another direction`, true); this.redraw(); return; }
-    const r = { id: newId(f, 'r'), type, refs: refs.slice(), value: +Math.abs(r6(v)).toFixed(4), ...(axis ? { axis, sgn: v < 0 ? -1 : 1 } : {}) };
+    const r = { id: newId(f, 'r'), type, refs: refs.slice(), value: +Math.abs(r6(v)).toFixed(4), ...(axis ? { axis, sgn: v < 0 ? -1 : 1 } : {}), ...(p.off && len(p.off) > 1e-9 ? { off: p.off.map(r6) } : {}) };
     f.rels.push(r);
     if (!solve3d(f, this.ev).ok) {
       f.rels = f.rels.filter((x) => x !== r);
@@ -1320,6 +1324,44 @@ export class Sketcher3D {
     if (sid) return this.entMid(getSeg(f, sid));
     const p = getPt(f, r.refs[0]);
     return p ? V(p) : null;
+  }
+
+  // A dimension's lines and where its value sits, `off` (a 3D offset, as placed) from what it measures: a length or
+  // distance between extension lines, its dimension line square to them (along X, Y or Z for one along an axis); a
+  // radius, diameter or angle on a leader from its entity. { lines, at }, or null when there is nothing to draw
+  dimGeom(type, refs, axis, off) {
+    const f = this.f;
+    if (!off) return null;
+    if (type === 'length' || type === 'distance') {
+      const sg = type === 'length' ? getSeg(f, refs[0]) : null, pa = getPt(f, sg ? sg.a : refs[0]), pb = getPt(f, sg ? sg.b : refs[1]);
+      if (!pa || !pb) return null;
+      const A = V(pa), B0 = V(pb), k = axis ? COORD[axis] : -1;
+      const B = k >= 0 ? A.map((x, i) => (i === k ? B0[i] : x)) : B0, d = sub(B, A);
+      if (len(d) < 1e-9) return null;
+      const u = unit(d), o = sub(off, mulv(u, dot(off, u))), w = this.vp.worldPerPixel(), ol = len(o);
+      const over = ol > 1e-9 ? mulv(o, (ol + 6 * w) / ol) : o;
+      return { lines: [[A, addv(A, over)], [B0, addv(B, over)], [addv(A, o), addv(B, o)]], at: addv(addv(A, o), mulv(d, 0.5)) };
+    }
+    const anchor = this.relAnchor({ type, refs });
+    if (!anchor) return null;
+    const at = addv(anchor, off);
+    return { lines: [[anchor, at]], at };
+  }
+  // where the mouse puts a dimension being placed: its offset from what it measures, in the plane through it that
+  // faces the view (for a length, the plane along it)
+  dimOffset(e, p) {
+    const f = this.f, cam = new THREE.Vector3();
+    this.vp.camera.getWorldDirection(cam);
+    let base, n = cam.toArray();
+    if (p.type === 'length' || p.type === 'distance') {
+      const sg = p.type === 'length' ? getSeg(f, p.refs[0]) : null, pa = getPt(f, sg ? sg.a : p.refs[0]), pb = getPt(f, sg ? sg.b : p.refs[1]);
+      if (!pa || !pb) return null;
+      base = V(pa);
+      const u = unit(sub(V(pb), base)), m = sub(n, mulv(u, dot(n, u)));
+      if (len(m) > 1e-6) n = unit(m);
+    } else base = this.relAnchor({ type: p.type, refs: p.refs });
+    if (!base) return null;
+    return sub(this.rayOnPlane(e, base, n), base);
   }
 
   dimText(type, value, axis) {
@@ -1466,10 +1508,17 @@ export class Sketcher3D {
     if (this.tool === 'tarc' && this.tarc && this.cand) { const g = this.tangentArcTo(this.cand.p); tip = g ? `R ${fmt(g.R)} mm · ${fmt((g.th * 180) / Math.PI)}°` : 'Straight ahead'; }
     if (this.tool === 'spline' && this.spl) tip = `${this.planeLabel()}\nSpline: ${this.spl.ids.length + 1} points · double-click or Enter ends`;
     if (this.tool === 'convert') tip = null;
+    // dimensions placed off what they measure: their extension and dimension lines (or leader)
+    const dimCol = document.documentElement.dataset.theme === 'dark' ? 0x93a4c8 : 0x5b6f9c;
+    for (const r of f.rels) {
+      if (!REL3D[r.type]?.dim || r.hidden || !r.off) continue;
+      for (const l of this.dimGeom(r.type, r.refs, r.axis, r.off)?.lines || []) polyline(l, dimCol, false, 21);
+    }
+    if (this.dimPending) for (const l of this.dimGeom(this.dimPending.type, this.dimPending.refs, this.dimPending.axis, this.dimPending.off)?.lines || []) polyline(l, 0xf97316, false, 24);
     // a dimension being placed
     if (this.dimPending) {
       const p = this.dimPending, lin = p.type === 'length' || p.type === 'distance';
-      tip = `${REL3D[p.type].label}: ${this.dimText(p.type, Math.abs(this.currentValue(p.type, p.refs, p.axis)), p.axis)}${lin ? `\nTab: ${p.axis === 'z' ? 'true length' : 'along ' + ({ null: 'X', x: 'Y', y: 'Z' }[p.axis])}` : ''}\nClick to place`;
+      tip = `${lin ? `Tab: ${p.axis === 'z' ? 'true length' : 'along ' + ({ null: 'X', x: 'Y', y: 'Z' }[p.axis])}\n` : ''}Click to place`;
     }
     this.tip = tip;
     this.buildLabels();
@@ -1519,7 +1568,8 @@ export class Sketcher3D {
     for (const r of f.rels) {
       const info = REL3D[r.type];
       if (!info || r.hidden) continue;
-      const at = this.relAnchor(r);
+      const placed = info.dim && r.off ? this.dimGeom(r.type, r.refs, r.axis, r.off)?.at : null;
+      const at = placed || this.relAnchor(r);
       if (!at) continue;
       const el = document.createElement('div');
       if (info.dim) {
@@ -1540,7 +1590,21 @@ export class Sketcher3D {
       const n = perRef.get(k) || 0;
       perRef.set(k, n + 1);
       this.vp.labelsEl.appendChild(el);
-      this.labels.push({ el, at, off: info.dim ? [0, -12 - 16 * n] : [10 + 22 * n, 8] });
+      this.labels.push({ el, at, off: placed ? [0, 0] : info.dim ? [0, -12 - 16 * n] : [10 + 22 * n, 8] });
+    }
+    // the dimension being placed: its value where it will go
+    const p = this.dimPending;
+    if (p) {
+      const at = this.dimGeom(p.type, p.refs, p.axis, p.off)?.at || this.relAnchor({ type: p.type, refs: p.refs });
+      if (at) {
+        const el = document.createElement('div');
+        el.className = 's3-dim s3-dim-pending';
+        el.dataset.dimPending = p.type;
+        el.textContent = this.dimText(p.type, Math.abs(this.currentValue(p.type, p.refs, p.axis)), p.axis);
+        el.style.pointerEvents = 'none';
+        this.vp.labelsEl.appendChild(el);
+        this.labels.push({ el, at, off: [0, 0] });
+      }
     }
     for (const h of this.handle || []) {
       const el = document.createElement('div');

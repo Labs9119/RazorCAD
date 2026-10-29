@@ -647,7 +647,7 @@ Click **3D Sketch** on the Sketch tab or the Fast Structure tab (or **Insert ▸
 | **Sketch Fillet / Sketch Chamfer** | | Click a corner where two lines meet. The sharp corner stays as a point on both lines, so lengths measured to it keep their meaning. |
 | **Trim** | [[T]] | Click the piece to remove, up to where other entities cross or touch it |
 | **Project Edges** | [[E]] | Click model edges to bring them in, linked to the model (see below) |
-| **Dimension** | [[D]] | Length, distance between points, angle between lines, arc radius, circle diameter. While placing a length, [[Tab]] cycles true length → ΔX → ΔY → ΔZ. |
+| **Dimension** | [[D]] | Length, distance between points, angle between lines, arc radius, circle diameter. As in a 2D sketch, the dimension shows in orange as soon as you click the line (or the second point), with its extension and dimension lines, and follows the pointer; click where it goes (it stays there, drawn with its lines). While placing a length, [[Tab]] cycles true length → ΔX → ΔY → ΔZ. |
 | **Construction Geometry** | [[Q]] | Toggles the selected lines to or from construction |
 | **Delete** | [[Del]] | Deletes the selection |
 

@@ -6,6 +6,14 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 22:52 — 3D sketch dimensions shown while they are placed
+
+- **Dimension** in a 3D sketch: as in a 2D sketch, the dimension shows in orange as soon as the line (or second
+  point, circle…) is clicked, with its value, extension and dimension lines (a leader for a radius, diameter or
+  angle), and follows the pointer; the click places it there. Before, nothing showed until the second click.
+- A placed 3D sketch dimension stays where it was put, drawn with its lines; older ones sit on their line as before.
+- Tests: sketch3d-dimension-preview.
+
 ## 2026-10-29 22:49 — A feature that fails is not added to the tree
 
 - ✔ on a feature that fails (no edges picked, a depth of 0, a shape the kernel can't make…) no longer adds it to

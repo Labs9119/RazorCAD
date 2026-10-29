@@ -848,6 +848,38 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
   },
 
+  // 3D sketch Dimension: a line clicked shows its length at once, with extension and dimension lines, following the
+  // mouse (as in a 2D sketch); a click off it places it there, kept with the dimension (its offset) and drawn there
+  async 'sketch3d-dimension-preview'() {
+    const a=window.app,{Vector3}=await import('three'),d=M.newDoc(),f=M.createFeature(d,'sketch3d'),bad=[];
+    f.pts=[{id:'p1',x:0,y:0,z:0},{id:'p2',x:100,y:0,z:0}];f.segs=[{id:'s1',a:'p1',b:'p2'}];f.rels=[];f.nextId=4;d.features.push(f);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);
+    a.editSketch3D(f.id);await wait(100);
+    const sk=a.sketch3d,vp=a.viewport;vp.setView?.('front');await wait(50);sk.redraw();
+    const r=vp.canvas.getBoundingClientRect(),ev=(p)=>{const q=vp.project(new Vector3(...p));return {clientX:r.left+q.x,clientY:r.top+q.y,button:0,ctrlKey:false,shiftKey:false,preventDefault(){},stopPropagation(){}};};
+    sk.setTool('dim');
+    const down=(p)=>{const e=ev(p);sk.pointerMove(e);sk.pointerDown(e);sk.pointerUp(e);};
+    down([50,0,0]);await wait(30);
+    const lab=()=>document.querySelector('[data-dim-pending]');
+    if(!lab())bad.push('nothing shown after the first click on the line');
+    else if(!/100/.test(lab().textContent))bad.push(`it shows ${lab().textContent}`);
+    // the mouse moved off the line: the dimension goes with it
+    sk.pointerMove(ev([50,20,0]));await wait(30);
+    const off=sk.dimPending?.off,g=sk.dimPending&&sk.dimGeom('length',['s1'],null,off);
+    // (whatever the view: the point it follows is under the mouse, and the dimension line stands off the line, along it)
+    const m=off&&vp.project(new Vector3(off[0],off[1],off[2])),want=vp.project(new Vector3(50,20,0)),dl=g?.lines?.[2];
+    if(!g||g.lines.length!==3||!m||Math.hypot(m.x-want.x,m.y-want.y)>1||Math.hypot(dl[0][1],dl[0][2])<5||Math.abs(dl[1][0]-dl[0][0]-100)>1e-6)bad.push(`following the mouse: ${JSON.stringify(g)}`);
+    // a click there places it
+    down([50,20,0]);await wait(30);sk.closeInput?.();
+    const rel=f.rels.find(x=>x.type==='length');
+    if(!rel||!rel.off||rel.off.some((x,i)=>Math.abs(x-off[i])>1e-5))bad.push(`placed: ${JSON.stringify(rel)}`);
+    if(lab())bad.push('still being placed after the click');
+    const placed=[...document.querySelectorAll('.s3-dim')].find(x=>/100/.test(x.textContent));
+    if(!placed)bad.push('no value shown where it was placed');
+    a.exitSketch3D(false);
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'shown on the first click, followed the mouse, placed and kept there with its lines'};
+  },
+
   // ✔ on a feature that fails: it is not added to the tree; a dialog says why and the panel stays open. A good one is
   // added; an edit that makes a feature fail is not kept (✕ brings it back as it was)
   async 'failing-feature-refused'() {
