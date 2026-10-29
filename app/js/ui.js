@@ -13,6 +13,7 @@ import { completeExpression } from './exprcomplete.js';
 import { S3_TOOLS, S3_KEYS } from './sketch3d.js';
 import { RELATION_INFO, analyzeSketch } from './solver.js';
 import * as SM from './sketchmodel.js';
+import * as DIM from './dimids.js';
 import * as LR from './loftrefs.js';
 import { axisCandidates, PATTERN_SKIP, fileStem, folderOfFeature, newFeatureFolder, putFeatureInFolder } from './model.js';
 import { BUILTIN_TEMPLATES, DEFAULT_TEMPLATE_ID, templateSummary, isTemplate } from './drawtemplates.js';
@@ -3983,7 +3984,8 @@ export class UI {
     const valEl = el('span', { class: 'val' });
     const unitEl = el('span', { class: 'unit' }, unit || '');
     if (unit) input.style.paddingRight = '52px';
-    const vars = this.app.result?.vars || {};
+    // (the global variables and the part's dimensions by their IDs)
+    const vars = this.app.liveVars ? this.app.liveVars() : this.app.result?.vars || {};
     const check = (commit) => {
       if (optional && !input.value.trim()) { input.classList.remove('bad'); input.title = ''; valEl.textContent = ''; if (commit) onValid(''); return; }
       try {
@@ -4012,6 +4014,44 @@ export class UI {
     check(false);
     wrap.append(input, valEl, unitEl);
     return wrap;
+  }
+
+  // The values of a feature that are dimensions (with IDs): its value fields shown for it now
+  dimFieldKeys(f) {
+    const a = this.app, keys = [];
+    for (const grp of PM_SCHEMAS[f?.type] || []) {
+      try { if (grp.show && !grp.show(f, a)) continue; } catch { continue; }
+      for (const fd of grp.fields || []) {
+        if (fd.type !== 'expr' || fd.world || !fd.key) continue;
+        try { if (fd.show && !fd.show(f, a)) continue; } catch { continue; }
+        keys.push(fd.key);
+      }
+    }
+    return keys;
+  }
+  // A dimension's ID as a small tag before a field's label (drawn from its data-dim-id, so the label's text stays the
+  // field's name): a click on it renames the dimension (and every value that uses it)
+  dimTagOn(label, did) {
+    if (!label) return;
+    label.dataset.dimId = did;
+    label.classList.add('has-dim-id');
+    label.title = `Dimension ID ${did}: type it in another value to drive it from this one. Click the tag to rename.`;
+    label.addEventListener('click', (e) => { if (e.offsetX <= 10 + 7 * did.length) { e.preventDefault(); e.stopPropagation(); this.renameDimension(did); } });
+  }
+  async renameDimension(did) {
+    const a = this.app, v = await this.promptFields(`Rename ${did}`, 'rename', [{ key: 'name', label: 'Dimension ID', type: 'text', value: did }], 'The values that use it are changed to the new name.');
+    const to = v?.name?.trim();
+    if (!to || to === did) return;
+    const why = DIM.renameProblem(a.doc, did, to);
+    if (why) { a.toast(why, true); return; }
+    const n = DIM.renameDim(a.doc, did, to);
+    a._liveVars = null; a._dimSnap = null;
+    a.commit();
+    if (a.mode === 'sketch') a.sketcher.redraw?.();
+    if (a.mode === 'sketch3d') a.sketch3d.redraw?.();
+    this.renderPM();
+    a.rebuild();
+    a.status(`${did} is now ${to}${n ? ` (${n} value${n === 1 ? '' : 's'} using it changed)` : ''}.`);
   }
 
   row(label, control, cls = '') {
@@ -4218,7 +4258,13 @@ export class UI {
           if (picked) row.appendChild(el('button', { class: 'pm-btn', onclick: () => { f[fd.key] = null; this.renderPM(); a.updateEdgeHighlights(); a.preview(); } }, 'Clear'));
           body.appendChild(this.row(fd.label, row));
         } else if (fd.type === 'expr') {
-          body.appendChild(this.row(fd.label, this.exprInput(fd.neg ? negExpr(f[fd.key] ?? fd.default) : (f[fd.key] ?? fd.default), fd.unit, (v) => { f[fd.key] = fd.neg ? negExpr(v) : v; a.preview(); }, { optional: !!fd.optional })));
+          const r = this.row(fd.label, this.exprInput(fd.neg ? negExpr(f[fd.key] ?? fd.default) : (f[fd.key] ?? fd.default), fd.unit, (v) => { f[fd.key] = fd.neg ? negExpr(v) : v; a.assignDimIds(); a.preview(); }, { optional: !!fd.optional }));
+          // (its dimension ID: click to rename; a value using a deleted dimension in red)
+          if (!fd.world && f[fd.key] !== undefined && f[fd.key] !== null && f[fd.key] !== '' && !f.dimIds?.[fd.key]) a.assignDimIds();
+          const did = !fd.world && f.dimIds?.[fd.key];
+          if (did) this.dimTagOn(r.querySelector('label'), did);
+          if (DIM.usesLost(a.doc, f[fd.key])) { r.classList.add('dim-lost'); r.title = DIM.lostFailures(a.doc, { name: f.name, dimIds: { [fd.key]: did }, [fd.key]: f[fd.key] }).join('\n'); }
+          body.appendChild(r);
         } else if (fd.type === 'check') {
           const cb = el('input', { type: 'checkbox' });
           cb.checked = !!(f[fd.key] ?? fd.default);

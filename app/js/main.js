@@ -43,6 +43,7 @@ import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from 
 import * as P3 from './print3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 import { glb, viewportBodies } from './gltf.js';
+import * as DIM from './dimids.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -186,6 +187,9 @@ class App {
     this.viewport.setSection(null);
     this.clearCheckMarks();
     for (const f of doc.features) if (f.type === 'sketch' && !f.rev) f.rev = M.newRev();
+    this.assignDimIds(doc);
+    this._dimSnap = null;
+    this.checkLostDims();
     this.history = new M.History(); // each part (tab) has its own undo history
     this.history.reset(doc);
     this.ui.renderPM();
@@ -250,7 +254,56 @@ class App {
     } catch { return null; }
   }
 
+  // Dimension IDs given to the dimensions without one (a sketch's, a 3D sketch's, the values a feature shows)
+  assignDimIds(doc = this.doc) {
+    if (!doc?.features) return 0;
+    return DIM.assignDimIds(doc, (f) => this.ui.dimFieldKeys?.(f) || []);
+  }
+  // The variables a value can use now (the global variables and the dimensions by their IDs), as the part is
+  // (a sketch being edited included)
+  liveVars() {
+    const doc = this.doc, key = doc && JSON.stringify([doc.equations, doc.lostDims, DIM.dimsOf(doc).map((d) => [d.did, d.expr, d.driven])]);
+    if (this._liveVars?.key !== key) this._liveVars = { key, vars: doc ? DIM.docVariables(doc).vars : {} };
+    return this._liveVars.vars;
+  }
+  // Dimensions gone since last looked at (deleted with their sketch entity, their feature, or on their own) that other
+  // values still use: kept as lost, their last values held by those using them (which fail), with a warning that
+  // offers to undo it
+  checkLostDims() {
+    const doc = this.doc;
+    if (!doc?.features) return;
+    const now = new Map(DIM.dimsOf(doc).filter((d) => d.did).map((d) => [d.did, d]));
+    if (doc.lostDims) for (const id of Object.keys(doc.lostDims)) if (now.has(id)) delete doc.lostDims[id];
+    // (what was there the last time this part was looked at: another part's, or none, is no comparison)
+    const before = this._dimSnap?.doc === doc ? this._dimSnap.map : null;
+    const vars = this.liveVars();
+    this._dimSnap = { doc, map: new Map([...now.keys()].map((id) => [id, vars[id]])) };
+    if (!before) return;
+    const gone = [...before.keys()].filter((id) => !now.has(id) && !(doc.lostDims && id in doc.lostDims));
+    const used = gone.map((id) => ({ id, users: DIM.usersOf(doc, id), last: before.get(id) })).filter((x) => x.users.length);
+    if (!used.length) { DIM.pruneLost(doc); return; }
+    doc.lostDims ||= {};
+    for (const x of used) doc.lostDims[x.id] = Number.isFinite(x.last) ? x.last : 0;
+    this._liveVars = null;
+    const box = document.createElement('div');
+    box.dataset.dimDeleted = used.map((x) => x.id).join(',');
+    for (const x of used) {
+      const p = document.createElement('p');
+      p.textContent = `${x.id} is used by ${x.users.map((u) => u.text).join(', ')}.`;
+      box.appendChild(p);
+    }
+    const p2 = document.createElement('p');
+    p2.textContent = `Deleted, ${used.length === 1 ? 'it' : 'they'} can't drive them any more: they fail (shown in red, and their features as failing) and hold the last value until you change them. Undo to keep ${used.length === 1 ? 'it' : 'them'}.`;
+    box.appendChild(p2);
+    this.ui.modal(used.length === 1 ? `${used[0].id} is used by other dimensions` : 'Deleted dimensions are used by others', 'error', box, [
+      { label: 'Undo', action: () => { this.undo(); this._liveVars = null; this.checkLostDims(); this.rebuild(); } },
+      { label: 'Keep it deleted', primary: true },
+    ]);
+  }
+
   commit() {
+    this.assignDimIds();
+    this.checkLostDims();
     rememberPart(this);
     const prev = this.history.stack[this.history.idx];
     this.history.push(this.doc);
@@ -675,7 +728,11 @@ class App {
       if (this.result?.body?.key !== r.body.key) { this._forceMesh = true; this.rebuild(); return; }
       r.body = this.result.body;
     }
-    const { vars, errors: eqErrors } = evalEquations(doc.equations || []);
+    const { vars, errors: eqErrors } = DIM.docVariables(doc);
+    // (a feature failing for several reasons: one per line, as bullets)
+    const errs = new Map();
+    for (const [id, m] of r.errors) errs.set(id, errs.has(id) ? [...errs.get(id), m] : [m]);
+    r.errors = [...errs].map(([id, ms]) => [id, ms.length > 1 ? ms.map((m) => '• ' + m).join('\n') : ms[0]]);
     const sketches = new Map(), planes = new Map();
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -5479,6 +5536,7 @@ class App {
     this.macros?.sync(prev);
     this.selection = null;
     this.dirty = true;
+    this._dimSnap = null; this.checkLostDims();
     this.refresh();
     this.updateTitle();
     this.status('Undo');

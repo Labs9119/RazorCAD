@@ -2106,6 +2106,14 @@ These displays colour the model to show the quality of its faces. Click the butt
 
 **Tools ▸ Equations…** holds global variables that can be used in any dimension or feature value. Example: `width = 120`, then set a depth to `width/4`. Each row shows the value it evaluates to; invalid or duplicate names are flagged. {idx:equations}{idx:global variables}
 
+### Dimension IDs {idx:dimension IDs}
+
+Every dimension has a short ID of its own: each sketch and 3D sketch dimension (reference ones too) and each value of a feature (an extrude's depth, a fillet's radius…). IDs are given when the dimension is made: D1, D2… from a counter that never goes back, so an ID is never given twice in a part. The ID shows as a small tag by the value in a feature's panel, in a 2D sketch dimension's Modify box, and in the tooltip of a dimension in the sketch. Click the tag to **rename** it (e.g. `Width`); every value that uses it is changed to the new name.
+
+Use an ID in any value as you would a global variable: set a depth to `D3 / 2` or `Width / 2` and it follows that dimension. (A reference dimension's ID can't drive others yet: its value is measured, not set.) IDs are also what a design table can list.
+
+**Deleting a dimension others use** {idx:dimension IDs, deleted}: a warning lists what uses it, with **Undo** to keep it. Deleted anyway, the values that used it fail: they hold its last value (so nothing moves), they show in red (a sketch dimension, a feature's value), and a feature with such a value shows as failing in the tree. Change them to drop the deleted ID and the failure goes. Hover a failing feature in the tree to see why; several reasons are shown as bullet points.
+
 Every value field accepts:
 
 | Item | Examples |

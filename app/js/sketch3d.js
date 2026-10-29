@@ -34,6 +34,7 @@ import {
 import { splineGeom, splineBeziers, bezierCurvature, segEnds as segEndIds } from './sketch3dmodel.js';
 import { sketchDefined, sketchUnder } from './theme.js';
 import * as W from './wcs.js';
+import * as DIM from './dimids.js';
 export { REL3D, normalize3d, solve3d, freedom3d, applicableRelations, getPt, getSeg, arcGeom, circleGeom } from './sketch3dmodel.js';
 
 // the Sketch tab's tools a 3D sketch has (the rest are 2D only), and their keys
@@ -60,7 +61,7 @@ export class Sketcher3D {
   }
 
   get ev() {
-    const vars = this.app.result?.vars || {};
+    const vars = this.app.liveVars ? this.app.liveVars() : this.app.result?.vars || {};
     return (x) => (typeof x === 'number' ? x : evaluate(x, vars));
   }
 
@@ -126,6 +127,8 @@ export class Sketcher3D {
 
   // after each change: kept for undo
   changed() {
+    this.app.assignDimIds?.();
+    this.app.checkLostDims?.();
     const s = JSON.stringify(this.data());
     if (s !== this.hist[this.hist.length - 1]) { this.hist.push(s); this.redoStack = []; if (this.hist.length > 200) this.hist.shift(); }
     this.solve();
@@ -1573,9 +1576,10 @@ export class Sketcher3D {
       if (!at) continue;
       const el = document.createElement('div');
       if (info.dim) {
-        el.className = 's3-dim';
+        const lost = this.app.doc && DIM.usesLost(this.app.doc, r.value);
+        el.className = 's3-dim' + (lost ? ' lost' : '');
         el.textContent = this.dimText(r.type, r.value, r.axis);
-        el.title = `${r.axis ? `${info.label} along ${r.axis.toUpperCase()}` : info.label} — double-click to change`;
+        el.title = `${r.did ? r.did + ': ' : ''}${r.axis ? `${info.label} along ${r.axis.toUpperCase()}` : info.label} — double-click to change${lost ? '\n' + DIM.lostFailures(this.app.doc, { name: '', type: 'sketch3d', rels: [r] }).join('\n') : ''}`;
         el.addEventListener('pointerdown', (e) => e.stopPropagation());
         el.addEventListener('dblclick', (e) => { e.stopPropagation(); this.editDim(r.id); });
         el.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); this.app.ui.showContext(e.clientX, e.clientY, [{ label: 'Change Value…', icon: 'edit', action: () => this.editDim(r.id) }, { label: 'Delete Dimension', icon: 'trash', action: () => this.deleteRelation(r.id) }]); });

@@ -926,6 +926,55 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):'shown on the first click, followed the mouse, placed and kept there with its lines'};
   },
 
+  // Dimension IDs: a 40 × 20 rectangle (its width and height dimensioned) extruded; every dimension and the extrude's
+  // depth get IDs (D…, none twice); the depth driven by the width's ID (40 / 2: 40 × 20 × 20); the width renamed
+  // Width, the depth following; the width deleted: a warning (it is used), the depth holds 20 and the extrude fails,
+  // saying why (two values using it: bullets); Undo brings it back; a new dimension never takes an old ID
+  async 'dimension-ids'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),DIM=await import('/js/dimids.js'),bad=[];
+    const d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}});
+    const p=[[0,0],[40,0],[40,20],[0,20]].map(q=>S.addPoint(sk,...q));p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));
+    S.addRel(sk,'dim',[p[0],p[1]],{kind:'distance',value:40});S.addRel(sk,'dim',[p[1],p[2]],{kind:'distance',value:20});
+    const ex=M.createFeature(d,'extrude',{sketch:sk.id,depth:10});d.features.push(sk,ex);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();
+    const vol=async()=>(await Promise.all(a.result.bodies.map(async(b)=>(await a.kernel.request('measure',{refs:[{kind:'body',id:b.id}]})).items[0].volume))).reduce((x,y)=>x+y,0);
+    const dims=DIM.dimsOf(a.doc),ids=dims.map(x=>x.did);
+    const wId=sk.constraints.find(k=>k.type==='dim'&&k.value===40)?.did,depthId=ex.dimIds?.depth;
+    if(ids.some(x=>!/^D\d+$/.test(x||''))||new Set(ids).size!==ids.length||!wId||!depthId)bad.push(`IDs: ${JSON.stringify(ids)}, depth ${depthId}`);
+    // the depth driven by the width
+    ex.depth=`${wId} / 2`;a.commit();await a.rebuild();
+    const v1=await vol();if(Math.abs(v1-16000)>1e-6||a.result.errors.size)bad.push(`driven: ${v1} ${JSON.stringify([...a.result.errors])}`);
+    // the panel shows the depth's ID
+    a.editFeature(ex.id);await wait(80);
+    if(!document.querySelector(`#pm [data-dim-id="${depthId}"]`))bad.push('no ID tag on the depth');
+    a.cancelPM();await wait(50);
+    // renamed
+    DIM.renameDim(a.doc,wId,'Width');a.commit();await a.rebuild();
+    if(ex.depth!=='Width / 2'||a.result.errors.size)bad.push(`renamed: depth ${ex.depth}`);
+    // deleted while the depth (and the second side's depth) use it
+    Object.assign(ex,{side2:true,end2:'blind',depth2:'Width / 4'});a.assignDimIds();a.commit();await a.rebuild();
+    const v2=await vol();
+    const w=sk.constraints.find(k=>k.did==='Width');sk.constraints=sk.constraints.filter(k=>k!==w);a.commit();await wait(50);
+    const warn=document.querySelector('[data-dim-deleted]');
+    if(!warn||!/Width is used by/.test(warn.textContent))bad.push(`warning: ${warn?.textContent||'none'}`);
+    closeModals();await a.rebuild();
+    const err=a.result.errors.get(ex.id)||'',v3=await vol();
+    if(a.doc.lostDims?.Width!==40)bad.push(`lost: ${JSON.stringify(a.doc.lostDims)}`);
+    if((err.match(/• /g)||[]).length!==2||!/uses Width, which was deleted/.test(err))bad.push(`failing: ${err}`);
+    if(Math.abs(v3-v2)>1e-6)bad.push(`held: ${v3} (was ${v2})`);
+    const title=[...document.querySelectorAll('#tree .tree-item, #tree [data-fid]')].find(n=>n.dataset?.fid===ex.id)?.title||'';
+    if(title&&!/• /.test(title))bad.push(`tree tooltip: ${title}`);
+    // Undo: the width back, nothing lost
+    sk.constraints.push(w);a.checkLostDims();a.commit();await a.rebuild();
+    if(a.doc.lostDims||a.result.errors.size)bad.push(`after putting it back: ${JSON.stringify(a.doc.lostDims)} ${JSON.stringify([...a.result.errors])}`);
+    // a new dimension: a new ID, past every one given
+    const before=a.doc.nextDim;S.addRel(sk,'dim',[p[2],p[3]],{kind:'distance',value:40});a.commit();
+    const nd=sk.constraints.at(-1).did;
+    if(!nd||+nd.slice(1)<before||DIM.dimsOf(a.doc).filter(x=>x.did===nd).length!==1)bad.push(`new ID ${nd} (counter was ${before})`);
+    closeModals();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`IDs ${ids.join(', ')}; depth driven by the width (16000 mm³); renamed Width; deleted: warned, held, failing with 2 bullets; put back; new ID ${nd}`};
+  },
+
   // ✔ on a feature that fails: it is not added to the tree; a dialog says why and the panel stays open. A good one is
   // added; an edit that makes a feature fail is not kept (✕ brings it back as it was)
   async 'failing-feature-refused'() {

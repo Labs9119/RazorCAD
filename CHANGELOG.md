@@ -6,6 +6,18 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 23:52 — Dimension IDs
+
+- Every dimension has an ID (D1, D2…, from a counter that never goes back): sketch and 3D sketch dimensions,
+  reference ones too, and the values of features. Shown by the value in a feature's panel, in a sketch dimension's
+  Modify box and tooltip; click it to rename it (the values using it follow).
+- A value can use another dimension by its ID (`D3 / 2`), as it can a global variable.
+- Deleting a dimension others use warns, with Undo. Deleted anyway, those using it hold its last value, show in red,
+  and their features show as failing until they no longer use it.
+- A feature failing for several reasons lists them as bullet points in its tooltip.
+- Not yet: a reference dimension's ID driving others (its value is measured).
+- Tests: dimension-ids.
+
 ## 2026-10-29 23:07 — Assemblies: Edit Part, parts' features in the tree, no circular references
 
 - **Edit Part** (right-click a part in the tree or the view): the part opened with every other part shown in the

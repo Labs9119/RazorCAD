@@ -33,6 +33,7 @@ import * as SO from './sketchoffset.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
+import { docVariables, lostFailures } from './dimids.js';
 
 // sheet metal features (they keep a body's flat pattern up to date)
 // sheet metal features that make new bodies (from sketches)
@@ -2599,7 +2600,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
       features: doc.features.map((f) => (sup.has(f.id) && !f.suppressed ? { ...f, suppressed: true } : unsup.has(f.id) && f.suppressed ? { ...f, suppressed: false } : f)),
     };
   }
-  const { vars, errors: eqErrors } = evalEquations(doc.equations || []);
+  // (the global variables, and the dimensions by their IDs)
+  const { vars, errors: eqErrors } = docVariables(doc);
   const ev = (x) => evaluate(x, vars);
   // threads: cosmetic threads (shown and called out, not modelled) per feature: [{ internal, o, d, len, r, D, D1, P, label }]
   const res = { errors: [], sketches: {}, planes: {}, axes: {}, points: {}, curves: {}, notes: {}, detected: {}, features: {}, threads: {}, missing: {}, eqErrors: [...eqErrors], preview: null };
@@ -9224,6 +9226,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
       res.errors.push([f.id, raw ? `The geometry kernel could not compute this ${f.type === 'moveBody' ? 'move' : 'feature'}${hint}` : e.message]);
     }
     noteRefs(f, res);
+    // (values using a dimension deleted while they used it: built with its last value, the feature failing)
+    for (const m of lostFailures(doc, f)) res.errors.push([f.id, m]);
     timing.features.push([f.name, Math.round(performance.now() - tf)]);
     // any other feature that changes the solid ends the run of blends
     if (body !== bodyIn && f.type !== 'fillet' && f.type !== 'chamfer') blendChain = null;
