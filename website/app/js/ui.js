@@ -6247,7 +6247,25 @@ export class UI {
         input.onchange = () => { const v = input.value === '' ? null : +input.value; if (v != null && !(v >= 0)) { this.app.toast(`${label} can't be negative`, true); render(); return; } save(set(v)); };
         const row = this.row(`${label}${unit ? ` (${unit})` : ''}`, input); box.appendChild(row);
       };
-      ['X', 'Y', 'Z'].forEach((ax, i) => num('bed' + ax, `Bed ${ax}`, 'mm', () => p.bed[i], (v) => ({ ...p, bed: p.bed.map((q, j) => (j === i ? v : q)) })));
+      // (the printer: its bed set from a list of popular printers; on a starting profile, a copy of your own made for it)
+      const printer = el('select', { 'data-print-printer': '', 'aria-label': 'Printer' });
+      printer.appendChild(el('option', { value: '' }, 'Sizes of your own'));
+      for (const x of P3.PRINTERS) printer.appendChild(el('option', { value: x.name }, esc(`${x.name} (${x.bed.join(' × ')} mm)${x.checked ? '' : ' (check the size)'}`)));
+      printer.value = p.printer || '';
+      printer.onchange = () => {
+        const x = P3.PRINTERS.find((q) => q.name === printer.value);
+        if (!x) { if (!p.builtIn) save({ ...p, printer: undefined }); return; }
+        if (p.builtIn) {
+          const name = `${p.material || p.name}, ${x.name}`;
+          prefs.printProfiles = [...(prefs.printProfiles || []).filter((q) => q.name !== name), { ...p, name, bed: [...x.bed], printer: x.name, builtIn: undefined }];
+          this.savePrefs(); a.setPrintProfile(name); current = name; render();
+        } else { save({ ...p, bed: [...x.bed], printer: x.name }); current = p.name; render(); }
+      };
+      box.appendChild(this.row('Printer', printer));
+      const pr = P3.PRINTERS.find((q) => q.name === p.printer);
+      if (pr && !pr.checked) box.appendChild(el('div', { class: 'pm-hint', 'data-print-printer-check': '' }, 'This size is from retailers’ and reviewers’ listings, not the maker’s own page: check it against your printer’s specifications.'));
+      if (p.builtIn) box.appendChild(el('div', { class: 'pm-hint' }, 'Choosing a printer here makes a copy of this profile with its bed, used for this part.'));
+      ['X', 'Y', 'Z'].forEach((ax, i) => num('bed' + ax, `Bed ${ax}`, 'mm', () => p.bed[i], (v) => ({ ...p, printer: undefined, bed: p.bed.map((q, j) => (j === i ? v : q)) })));
       for (const [key, label, unit] of P3.PROFILE_FIELDS) num(key, label, unit);
       for (const fit of ['press', 'snug', 'sliding', 'loose']) num('fit-' + fit, `Fit, ${fit}`, 'mm', () => p.fits?.[fit], (v) => ({ ...p, fits: { ...p.fits, [fit]: v } }));
       const shrink = el('input', { type: 'checkbox', 'data-print-field': 'shrinks' }); shrink.checked = !!p.shrinks; shrink.disabled = !!p.builtIn;
