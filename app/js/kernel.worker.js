@@ -7561,7 +7561,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const k = (target - S0[i - 1]) / ((S0[i] - S0[i - 1]) || 1);
               return add(W3[i - 1], mul(sub(W3[i], W3[i - 1]), Math.max(0, Math.min(1, k))));
             };
-            return { at, corners, first: W3[0], last: W3[W3.length - 1] };
+            return { at, corners, first: W3[0], last: W3[W3.length - 1], W3, items: s ? S.curveChains(s.sk)[0].items : null, s };
           };
           const PA = profile(f.profileA, 'first'), PB0 = profile(f.profileB, 'second');
           // the profiles run the same way (the nearer ends together)
@@ -7580,9 +7580,119 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const rec = bodyRec(newId(f.id), shape, f.id);
           rec.sheet = sheet;
           solids.push(rec);
-          body = compoundOf(solids);
           applied.push({ op: 'add', tool: shape });
-          res.notes[f.id] = bent ? `${sheet.lofted.bendLines.length} bend${sheet.lofted.bendLines.length === 1 ? '' : 's'} between ${A.length - 1} strips (bent from flat facets)` : `Formed (smooth) — rolled from a flat pattern developed from the surface${sheet.lofted.bendLines.length ? `, with ${sheet.lofted.bendLines.length} sharp fold${sheet.lofted.bendLines.length === 1 ? '' : 's'} at its corners` : ''}`;
+          // flanges: at a profile, a flat ring (a flat sheet metal plate of its own) out past the profile's plane, away
+          // from the other profile, by its thickness. It goes round the profile with its gap closed straight across;
+          // its opening is the inside of the part there (the profile, or the profile less the thickness when the
+          // material is inside it), and it is as wide as set, sharp at the corners. Bolt holes on a line round its
+          // middle: at each corner and evenly between, at most the pitch apart.
+          let nFl = 0, nHoles = 0;
+          if (f.flangeA || f.flangeB) {
+            const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), pitch = ev(f.flPitch ?? 100);
+            if (!(W > 0)) throw new Error('The flange width must be greater than zero');
+            if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
+            if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
+            if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
+            if (hd > 0 && !(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+            const mid = (P) => mul(P.reduce(add, [0, 0, 0]), 1 / P.length);
+            // which way the material goes from strip i (into the sheet), at the first or second profile's end
+            const matAt = (i, atB) => {
+              const nn = atB ? cross(sub(B[i + 1], A[i + 1]), sub(B[i], A[i + 1])) : cross(sub(A[i + 1], A[i]), sub(B[i], A[i]));
+              return len(nn) > 1e-12 ? mul(unit(nn), f.flip ? -1 : 1) : null;
+            };
+            const miter = { lineJoinType: 'miter' };
+            for (const [P, on, which, atB, flipped] of [[PA, f.flangeA, 'first', false, false], [PB0, f.flangeB, 'second', true, swapB]]) {
+              if (!on) continue;
+              // the profile's plane: its sketch's, or a 3D sketch's when the profile lies flat in one
+              let fr = P.s?.frame;
+              if (!fr) {
+                const c = mid(P.W3);
+                let n = [0, 0, 0];
+                P.W3.forEach((q, i) => { n = add(n, cross(sub(q, c), sub(P.W3[(i + 1) % P.W3.length], c))); });
+                const size = Math.max(1, ...P.W3.map((q) => len(sub(q, c))));
+                if (len(n) < 1e-12 || P.W3.some((q) => Math.abs(dot(sub(q, c), unit(n))) > 1e-6 * size)) throw new Error(`A flange needs a flat profile: the ${which} profile does not lie in a plane`);
+                n = unit(n);
+                const u = levelX(n);
+                fr = { o: c, u, v: cross(n, u), n };
+              }
+              const to2 = (q) => S.toFrame2D(fr, q);
+              // the profile as 2D segments in its plane, in its own order, its gap closed by a line
+              const segs = [];
+              if (P.items) {
+                for (const { c, rev } of P.items) {
+                  let q = S.curvePoints(P.s.sk, c, 96);
+                  if (rev) q = [...q].reverse();
+                  if (c.type === 'line') segs.push({ type: 'line', a: q[0], b: q[q.length - 1] });
+                  else if (c.type === 'arc') segs.push({ type: 'arc', a: q[0], m: q[Math.floor(q.length / 2)], b: q[q.length - 1] });
+                  else for (let i = 1; i < q.length; i++) segs.push({ type: 'line', a: q[i - 1], b: q[i] });
+                }
+              } else {
+                const q = P.W3.map(to2);
+                for (let i = 1; i < q.length; i++) segs.push({ type: 'line', a: q[i - 1], b: q[i] });
+              }
+              const first = segs[0].a, last = segs[segs.length - 1].b;
+              if (Math.hypot(last[0] - first[0], last[1] - first[1]) > 1e-9) segs.push({ type: 'line', a: last, b: first });
+              // is the material outside the profile? (the strip's material direction against the loop's outward one,
+              // in the middle of the profile)
+              const L2 = P.W3.map(to2);
+              let area = 0;
+              L2.forEach((q, i) => { const r = L2[(i + 1) % L2.length]; area += q[0] * r[1] - r[0] * q[1]; });
+              let out = null;
+              for (let k = 0; k < A.length - 1 && out === null; k++) {
+                const i = (Math.floor((A.length - 1) / 2) + k) % (A.length - 1), m = matAt(i, atB);
+                const E = atB ? B : A, e0 = sub(E[i + 1], E[i]);
+                if (!m || len(e0) < 1e-12) continue;
+                const e = flipped ? mul(e0, -1) : e0, outward = area > 0 ? cross(e, fr.n) : cross(fr.n, e);
+                out = dot(m, outward) > 0;
+              }
+              if (out === null) throw new Error(`The ${which} profile's flange could not tell which side the material is on`);
+              let opening = loopDrawing({ segs });
+              if (!out) opening = opening.offset(-t, miter);
+              let dr = opening.offset(W, miter).cut(opening);
+              let holes = 0;
+              if (hd > 0) {
+                // the bolt line as points along it (each edge in turn, the way the loop runs), its corners marked
+                const wire = opening.offset(W / 2, miter).sketchOnPlane('XY').wire, Q = [], corner = [];
+                for (const e of wire.edges) {
+                  const nS = e.geomType === 'LINE' ? 1 : 64;
+                  let q = Array.from({ length: nS + 1 }, (_, i) => vec(e.pointAt(i / nS)).slice(0, 2));
+                  if (Q.length && Math.hypot(q[nS][0] - Q.at(-1)[0], q[nS][1] - Q.at(-1)[1]) < Math.hypot(q[0][0] - Q.at(-1)[0], q[0][1] - Q.at(-1)[1])) q.reverse();
+                  if (Q.length) q = q.slice(1);
+                  corner.push(Q.length ? Q.length - 1 : 0);
+                  Q.push(...q);
+                }
+                if (Math.hypot(Q[0][0] - Q.at(-1)[0], Q[0][1] - Q.at(-1)[1]) < 1e-7) Q.pop();
+                const M = Q.length, dir = (i, j) => { const d0 = [Q[j % M][0] - Q[i % M][0], Q[j % M][1] - Q[i % M][1]], l = Math.hypot(...d0) || 1; return [d0[0] / l, d0[1] / l]; };
+                const sharp = [...new Set(corner)].filter((i) => { const d0 = dir((i + M - 1) % M, i), d1 = dir(i, i + 1); return d0[0] * d1[0] + d0[1] * d1[1] < Math.cos(Math.PI / 180); }).sort((x, y) => x - y);
+                const starts = sharp.length ? sharp : [0], pts = [];
+                starts.forEach((s0, k) => {
+                  const s1 = k + 1 < starts.length ? starts[k + 1] : starts[0] + M, run = [Q[s0 % M]], acc = [0];
+                  for (let i = s0 + 1; i <= s1; i++) { run.push(Q[i % M]); acc.push(acc.at(-1) + Math.hypot(Q[i % M][0] - Q[(i - 1) % M][0], Q[i % M][1] - Q[(i - 1) % M][1])); }
+                  const Ltot = acc.at(-1), m = Math.max(1, Math.ceil(Ltot / pitch - 1e-9));
+                  for (let j = 0; j < m; j++) {
+                    const target = (Ltot * j) / m;
+                    let i = 1;
+                    while (i < acc.length - 1 && acc[i] < target) i++;
+                    const w = (target - acc[i - 1]) / ((acc[i] - acc[i - 1]) || 1);
+                    pts.push([run[i - 1][0] + (run[i][0] - run[i - 1][0]) * w, run[i - 1][1] + (run[i][1] - run[i - 1][1]) * w]);
+                  }
+                });
+                for (const [x, y] of pts) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+                holes = pts.length;
+              }
+              // out past the profile's plane, away from the other profile
+              const other = atB ? A : B, away = dot(sub(mid(other), mid(atB ? B : A)), fr.n) > 0 ? -1 : 1;
+              const fsheet = SM.baseFlange({ region: drawingRegion(dr), frame: fr, t: T, R: R0 > 0 ? R0 : T, K, reverse: away < 0 });
+              const fshape = SM.toSolid(fsheet), frec = bodyRec(newId(f.id), fshape, f.id);
+              frec.sheet = fsheet;
+              solids.push(frec);
+              applied.push({ op: 'add', tool: fshape });
+              nFl++; nHoles += holes;
+            }
+          }
+          body = compoundOf(solids);
+          const flNote = nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '';
+          res.notes[f.id] = (bent ? `${sheet.lofted.bendLines.length} bend${sheet.lofted.bendLines.length === 1 ? '' : 's'} between ${A.length - 1} strips (bent from flat facets)` : `Formed (smooth) — rolled from a flat pattern developed from the surface${sheet.lofted.bendLines.length ? `, with ${sheet.lofted.bendLines.length} sharp fold${sheet.lofted.bendLines.length === 1 ? '' : 's'} at its corners` : ''}`) + flNote;
           break;
         }
         case 'draft': {

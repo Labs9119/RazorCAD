@@ -848,6 +848,12 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
   },
 
+  // Lofted Bend flanges (tests/loft-flange-cases.js): flat rings round the profiles, by hand for either material side
+  async 'loft-flanges'() {
+    const {run}=await import('/tests/loft-flange-cases.js'),native=await run({threads:threadsPerKernel()});
+    return {ok:native.ok,detail:native.ok?`${native.results.length} cases: flanges out past both profiles, the opening as the material lies, 20 holes; a flat 3D sketch profile the same`:JSON.stringify(native.results.filter(x=>!x.ok))};
+  },
+
   // Edges named by the extrusion that made them, found again by their name after a change (tests/edge-name-cases.js)
   async 'edge-names'() {
     const {run}=await import('/tests/edge-name-cases.js'),native=await run({threads:threadsPerKernel()});

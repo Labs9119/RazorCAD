@@ -389,7 +389,8 @@ export function createFeature(doc, type, props = {}) {
     // sheet metal (see sheetmetal.js). kFactor: where the neutral axis lies in the thickness
     smBase: { sketch: null, thickness: 2, radius: 2, kFactor: 0.44, reverse: false },
     // method: 'bent' (flat facets, `bends` of them across, each fold a bend line) | 'formed' (smooth)
-    smLoft: { profileA: null, profileB: null, thickness: 2, kFactor: 0.44, radius: 0, method: 'bent', bends: 12, flip: false },
+    // (flanges at the profiles, as a Transition's; holes at most flPitch apart round the flange)
+    smLoft: { profileA: null, profileB: null, thickness: 2, kFactor: 0.44, radius: 0, method: 'bent', bends: 12, flip: false, flangeA: false, flangeB: false, flW: 40, flT: 6, flHoleD: 10, flPitch: 100 },
     // transition / reducer on the axis line of `sketch` (bottom centre to top centre). Ends b (bottom) and
     // t (top): Shape 'round' | 'square' | 'rect' | 'tri' | 'pent' | 'hex'; D (round), Size + Basis
     // ('side' | 'flats' | 'corners'), W × L (rect). dims: 'inside' | 'outside' | 'mean'

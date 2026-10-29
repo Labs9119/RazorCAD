@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 22:11 — Lofted Bend: flanges with bolt holes
+
+- **Flanges** group, as on a Transition: a flat bolting ring at the first and/or second profile, a flat sheet metal
+  plate of its own out past the profile's plane (away from the other profile), round the profile with its gap
+  closed straight across. Its opening is the inside of the part there (the profile, or the profile less the
+  thickness when the material is inside it); width, thickness, hole diameter and the most the holes are apart are
+  set. Holes at each corner of a line round the middle of the flange and evenly between. Profiles in a sketch,
+  or a 3D sketch that lies flat.
+- Tests: loft-flanges (tests/loft-flange-cases.js), by hand for either material side.
+
 ## 2026-10-29 21:53 — Transition / Reducer: flanges with bolt holes
 
 - **Flanges** group: a flat bolting ring at the bottom and/or top end, each a flat sheet metal plate of its own

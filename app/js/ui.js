@@ -407,6 +407,15 @@ const PM_SCHEMAS = {
       { key: 'radius', type: 'expr', label: 'Bend radius (for the line notes)', unit: 'mm' },
       { key: 'mHint', type: 'hint', text: (f) => (f.method === 'formed' ? 'The smooth surface between the profiles is thickened; the flat pattern is developed from it (triangulation at the neutral layer).' : 'The sheet is made of flat facets folded along straight lines: each fold is a bend line (with its angle, up or down) in the flat pattern and DXF.') },
     ] },
+    { title: 'Flanges', fields: [
+      { key: 'flangeA', type: 'check', label: 'Flange at the first profile' },
+      { key: 'flangeB', type: 'check', label: 'Flange at the second profile' },
+      { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flPitch', type: 'expr', label: 'Holes at most this far apart', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flHint', type: 'hint', text: 'Each flange is a flat ring of its own (a flat sheet metal plate: cut it from plate), out past the profile\'s plane, away from the other profile, by its thickness. It goes round the profile with its gap closed straight across, so it suits a part made in one piece; the profile must lie flat. Its opening is the inside of the part there. Holes go at each corner of a line round the middle of the flange and evenly between, at most the set distance apart.', show: (f) => f.flangeA || f.flangeB },
+    ] },
     {
       title: 'Sheet Metal Parameters', fields: [
         { key: 'thickness', type: 'expr', label: 'Thickness', unit: 'mm' },

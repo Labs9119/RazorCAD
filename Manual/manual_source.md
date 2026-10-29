@@ -1358,6 +1358,7 @@ A sheet metal part between two open profile sketches (each one chain of lines an
 - The flat pattern is developed at the neutral layer (K-factor) and works with Flatten, DXF export and flat pattern drawings. **Material on the other side** flips the thickness.
 - A cut through a lofted bend is carried into its flat pattern, and the cut edges are square to the sheet, as a laser-cut blank formed to shape would be. This makes trimmed conical parts possible: loft the cone between two arcs, then cut it to the outline with a revolved cut.
 - Edge flanges, corner reliefs and closed corners can't be added to a lofted bend; its shape comes from the profiles.
+- **Flanges** {idx:Lofted Bend, flanges}: tick **Flange at the first profile** and/or **at the second profile** for a flat bolting ring there, as on a Transition: a flat sheet metal plate of its own (with its flat pattern, holes and all), out past the profile's plane, away from the other profile, by its **Thickness**, and **Width** wide all round, sharp at the corners. It goes round the profile with its gap closed straight across, so it suits a part made in one piece, and the profile must lie flat (a sketch, or a 3D sketch that lies in a plane). Its opening is the inside of the part there: the profile when the material is outside it, the profile less the thickness when inside. Bolt holes (**Bolt hole diameter**, 0: none) go at each corner of a line round the middle of the flange and evenly between, at most the set distance apart; round a smooth profile, evenly round it.
 
 ## Transition / Reducer
 
