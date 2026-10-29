@@ -37,12 +37,15 @@ import * as W from './wcs.js';
 import {referenceRelations,defaultReferenceRelations,RELATION_LABELS} from './refconstraints.js';
 import * as LC from './loftcorrespondence.js';
 
+// a 3D sketch's line, circle or arc as a reference's curve ({ type }), and its name in the references list
+function sketch3dCurve(f,id){const g=(f.segs||[]).find(x=>x.id===id);return g?{type:g.type||'line'}:null;}
+function sketch3dItemName(f,id){const g=(f.segs||[]).find(x=>x.id===id);if(g){const t=g.type||'line';return t[0].toUpperCase()+t.slice(1);}const i=(f.pts||[]).findIndex(x=>x.id===id);return i>=0?`Point ${i+1}`:id;}
 function datumHint(doc,r){
   if(r.kind==='curve')return {kind:'path',curve:{type:'path'}};
   if(r.kind==='plane'||r.kind==='face'&&r.n)return {kind:'plane'};
   if(r.kind==='face')return {kind:'cylinder'};
   if(r.kind==='point'||r.kind==='vertex'||r.kind==='sketch'&&r.point)return {kind:'point'};
-  const source=r.kind==='sketch'?findFeature(doc,r.sketch):null,c=source&&SM.getCurve(source,r.curve);
+  const source=r.kind==='sketch'?findFeature(doc,r.sketch):null,c=source&&(source.type==='sketch3d'?sketch3dCurve(source,r.curve):SM.getCurve(source,r.curve));
   if(c?.type==='spline')return {kind:'path',curve:{type:'path'}};
   return {kind:'line',...(r.kind==='edge'||c?{curve:{type:c?.type||'unknown'}}:{})};
 }
@@ -392,8 +395,8 @@ const PM_SCHEMAS = {
   ],
   smLoft: [
     { title: 'Profiles', fields: [
-      { key: 'profileA', type: 'sketch', label: 'First profile (open)' },
-      { key: 'profileB', type: 'sketch', label: 'Second profile (open)' },
+      { key: 'profileA', type: 'sketch', label: 'First profile (open; a sketch or 3D sketch)', with3d: true },
+      { key: 'profileB', type: 'sketch', label: 'Second profile (open; a sketch or 3D sketch)', with3d: true },
       { key: 'lHint', type: 'hint', text: 'Two sketches, each one open chain of lines and arcs (e.g. on parallel planes: a transition, hopper or duct piece). Points are matched along both by length, corners kept.' },
     ] },
     { title: 'Manufacturing Method', fields: [
@@ -721,7 +724,7 @@ const PM_SCHEMAS = {
     ...SCOPE_GROUP,
   ],
   loft: [
-    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection' }] },
+    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: 'sketch3d' }] },
     {title:'Profile Correspondence',fields:[{key:'loftCorrespondence',type:'loftCorrespondence'}]},
     ...LOFT_END_GROUPS,
     { title: 'Guide Curves', fields: [
@@ -806,7 +809,7 @@ const PM_SCHEMAS = {
     ] },
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
   ],
@@ -821,7 +824,7 @@ const PM_SCHEMAS = {
     ] },
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
   ],
@@ -834,7 +837,7 @@ const PM_SCHEMAS = {
     ] },
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for them, or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets one.' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
   ],
@@ -875,13 +878,13 @@ const PM_SCHEMAS = {
     ] },
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
     ] },
   ],
   boss: [
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the bosses, or select a sketch on the face with points or circles: each gets one.', itemLabel: 'Boss' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points / circle centres)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
     { title: 'Boss', fields: [
@@ -901,7 +904,7 @@ const PM_SCHEMAS = {
   snapHook: [
     { title: 'Positions', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click points on a flat face for the snap hooks, or select a sketch on the face with points.', itemLabel: 'Hook' },
-      { key: 'sketch', type: 'sketch', label: 'Sketch (points)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points)', with3d: true },
       { key: 'angle', type: 'expr', label: 'Hook faces (° from the face’s X)', unit: '°' },
       { key: 'reverse', type: 'check', label: 'Reverse direction' },
     ] },
@@ -947,7 +950,7 @@ const PM_SCHEMAS = {
   ],
   moldRunner: [
     { title: 'Runners', fields: [
-      { key: 'sketch', type: 'sketch', label: 'Sketch on the parting plane (lines)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch on the parting plane, or a 3D sketch (lines)', with3d: true },
       { key: 'runnerD', type: 'expr', label: 'Runner diameter', unit: 'mm' },
       { key: 'sprueD', type: 'expr', label: 'Sprue diameter (at the runner)', unit: 'mm' },
       { key: 'taper', type: 'expr', label: 'Sprue taper (each side)', unit: '°' },
@@ -980,7 +983,7 @@ const PM_SCHEMAS = {
   helix: [
     {
       title: 'Defined By', fields: [
-        { key: 'sketch', type: 'sketch', label: 'Sketch with a circle' },
+        { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch with a circle', with3d: true },
         { key: 'helixHint', type: 'hint', text: 'The circle sets the axis (the sketch normal), the centre and the diameter.' },
         { key: 'definedBy', type: 'select', label: 'Defined by', options: [['pitchRev', 'Pitch and revolutions'], ['pitchHeight', 'Pitch and height'], ['heightRev', 'Height and revolutions']] },
       ],
@@ -1170,7 +1173,7 @@ const PM_SCHEMAS = {
   spattern: [
     patternSources('Features to Pattern'),
     { title: 'Selections', fields: [
-      { key: 'sketch', type: 'sketch', label: 'Reference sketch' },
+      { key: 'sketch', type: 'sketch', label: 'Reference sketch or 3D sketch', with3d: true },
       { key: 'spHint', type: 'hint', text: 'A copy goes at every point of the sketch (lone points and circle centres). The point nearest the feature is the feature itself.' },
     ] },
   ],
@@ -5661,7 +5664,7 @@ export class UI {
     const info=a.result?.info?.[f.id],resolved=info?.datumSignature===JSON.stringify(f)&&info.geometry;
     const hints=resolved?resolved.map((g,i)=>resolvedDatumHint(a.doc,f.refs[i],g,f.type)):f.refs.map(r=>this.datumGeometryHint(r)),defaults=defaultReferenceRelations(f.type,hints,f);body.dataset.geometry=resolved?JSON.stringify(resolved):'';
     const name=r=>{
-      if(r.kind==='sketch'){const sk=a.result?.sketches.get(r.sketch)?.sketch||findFeature(a.doc,r.sketch),id=r.point||r.curve;return `${sk?.name||'(missing sketch)'} · ${sk?SM.itemName(sk,id):id} (${id})`;}
+      if(r.kind==='sketch'){const sk=a.result?.sketches.get(r.sketch)?.sketch||findFeature(a.doc,r.sketch),id=r.point||r.curve;return `${sk?.name||'(missing sketch)'} · ${sk?.type==='sketch3d'?sketch3dItemName(sk,id):sk?SM.itemName(sk,id):id} (${id})`;}
       return r.kind==='plane'?STD_PLANES[r.id]?.name||findFeature(a.doc,r.id)?.name||'(missing plane)':['axis','point','curve'].includes(r.kind)?findFeature(a.doc,r.id)?.name||'(missing reference)':r.kind==='face'?(r.n?'Planar face':'Cylindrical / conical face'):r.kind==='edge'?'Model edge':'Model vertex';
     };
     for(let i=0;i<3;i++){
@@ -5700,6 +5703,13 @@ export class UI {
       for(const c of sk.curves)if(['line','arc','circle'].includes(c.type)||f.type!=='axis'&&c.type==='spline')add('curve',c.id);
       add('point','O');for(const p of sk.points)add('point',p.id);
       sources.appendChild(group);
+    }
+    for(const source of before.filter(x=>x.type==='sketch3d'&&!x.suppressed&&!a.result?.errors.has(x.id)&&Array.isArray(x.segs))){
+      const group=el('optgroup',{label:source.name});
+      const add=(kind,id,name)=>{const ref={kind:'sketch',sketch:source.id,[kind]:id},value='entity:'+entities.length;entities.push(ref);group.appendChild(el('option',{value,'data-datum-sketch':source.id,['data-datum-'+kind]:id},`${name} (${id})`));};
+      for(const g of source.segs)if(['line','arc','circle'].includes(g.type||'line'))add('curve',g.id,sketch3dItemName(source,g.id));
+      source.pts.forEach((p,i)=>add('point',p.id,`Point ${i+1}`));
+      if(group.children.length)sources.appendChild(group);
     }
     sources.onchange=()=>{if(sources.value){const [kind,id]=sources.value.split(':');a.togglePlaneRef(kind==='entity'?{...entities[Number(id)]}:{kind,id});}};
     body.appendChild(sources);
@@ -5890,7 +5900,7 @@ export class UI {
     }
     const details = el('details'), summary = el('summary', {}, 'Other sources (whole sketch / curve)'); details.appendChild(summary);
     const select = el('select', { 'data-loft-legacy': key, 'aria-label': guide ? 'Add a guide from a whole sketch or curve' : 'Add a profile from a whole sketch or curve' }); select.appendChild(el('option', { value: '' }, '+ Add source…'));
-    const kinds = guide ? ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix'] : fd.with3d ? ['sketch', 'sketch3d', 'compCurve', 'projCurve'] : ['sketch'];
+    const kinds = guide ? ['sketch', 'sketch3d', 'compCurve', 'projCurve', 'helix'] : fd.with3d === 'sketch3d' ? ['sketch', 'sketch3d'] : fd.with3d ? ['sketch', 'sketch3d', 'compCurve', 'projCurve'] : ['sketch'];
     for (const source of before.filter((s) => kinds.includes(s.type) && !s.suppressed && !f[key].includes(s.id))) select.appendChild(el('option', { value: source.id }, esc(source.name)));
     select.onchange = () => { if (select.value) {
       if (extrude || planar || common) { f[key] = f[key].filter((r) => LR.sourceId(r) !== select.value); if (extrude && SM.isOpenSketch(findFeature(a.doc, select.value))) f.thin = true; }
@@ -5916,7 +5926,7 @@ export class UI {
     body.appendChild(ul);
     const s = el('select');
     s.appendChild(el('option', { value: '' }, '+ Add a profile sketch…'));
-    for (const x of before.filter((y) => (y.type === 'sketch' || (fd.with3d && ['sketch3d', 'compCurve', 'projCurve'].includes(y.type))) && !y.suppressed && !f.profiles.includes(y.id))) s.appendChild(el('option', { value: x.id }, esc(x.name)));
+    for (const x of before.filter((y) => (y.type === 'sketch' || (fd.with3d && (fd.with3d === 'sketch3d' ? ['sketch3d'] : ['sketch3d', 'compCurve', 'projCurve']).includes(y.type))) && !y.suppressed && !f.profiles.includes(y.id))) s.appendChild(el('option', { value: x.id }, esc(x.name)));
     s.onchange = () => { if (s.value) { f.profiles.push(s.value); a.preview(true); } };
     const w = el('div', { class: 'pm-input' }); w.appendChild(s);
     body.appendChild(w);

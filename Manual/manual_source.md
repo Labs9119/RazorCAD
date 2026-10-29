@@ -663,7 +663,22 @@ Along X/Y/Z, Parallel, Perpendicular, Collinear, Equal Length, Equal Radius, Tan
 
 ## Curves from a 3D sketch
 
-Each connected run of lines, arcs and splines is one curve; a T-junction splits it into separate runs. A run can be used as straight segments with an optional bend radius at the corners (pipe and duct routes) or as a smooth spline, and can be closed into a loop. **Sweep**, **Swept Surface**, **Lofted Surface**, **Curve Driven Pattern** and **Structural Member** use 3D sketches.
+Each connected run of lines, arcs and splines is one curve; a T-junction splits it into separate runs. A run can be used as straight segments with an optional bend radius at the corners (pipe and duct routes) or as a smooth spline, and can be closed into a loop. **Sweep**, **Swept Surface**, **Lofted Surface**, **Curve Driven Pattern** and **Structural Member** use 3D sketches, and so do the features below.
+
+## Features that take a 3D sketch
+
+These features take a 3D sketch wherever they take a sketch: choose it in the panel's sketch list, or click it in the feature tree. {idx:3D sketch, features that use it}
+
+| Feature | What it takes from the 3D sketch |
+|---|---|
+| Hole, Boss, Snap Hook, Nut Pocket, Insert Hole, Screw Hole for Plastic | Its points that stand on their own, and circle centres. Each point must lie on a face of the part: the hole or boss goes square to that face there, so one 3D sketch can place them on several faces, flat or curved. **Reverse** turns them all the other way. |
+| Sketch Pattern | Its points (as above, anywhere in space): a copy at each, moved from the point nearest the feature |
+| Helix | Its circle (or arc): the centre, diameter and axis. The start angle is measured from the level direction square to the axis (the model's X axis when the axis is upright). |
+| Reference Axis, Reference Point, Reference Plane | Its lines, circles, arcs and points, one by one, from the references list (an axis along a line, or a circle's axis) |
+| Loft | One closed chain or circle as a profile, which may be curved out of a plane (a saddle). Not for a thin loft or manual connectors. |
+| Lofted Bend | One open chain as either edge, which may run out of a plane |
+| Transition / Reducer | One line as the axis (see Transition / Reducer) |
+| Sprue and Runners | Its lines as runners, for runners that follow a parting surface of your own |
 
 # Gears
 
@@ -898,7 +913,7 @@ The kernel constructs clamped tensor B-splines (cubic, or degree five along the 
 
 ## Helix
 
-Pick a sketch with a circle; it sets the axis and diameter. Define the helix by **pitch and revolutions**, **pitch and height**, or **height and revolutions**. Options: start angle, clockwise, reverse. Use a helix as a sweep path for springs and coils. {idx:helix}
+Pick a sketch (or a 3D sketch) with a circle; it sets the axis and diameter. Define the helix by **pitch and revolutions**, **pitch and height**, or **height and revolutions**. Options: start angle, clockwise, reverse. Use a helix as a sweep path for springs and coils. {idx:helix}
 
 ## Thread Cut and Thread Extrude
 

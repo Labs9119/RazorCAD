@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 18:10 — 3D sketches for holes, bosses, patterns, helices, axes, lofts and runners
+
+- **Hole**, **Boss**, **Snap Hook**, **Nut Pocket**, **Insert Hole** and **Screw Hole for Plastic** take a 3D sketch's
+  points: each on a face of the part, the feature square to that face, so one 3D sketch places them on several faces,
+  flat or curved.
+- **Sketch Pattern** copies to a 3D sketch's points; **Helix** takes a 3D sketch's circle; **Reference Axis**, **Point**
+  and **Plane** take a 3D sketch's lines, circles, arcs and points one by one; **Loft** takes a closed 3D chain as a
+  profile (curved out of a plane, like a saddle); **Lofted Bend** an open 3D chain as an edge; **Sprue and Runners**
+  a 3D sketch's lines. Each lists 3D sketches in its panel, and a click on one in the tree picks it.
+
 ## 2026-10-29 17:43 — Transition / Reducer on a 3D sketch line
 
 - **Transition / Reducer** takes its axis from a line in a 3D sketch too: pick the 3D sketch in the panel or the

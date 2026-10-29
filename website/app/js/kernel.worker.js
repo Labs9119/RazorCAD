@@ -2527,6 +2527,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const curves = new Map(); // curve features (helices): id -> { wire, axis, r, pitch, height }
   const planes = new Map();
   const sketches = new Map();
+  // 3D sketches' runs (each connected chain, circle and closed spline): id -> [{ closed, section, edges }], a section as
+  // a loft takes it ({ segs } or { circle }; null for an open smooth spline)
+  const sketch3dRuns = new Map();
   const axes = new Map();
   const points = new Map();
   const tools = new Map();
@@ -3070,7 +3073,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (r.kind === 'vertex') return { kind: 'point', p: resolvePoint(null, r) };
     if (r.kind === 'sketch') {
       // a sketch's point, line, or circle / arc (its axis), where the sketch has it now
-      const s = sketches.get(r.sketch);
+      const s = sketches.get(r.sketch), s3 = s ? null : sketch3dOf(r.sketch);
+      if (s3) {
+        // (a 3D sketch's point, line, or circle / arc: its axis along its normal)
+        if (r.point) { const p = s3.at.get(r.point); if (!p) throw new Error('A 3D sketch point used as a reference is gone'); return { kind: 'point', p }; }
+        const g = (s3.segs || []).find((x) => x.id === r.curve);
+        if (!g) throw new Error('A 3D sketch entity used as a reference is gone');
+        if (!g.type || g.type === 'line') { const a = s3.at.get(g.a), b = s3.at.get(g.b); return { kind: 'line', d: unit(sub(b, a)), start: a, end: b, mid: mul(add(a, b), 0.5), curve: { type: 'line' } }; }
+        if ((g.type === 'circle' || g.type === 'arc') && g.n) {
+          const o = s3.at.get(g.c), n = unit(g.n), u = g.type === 'arc' ? unit(sub(s3.at.get(g.a), o)) : levelX(n), r0 = g.type === 'arc' ? len(sub(s3.at.get(g.a), o)) : +g.r;
+          let span = 2 * Math.PI;
+          if (g.type === 'arc') { const w = sub(s3.at.get(g.b), o); span = Math.atan2(dot(n, cross(u, w)), dot(u, w)); if (span <= 1e-9) span += 2 * Math.PI; }
+          const at = (t) => add(o, add(mul(u, r0 * Math.cos(t * span)), mul(cross(n, u), r0 * Math.sin(t * span))));
+          return { kind: 'line', d: n, start: o, end: add(o, n), mid: o, curve: { type: g.type, c: o, start: at(0), end: at(1), mid: at(0.5) } };
+        }
+        throw new Error('Pick a line, circle or arc of the 3D sketch (or one of its points)');
+      }
       if (!s) throw new Error('The sketch of a reference is missing, suppressed or has errors');
       const W = (q) => S.fromFrame2D(s.frame, q.x, q.y);
       if (r.point) { const q = r.point === 'O' ? { x: 0, y: 0 } : S.getPoint(s.sk, r.point); if (!q) throw new Error('A sketch point used as a reference is gone'); return { kind: 'point', p: W(q) }; }
@@ -3085,24 +3103,56 @@ async function rebuild(doc, previewId = null, opts = {}) {
     }
     throw new Error('Unknown reference');
   };
-  // The points where a reference point's two references meet, when one of them is curved (an edge that is not straight,
-  // or a curved face that is not a cylinder): null for the cases the affine solver takes. An edge against a plane:
-  // the edge's parameter halved to 1e-15 at each change of side (400 steps first); anything else: the kernel's
-  // distance query, its solutions at no distance. In a fixed order (along the edge from its start, else by x, y, z),
-  // so f.solution keeps its point from one rebuild to the next.
-  // Where a 3D-printing fastener goes, as Hole places its holes: the points and circle centres of a sketch, and points
-  // clicked on a face (a curved one: moved onto it, square to it there): [{ p, dir (into the material) }]
-  const printLocs = (f) => {
-    const locs = [];
-    if (f.sketch) {
-      const s = sketches.get(f.sketch);
-      if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
-      const P3d = (id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); };
+  // A 3D sketch as the features that take a sketch read it (null: not one, or not built): the feature, its points as
+  // built by id, its lines and curves (null: an older 3D sketch, its points joined in order) and its runs
+  const sketch3dOf = (id) => {
+    const f3 = doc.features.find((x) => x.id === id && x.type === 'sketch3d'), P = f3 && res.detected[id]?.pts;
+    if (!P) return null;
+    return { f: f3, at: new Map((f3.pts || []).map((q, i) => [q.id, P[i]])), segs: Array.isArray(f3.segs) ? f3.segs : null, runs: sketch3dRuns.get(id) || [] };
+  };
+  // A 3D sketch's lines: [[a, b]] (the drawn ones; when it has none, its construction lines)
+  const sketch3dLines = (s3) => {
+    if (!s3.segs) return s3.f.pts.length === 2 ? [[s3.at.get(s3.f.pts[0].id), s3.at.get(s3.f.pts[1].id)]] : [];
+    const all = s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)), drawn = all.filter((g) => !g.construction);
+    return (drawn.length ? drawn : all).map((g) => [s3.at.get(g.a), s3.at.get(g.b)]);
+  };
+  // A 3D sketch's points that stand on their own or are circle / arc centres (as a sketch's are for Hole and the
+  // patterns): [{ i (its number, from 0), p }]
+  const sketch3dFreePoints = (s3) => {
+    if (!s3.segs) return [];
+    const used = new Set(s3.segs.filter((g) => g.type !== 'circle').flatMap((g) => (g.type === 'spline' ? g.pts : [g.a, g.b])));
+    const centres = new Set(s3.segs.filter((g) => (g.type === 'circle' || g.type === 'arc') && !g.construction).map((g) => g.c));
+    return s3.f.pts.map((q, i) => ({ i, id: q.id, p: s3.at.get(q.id) })).filter((x) => centres.has(x.id) || !used.has(x.id));
+  };
+  // The level direction square to an axis d, where there is no sketch plane to take one from (a 3D sketch): square to
+  // d and to the up axis, or the model's X when d is upright
+  const levelX = (d) => { const up = docUp === 'z' ? [0, 0, 1] : [0, 1, 0], l = cross(up, d); return len(l) > 1e-9 ? unit(l) : unit(sub([1, 0, 0], mul(d, d[0]))); };
+  // A sketch's placement points (Hole, Boss, Snap Hook, the 3D-printing fasteners): its points and circle centres,
+  // each with the way out of the material there: [{ p, n }]. A sketch: the normal of its plane. A 3D sketch (it has no
+  // plane): each point on a face of the part, square to the face there.
+  const placementPoints = (id) => {
+    const s = sketches.get(id);
+    if (s) {
       const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
       const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
-      const dir = mul(s.frame.n, f.reverse ? 1 : -1);
-      for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: P3d(pt.id), dir });
+      return s.sk.points.filter((pt) => pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))).map((pt) => { const q = S.getPoint(s.sk, pt.id); return { p: S.fromFrame2D(s.frame, q.x, q.y), n: s.frame.n }; });
     }
+    const s3 = sketch3dOf(id);
+    if (!s3) throw new Error('The placement sketch is missing, suppressed or has errors');
+    return sketch3dFreePoints(s3).map(({ i, p }) => {
+      const hit = solids.length ? findFaceAny(solids, { p }) : null;
+      let d = Infinity;
+      if (hit) { const dq = new R.DistanceQuery(R.makeVertex(p)); try { d = dq.distanceTo(hit.face); } finally { dq.delete?.(); } }
+      if (!(d < 1e-3)) throw new Error(`Point ${i + 1} of ${s3.f.name} is not on a face of the part: from a 3D sketch, each goes square to the face its point is on`);
+      return { p, n: unit(vec(hit.face.normalAt(p))) };
+    });
+  };
+  // Where a 3D-printing fastener goes, as Hole places its holes: the points and circle centres of a sketch (or a 3D
+  // sketch), and points clicked on a face (a curved one: moved onto it, square to it there): [{ p, dir (into the
+  // material) }]
+  const printLocs = (f) => {
+    const locs = [];
+    if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
     for (const fc of f.faces || []) {
       if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
       const hit = body && findFaceAny(solids, fc);
@@ -3113,6 +3163,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (!locs.length) throw new Error('Click points on a face for them, or select a sketch with points (or circles) on the face');
     return locs;
   };
+  // The points where a reference point's two references meet, when one of them is curved (an edge that is not straight,
+  // or a curved face that is not a cylinder): null for the cases the affine solver takes. An edge against a plane:
+  // the edge's parameter halved to 1e-15 at each change of side (400 steps first); anything else: the kernel's
+  // distance query, its solutions at no distance. In a fixed order (along the edge from its start, else by x, y, z),
+  // so f.solution keeps its point from one rebuild to the next.
   const curvedPointCrossing=f=>{
     const refs=f.refs||[];
     if(f.type!=='point'||!f.referenceDefinition||f.pointType==='coords'||refs.length!==2||refs.some(r=>r.relation&&r.relation!=='coincident'))return null;
@@ -3641,7 +3696,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const copyMap = (to, from) => { to.clear(); for (const [a, b] of from) to.set(a, b); };
   const takeSnap = () => ({
     body, solids: [...solids], surfaces: [...surfaces], dense, blendChain, steps: [...steps], pending: [...pending], moldInfo,
-    planes: new Map(planes), sketches: new Map(sketches), axes: new Map(axes), points: new Map(points), tools: new Map(tools), curves: new Map(curves),
+    planes: new Map(planes), sketches: new Map(sketches), axes: new Map(axes), points: new Map(points), tools: new Map(tools), curves: new Map(curves), sketch3dRuns: new Map(sketch3dRuns),
     usedIds: new Set(usedIds), featureDiffs: new Map(featureDiffs), sketchBodies: new Map(sketchBodies),
     res: { info:{...res.info}, errors: [...res.errors], sketches: { ...res.sketches }, planes: { ...res.planes }, axes: { ...res.axes }, points: { ...res.points }, curves: { ...res.curves }, notes: { ...res.notes }, detected: { ...res.detected }, features: { ...res.features }, threads: { ...res.threads }, missing: { ...res.missing } },
     timing: [...timing.features],
@@ -3652,7 +3707,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     solids = [...s.solids]; surfaces = [...s.surfaces];
     pending = [...(s.pending || [])];
     steps.length = 0; steps.push(...s.steps);
-    copyMap(planes, s.planes); copyMap(sketches, s.sketches); copyMap(axes, s.axes); copyMap(points, s.points); copyMap(tools, s.tools); copyMap(curves, s.curves);
+    copyMap(planes, s.planes); copyMap(sketches, s.sketches); copyMap(axes, s.axes); copyMap(points, s.points); copyMap(tools, s.tools); copyMap(curves, s.curves); copyMap(sketch3dRuns, s.sketch3dRuns || new Map());
     copyMap(featureDiffs, s.featureDiffs); copyMap(sketchBodies, s.sketchBodies);
     usedIds.clear(); for (const id of s.usedIds) usedIds.add(id);
     res.errors = [...s.res.errors];
@@ -4431,14 +4486,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
         case 'spattern': {
           // Sketch-driven pattern: a copy at each point of a sketch (the point nearest the feature is the
           // feature itself)
-          const s2 = sketches.get(f.sketch);
-          if (!s2) throw new Error('Select a sketch with points (or circles) where the copies go');
-          const used = new Set(s2.sk.curves.filter((c) => c.type !== 'circle').flatMap((c) => [c.p1, c.p2, c.a, ...(c.pts || [])]).filter(Boolean));
-          const centres = new Set(s2.sk.curves.filter((c) => c.type === 'circle' || c.type === 'arc').map((c) => c.c));
-          const pts = s2.sk.points.filter((q) => q.id !== 'O' && (centres.has(q.id) || !used.has(q.id))).map((q) => S.fromFrame2D(s2.frame, q.x, q.y));
+          // (or a 3D sketch's points, anywhere in space)
+          const s2 = sketches.get(f.sketch), s3 = s2 ? null : sketch3dOf(f.sketch);
+          if (!s2 && !s3) throw new Error('Select a sketch with points (or circles) where the copies go');
+          const used = s2 && new Set(s2.sk.curves.filter((c) => c.type !== 'circle').flatMap((c) => [c.p1, c.p2, c.a, ...(c.pts || [])]).filter(Boolean));
+          const centres = s2 && new Set(s2.sk.curves.filter((c) => c.type === 'circle' || c.type === 'arc').map((c) => c.c));
+          const pts = s2 ? s2.sk.points.filter((q) => q.id !== 'O' && (centres.has(q.id) || !used.has(q.id))).map((q) => S.fromFrame2D(s2.frame, q.x, q.y)) : sketch3dFreePoints(s3).map((x) => x.p);
           if (pts.length < 2) throw new Error('The sketch needs at least two points (one at the feature, one for each copy)');
           const c0 = patternCentre(f);
-          const base = pts.reduce((b, q) => (len(sub(q, c0)) - dot(sub(q, c0), s2.frame.n) * 0 < len(sub(b, c0)) ? q : b), pts[0]);
+          const base = pts.reduce((b, q) => (len(sub(q, c0)) < len(sub(b, c0)) ? q : b), pts[0]);
           await patternAll(f, pts.filter((q) => q !== base).map((q) => xMove(sub(q, base))));
           res.notes[f.id] = `${pts.length - 1} cop${pts.length === 2 ? 'y' : 'ies'} at the sketch points`;
           break;
@@ -6525,12 +6581,23 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'helix': {
           // the sketch's circle gives the axis (its normal), the centre and the diameter
-          const s = sketches.get(f.sketch);
-          if (!s) throw new Error('Select a sketch with a circle (it sets the helix axis and diameter)');
-          const circ = s.sk.curves.find((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction) || s.sk.curves.find((c) => c.type === 'circle' || c.type === 'arc');
-          if (!circ) throw new Error('The sketch needs a circle: its centre and diameter set the helix axis and size');
-          const fr = s.frame, C = S.getPoint(s.sk, circ.c), r = S.radiusOf(s.sk, circ);
-          const c0 = S.fromFrame2D(fr, C.x, C.y), d = f.reverse ? mul(fr.n, -1) : fr.n;
+          // (or a 3D sketch's circle: its centre, radius and axis; the start angle then from the level direction)
+          const s = sketches.get(f.sketch), s3 = s ? null : sketch3dOf(f.sketch);
+          if (!s && !s3) throw new Error('Select a sketch with a circle (it sets the helix axis and diameter)');
+          let c0, r, n0, ux;
+          if (s) {
+            const circ = s.sk.curves.find((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction) || s.sk.curves.find((c) => c.type === 'circle' || c.type === 'arc');
+            if (!circ) throw new Error('The sketch needs a circle: its centre and diameter set the helix axis and size');
+            const C = S.getPoint(s.sk, circ.c);
+            c0 = S.fromFrame2D(s.frame, C.x, C.y); r = S.radiusOf(s.sk, circ); n0 = s.frame.n; ux = s.frame.u;
+          } else {
+            const round = (s3.segs || []).filter((g) => (g.type === 'circle' || g.type === 'arc') && s3.at.has(g.c) && g.n);
+            const circ = round.find((g) => !g.construction) || round[0];
+            if (!circ) throw new Error('The 3D sketch needs a circle: its centre and diameter set the helix axis and size');
+            c0 = s3.at.get(circ.c); r = circ.type === 'circle' ? +circ.r : len(sub(s3.at.get(circ.a), c0)); n0 = unit(circ.n); ux = levelX(n0);
+            if (!(r > 0)) throw new Error('The 3D sketch\'s circle has no size');
+          }
+          const d = f.reverse ? mul(n0, -1) : n0;
           let pitch = ev(f.pitch), revs = ev(f.revolutions), height = ev(f.height);
           if (f.definedBy === 'pitchHeight') revs = height / pitch;
           else if (f.definedBy === 'heightRev') pitch = height / revs;
@@ -6541,7 +6608,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // start angle measured from the sketch's horizontal direction, about the axis
           const sp = vec(w.startPoint), e = unit(rej(sub(sp, c0), d));
           const a = ((ev(f.startAngle) || 0) * Math.PI) / 180;
-          const t = add(mul(fr.u, Math.cos(a)), mul(cross(d, fr.u), Math.sin(a)));
+          const t = add(mul(ux, Math.cos(a)), mul(cross(d, ux), Math.sin(a)));
           const turn = (Math.atan2(dot(cross(e, t), d), dot(e, t)) * 180) / Math.PI;
           if (Math.abs(turn) > 1e-9) w = w.rotate(turn, c0, d);
           curves.set(f.id, { wire: w, axis: { o: c0, d }, r, pitch, height });
@@ -6659,20 +6726,23 @@ async function rebuild(doc, previewId = null, opts = {}) {
             const closed = !!closed0 && Q.length > 2;
             if (closed && len(sub(Q[0], Q[Q.length - 1])) < 1e-9) Q.pop();
             if (Q.length < 2) throw new Error('A 3D sketch needs at least two different points');
-            let wire, edgesOut = [];
+            let wire, edgesOut = [], sec = [];
             if (f.kind === 'spline') {
               if (Q.length < 3) {
                 wire = R.assembleWire([R.makeLine(Q[0], Q[1])]);
+                sec.push({ type: 'line', a: Q[0], b: Q[1] });
               } else if (!closed) {
                 wire = R.assembleWire([R.makeBSplineApproximation(Q, { tolerance: 1e-4, degMin: 3, degMax: 5, smoothing: null })]);
+                sec = null;
               } else {
                 // closed: cubic pieces through the points, each point's tangent along the chord of its
                 // neighbours, so it runs smoothly all the way round (no kink where it closes)
                 const m = Q.length, at = (i) => Q[((i % m) + m) % m];
                 const tg = (i) => unit(sub(at(i + 1), at(i - 1)));
                 wire = R.assembleWire(Q.map((q, i) => {
-                  const b = at(i + 1), d = len(sub(b, q)) / 3;
-                  return R.makeBezierCurve([q, add(q, mul(tg(i), d)), sub(b, mul(tg(i + 1), d)), b]);
+                  const b = at(i + 1), d = len(sub(b, q)) / 3, c1 = add(q, mul(tg(i), d)), c2 = sub(b, mul(tg(i + 1), d));
+                  sec.push({ type: 'bezier', a: q, c1, c2, b });
+                  return R.makeBezierCurve([q, c1, c2, b]);
                 }));
               }
             } else {
@@ -6693,7 +6763,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 const s = Rb * Math.tan(th / 2);
                 const T1 = sub(at, mul(d1, s)), T2 = add(at, mul(d2, s));
                 const ctr = add(at, mul(unit(sub(d2, d1)), Rb / Math.cos(th / 2)));
-                return { s, arc: () => R.makeThreePointArc(T1, add(ctr, mul(unit(sub(at, ctr)), Rb)), T2) };
+                const M = add(ctr, mul(unit(sub(at, ctr)), Rb));
+                return { s, arc: () => R.makeThreePointArc(T1, M, T2), sec: { type: 'arc', a: T1, m: M, b: T2 } };
               };
               const C = V.map((_, k) => corner(k));
               for (let i = 0; i < n - 1; i++) {
@@ -6702,36 +6773,43 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 const s0 = cs?.s || 0, s1 = ce?.s || 0;
                 if (s0 + s1 > L + 1e-9) throw new Error(`The bend radius is too big for the run from point ${i + 1} to point ${i + 2 > Q.length ? 1 : i + 2} (${+L.toFixed(3)} mm long)`);
                 const pa = add(a, mul(d, s0)), pb = sub(b, mul(d, s1));
-                if (len(sub(pb, pa)) > 1e-9) edgesOut.push(R.makeLine(pa, pb));
-                if (ce) edgesOut.push(ce.arc());
+                if (len(sub(pb, pa)) > 1e-9) { edgesOut.push(R.makeLine(pa, pb)); sec.push({ type: 'line', a: pa, b: pb }); }
+                if (ce) { edgesOut.push(ce.arc()); sec.push(ce.sec); }
               }
               wire = R.assembleWire(edgesOut);
             }
-            return { wire, edgesOut, Q };
+            return { wire, edgesOut, Q, closed, section: sec && { segs: sec } };
           };
           if (!chains.length && !circles3d.length && !closedSplines.length) {
             res.notes[f.id] = (f.pts || []).length ? `${f.pts.length} point${f.pts.length === 1 ? '' : 's'}, no lines` : 'Empty 3D sketch';
             break;
           }
           // runs with arcs: each line and arc as it is (the bend radius rounds runs of lines only)
+          // (a cubic piece as a loft section's bezier; other degrees: none)
+          const bez = (q) => (q.length === 4 ? { type: 'bezier', a: q[0], c1: q[1], c2: q[2], b: q[3] } : null);
           const routes = chains.map((c) => {
             if (!c.segs?.some((g) => g.type === 'arc' || g.type === 'spline')) return buildRoute(c.Q, c.closed);
             const at = chains.at, edgesOut = [];
+            let sec = [];
             c.segs.forEach((g, i) => {
               const A = at.get(c.ids[i]), B = at.get(c.ids[(i + 1) % c.ids.length]);
-              if (g.type === 'arc') edgesOut.push(R.makeThreePointArc(A, arcMid(g, at), B));
+              if (g.type === 'arc') { const M = arcMid(g, at); edgesOut.push(R.makeThreePointArc(A, M, B)); sec?.push({ type: 'arc', a: A, m: M, b: B }); }
               else if (g.type === 'spline') {
                 // (walked from its last point: the pieces the other way round)
                 const fwd = c.ids[i] === g.pts[0];
                 const pieces = splineGeom(f, g).pieces;
-                for (const q of fwd ? pieces : pieces.slice().reverse()) edgesOut.push(R.makeBezierCurve(fwd ? q : q.slice().reverse()));
-              } else if (len(sub(B, A)) > 1e-9) edgesOut.push(R.makeLine(A, B));
+                for (const q of fwd ? pieces : pieces.slice().reverse()) { const qq = fwd ? q : q.slice().reverse(); edgesOut.push(R.makeBezierCurve(qq)); const b = bez(qq); if (b) sec?.push(b); else sec = null; }
+              } else if (len(sub(B, A)) > 1e-9) { edgesOut.push(R.makeLine(A, B)); sec?.push({ type: 'line', a: A, b: B }); }
             });
-            return { wire: R.assembleWire(edgesOut), edgesOut, Q: c.Q };
+            return { wire: R.assembleWire(edgesOut), edgesOut, Q: c.Q, closed: c.closed, section: sec && { segs: sec } };
           });
-          for (const ci of circles3d) routes.push({ wire: R.assembleWire([R.makeCircle(ci.r, ci.C, ci.n)]), edgesOut: [], Q: [] });
-          for (const g of closedSplines) routes.push({ wire: R.assembleWire(splineGeom(f, g).pieces.map((q) => R.makeBezierCurve(q))), edgesOut: [], Q: [] });
+          for (const ci of circles3d) routes.push({ wire: R.assembleWire([R.makeCircle(ci.r, ci.C, ci.n)]), edgesOut: [], Q: [], closed: true, section: { circle: { c: ci.C, r: ci.r, n: ci.n, u: levelX(ci.n) } } });
+          for (const g of closedSplines) {
+            const pieces = splineGeom(f, g).pieces, secs = pieces.map(bez);
+            routes.push({ wire: R.assembleWire(pieces.map((q) => R.makeBezierCurve(q))), edgesOut: [], Q: [], closed: true, section: secs.every(Boolean) ? { segs: secs } : null });
+          }
           curves.set(f.id, { wire: routes[0].wire, wires: routes.map((r) => r.wire), route: true });
+          sketch3dRuns.set(f.id, routes.map((r) => ({ closed: !!r.closed, section: r.section || null, edges: r.wire.edges })));
           // drawn as polylines (curves finely)
           const shownAll = routes.map(({ wire }) => {
             const shown = [];
@@ -6789,6 +6867,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // each profile: one region (outline + holes), as 3D sections
           const profs = ids.map((id) => {
             const s = sketches.get(LR.sourceId(id));
+            // (a 3D sketch: its one closed run of lines, arcs and splines, or a circle; it may be curved out of a plane)
+            const s3 = !s && typeof id === 'string' ? sketch3dOf(id) : null;
+            if (s3) {
+              if (thin) throw new Error('A thin loft needs sketch profiles (not a 3D sketch)');
+              const closed = s3.runs.filter((x) => x.closed);
+              if (closed.length !== 1) throw new Error(`${s3.f.name} must have exactly one closed chain or circle (it has ${closed.length})`);
+              if (!closed[0].section) throw new Error(`${s3.f.name}: its smooth spline can't be a loft profile (use a spline segment, or lines and arcs)`);
+              return { name: s3.f.name, outer: closed[0].section, holes: [], holeKeys: [] };
+            }
             if (!s) throw new Error('A profile sketch is missing, suppressed or has errors');
             const resolved = typeof id === 'string' ? { sketch: s.sk } : LR.resolveContour(s.sk, id);
             const regions = thin ? S.thinRegions(resolved.sketch, thin.t, thin.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
@@ -7232,19 +7319,40 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const perLine = bent ? 1 : Math.max(1, Math.ceil(64 / nDiv)), nSeg = nDiv * perLine;
           // each profile as a fine polyline in model space, with where its corners are (fraction of its length)
           const profile = (id, which) => {
-            const s = sketches.get(id);
-            if (!s) throw new Error(`The ${which} profile sketch is missing, suppressed or has errors`);
-            const chains = S.curveChains(s.sk);
-            if (chains.length !== 1) throw new Error(`The ${which} profile sketch must hold one chain of lines / arcs joined end to end (it has ${chains.length})`);
-            if (chains[0].closed) throw new Error(`The ${which} profile must be open: leave a gap where the seam of the part goes`);
-            const pts = [], cornerAt = [];
-            chains[0].items.forEach(({ c, rev }, k) => {
-              let q = S.curvePoints(s.sk, c, 256);
-              if (rev) q = [...q].reverse();
-              if (k) { cornerAt.push(pts.length - 1); q = q.slice(1); }
-              pts.push(...q);
-            });
-            const fr = s.frame, W3 = pts.map(([x, y]) => add(add(fr.o, mul(fr.u, x)), mul(fr.v, y)));
+            // (a sketch's one open chain, or a 3D sketch's: then it may run out of a plane)
+            const s = sketches.get(id), s3 = s ? null : sketch3dOf(id);
+            if (!s && !s3) throw new Error(`The ${which} profile sketch is missing, suppressed or has errors`);
+            let W3 = [];
+            const cornerAt = [];
+            if (s) {
+              const chains = S.curveChains(s.sk);
+              if (chains.length !== 1) throw new Error(`The ${which} profile sketch must hold one chain of lines / arcs joined end to end (it has ${chains.length})`);
+              if (chains[0].closed) throw new Error(`The ${which} profile must be open: leave a gap where the seam of the part goes`);
+              const pts = [];
+              chains[0].items.forEach(({ c, rev }, k) => {
+                let q = S.curvePoints(s.sk, c, 256);
+                if (rev) q = [...q].reverse();
+                if (k) { cornerAt.push(pts.length - 1); q = q.slice(1); }
+                pts.push(...q);
+              });
+              const fr = s.frame;
+              W3 = pts.map(([x, y]) => add(add(fr.o, mul(fr.u, x)), mul(fr.v, y)));
+            } else {
+              if (s3.runs.length !== 1) throw new Error(`The ${which} profile 3D sketch must hold one chain of lines / arcs joined end to end (it has ${s3.runs.length})`);
+              if (s3.runs[0].closed) throw new Error(`The ${which} profile must be open: leave a gap where the seam of the part goes`);
+              // (each edge in turn, the way the chain runs: 256 points along a curved one)
+              s3.runs[0].edges.forEach((e, k) => {
+                const m = e.geomType === 'LINE' ? 1 : 256;
+                let q = Array.from({ length: m + 1 }, (_, i) => vec(e.pointAt(i / m)));
+                if (W3.length && len(sub(q[q.length - 1], W3[W3.length - 1])) < len(sub(q[0], W3[W3.length - 1]))) q.reverse();
+                else if (!W3.length && s3.runs[0].edges.length > 1) {
+                  const e1 = s3.runs[0].edges[1], ends = [vec(e1.startPoint), vec(e1.endPoint)], far = (x) => Math.min(...ends.map((y) => len(sub(x, y))));
+                  if (far(q[0]) < far(q[q.length - 1])) q.reverse();
+                }
+                if (k) { cornerAt.push(W3.length - 1); q = q.slice(1); }
+                W3.push(...q);
+              });
+            }
             const S0 = [0];
             for (let i = 1; i < W3.length; i++) S0.push(S0[i - 1] + len(sub(W3[i], W3[i - 1])));
             const total = S0[S0.length - 1];
@@ -7538,13 +7646,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // its lead-in at insertAngle from the beam and its catch at retainAngle (90: square); turned angle about the
           // normal from the face's X direction
           const locs = [];
-          if (f.sketch) {
-            const s = sketches.get(f.sketch);
-            if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
-            const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
-            const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
-            for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: S.fromFrame2D(s.frame, pt.x, pt.y), n: mul(s.frame.n, f.reverse ? -1 : 1) });
-          }
+          if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, n: mul(n, f.reverse ? -1 : 1) });
           for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, n: mul(unit(fc.n), f.reverse ? -1 : 1) });
           if (!locs.length) throw new Error('Click points on a flat face for them, or select a sketch with points on the face');
           if (!body) throw new Error('There is no body to put them on');
@@ -7705,11 +7807,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // the core), a gate where each meets the part, and a tapered sprue from the cavity's back down to the sketch's
           // first point: cut from the mould's bodies
           if (!moldInfo) throw new Error('Make the core and cavity first (Core and Cavity, above this)');
-          const s = sketches.get(f.sketch);
-          if (!s) throw new Error('Select the sketch of the runners (lines on the parting plane)');
+          // (or a 3D sketch's lines: runners that follow a parting surface of your own)
+          const s = sketches.get(f.sketch), s3 = s ? null : sketch3dOf(f.sketch);
+          if (!s && !s3) throw new Error('Select the sketch of the runners (lines on the parting plane, or a 3D sketch)');
           const D = ev(f.runnerD ?? 6), sd = ev(f.sprueD ?? 4), dd = moldInfo.d;
           if (!(D > 0 && sd > 0)) throw new Error('The runner and sprue need diameters');
-          const lines = s.sk.curves.filter((c) => c.type === 'line' && !c.construction).map((c) => [c.p1, c.p2].map((id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); }));
+          const lines = s ? s.sk.curves.filter((c) => c.type === 'line' && !c.construction).map((c) => [c.p1, c.p2].map((id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); })) : (s3.segs || []).filter((g) => (!g.type || g.type === 'line') && !g.construction && s3.at.has(g.a) && s3.at.has(g.b)).map((g) => [s3.at.get(g.a), s3.at.get(g.b)]);
           if (!lines.length) throw new Error('The runner sketch needs lines');
           let tool = null;
           const addT = (x) => { tool = tool ? tool.fuse(x) : x; };
@@ -8042,15 +8145,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (spec.type === 'csink' && !(spec.csD > spec.d && spec.csAng > 0 && spec.csAng < 180)) throw new Error('The countersink must be wider than the hole, at an angle between 0° and 180°');
           if (spec.type === 'cdrill' && !(spec.cdD > spec.d && spec.cdDepth > 0 && spec.cdAng > 0 && spec.cdAng < 180)) throw new Error('The counterdrill must be wider than the hole, have a depth, and a point angle between 0° and 180°');
           const locs = [];
-          if (f.sketch) {
-            const s = sketches.get(f.sketch);
-            if (!s) throw new Error('The placement sketch is missing, suppressed or has errors');
-            const P3 = (id) => { const q = S.getPoint(s.sk, id); return S.fromFrame2D(s.frame, q.x, q.y); };
-            const used = new Set(s.sk.curves.flatMap((c) => [c.p1, c.p2, ...(c.pts || [])]).filter(Boolean));
-            const centres = new Set(s.sk.curves.filter((c) => (c.type === 'circle' || c.type === 'arc') && !c.construction).map((c) => c.c));
-            const dir = mul(s.frame.n, f.reverse ? 1 : -1);
-            for (const pt of s.sk.points) if (pt.id !== 'O' && (centres.has(pt.id) || !used.has(pt.id))) locs.push({ p: P3(pt.id), dir });
-          }
+          if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
           for (const fc of f.faces || []) {
             if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
             // (a point on a curved face: moved onto it, the hole square to it there)
@@ -8350,9 +8445,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // to top centre: its length is the height), in equal parts, each a sheet metal body of its own. The line is
           // in a sketch or a 3D sketch.
           if (!f.sketch) throw new Error('Select the sketch with the axis line (or sketch one: bottom centre to top centre)');
-          const s = sketches.get(f.sketch), s3 = s ? null : doc.features.find((x) => x.id === f.sketch && x.type === 'sketch3d');
-          const P3d = s3 && res.detected[s3.id]?.pts;
-          if (!s && !P3d) throw new Error('The sketch is missing, suppressed or has errors');
+          const s = sketches.get(f.sketch), s3 = s ? null : sketch3dOf(f.sketch);
+          if (!s && !s3) throw new Error('The sketch is missing, suppressed or has errors');
           const pick = (lines) => { const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null; };
           const noLine = (n) => new Error(n ? 'The sketch has more than one line: keep one line for the axis (bottom centre to top centre)' : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
           let o, tp, fr = null;
@@ -8364,11 +8458,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
             o = W3(S.getPoint(s.sk, line.p1)); tp = W3(S.getPoint(s.sk, line.p2));
           } else {
             // (a 3D sketch's line, between its points as built; an older 3D sketch of just two points is one too)
-            const at = new Map((s3.pts || []).map((q, i) => [q.id, P3d[i]]));
-            const lines = Array.isArray(s3.segs) ? s3.segs.filter((g) => (!g.type || g.type === 'line') && at.has(g.a) && at.has(g.b)) : P3d.length === 2 ? [{ a: s3.pts[0].id, b: s3.pts[1].id }] : [];
+            const lines = s3.segs ? s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)) : s3.f.pts.length === 2 ? [{ a: s3.f.pts[0].id, b: s3.f.pts[1].id }] : [];
             const line = pick(lines);
             if (!line) throw noLine(lines.length);
-            o = at.get(line.a); tp = at.get(line.b);
+            o = s3.at.get(line.a); tp = s3.at.get(line.b);
           }
           if (f.reverse) [o, tp] = [tp, o];
           const h = len(sub(tp, o));
@@ -8377,8 +8470,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // X: in the sketch plane, square to the line; from a 3D sketch (no plane): level, square to the line and the
           // up axis (Y then toward the top), or the model's X when the line is upright. Turned about the axis by the
           // rotation.
-          const up = docUp === 'z' ? [0, 0, 1] : [0, 1, 0], level = cross(up, d);
-          const X0 = fr ? unit(cross(d, fr.n)) : len(level) > 1e-9 ? unit(level) : unit(sub([1, 0, 0], mul(d, d[0])));
+          const X0 = fr ? unit(cross(d, fr.n)) : levelX(d);
           const Y0 = cross(d, X0), rot = (ev(f.rotation ?? 0) * Math.PI) / 180;
           const X = add(mul(X0, Math.cos(rot)), mul(Y0, Math.sin(rot))), Y = cross(d, X);
           const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);

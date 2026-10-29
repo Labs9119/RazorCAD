@@ -831,6 +831,29 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab A1 (flagged: from listings), a bed size typed clears the printer`};
   },
 
+  // Features that take a 3D sketch where they took a sketch (tests/sketch3d-input-cases.js): Hole, Boss, Snap Hook and
+  // the 3D-printing fasteners square to the face under each point, Sketch Pattern, Helix, Reference Axis and Point,
+  // Loft, Lofted Bend, Sprue and Runners; and the panels list 3D sketches for them
+  async 'sketch3d-inputs'() {
+    const {run}=await import('/tests/sketch3d-input-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
+    const a=window.app,d=M.newDoc(),s3=M.createFeature(d,'sketch3d');s3.pts=[{id:'p1',x:0,y:0,z:0},{id:'p2',x:0,y:10,z:0}];s3.segs=[{id:'s1',a:'p1',b:'p2'}];d.features.push(s3);
+    const missing=[];
+    for(const type of ['hole','boss','snapHook','nutPocket','insertHole','plasticScrewHole','helix','spattern','moldRunner','smLoft']){
+      await a.newDocument?.();closeModals();const doc=JSON.parse(JSON.stringify(d)),f=M.createFeature(doc,type);doc.features.push(f);await a.setDoc(doc);
+      a.editFeature(f.id);const opts=[...document.querySelectorAll('#pm select')].flatMap(x=>[...x.options].map(o=>o.value));
+      if(!opts.includes(s3.id))missing.push(type);
+      if(type!=='smLoft'&&(!a.pmPick('helix',s3.id)||a.pm.feature.sketch!==s3.id))missing.push(type+' (tree)');
+      a.cancelPM();
+    }
+    // (Reference Axis: the 3D sketch's line in its references list; Loft: the 3D sketch among its profile sources)
+    for(const [type,props,sel] of [['axis',{referenceDefinition:true,axisType:'references',refs:[]},`[data-datum-sketch="${s3.id}"][data-datum-curve="s1"]`],['loft',{},'[data-loft-legacy] option']]){
+      await a.newDocument?.();closeModals();const doc=JSON.parse(JSON.stringify(d)),f=M.createFeature(doc,type,props);doc.features.push(f);await a.setDoc(doc);
+      a.editFeature(f.id);const found=[...document.querySelectorAll(sel)].some(x=>type==='axis'||x.value===s3.id);if(!found)missing.push(type);a.cancelPM();
+    }
+    return {ok:!missing.length,detail:missing.length?`no 3D sketch in the panel of ${missing.join(', ')}`:native.results.map(x=>x.name).join('; ')+'; listed in the panels (Reference Axis, Loft and the rest) and picked in the tree'};
+  },
+
   async 'print-joints'() {
     const {run}=await import('/tests/print-joint-cases.js'),native=await run({threads:threadsPerKernel()});if(!native.ok)return {ok:false,detail:native};
     // (Calibrate Fits: the test piece made on its own kernel, saved, the fits typed and kept in a copy of the profile)

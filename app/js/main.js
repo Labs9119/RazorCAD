@@ -57,6 +57,9 @@ const WHEEL_TOOLS = [
 
 const $ = (s) => document.querySelector(s);
 
+// features whose sketch slot takes a 3D sketch too (its points, lines or circle)
+const SKETCH_OR_3D = new Set(['smTransition', 'hole', 'boss', 'snapHook', 'nutPocket', 'insertHole', 'plasticScrewHole', 'moldRunner', 'helix', 'spattern']);
+
 class App {
   constructor() {
     this.viewport = new Viewport($('#viewport'), $('#c'), $('#labels'));
@@ -3398,8 +3401,16 @@ class App {
     } else if (['sweep','surfSweep'].includes(f.type) && target && ['sketch','sketch3d','helix','compCurve','projCurve'].includes(target.type)) {
       if(kind==='sketch'){this.hoverSketchId=id;this.updateSketchDisplay();this.status('Activate a sweep slot and select its contour in the canvas.');return true;}
       return this.setSweepReference(id,this.pm.sweepSlot||(f.profileType==='circle'?'path':'profile'));
-    } else if (f.type === 'smTransition' && target && ['sketch', 'sketch3d'].includes(target.type)) {
+    } else if (SKETCH_OR_3D.has(f.type) && target && ['sketch', 'sketch3d'].includes(target.type)) {
+      // (features whose sketch may be a 3D sketch: a click on either in the tree picks it)
       key = 'sketch';
+    } else if (f.type === 'smLoft' && target && ['sketch', 'sketch3d'].includes(target.type)) {
+      key = f.profileA && !f.profileB ? 'profileB' : 'profileA';
+    } else if (f.type === 'loft' && target?.type === 'sketch3d') {
+      f.profiles = Array.isArray(f.profiles) ? f.profiles : [];
+      if (!f.profiles.includes(id)) f.profiles.push(id); else f.profiles = f.profiles.filter((x) => x !== id);
+      this.preview(true);
+      return true;
     } else {
       const fields = { sketch: ['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'surfPlanar', 'helix', 'wrap'], feature: ['lpattern', 'cpattern', 'mirror'] };
       if (fields[kind]?.includes(f.type)) key = kind;
