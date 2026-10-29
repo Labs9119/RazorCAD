@@ -420,6 +420,8 @@ Hold [[Shift]] and **right-click** to step through the bodies and surfaces under
 
 Click a plane or a flat face, then click **Sketch** (Sketch tab), or right-click a face ▸ **Sketch**. Clicking a sketch tool such as **Circle** with no sketch open also starts a 2D sketch: pick a plane or flat face and the tool is ready. (For sketches in space, see the 3D Sketches chapter.) You can also start a feature such as Extrude without a sketch: RazorCAD asks you to pick a plane or face, you sketch, and when you exit the sketch the feature continues. If the profile is open you can keep editing or abort and keep the sketch. {idx:sketch, start}
 
+A sketch on a flat face of the model follows the face: when the model changes so that the face moves (a taller block, a deeper cut), the sketch moves with it along the face's normal and the features made from it follow. Its curves keep their place on the plane: the sketch moves only along the normal, not across. The face is found again by its direction and where it was in the part, as fillet edges are. If it is no longer there, the sketch stays where it was and its tree item says so; right-click it ▸ **Change Sketch Plane…** to put it on a face again. Sketches put on faces before version 0.20.1 keep the plane only and stay where they are, until you pick the face again with Change Sketch Plane. {idx:sketch, on a face}
+
 - [[Esc]] ends the active sketch tool first; pressing it again closes the sketch and keeps it.
 - [[Enter]] does **not** leave the sketch.
 - The ✔ in the confirm corner, or **Exit Sketch**, closes the sketch.
@@ -2189,7 +2191,7 @@ Editing a feature meshes again only the faces and edges it changed, and a part r
 |---|---|
 | A fillet or projected edge loses its edge after a big change | Edges are found again by their geometry and the faces beside them (see References that follow edits). If one is still lost, **Tools ▸ Fix References** lists it: Edit to re-pick it, or Remove missing. |
 | A mate moved to the wrong face, or shows a red ! | Mates find their faces again by geometry. A face that is gone is listed in **Tools ▸ Fix Mates**: edit the mate to pick it again. |
-| A sketch on a model face doesn't follow the face | Sketches on faces are stored as fixed planes. Use a reference plane driven by an equation when that matters. |
+| A sketch on a model face doesn't follow the face | Sketches put on faces before version 0.20.1 keep only the plane: right-click the sketch ▸ Change Sketch Plane… and click the face again. If the note says the face is no longer in the model, pick the face it should be on. |
 | Project Edges can't see a sketch | It only sees visible sketches earlier in the history. Show the sketch first. |
 | An STL body can't be filleted | STL bodies with thousands of faces can't be filleted or chamfered and don't offer pickable edges. |
 | A fillet won't blend across two touching bodies | Combine the bodies first. |

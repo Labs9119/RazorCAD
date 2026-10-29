@@ -848,10 +848,11 @@ function labQuickBox(e) {
   return (e.quick = b);
 }
 
-function findFace(body, ref) {
+// (facing: only faces facing the same way as the reference, not the other way too)
+function findFace(body, ref, facing = false) {
   if (!body) return null;
   const b = bbox(body);
-  const cands = faceInfos(body).filter((c) => Math.abs(dot(c.n, ref.n)) > 0.999);
+  const cands = faceInfos(body).filter((c) => (facing ? dot(c.n, ref.n) : Math.abs(dot(c.n, ref.n))) > 0.999);
   const search = (p) => nearestTwo(cands, p, (c) => c.face);
   const tol = Math.max(0.05, b.diag * 0.15);
   const ok = (r) => r.best && r.bd < tol && (r.bd < 1e-3 || r.second > r.bd * 1.6);
@@ -2580,6 +2581,26 @@ async function rebuild(doc, previewId = null, opts = {}) {
     if (!fr) throw new Error('The reference plane is missing or failed');
     return fr;
   };
+  // A sketch on a model face (plane.face: a point on the face picked and its normal): the face found again in the
+  // bodies as they are now and the sketch's plane moved onto it, square to the face (its axes kept as near as they
+  // were), and written back to the document so it is found from there next time. A face that is not there: the
+  // plane as it was, with a note. (Sketches from before faces were kept have only the plane: it stays put.)
+  const faceSketchFrame = (f) => {
+    const pl = f.plane, ref = pl?.ref === 'face' ? pl.face : null, fr = pl?.frame;
+    if (!ref || !fr) return null;
+    // (the first time it is found the bodies' box is kept with it, to find it by when the model changes size)
+    const first = !ref.box, hit = body && !dense ? findFace(body, ref, true) : null;
+    if (!hit) { res.notes[f.id] = 'The face this sketch is on is no longer in the model: the sketch stays where it was (Change Sketch Plane to put it on a face again)'; return fr; }
+    const n = dot(hit.n, fr.n) < 0 ? mul(hit.n, -1) : unit(hit.n);
+    const o = add(fr.o, mul(n, dot(sub(hit.p, fr.o), n)));
+    if (len(sub(o, fr.o)) < 1e-9 && dot(n, fr.n) > 1 - 1e-12) {
+      if (first) res.features[f.id] = { ...(res.features[f.id] || {}), plane: { ...pl, face: ref } };
+      return fr;
+    }
+    const u = unit(sub(fr.u, mul(n, dot(fr.u, n)))), frame = { o, u, v: cross(n, u), n };
+    res.features[f.id] = { ...(res.features[f.id] || {}), plane: { ...pl, frame, face: ref } };
+    return frame;
+  };
   // Add or cut a tool. Added material fuses with the bodies it touches (merge) or becomes
   // new bodies; a cut acts on every body it reaches and may split one into several.
   // scope: for a cut, the ids of the only bodies it may cut (null: every body it reaches)
@@ -3805,7 +3826,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // (opts.batchCuts false: every cut made as its feature comes, as before; for comparisons in the tests)
   const canDefer = (f) => {
     if (opts.batchCuts === false || f.id === previewId || dense || !solids.length || solids.some((x) => x.sheet)) return false;
-    if (f.type === 'sketch') return !(f.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
+    if (f.type === 'sketch') return !f.plane?.face && !(f.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((f.type === 'extrude' || f.type === 'revolve') && f.op === 'cut') {
       if (f.scopeAll === false) return false;
       if (f.type === 'extrude' && !endsDefer(f)) return false;
@@ -3824,7 +3845,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   let labNext = null; // the next feature to be built after the one running
   const labSheetCanWait = (g) => {
     if (!g || g.id === previewId) return false;
-    if (g.type === 'sketch') return !(g.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
+    if (g.type === 'sketch') return !g.plane?.face && !(g.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((g.type === 'extrude' || g.type === 'revolve') && g.op === 'cut') {
       if (g.scopeAll === false) return false;
       if (g.type === 'extrude' && !endsDefer(g)) return false;
@@ -4183,7 +4204,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       };
       switch (f.type) {
         case 'sketch': {
-          const frame = orientFrame(resolveFrame(f.plane.ref, f.plane), f.plane.rot);
+          const frame = orientFrame(faceSketchFrame(f) || resolveFrame(f.plane.ref, f.plane), f.plane.rot);
           // (with cuts waiting: the body it was drawn on is worked out only if asked for, by sectionCurves)
           sketchBodies.set(f.id, pending.length ? { body: null, lazy: { base: body, tools: pending.map((x) => x.tool) }, frame, surfaces: surfaces.map((x) => x.shape) } : { body, frame, surfaces: surfaces.map((x) => x.shape) });
           if (f.entities) S.migrateSketch(f, vars);

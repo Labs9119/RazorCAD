@@ -2998,11 +2998,13 @@ export class UI {
       const err = rolled ? null : res?.errors.get(f.id);
       // (-) marks an under-defined sketch
       const dof = f.type === 'sketch' && !err && !rolled ? this.sketchFreedom(f) : 0;
+      // (⚠ a sketch's note, e.g. the face it is on no longer in the model: a sketch has no Property panel to show it)
+      const note = f.type === 'sketch' && !err && !rolled ? res?.notes?.get(f.id) : null;
       const shown = a.featureVisible(f);
       const hidden = shown === false;
       const n = node({
-        icon: iconFor(f), label: (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
-        title: rolled ? 'Rolled back (below the rollback bar)' : err || (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
+        icon: iconFor(f), label: (note ? '⚠ ' : '') + (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
+        title: rolled ? 'Rolled back (below the rollback bar)' : err || (note ? note + '\n' : '') + (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
         cls: (hidden ? 'hidden-item' : '') + (rolled ? ' rolled' : ''),
         vis: { on: shown, toggle: () => a.toggleFeatureVisible(f.id) },
         suppressed: a.isSuppressed(f),

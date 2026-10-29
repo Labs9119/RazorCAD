@@ -302,8 +302,9 @@ tools/make_icon.py       generates assets/razorcad.ico
 ## Limitations and next steps
 - **Edge references are re-found by geometry, not by true topological naming.** Large or ambiguous changes
   can lose a fillet edge or projected edge; the feature then shows an error so you can re-pick.
-- **Sketches on model faces are stored as fixed planes.** They don't follow the face if the model changes;
-  use a reference plane driven by an equation when that matters.
+- **Sketches on model faces follow the face along its normal** (when the part gets taller, the sketch goes up with
+  it), not across it, and a face is found again by geometry like edges are. Sketches on faces from before
+  version 0.20.1 stay where they are until they are put on the face again (Change Sketch Plane).
 - **Snapping and dimensions to other sketches only see visible sketches** (not ones absorbed into features);
   Project Edges and Intersection Curve see those too. All of them see only sketches earlier in the history.
 - **STL bodies with more than about 2,500 faces can't be filleted or chamfered**, and they don't offer pickable

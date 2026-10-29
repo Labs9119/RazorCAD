@@ -831,6 +831,31 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab X1C (flagged: from listings), a bed size typed clears the printer`};
   },
 
+  // Sketches on model faces follow the face (tests/face-sketch-cases.js); in the app a sketch started on a face clicked
+  // keeps the face (the point clicked and its normal), and the block made taller takes the sketch and its boss up
+  async 'face-sketch-follows'() {
+    const {run,fixture}=await import('/tests/face-sketch-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
+    const a=window.app,S=await import('/js/sketchmodel.js'),d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}});
+    const p=[[-20,-10],[20,-10],[20,10],[-20,10]].map(q=>S.addPoint(sk,...q));p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));
+    const block=M.createFeature(d,'extrude',{sketch:sk.id,depth:10});d.features.push(sk,block);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);
+    const vp=a.viewport,i=vp.faceIndexNear([5,10,2]),bad=[];
+    if(i<0)return {ok:false,detail:'the top face is not in the view'};
+    a.select({kind:'face',face:vp.faceInfo(i),point:[5,10,2]});a.startSketch();
+    await until(()=>a.mode==='sketch');
+    const on=a.doc.features.find(f=>f.type==='sketch'&&f!==a.doc.features[0]);
+    if(on?.plane?.ref!=='face'||on.plane.face?.p?.join()!=='5,10,2'||on.plane.face.n.map(Math.round).join()!=='0,1,0')bad.push(`the plane: ${JSON.stringify(on?.plane)}`);
+    S.addCircle(on,S.addPoint(on,0,0),3);a.exitSketch(true);await until(()=>a.mode!=='sketch'&&!a.kernel.pending);
+    const boss=M.createFeature(a.doc,'extrude',{sketch:on.id,depth:5});a.doc.features.push(boss);
+    M.findFeature(a.doc,block.id).depth=20;a.commit();await a.rebuild();await until(()=>!a.kernel.pending);
+    const y=a.result.sketches.get(on.id)?.frame?.o?.y;
+    if(Math.abs(y-20)>1e-6)bad.push(`the sketch at y ${y}`);
+    if(Math.abs(on.plane.frame.o[1]-20)>1e-6)bad.push(`its plane in the part at y ${on.plane.frame.o[1]}`);
+    if(a.result.errors.size)bad.push(`errors: ${JSON.stringify([...a.result.errors])}`);
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases; a sketch started on the top face clicked keeps it, and goes up with it to y 20`};
+  },
+
   // Features that take a 3D sketch where they took a sketch (tests/sketch3d-input-cases.js): Hole, Boss, Snap Hook and
   // the 3D-printing fasteners square to the face under each point, Sketch Pattern, Helix, Reference Axis and Point,
   // Loft, Lofted Bend, Sprue and Runners; and the panels list 3D sketches for them

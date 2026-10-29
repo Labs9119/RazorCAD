@@ -3570,6 +3570,11 @@ class App {
     const o = face.normal.clone().multiplyScalar(face.d);
     return G.frameFromNormal(o, face.normal);
   }
+  // A sketch plane on a flat model face: the face's plane and the face itself (the point picked on it and its normal),
+  // so the sketch follows the face when the model changes
+  faceSketchPlane(face, p) {
+    return { ref: 'face', frame: G.frameToJSON(this.faceFrame(face)), face: { p: p ? [...p] : face.center.toArray(), n: face.normal.toArray() } };
+  }
 
   // ------------------------------------------------------------ viewport input
   wireViewport() {
@@ -3797,8 +3802,7 @@ class App {
     const face = this.viewport.faceInfo(p.hit.face);
     if (this.pm?.kind === 'selectPlane') {
       if (!face.planar) { this.toast('Select a flat face (or a plane) to sketch on'); return; }
-      const frame = this.faceFrame(face);
-      return this.createSketchOn({ ref: 'face', frame: G.frameToJSON(frame) });
+      return this.createSketchOn(this.faceSketchPlane(face, p.hit.point.toArray()));
     }
     if (this.pm) return;
     this.select({ kind: 'face', face, point: p.hit.point.toArray() });
@@ -4043,7 +4047,7 @@ class App {
         const fp = p.hit.point.toArray(), bid = this.result.bodies?.[bi]?.id;
         items.push({ label: 'Appearance…', icon: 'appearance', action: () => this.ui.showAppearance({ kind: 'face', p: fp, body: bid }) });
         if (face.planar) {
-          items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn({ ref: 'face', frame: G.frameToJSON(this.faceFrame(face)) }) });
+          items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn(this.faceSketchPlane(face, fp)) });
           items.push({ label: 'Normal To', icon: 'normalTo', action: () => this.viewport.normalTo(this.faceFrame(face)) });
           items.push({ label: 'Export Face as DXF…', icon: 'dxf', action: () => this.exportFaceDXF() });
         }
@@ -4086,7 +4090,7 @@ class App {
     if (this.pm) this.cancelPM();
     const s = this.selection;
     if (s?.kind === 'plane') return this.createSketchOn({ ref: s.id });
-    if (s?.kind === 'face' && s.face.planar) return this.createSketchOn({ ref: 'face', frame: G.frameToJSON(this.faceFrame(s.face)) });
+    if (s?.kind === 'face' && s.face.planar) return this.createSketchOn(this.faceSketchPlane(s.face, s.point));
     if (s?.kind === 'feature') {
       const f = M.findFeature(this.doc, s.id);
       if (f?.type === 'plane') return this.createSketchOn({ ref: f.id });

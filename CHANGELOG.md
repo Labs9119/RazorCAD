@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 21:41 — Sketches on model faces follow the face
+
+- A sketch put on a flat face keeps the face (the point clicked on it and its normal). When the model changes so
+  that the face moves, the sketch moves onto it along its normal, and what is built from it follows. The face is
+  found again as fillet edges are (by direction and by where it was in the part, with the part's box to scale by).
+  A face that is gone leaves the sketch where it was, with a note. Sketches on faces from before keep only their
+  plane: Change Sketch Plane puts them on the face again.
+- README and manual: the limit on sketches on faces changed to say so.
+- Tests: face-sketch-follows (tests/face-sketch-cases.js).
+
 ## 2026-10-29 21:35 — 3D Print: printer bed sizes from the makers' own pages
 
 - The Print Profile dialog's printers: every size but the Bambu Lab X1C's is now confirmed on the maker's own page
