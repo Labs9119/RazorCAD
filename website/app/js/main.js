@@ -181,6 +181,7 @@ class App {
     this.selection = null;
     this.dirty = false;
     this.viewport.setSection(null);
+    this.clearCheckMarks();
     for (const f of doc.features) if (f.type === 'sketch' && !f.rev) f.rev = M.newRev();
     this.history = new M.History(); // each part (tab) has its own undo history
     this.history.reset(doc);
@@ -901,6 +902,8 @@ class App {
     this.status('The face is down on the bed: the checks and Export for Printing use this orientation');
   }
   // the bed drawn under the part (a grid, every 10 mm, and the printer's build volume), or taken away
+  // Check Printability's and DFM Check's numbered marks: they belong to the part they were found on
+  clearCheckMarks() { for (const k of ['print', 'dfm']) this.viewport.setPointMarks(k, null); }
   togglePrintBed() { this.printBedOn = !this.printBedOn; this.drawPrintBed(); this.ui.renderCommandManager(); }
   drawPrintBed() {
     if (!this.printBedOn || this.mode !== 'part' || !this.result?.body?.bodies?.length) { this.viewport.setPrintBed(null); return; }
@@ -1872,6 +1875,7 @@ class App {
     this.showBanner(null);
     this.clearCycle();
     this.viewport.setSection(null);
+    this.clearCheckMarks();
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.updateTitle();

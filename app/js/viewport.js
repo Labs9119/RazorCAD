@@ -490,7 +490,6 @@ export class Viewport {
     return best;
   }
 
-  // Small marks at points, following the view: key names the set (replaced as a whole); list: [{ p, text, cls }].
   // The printer's bed (3D Print tab): line segments in model axes ([[p, q], …]), or null to take it away
   setPrintBed(lines) {
     if (this.printBed) { this.scene.remove(this.printBed); this.printBed.geometry.dispose(); this.printBed.material.dispose(); this.printBed = null; }
@@ -503,6 +502,7 @@ export class Viewport {
     this.requestRender?.();
   }
 
+  // Small marks at points, following the view: key names the set (replaced as a whole); list: [{ p, text, cls }].
   setPointMarks(key, list) {
     this._marks ||= new Map();
     const old = this._marks.get(key);

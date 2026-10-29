@@ -883,13 +883,17 @@ const UI = {
     a.overhangMap(); if (a.analysis?.kind !== 'overhang') bad.push('Overhang Map'); a.overhangMap();
     a.togglePrintBed(); if (!a.viewport.printBed || a.viewport.printBed.geometry.getAttribute('position').count < 50) bad.push('bed not drawn'); a.togglePrintBed();
     if (!document.querySelector('[data-tab="print"]') && !a.ui.toolbarTabs().some((t) => t.id === 'print')) bad.push('no 3D Print tab');
+    // (the findings' numbered marks on the model, gone when another part comes to the front)
+    const marks = () => a.viewport._marks?.get('print')?.els.length || 0;
+    if (!marks()) bad.push('no marks on the findings');
     // a closed void: a 20 mm cube hollowed 2 thick
     const h = M.newDoc(), hs = M.createFeature(h, 'sketch', { plane: { ref: 'front' } }); rect(hs, -10, -10, 10, 10);
     h.features.push(hs, M.createFeature(h, 'extrude', { sketch: hs.id, depth: 20 }), M.createFeature(h, 'shell', { faces: [], thickness: 2 }));
     await a.setDoc(h); await a.rebuild();
+    if (marks()) bad.push('the marks stayed on another part');
     const cav = await a.kernel.request('printCavities', {});
     if (cav.length !== 1 || !close(cav[0].volume, 4096, 1e-6)) bad.push(`cavities ${JSON.stringify(cav)}`);
-    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `2 bridges of 12 mm found, support ${st.support} cm³, ${+st.volume.toFixed(2)} cm³ = ${+st.mass.toFixed(2)} g, ${+st.filament.toFixed(2)} m of filament; exported on the bed (z 0 to 12, centred); the overhang map and the bed; a hollow cube's void 4096 mm³` };
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `2 bridges of 12 mm found, support ${st.support} cm³, ${+st.volume.toFixed(2)} cm³ = ${+st.mass.toFixed(2)} g, ${+st.filament.toFixed(2)} m of filament; exported on the bed (z 0 to 12, centred); the overhang map and the bed; the marks cleared on another part; a hollow cube's void 4096 mm³` };
   },
 
   async 'loft-more-connectors-panel'() {

@@ -8,6 +8,7 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ## 2026-10-29 14:09 — Version 0.20.0-beta
 - Installer, user manual (113 pages) and website for 0.20.0-beta.
+- Fixed: Check Printability's and DFM Check's numbered marks stayed on the screen when another part came to the front.
 
 ## 2026-10-29 08:46 — The 3D Print tab, and limits lifted (spline intersections, curved reference points, outward shells, G2 rings, loft connectors, freeform on any face, dished ends)
 
