@@ -3054,6 +3054,41 @@ const UI = {
     return { ok: true, detail: `3 copies 40, 80, 120 mm along X, in the tree; deleted with the pattern` };
   },
 
+  // Assembly tree and Edit Part: a part expands to its features; Edit Part is first on its menu; a part can take its
+  // shape from another (cross reference) but not from one that takes its shape from it, nor from another instance of
+  // itself (a circular reference): refused with a warning, nothing added
+  async 'assembly-edit-part-circular'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), bad = [];
+    const box = (name, w) => { const d = M.newDoc(); d.name = name; const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); const P = [[-w / 2, -w / 2], [w / 2, -w / 2], [w / 2, w / 2], [-w / 2, w / 2]].map((q) => S.addPoint(sk, ...q)); P.forEach((id, i) => S.addLine(sk, id, P[(i + 1) % 4])); d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: w })); return d; };
+    a.newAssembly(); await wait(300); closeModals();
+    const asm = a.drawing, asmTab = a.tabs[a.tabIndex], pa = asm.addPart(box('Lid', 20), null, null), pb = asm.addPart(box('Base', 10), null, null);
+    await asm.addComponent(pa); await asm.addComponent(pb); await asm.addComponent(pb);
+    const [ca, cb, cb2] = asm.doc.components, PA = asm.part(ca.part), PB = asm.part(cb.part);
+    asm.doc.uid ||= 'asm-test';
+    // (the lid already takes its shape from the base: a context feature of it, as Edit in Context makes)
+    const ctx = M.createFeature(PA.doc, 'import', { format: 'step', fileName: 'Base.step', data: '', context: { comp: cb.id, host: ca.id, asm: asm.doc.uid } });
+    ctx.name = 'Context: Base'; PA.doc.features.push(ctx);
+    if (asm.circularVia(PA.id, cb)) bad.push('the lid refused the base, which does not depend on it');
+    if (!asm.circularVia(PB.id, ca)) bad.push('the base was let take the lid, which depends on it');
+    if (!asm.circularVia(PB.id, cb2)) bad.push('the base was let take another instance of itself');
+    // the tree: the lid expands to its features
+    asm._openSubs = new Set([ca.id]); asm.renderTree(); await wait(30);
+    const labels = [...document.querySelectorAll('#tree .tl')].map((n) => n.textContent);
+    if (!['Sketch1', 'Extrude1', 'Context: Base'].every((x) => labels.includes(x)) && !(labels.includes('Extrude1') && labels.includes('Context: Base'))) bad.push(`the lid's features not under it: ${labels.join(', ')}`);
+    if (asm.compMenu(ca)[0]?.label !== 'Edit Part') bad.push(`its menu starts ${asm.compMenu(ca)[0]?.label}`);
+    if (asm.compMenu(asm.doc.components[1]).every((x) => x?.label !== 'Edit Part')) bad.push('no Edit Part for the base');
+    // the base in context of the lid: refused, with a warning; no context feature added to the base
+    const n0 = PB.doc.features.length;
+    await asm.editInContext(cb.id, [ca.id, cb2.id]); await wait(150);
+    const warn = document.querySelector('[data-circular-refused]');
+    if (!warn || !/circular reference/.test(warn.textContent) || !/Lid already takes its shape from Base/.test(warn.textContent)) bad.push(`warning: ${warn?.textContent || 'none'}`);
+    closeModals();
+    const baseDoc = a.doc?.name === 'Base' ? a.doc : PB.doc;
+    if (baseDoc.features.some((f) => f.type === 'import' && f.context) || PB.doc.features.length !== n0) bad.push('a context feature was added to the base');
+    if (a.tabs.includes(asmTab)) await a.activateTab(a.tabs.indexOf(asmTab));
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'the lid (taking the base) expands to its features; Edit Part first on the menu; the base refused the lid and another instance of itself, with a warning, nothing added' };
+  },
+
   // Fasten All Holes: two plates stacked, four lined-up Ø9 holes: four M8 bolts, each with two washers and a nut, as
   // long as the stack; done again, nothing more
   async 'assembly-edit-in-context'() {

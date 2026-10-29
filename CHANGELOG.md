@@ -6,6 +6,15 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 23:07 — Assemblies: Edit Part, parts' features in the tree, no circular references
+
+- **Edit Part** (right-click a part in the tree or the view): the part opened with every other part shown in the
+  assembly as context bodies, its feature tree the one features go into; a banner with **Back to the Assembly**.
+- Parts (and parts in sub-assemblies) expand in the assembly tree to show their features.
+- A part can't take its shape from a part that depends on it (directly or through others) or from another instance
+  of itself: Edit Part and Edit in Context leave those out, with a warning that says which and why.
+- Tests: assembly-edit-part-circular.
+
 ## 2026-10-29 23:03 — Structural Member: segments picked in groups
 
 - **Groups**: pick the lines and arcs for the members yourself, from sketches and 3D sketches, clicked in the view,
