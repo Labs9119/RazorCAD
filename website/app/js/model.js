@@ -200,7 +200,7 @@ export const SKETCH_FEATURES = new Set(['extrude', 'revolve', 'surfExtrude', 'su
 
 // Sketches a feature uses (they are hidden and shown under it in the tree once used).
 export function sketchesUsedBy(f) {
-  return [...new Set([f.sketch, f.profile, f.path, f.guide, f.profileA, f.profileB, ...(Array.isArray(f.profiles) ? f.profiles : []), ...(f.guides || [])].map((x) => typeof x === 'string' ? x : x?.sketch).filter(Boolean))];
+  return [...new Set([f.sketch, f.profile, f.path, f.guide, f.profileA, f.profileB, ...(Array.isArray(f.profiles) ? f.profiles : []), ...(f.guides || []), ...(f.type === 'structMember' && Array.isArray(f.groups) ? f.groups.flatMap((g) => (g.segs || []).map((k) => k.s)) : [])].map((x) => typeof x === 'string' ? x : x?.sketch).filter(Boolean))];
 }
 
 export function iconFor(f) {
@@ -339,7 +339,8 @@ export function createFeature(doc, type, props = {}) {
     endCap: { faces: [], capType: 'outside', thickness: 3 },
     // a triangular plate between two flat faces: legs d1 / d2, thickness, corner chamfer, position along the corner
     weldGusset: { faces: [], d1: 75, d2: 75, thickness: 6, chamfer: 10, position: 'mid', offset: 0 },
-    structMember: { path: null, paths: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar' },
+    // groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }] (none: every line of the paths)
+    structMember: { path: null, paths: [], groups: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar' },
     // faces: picked faces of any bodies (solid or surface), copied as they are; knit: touching copies become one surface body
     surfCopy: { faces: [], knit: true },
     knit: { bodies: [], solid: true, tolerance: 0.01, merge: true },
@@ -389,16 +390,22 @@ export function createFeature(doc, type, props = {}) {
     // sheet metal (see sheetmetal.js). kFactor: where the neutral axis lies in the thickness
     smBase: { sketch: null, thickness: 2, radius: 2, kFactor: 0.44, reverse: false },
     // method: 'bent' (flat facets, `bends` of them across, each fold a bend line) | 'formed' (smooth)
-    smLoft: { profileA: null, profileB: null, thickness: 2, kFactor: 0.44, radius: 0, method: 'bent', bends: 12, flip: false },
+    // (flanges at the profiles, as a Transition's; holes at most flPitch apart round the flange)
+    smLoft: { profileA: null, profileB: null, thickness: 2, kFactor: 0.44, radius: 0, method: 'bent', bends: 12, flip: false, flangeA: false, flangeB: false, flW: 40, flT: 6, flHoleD: 10, flPitch: 100 },
     // transition / reducer on the axis line of `sketch` (bottom centre to top centre). Ends b (bottom) and
     // t (top): Shape 'round' | 'square' | 'rect' | 'tri' | 'pent' | 'hex'; D (round), Size + Basis
     // ('side' | 'flats' | 'corners'), W × L (rect). dims: 'inside' | 'outside' | 'mean'
     smTransition: {
-      sketch: null, reverse: false,
+      // line: the axis line picked in the sketch or 3D sketch (null: its one line)
+      sketch: null, line: null, reverse: false,
       bShape: 'square', bD: 300, bSize: 300, bW: 400, bL: 300, bBasis: 'side',
       tShape: 'round', tD: 200, tSize: 150, tW: 200, tL: 150, tBasis: 'side',
       offX: 0, offY: 0, rotation: 0, parts: 2, seamAt: 'mid', seamShift: false, seamAngle: 0, seamGap: 0,
       method: 'formed', divs: 6, divsRound: 24, radius: 0, thickness: 2, kFactor: 0.44, dims: 'inside',
+      // flanges at the ends (flat rings, bodies of their own): width out from the opening, thickness, bolt hole
+      // diameter (0: none), holes on a round flange and their circle (0: the middle of the flange), the most a
+      // flat-sided flange's holes are apart
+      flangeBot: false, flangeTop: false, flW: 40, flT: 6, flHoleD: 10, flHoles: 8, flPCD: 0, flPitch: 100,
     },
     // extruded from an open profile (or a circle, rolled): direction 'one' | 'reverse' | 'mid'; side 'one' |
     // 'other' | 'mid' (material left of the profile's direction, right, or half each side); radius: inside

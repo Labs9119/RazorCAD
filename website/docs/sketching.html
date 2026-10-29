@@ -58,6 +58,7 @@
         <h1>Sketching</h1>
 <h2 id="starting-and-ending-a-sketch">Starting and ending a sketch</h2>
 <p>Click a plane or a flat face, then click <strong>Sketch</strong> (Sketch tab), or right-click a face ▸ <strong>Sketch</strong>. Clicking a sketch tool such as <strong>Circle</strong> with no sketch open also starts a 2D sketch: pick a plane or flat face and the tool is ready. (For sketches in space, see the 3D Sketches chapter.) You can also start a feature such as Extrude without a sketch: RazorCAD asks you to pick a plane or face, you sketch, and when you exit the sketch the feature continues. If the profile is open you can keep editing or abort and keep the sketch.</p>
+<p>A sketch on a flat face of the model follows the face: when the model changes so that the face moves (a taller block, a deeper cut), the sketch moves with it along the face's normal and the features made from it follow. Its curves keep their place on the plane: the sketch moves only along the normal, not across. The face is found again by its direction and where it was in the part, as fillet edges are. If it is no longer there, the sketch stays where it was and its tree item says so; right-click it ▸ <strong>Change Sketch Plane…</strong> to put it on a face again. Sketches put on faces before version 0.20.1 keep the plane only and stay where they are, until you pick the face again with Change Sketch Plane.</p>
 <ul><li><kbd>Esc</kbd> ends the active sketch tool first; pressing it again closes the sketch and keeps it.</li><li><kbd>Enter</kbd> does <strong>not</strong> leave the sketch.</li><li>The ✔ in the confirm corner, or <strong>Exit Sketch</strong>, closes the sketch.</li><li><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd> undo and redo inside the sketch.</li></ul>
 <h2 id="the-sketch-tool-wheel">The sketch tool wheel</h2>
 <p>While sketching, press and hold the right mouse button. After a moment, or as soon as you start to drag, a wheel of sketch tools appears around the pointer. Keep the button held, move toward a tool (it highlights) and release to activate it. Releasing in the centre or pressing <kbd>Esc</kbd> cancels. A quick right click (press and release without moving) still opens the right-click menu.</p>
@@ -128,7 +129,7 @@
   <footer class="titleblock" aria-label="About this page">
     <div class="tb-cell tb-logo"><img src="/favicon.svg" alt="" width="44" height="44"></div>
     <div class="tb-cell tb-title"><span class="tb-label">Title</span><span class="tb-value tb-big">RazorCAD user manual</span></div>
-    <div class="tb-cell"><span class="tb-label">Rev</span><span class="tb-value">0.20.0-beta</span></div>
+    <div class="tb-cell"><span class="tb-label">Rev</span><span class="tb-value">0.21.0-beta</span></div>
     <div class="tb-cell"><span class="tb-label">Licence</span><span class="tb-value"><a href="https://github.com/Labs9119/RazorCAD/blob/main/LICENSE">GPL-3.0</a></span></div>
     <div class="tb-cell"><span class="tb-label">Source</span><span class="tb-value"><a href="https://github.com/Labs9119/RazorCAD">Labs9119/RazorCAD</a></span></div>
     <div class="tb-cell"><span class="tb-label">Kernel</span><span class="tb-value">OpenCascade</span></div>

@@ -903,3 +903,15 @@ button:focus-visible, [role="button"]:focus-visible, .pm-gt:focus-visible, selec
 .expr-complete [role="option"] { display: flex; justify-content: space-between; gap: 20px; padding: 6px 8px; cursor: pointer; overflow-wrap: anywhere; }
 .expr-complete [aria-selected="true"], .expr-complete [role="option"]:hover { background: var(--accent-weak); }
 .expr-complete-value { color: var(--muted); white-space: nowrap; }
+
+/* dimension IDs (click to rename); a value using a deleted dimension */
+label.has-dim-id::before { content: attr(data-dim-id); display: inline-block; font-size: 10px; line-height: 14px; padding: 0 4px; margin-right: 5px; border-radius: 3px; background: #e0e7ff; color: #3730a3; cursor: pointer; vertical-align: 1px; }
+[data-theme="dark"] label.has-dim-id::before { background: #312e81; color: #c7d2fe; }
+.dim-id { display: inline-block; font-size: 10px; line-height: 14px; padding: 0 4px; margin-right: 5px; border-radius: 3px; background: #e0e7ff; color: #3730a3; cursor: pointer; vertical-align: 1px; }
+.dim-id:hover { background: #c7d2fe; }
+[data-theme="dark"] .dim-id { background: #312e81; color: #c7d2fe; }
+.pm-row.dim-lost input { border-color: #dc2626 !important; color: #dc2626; }
+.pm-row.dim-lost > label { color: #dc2626; }
+.s3-dim.lost { border-color: #dc2626; color: #dc2626; }
+.modify .mid { font-size: 11px; padding: 0 5px; border-radius: 3px; background: #e0e7ff; color: #3730a3; cursor: pointer; margin-left: 6px; }
+.dim.lost { color: #dc2626 !important; border-color: #dc2626 !important; }

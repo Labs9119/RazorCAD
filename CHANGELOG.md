@@ -6,6 +6,10 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-30 06:53 — Version 0.21.0-beta
+
+- Installer, user manual (118 pages) and website for 0.21.0-beta.
+
 ## 2026-10-29 23:52 — Dimension IDs
 
 - Every dimension has an ID (D1, D2…, from a counter that never goes back): sketch and 3D sketch dimensions,

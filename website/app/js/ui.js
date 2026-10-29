@@ -13,6 +13,7 @@ import { completeExpression } from './exprcomplete.js';
 import { S3_TOOLS, S3_KEYS } from './sketch3d.js';
 import { RELATION_INFO, analyzeSketch } from './solver.js';
 import * as SM from './sketchmodel.js';
+import * as DIM from './dimids.js';
 import * as LR from './loftrefs.js';
 import { axisCandidates, PATTERN_SKIP, fileStem, folderOfFeature, newFeatureFolder, putFeatureInFolder } from './model.js';
 import { BUILTIN_TEMPLATES, DEFAULT_TEMPLATE_ID, templateSummary, isTemplate } from './drawtemplates.js';
@@ -370,6 +371,16 @@ function convertFound(f, a) {
 const smCircle = (f, a) => { const sk = a?.doc?.features.find((x) => x.id === f.sketch); const cs = (sk?.curves || []).filter((c) => !c.construction); return cs.length === 1 && cs[0].type === 'circle'; };
 // Transition ends (k: 'b' bottom, 't' top)
 const trRound = (f) => f.bShape === 'round' && f.tShape === 'round';
+// (a Transition's axis line choices: the lines of its sketch or 3D sketch, with "the only line" when it has one)
+const trLines = (f, a) => {
+  const sk = f.sketch ? (a.result?.sketches.get(f.sketch)?.sketch || findFeature(a.doc, f.sketch)) : null;
+  if (!sk) return [];
+  const lines = sk.type === 'sketch3d' ? (sk.segs || []).filter((g) => !g.type || g.type === 'line').map((g) => [g.id, `${sketch3dItemName(sk, g.id)} ${g.id}${g.construction ? ' (construction)' : ''}`])
+    : (sk.curves || []).filter((c) => c.type === 'line').map((c) => [c.id, `${SM.itemName(sk, c.id)}${c.construction ? ' (construction)' : ''}`]);
+  return [['', lines.length === 1 ? 'Its line' : 'Click one in the view…'], ...lines];
+};
+// (the ends with a flange: any of them round, any of them flat-sided)
+const trFlanged = (f) => [f.flangeBot && f.bShape, f.flangeTop && f.tShape].filter(Boolean);
 const TR_SHAPES = [['round', 'Round'], ['square', 'Square'], ['rect', 'Rectangle'], ['tri', 'Triangle'], ['pent', 'Pentagon'], ['hex', 'Hexagon']];
 const TR_BASIS = { side: 'Side length', flats: 'Across flats (inscribed Ø)', corners: 'Across corners (circumscribed Ø)' };
 const trEnd = (k, title) => ({ title, fields: [
@@ -404,6 +415,15 @@ const PM_SCHEMAS = {
       { key: 'bends', type: 'expr', label: (f) => (f.method === 'formed' ? 'Forming lines along the profiles' : 'Divisions along the profiles'), unit: '', hint: (f) => (f.method === 'formed' ? 'The curved stretches get this many forming lines in the flat pattern and DXF (corners of the profiles are lines of their own).' : 'Each division is two flat facets (corners of the profiles add more): more divisions, smaller folds.') },
       { key: 'radius', type: 'expr', label: 'Bend radius (for the line notes)', unit: 'mm' },
       { key: 'mHint', type: 'hint', text: (f) => (f.method === 'formed' ? 'The smooth surface between the profiles is thickened; the flat pattern is developed from it (triangulation at the neutral layer).' : 'The sheet is made of flat facets folded along straight lines: each fold is a bend line (with its angle, up or down) in the flat pattern and DXF.') },
+    ] },
+    { title: 'Flanges', fields: [
+      { key: 'flangeA', type: 'check', label: 'Flange at the first profile' },
+      { key: 'flangeB', type: 'check', label: 'Flange at the second profile' },
+      { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flPitch', type: 'expr', label: 'Holes at most this far apart', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flHint', type: 'hint', text: 'Each flange is a flat ring of its own (a flat sheet metal plate: cut it from plate), out past the profile\'s plane, away from the other profile, by its thickness. It goes round the profile with its gap closed straight across, so it suits a part made in one piece; the profile must lie flat. Its opening is the inside of the part there. Holes go at each corner of a line round the middle of the flange and evenly between, at most the set distance apart.', show: (f) => f.flangeA || f.flangeB },
     ] },
     {
       title: 'Sheet Metal Parameters', fields: [
@@ -546,7 +566,8 @@ const PM_SCHEMAS = {
   ],
   smTransition: [
     { title: 'Axis', fields: [
-      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (one line)', with3d: true },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch with the axis line', with3d: true },
+      { key: 'line', type: 'select', label: 'Axis line', options: (f, a) => trLines(f, a), show: (f, a) => trLines(f, a).length > 2 || !!f.line },
       { key: 'reverse', type: 'check', label: 'Swap the bottom and top ends' },
       { key: 'aHint', type: 'hint', text: 'The line runs from the bottom centre to the top centre: its length is the height and it places the part. Change the line (or its dimension) to change the height.' },
     ] },
@@ -565,6 +586,17 @@ const PM_SCHEMAS = {
       { key: 'seamAngle', type: 'expr', label: 'First seam at (from X)', unit: '°', show: (f) => trRound(f) },
       { key: 'seamGap', type: 'expr', label: 'Gap at each seam', unit: 'mm', show: (f) => trRound(f) },
       { key: 'sHint', type: 'hint', text: (f) => (trRound(f) ? 'A cone can be rolled from one part, or from two or more equal parts welded together.' : 'With a flat-sided end the transition is made from two or more equal parts welded together; the number of parts must divide its number of sides (a square: 2 or 4).') },
+    ] },
+    { title: 'Flanges', fields: [
+      { key: 'flangeBot', type: 'check', label: 'Flange at the bottom end' },
+      { key: 'flangeTop', type: 'check', label: 'Flange at the top end' },
+      { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flHoles', type: 'expr', label: 'Bolt holes on a round flange', unit: '', show: (f) => trFlanged(f).includes('round') },
+      { key: 'flPCD', type: 'expr', label: 'Bolt circle diameter (0: the middle of the flange)', unit: 'mm', show: (f) => trFlanged(f).includes('round') },
+      { key: 'flPitch', type: 'expr', label: 'Flat-sided flange: holes at most this far apart', unit: 'mm', show: (f) => trFlanged(f).some((x) => x !== 'round') },
+      { key: 'flHint', type: 'hint', text: 'Each flange is a flat ring of its own (a body: cut it from plate), out past the end by its thickness. Its opening is the inside of the part at that end. A round flange has its holes evenly on the bolt circle, straddling X; a flat-sided one has a hole at each corner of a line round the middle of the flange and more along each side, evenly, at most the pitch apart.', show: (f) => trFlanged(f).length },
     ] },
     { title: 'Manufacturing Method', fields: [
       { key: 'method', type: 'select', label: 'Method', options: [['formed', 'Formed (rolled smooth)'], ['bent', 'Bent (bump formed: press-brake bends)']] },
@@ -1573,7 +1605,8 @@ const PM_SCHEMAS = {
   ],
   structMember: [
     { title: 'Profile', fields: [{ key: 'profile', type: 'profileSel' }] },
-    { title: 'Path', fields: [
+    { title: 'Groups', fields: [{ key: 'groups', type: 'memberGroups' }] },
+    { title: 'Path', show: (f) => !(f.groups || []).some((g) => g.segs?.length), fields: [
       { key: 'path', type: 'pathSel', label: 'Sketch / 3D sketch' },
       { key: 'paths', type: 'curveList' },
       { key: 'pHint', type: 'hint', text: 'Every line (and arc) of the sketch becomes a member, its own body. Add more sketches / 3D sketches (the list) for a frame in 3D, e.g. the top of a table and its legs: the joints between them are treated too. Arcs (or the bends of a 3D sketch with a bend radius) become bent members.' },
@@ -2998,11 +3031,13 @@ export class UI {
       const err = rolled ? null : res?.errors.get(f.id);
       // (-) marks an under-defined sketch
       const dof = f.type === 'sketch' && !err && !rolled ? this.sketchFreedom(f) : 0;
+      // (⚠ a sketch's note, e.g. the face it is on no longer in the model: a sketch has no Property panel to show it)
+      const note = f.type === 'sketch' && !err && !rolled ? res?.notes?.get(f.id) : null;
       const shown = a.featureVisible(f);
       const hidden = shown === false;
       const n = node({
-        icon: iconFor(f), label: (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
-        title: rolled ? 'Rolled back (below the rollback bar)' : err || (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
+        icon: iconFor(f), label: (note ? '⚠ ' : '') + (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
+        title: rolled ? 'Rolled back (below the rollback bar)' : err || (note ? note + '\n' : '') + (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
         cls: (hidden ? 'hidden-item' : '') + (rolled ? ' rolled' : ''),
         vis: { on: shown, toggle: () => a.toggleFeatureVisible(f.id) },
         suppressed: a.isSuppressed(f),
@@ -3949,7 +3984,8 @@ export class UI {
     const valEl = el('span', { class: 'val' });
     const unitEl = el('span', { class: 'unit' }, unit || '');
     if (unit) input.style.paddingRight = '52px';
-    const vars = this.app.result?.vars || {};
+    // (the global variables and the part's dimensions by their IDs)
+    const vars = this.app.liveVars ? this.app.liveVars() : this.app.result?.vars || {};
     const check = (commit) => {
       if (optional && !input.value.trim()) { input.classList.remove('bad'); input.title = ''; valEl.textContent = ''; if (commit) onValid(''); return; }
       try {
@@ -3978,6 +4014,44 @@ export class UI {
     check(false);
     wrap.append(input, valEl, unitEl);
     return wrap;
+  }
+
+  // The values of a feature that are dimensions (with IDs): its value fields shown for it now
+  dimFieldKeys(f) {
+    const a = this.app, keys = [];
+    for (const grp of PM_SCHEMAS[f?.type] || []) {
+      try { if (grp.show && !grp.show(f, a)) continue; } catch { continue; }
+      for (const fd of grp.fields || []) {
+        if (fd.type !== 'expr' || fd.world || !fd.key) continue;
+        try { if (fd.show && !fd.show(f, a)) continue; } catch { continue; }
+        keys.push(fd.key);
+      }
+    }
+    return keys;
+  }
+  // A dimension's ID as a small tag before a field's label (drawn from its data-dim-id, so the label's text stays the
+  // field's name): a click on it renames the dimension (and every value that uses it)
+  dimTagOn(label, did) {
+    if (!label) return;
+    label.dataset.dimId = did;
+    label.classList.add('has-dim-id');
+    label.title = `Dimension ID ${did}: type it in another value to drive it from this one. Click the tag to rename.`;
+    label.addEventListener('click', (e) => { if (e.offsetX <= 10 + 7 * did.length) { e.preventDefault(); e.stopPropagation(); this.renameDimension(did); } });
+  }
+  async renameDimension(did) {
+    const a = this.app, v = await this.promptFields(`Rename ${did}`, 'rename', [{ key: 'name', label: 'Dimension ID', type: 'text', value: did }], 'The values that use it are changed to the new name.');
+    const to = v?.name?.trim();
+    if (!to || to === did) return;
+    const why = DIM.renameProblem(a.doc, did, to);
+    if (why) { a.toast(why, true); return; }
+    const n = DIM.renameDim(a.doc, did, to);
+    a._liveVars = null; a._dimSnap = null;
+    a.commit();
+    if (a.mode === 'sketch') a.sketcher.redraw?.();
+    if (a.mode === 'sketch3d') a.sketch3d.redraw?.();
+    this.renderPM();
+    a.rebuild();
+    a.status(`${did} is now ${to}${n ? ` (${n} value${n === 1 ? '' : 's'} using it changed)` : ''}.`);
   }
 
   row(label, control, cls = '') {
@@ -4052,6 +4126,8 @@ export class UI {
           if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No corners selected'));
           L.forEach((v, i) => { const li = el('div', { class: 'li sel' }, `${icon('point')}<span>Corner&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`); li.querySelector('.x').onclick = () => { L.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); }; ul.appendChild(li); });
           body.appendChild(ul);
+        } else if (fd.type === 'memberGroups') {
+          this.renderMemberGroups(body, f);
         } else if (fd.type === 'vertexRadii') {
           this.renderVertexRadii(body, f);
         } else if (fd.type === 'edgePoints') {
@@ -4182,7 +4258,13 @@ export class UI {
           if (picked) row.appendChild(el('button', { class: 'pm-btn', onclick: () => { f[fd.key] = null; this.renderPM(); a.updateEdgeHighlights(); a.preview(); } }, 'Clear'));
           body.appendChild(this.row(fd.label, row));
         } else if (fd.type === 'expr') {
-          body.appendChild(this.row(fd.label, this.exprInput(fd.neg ? negExpr(f[fd.key] ?? fd.default) : (f[fd.key] ?? fd.default), fd.unit, (v) => { f[fd.key] = fd.neg ? negExpr(v) : v; a.preview(); }, { optional: !!fd.optional })));
+          const r = this.row(fd.label, this.exprInput(fd.neg ? negExpr(f[fd.key] ?? fd.default) : (f[fd.key] ?? fd.default), fd.unit, (v) => { f[fd.key] = fd.neg ? negExpr(v) : v; a.assignDimIds(); a.preview(); }, { optional: !!fd.optional }));
+          // (its dimension ID: click to rename; a value using a deleted dimension in red)
+          if (!fd.world && f[fd.key] !== undefined && f[fd.key] !== null && f[fd.key] !== '' && !f.dimIds?.[fd.key]) a.assignDimIds();
+          const did = !fd.world && f.dimIds?.[fd.key];
+          if (did) this.dimTagOn(r.querySelector('label'), did);
+          if (DIM.usesLost(a.doc, f[fd.key])) { r.classList.add('dim-lost'); r.title = DIM.lostFailures(a.doc, { name: f.name, dimIds: { [fd.key]: did }, [fd.key]: f[fd.key] }).join('\n'); }
+          body.appendChild(r);
         } else if (fd.type === 'check') {
           const cb = el('input', { type: 'checkbox' });
           cb.checked = !!(f[fd.key] ?? fd.default);
@@ -4248,6 +4330,7 @@ export class UI {
               if(fd.key==='extent'&&revUpTo(f)){pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;}
             }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
+            if (f.type === 'smTransition' && fd.key === 'sketch') { f.line = null; a.updateRefGeometry(); this.renderPM(); }
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
             if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
@@ -5138,6 +5221,40 @@ export class UI {
     return { box, render, get current() { return cur; } };
   }
 
+  // Structural Member groups: each group's lines (picked in the view while it is the one being picked for), its own
+  // corners and alignment (blank: the feature's), added and removed here
+  renderMemberGroups(body, f) {
+    const a = this.app, pm = a.pm;
+    if (!Array.isArray(f.groups)) f.groups = [];
+    body.appendChild(el('div', { class: 'pm-hint' }, 'Optional: pick the lines for the members yourself, in groups. <b>Add Group</b>, then click lines and arcs of sketches or 3D sketches in the view (again to take one out). Each group has its own corners and alignment; where two groups meet, the later one is trimmed to the earlier. With no groups, every line of the Path sketches is a member.'));
+    const done = () => { a.updateRefGeometry(); a.updateSketchDisplay?.(); this.renderPM(); a.preview(true); };
+    f.groups.forEach((gr, gi) => {
+      const on = pm.memberGroup === gi, n = gr.segs?.length || 0;
+      const row = el('div', { class: 'li' + (on ? ' sel' : ''), 'data-member-group': gi }, `<span>Group ${gi + 1}: ${n} line${n === 1 ? '' : 's'}${on ? ' — click lines in the view' : ''}</span><span class="x" title="Remove the group">✕</span>`);
+      row.onclick = (e) => { if (e.target.classList.contains('x')) return; pm.memberGroup = on ? null : gi; done(); };
+      row.querySelector('.x').onclick = (e) => { e.stopPropagation(); f.groups.splice(gi, 1); pm.memberGroup = null; done(); };
+      body.appendChild(row);
+      if (!on) return;
+      const sel = (key, label, options) => {
+        const s = el('select', { 'data-member-group-field': key });
+        for (const [v, t] of [['', 'As the feature'], ...options]) s.appendChild(el('option', { value: v, selected: (gr[key] ?? '') === v }, esc(t)));
+        s.onchange = () => { gr[key] = s.value || null; a.preview(true); };
+        body.appendChild(this.row(label, s));
+      };
+      sel('corner', 'Corners', [['mitre', 'Mitre'], ['butt1', 'Butt (first member trimmed)'], ['butt2', 'Butt (second member trimmed)'], ['none', 'None']]);
+      sel('pierce', 'Line runs through', PIERCE);
+      body.appendChild(this.row('Rotate profile', this.exprInput(gr.rotate ?? '', '°', (v) => { gr.rotate = v === '' ? null : v; a.preview(); }, { optional: true })));
+      const cb = el('input', { type: 'checkbox', 'data-member-group-field': 'mirror' });
+      cb.checked = !!gr.mirror;
+      cb.onchange = () => { gr.mirror = cb.checked; a.preview(true); };
+      const lab = el('label'); lab.append(cb, ' Mirror profile');
+      body.appendChild(this.row(null, lab, 'check'));
+    });
+    const add = el('button', { class: 'btn', 'data-member-group-add': '' }, 'Add Group');
+    add.onclick = () => { f.groups.push({ segs: [] }); pm.memberGroup = f.groups.length - 1; done(); };
+    body.appendChild(add);
+  }
+
   modal(title, ic, body, buttons) {
     const back = el('div', { class: 'modal-back' });
     const m = el('div', { class: 'modal' });
@@ -5774,7 +5891,7 @@ export class UI {
     const a=this.app,pm=a.pm,active=LC.hasManualConnections(f),refs=f.profiles||[];
     body.classList.add('datum-definition');body.dataset.loftCorrespondence='';
     const graph=a.result?.info?.[f.id]?.loftConnections;body.dataset.graph=graph?.signature===JSON.stringify(f)?JSON.stringify(graph):'';
-    const blocked=refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
+    const blocked=refs.some(r=>{const t=findFeature(a.doc,LR.sourceId(r))?.type;return t!=='sketch'&&!(t==='sketch3d'&&f.type==='loft');})?'Manual connectors currently require sketch (or, in a Loft, 3D sketch) profiles.':null;
     const enabled=el('input',{type:'checkbox','data-loft-manual':''});enabled.checked=active;enabled.disabled=!!blocked&&!active;
     enabled.onchange=()=>{
       if(pm.loftDraft?.curves.length){a.toast('Add or clear the current contour before editing connectors',true);this.renderPM();return;}
@@ -5782,29 +5899,34 @@ export class UI {
     };
     const label=el('label');label.append(enabled,document.createTextNode(' Edit profile connectors'));body.appendChild(this.row(null,label,'check'));
     if(blocked)body.appendChild(el('div',{class:'pm-hint'},blocked+' Choose Automatic correspondence to continue.'));
+    const thinWalls=f.type==='loft'&&refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type==='sketch3d');
     if(active&&!blocked){
-      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin?' Thin: each wall starts at its vertex nearest the start.':'')));
+      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin&&!thinWalls?' Thin: each wall starts at its vertex nearest the start.':'')));
       refs.forEach((ref,i)=>{
-        const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{};if(!source)return;
+        // (a 3D sketch profile: its points, or its circle's seam angle; no holes, no start inside a curve)
+        const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{},f3=!source&&findFeature(a.doc,LR.sourceId(ref));if(!source&&f3?.type!=='sketch3d')return;
+        const itemName=id=>source?SM.itemName(source.sketch,id):sketch3dItemName(f3,id);
         const heading=el('div',{},`<b>${i+1}. ${esc(LR.describeRef(a.doc,ref))}</b>`);body.appendChild(heading);
         try{
-          const options=LC.profileConnectionOptions(source.sketch,ref),pick=el('button',{class:'pm-btn'+(pm.loftConnector?.key===LR.refKey(ref)?' on':''),'data-loft-connector-pick':i,disabled:!options.circle&&!options.points.length,onclick:()=>a.activateLoftConnector(i)},'Pick start in canvas');body.appendChild(pick);
+          const options=source?LC.profileConnectionOptions(source.sketch,ref):LC.sketch3dConnectionOptions(f3),pick=el('button',{class:'pm-btn'+(pm.loftConnector?.key===LR.refKey(ref)?' on':''),'data-loft-connector-pick':i,disabled:!options.circle&&!options.points.length,onclick:()=>a.activateLoftConnector(i)},'Pick start in canvas');body.appendChild(pick);
           if(options.circle){
-            let angle=0;const p=graph?.signature===JSON.stringify(f)&&graph.sections[i]?.points[0];if(p){const q=G.toLocal(source.frame,source.frame.o.clone().fromArray(p));angle=Math.atan2(q.y-options.circle.c.y,q.x-options.circle.c.x)*180/Math.PI;}
+            let angle=0;const p=graph?.signature===JSON.stringify(f)&&graph.sections[i]?.points[0];
+            if(p&&source){const q=G.toLocal(source.frame,source.frame.o.clone().fromArray(p));angle=Math.atan2(q.y-options.circle.c.y,q.x-options.circle.c.x)*180/Math.PI;}
+            else if(p){const c=a.sketch3dGeometry(f3)?.circle(f3.segs.find(g=>g.id===options.circle.curve));if(c){const w=c.o.clone().fromArray(p).sub(c.o);angle=Math.atan2(w.dot(c.v),w.dot(c.u))*180/Math.PI;}}
             const input=this.exprInput(control.circle?control.angle??0:angle,'°',value=>{const next={...control,circle:options.circle.curve,angle:value};delete next.point;a.setLoftConnection(ref,next,false);});input.dataset.loftConnectorAngle=i;body.appendChild(this.row('Seam angle',input));
           }else{
             const select=el('select',{'data-loft-connector-point':i,'aria-label':'Profile start vertex'});select.appendChild(el('option',{value:''},'Automatic start'));
-            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
-            if(options.curves.length&&!f.thin)select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(itemName(p.id))));
+            if(options.curves.length&&(!f.thin||thinWalls))select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
             select.value=control.curve?'@curve':control.point||'';
             select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
             if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
             // (more connectors after the start, in order round the profile: as many on every profile, vertex to vertex)
-            if(control.point&&options.closed&&!f.thin){
+            if(control.point&&options.closed&&(!f.thin||thinWalls)){
               const extra=control.extra||[];
               extra.forEach((id,k)=>{
                 const pick=el('select',{'data-loft-connector-extra':`${i}:${k}`,'aria-label':`Connector ${k+2} vertex`});
-                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(itemName(p.id))));
                 pick.value=id;pick.onchange=()=>a.setLoftConnection(ref,{...control,extra:extra.map((x,j)=>j===k?pick.value:x)});
                 const drop=el('button',{class:'pm-btn','data-loft-connector-extra-remove':`${i}:${k}`,title:'Remove this connector','aria-label':'Remove this connector',onclick:()=>a.setLoftConnection(ref,{...control,extra:extra.filter((_,j)=>j!==k)})},'✕');
                 const row=this.row(`Connector ${k+2}`,pick);row.appendChild(drop);body.appendChild(row);
@@ -5813,7 +5935,7 @@ export class UI {
               if(free.length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-extra-add':i,onclick:()=>a.setLoftConnection(ref,{...control,extra:[...extra,free[0].id]})},'Add connector'));
             }
           }
-          if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
+          if(options.holes.length&&(!f.thin||thinWalls))this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;
           reverse.onchange=()=>{const next={...control,reverse:reverse.checked};if(!options.closed)delete next.point;a.setLoftConnection(ref,next);};
           const label=el('label');label.append(reverse,document.createTextNode(' Reverse traversal'));body.appendChild(this.row(null,label,'check'));

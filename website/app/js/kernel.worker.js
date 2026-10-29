@@ -33,6 +33,7 @@ import * as SO from './sketchoffset.js';
 import {extrusionInterval,revolutionInterval} from './featuredirections.js';
 import {buildSurfacePatch,verifyPatch,patchContinuity,patchBoundary} from './surfacepatch.js';
 import { hasLoftEnds, endConstrainedLoft, checkLoftEndGuides, tensorFaceDistance } from './loftends.js';
+import { docVariables, lostFailures } from './dimids.js';
 
 // sheet metal features (they keep a body's flat pattern up to date)
 // sheet metal features that make new bodies (from sketches)
@@ -666,6 +667,72 @@ let refLog = null;
 const refFound = (ref, hit, moved) => { if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; } return hit; };
 const refLost = (ref) => { if (refLog) refLog.lost.push(ref); return null; };
 
+// ------------------------------------------------------------ edges named by the extrusion that made them
+// An edge an extrusion made is named (ref.gen) by what in its sketch it came from: a curve (seen along the extrusion
+// the edge lies on it: a cap edge, or where the extrusion's walls meet the body) with the level along the extrusion
+// it is at ('first', 'last' or its number, of how many), or a sketch point (a side edge along the extrusion from it).
+// When the model changes, the edge is looked for by its name first (where its extrusion has it now) and by where it
+// was only when that does not settle it, so another edge that has come to lie where it was is not taken for it.
+// (Set by rebuild: the extrusions built so far, by feature id: { fr: the sketch's frame, sk: the sketch })
+let edgeGens = null;
+const genSamples = (c) => (c.gs ||= [0.2, 0.5, 0.8].map((t) => vec(c.e.pointAt(t))));
+// What made edge info c in extrusion g ({ c: curve id } or { pt: point id }, with s: its height along it), or null;
+// want: only that curve or point
+function genMatch(g, c, tol, want = null) {
+  const { fr, sk } = g, Q = genSamples(c), s = Q.map((q) => dot(sub(q, fr.o), fr.n)), xy = Q.map((q) => S.toFrame2D(fr, q));
+  if (c.t === 'LINE' && c.d && Math.abs(dot(c.d, fr.n)) > 1 - 1e-9) {
+    if (want?.c) return null;
+    const [x, y] = xy[1], p = (want ? sk.points.filter((q) => q.id === want.pt) : sk.points).find((q) => Math.hypot(q.x - x, q.y - y) < tol);
+    return p ? { pt: p.id, s: s[1] } : null;
+  }
+  if (want?.pt) return null;
+  // (a spline or an ellipse is measured against its points, closer together than the tolerance)
+  const near = (k) => xy.every(([x, y]) => S.distToCurve(sk, k, x, y) < (['line', 'arc', 'circle'].includes(k.type) ? tol : 1e3 * tol));
+  const k = (want ? sk.curves.filter((q) => q.id === want.c) : sk.curves).find((q) => !q.construction && near(q));
+  return k ? { c: k.id, s: (s[0] + s[1] + s[2]) / 3 } : null;
+}
+// The edges of the body extrusion g made from curve or point m, in levels along the extrusion (the edges at one
+// height together), lowest first; null for bodies with very many edges
+function genLevels(g, body, m, tol) {
+  const all = edgeInfos(body);
+  if (all.length > 4000) return null;
+  const same = [];
+  for (const c of all) { const k = genMatch(g, c, tol, m); if (k) same.push([k.s, c]); }
+  same.sort((a, b) => a[0] - b[0]);
+  const levels = [];
+  for (const [h, c] of same) { const L = levels.at(-1); if (L && h - L.s < tol * 10) L.cs.push(c); else levels.push({ s: h, cs: [c] }); }
+  return levels;
+}
+const genTol = (body) => Math.max(1e-5, bbox(body).diag * 1e-6);
+// The name of edge e of the body (the latest extrusion that made it), or null
+function nameEdge(body, e) {
+  if (!edgeGens?.size) return null;
+  const all = edgeInfos(body), c = all.find((x) => x.e === e) || all.find((x) => x.e.wrapped.IsSame(e.wrapped));
+  if (!c) return null;
+  const tol = genTol(body);
+  for (const [f, g] of [...edgeGens].reverse()) {
+    const m = genMatch(g, c, tol);
+    if (!m) continue;
+    const levels = genLevels(g, body, m, tol), i = levels ? levels.findIndex((L) => L.cs.includes(c)) : -1;
+    if (i < 0) return null;
+    return { f, ...(m.c ? { c: m.c } : { pt: m.pt }), at: i === levels.length - 1 ? 'last' : i === 0 ? 'first' : i, of: levels.length };
+  }
+  return null;
+}
+// The edge named ref.gen in the body as it is now, or null when its name does not settle it
+function edgeByName(body, ref) {
+  const n = ref.gen, g = edgeGens?.get(n?.f);
+  if (!g || (n.c ? !g.sk.curves.some((k) => k.id === n.c) : !g.sk.points.some((q) => q.id === n.pt))) return null;
+  const levels = genLevels(g, body, n, genTol(body));
+  if (!levels?.length) return null;
+  const L = n.at === 'last' ? levels.at(-1) : n.at === 'first' ? levels[0] : levels.length === n.of ? levels[n.at] : null;
+  const cs = (L?.cs || []).filter((c) => !ref.t || c.t === ref.t);
+  if (cs.length < 2) return cs[0] || null;
+  // (several there: the curve's edge split by another feature; the one clearly nearest its old place)
+  const b = bbox(body), r = nearestTwo(cs, ref.box ? mapIntoBox(ref.p, ref.box, b) : ref.p, (c) => c.e);
+  return r.best && r.second > r.bd * 1.6 + b.diag * 1e-6 ? r.best : null;
+}
+
 // The faces on the two sides of an edge, [{ t: surface type, n: outward normal (planes) }], and between
 // two planes whether the edge is convex (an outside corner, cv: 1) or concave (an inside one, cv: -1): an
 // edge reference keeps them (fn), so a moved edge is found again and a different one is not taken for it.
@@ -707,7 +774,11 @@ function findEdgeInfo(body, ref) {
   // (an edge found near, not at, the old place must have the same faces on its sides, when they are known)
   const fits = (c) => !Array.isArray(ref.fn) || sameSides(edgeSides(c), ref.fn);
   const raw = search(ref.p);
-  if (raw.best && raw.bd < Math.max(1e-3, b.diag * 1e-4)) return refFound(ref, raw.best, false);
+  // (an edge where it was, made by what its name says: that edge; another edge there now: the edge by its name)
+  const named = refLog && ref.gen && edgeGens?.get(ref.gen.f);
+  if (raw.best && raw.bd < Math.max(1e-3, b.diag * 1e-4) && (!named || genMatch(named, raw.best, genTol(body), ref.gen))) return refFound(ref, raw.best, false);
+  // (one by its name with other faces beside it, or the other kind of corner, is not it)
+  if (named) { const c = edgeByName(body, ref); if (c && fits(c)) return refFound(ref, c, true); }
   const mapped = ref.box ? search(mapIntoBox(ref.p, ref.box, b)) : null;
   const choices = [raw, mapped].filter((r) => r && ok(r) && fits(r.best)).sort((x, y) => x.bd - y.bd);
   if (choices.length) return refFound(ref, choices[0].best, true);
@@ -755,6 +826,12 @@ function updateEdgeRef(ref, e, body) {
   const circ = ref.t === 'CIRCLE' ? circleOf(e) : null;
   if (circ) Object.assign(ref, { r: circ.r, c: circ.c, n: circ.n }); else { delete ref.r; delete ref.c; delete ref.n; }
   ref.box = { min: b.min, max: b.max };
+  // its name, by the extrusion that made it (while a feature is rebuilt; worked out when new or moved): a new name
+  // is written back to the part
+  if (refLog && edgeGens && (!ref.gen || !was || len(sub(was, ref.p)) > 1e-6)) {
+    const nm = nameEdge(body, e);
+    if (JSON.stringify(nm) !== JSON.stringify(ref.gen ?? null)) { if (nm) ref.gen = nm; else delete ref.gen; refLog.moved = true; }
+  }
 }
 
 // ------------------------------------------------------------ persistent face references
@@ -848,10 +925,11 @@ function labQuickBox(e) {
   return (e.quick = b);
 }
 
-function findFace(body, ref) {
+// (facing: only faces facing the same way as the reference, not the other way too)
+function findFace(body, ref, facing = false) {
   if (!body) return null;
   const b = bbox(body);
-  const cands = faceInfos(body).filter((c) => Math.abs(dot(c.n, ref.n)) > 0.999);
+  const cands = faceInfos(body).filter((c) => (facing ? dot(c.n, ref.n) : Math.abs(dot(c.n, ref.n))) > 0.999);
   const search = (p) => nearestTwo(cands, p, (c) => c.face);
   const tol = Math.max(0.05, b.diag * 0.15);
   const ok = (r) => r.best && r.bd < tol && (r.bd < 1e-3 || r.second > r.bd * 1.6);
@@ -2509,6 +2587,8 @@ function noteRefs(f, res) {
 
 async function rebuild(doc, previewId = null, opts = {}) {
   docUp = doc.upAxis === 'z' ? 'z' : 'y';
+  // (a partial rebuild inside another, for Shell: the same extrusions, added to the other's)
+  if (!opts.partial || !edgeGens) edgeGens = new Map();
   const t0 = performance.now();
   // the active configuration: its variable values and the features it suppresses (or un-suppresses)
   const cfg = doc.activeConfig ? (doc.configs || []).find((c) => c.id === doc.activeConfig) : null;
@@ -2520,7 +2600,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
       features: doc.features.map((f) => (sup.has(f.id) && !f.suppressed ? { ...f, suppressed: true } : unsup.has(f.id) && f.suppressed ? { ...f, suppressed: false } : f)),
     };
   }
-  const { vars, errors: eqErrors } = evalEquations(doc.equations || []);
+  // (the global variables, and the dimensions by their IDs)
+  const { vars, errors: eqErrors } = docVariables(doc);
   const ev = (x) => evaluate(x, vars);
   // threads: cosmetic threads (shown and called out, not modelled) per feature: [{ internal, o, d, len, r, D, D1, P, label }]
   const res = { errors: [], sketches: {}, planes: {}, axes: {}, points: {}, curves: {}, notes: {}, detected: {}, features: {}, threads: {}, missing: {}, eqErrors: [...eqErrors], preview: null };
@@ -2579,6 +2660,26 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const fr = planes.get(ref);
     if (!fr) throw new Error('The reference plane is missing or failed');
     return fr;
+  };
+  // A sketch on a model face (plane.face: a point on the face picked and its normal): the face found again in the
+  // bodies as they are now and the sketch's plane moved onto it, square to the face (its axes kept as near as they
+  // were), and written back to the document so it is found from there next time. A face that is not there: the
+  // plane as it was, with a note. (Sketches from before faces were kept have only the plane: it stays put.)
+  const faceSketchFrame = (f) => {
+    const pl = f.plane, ref = pl?.ref === 'face' ? pl.face : null, fr = pl?.frame;
+    if (!ref || !fr) return null;
+    // (the first time it is found the bodies' box is kept with it, to find it by when the model changes size)
+    const first = !ref.box, hit = body && !dense ? findFace(body, ref, true) : null;
+    if (!hit) { res.notes[f.id] = 'The face this sketch is on is no longer in the model: the sketch stays where it was (Change Sketch Plane to put it on a face again)'; return fr; }
+    const n = dot(hit.n, fr.n) < 0 ? mul(hit.n, -1) : unit(hit.n);
+    const o = add(fr.o, mul(n, dot(sub(hit.p, fr.o), n)));
+    if (len(sub(o, fr.o)) < 1e-9 && dot(n, fr.n) > 1 - 1e-12) {
+      if (first) res.features[f.id] = { ...(res.features[f.id] || {}), plane: { ...pl, face: ref } };
+      return fr;
+    }
+    const u = unit(sub(fr.u, mul(n, dot(fr.u, n)))), frame = { o, u, v: cross(n, u), n };
+    res.features[f.id] = { ...(res.features[f.id] || {}), plane: { ...pl, frame, face: ref } };
+    return frame;
   };
   // Add or cut a tool. Added material fuses with the bodies it touches (merge) or becomes
   // new bodies; a cut acts on every body it reaches and may split one into several.
@@ -3279,10 +3380,88 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const loftConnectionControls=(f,ids)=>{
     if(!LC.hasManualConnections(f))return null;
     return ids.map(ref=>{
+      const s3=f.type==='loft'&&typeof ref==='string'&&!sketches.get(ref)?sketch3dOf(ref):null;
+      if(s3){const control=LC.connectionFor(f,ref);return {anchor:sketch3dAnchor(s3,control),extra:(control?.extra||[]).map(id=>sketch3dAnchor(s3,{point:id})),reverse:!!control?.reverse,control,source:null,ref};}
       const source=sketches.get(LR.sourceId(ref));if(!source||curves.has(ref))throw new Error('Manual connectors require sketch profile contours; use Automatic for 3D curve profiles');
       const control=LC.connectionFor(f,ref);
       return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),extra:LC.connectionExtras(source.sk,ref,source.frame,control),reverse:!!control?.reverse,control,source,ref};
     });
+  };
+  // A 3D sketch profile's connector point: one of its points (control.point), or a seam angle on its circle (control.circle,
+  // angle: from the level direction square to its axis, as its section starts)
+  const sketch3dAnchor=(s3,control)=>{
+    if(!control)return null;
+    if(control.point){const p=s3.at.get(control.point);if(!p)throw new Error(`${s3.f.name}: a connector point is missing; reselect it`);return p;}
+    if(control.circle){
+      const g=(s3.segs||[]).find(x=>x.id===control.circle&&x.type==='circle');if(!g)throw new Error(`${s3.f.name}: the circular connector source changed; reselect it`);
+      const o=s3.at.get(g.c),n=unit(g.n),u=levelX(n),v=cross(n,u),angle=ev(control.angle??0)*Math.PI/180;
+      if(!Number.isFinite(angle))throw new Error('The connector seam angle must be finite');
+      return add(o,add(mul(u,+g.r*Math.cos(angle)),mul(v,+g.r*Math.sin(angle))));
+    }
+    if(control.curve)throw new Error(`${s3.f.name}: a connector inside a curve needs a sketch profile; pick one of the 3D sketch's points`);
+    return null;
+  };
+  // A loft that starts or ends at a profile that is not flat (a 3D sketch's saddle) has no end faces (the kernel makes
+  // them only when both are flat): its ends closed, with a filling surface through a profile that is not flat, and the
+  // loft sewn into a solid
+  const closeLoftEnds=(tool,first,last)=>{
+    const flat=(sec)=>{
+      if(sec.circle)return true;
+      const pts=sec.segs.flatMap(g=>[g.a,g.m,g.c1,g.c2].filter(Boolean)),c=mul(pts.reduce(add,[0,0,0]),1/pts.length),P=sec.segs.map(g=>g.a);
+      let n=[0,0,0];P.forEach((q,i)=>{n=add(n,cross(sub(q,c),sub(P[(i+1)%P.length],c)));});
+      if(len(n)<1e-12)return false;
+      const size=Math.max(1,...pts.map(q=>len(sub(q,c))));n=unit(n);
+      return pts.every(q=>Math.abs(dot(sub(q,c),n))<1e-7*size);
+    };
+    if(flat(first)&&flat(last))return tool;
+    const secs=[first,last],wires=secs.map(sectionWire),faces=tool.faces,tol=1e-4*Math.max(1,bbox(tool).diag);
+    const on=(e,w)=>new R.DistanceQuery(R.makeVertex(vec(e.pointAt(0.5)))).distanceTo(w)<tol;
+    try{
+      // (an end face the kernel did make is kept)
+      const missing=wires.map((w,i)=>({w,sec:secs[i]})).filter(({w})=>!faces.some(fc=>{const es=fc.edges;try{return es.length>0&&es.every(e=>on(e,w));}finally{es.forEach(e=>e.delete());}}));
+      if(!missing.length)return tool;
+      const oc=R.getOC(),sw=new oc.BRepBuilderAPI_Sewing(tol,true,true,true,false),failed='The loft\'s end at a profile that is not flat could not be closed';
+      try{
+        for(const fc of faces)sw.Add(fc.wrapped);
+        for(const {w,sec} of missing){let cap;try{cap=flat(sec)?R.makeFace(w):R.makeNonPlanarFace(w);}catch(e){if(isFatal(e))throw e;throw new Error(failed);}sw.Add(cap.wrapped);}
+        sw.Perform(new oc.Message_ProgressRange());
+        if(sw.NbFreeEdges())throw new Error(failed);
+        const shell=R.iterTopo(sw.SewedShape(),'shell').next().value;
+        if(!shell)throw new Error(failed);
+        const ms=new oc.BRepBuilderAPI_MakeSolid(shell);let solid;
+        try{solid=R.cast(ms.Solid());}finally{ms.delete();}
+        oc.BRepLib.OrientClosedSolid(solid.wrapped);
+        if(!(preciseVolume(solid)>0))throw new Error(failed);
+        return solid;
+      }finally{sw.delete();}
+    }finally{faces.forEach(x=>x.delete());wires.forEach(w=>w.delete());}
+  };
+  // A thin loft with a 3D sketch profile: the loft's side walls t thick (one: outward, other: inward, mid: half each way),
+  // open at its first and last profile (the faces whose every edge lies on one of them)
+  const thinLoftWalls=(tool,first,last,thin)=>{
+    const oc=R.getOC(),wires=[sectionWire(first),sectionWire(last)],faces=tool.faces,tol=1e-4*Math.max(1,bbox(tool).diag);
+    try{
+      const on=(e,w)=>new R.DistanceQuery(R.makeVertex(vec(e.pointAt(0.5)))).distanceTo(w)<tol;
+      const ends=faces.filter(fc=>{const es=fc.edges;try{return es.length>0&&wires.some(w=>es.every(e=>on(e,w)));}finally{es.forEach(e=>e.delete());}});
+      if(ends.length!==2)throw new Error('The thin loft could not find its two end profiles');
+      // (sharp corners, as a thin loft from sketches has; round ones when the kernel can't make them sharp)
+      const walls=(d)=>{
+        for(const join of [oc.GeomAbs_JoinType.GeomAbs_Intersection,oc.GeomAbs_JoinType.GeomAbs_Arc]){
+          const L=ocList(ends),sp=stack?.get(),mk=new oc.BRepOffsetAPI_MakeThickSolid();let out=null;
+          try{
+            mk.MakeThickSolidByJoin(tool.wrapped,L,d,Math.max(1e-7,Math.min(1e-4,Math.abs(d)*1e-3)),oc.BRepOffset_Mode.BRepOffset_Skin,join===oc.GeomAbs_JoinType.GeomAbs_Intersection,false,join,false);
+            if(!mk.IsDone())continue;
+            const raw=mk.Shape();try{out=R.cast(raw);}finally{raw.delete();}
+            if(solidsOf(out).length&&preciseVolume(out)>0){const ok=out;out=null;return ok;}
+          }catch(e){if(isFatal(e))throw e;}
+          finally{out?.delete();L.delete();mk.delete();if(sp!=null)stack.set(sp);}
+        }
+        throw new Error('The thin loft\'s walls could not be made this thick (try thinner walls, or the other side)');
+      };
+      const t=thin.t;
+      if(!(t>0))throw new Error('The wall thickness must be greater than zero');
+      return thin.dir==='mid'?unify(walls(t/2).fuse(walls(-t/2))):walls(thin.dir==='other'?-t:t);
+    }finally{faces.forEach(x=>x.delete());wires.forEach(w=>w.delete());}
   };
   // (several connectors on each profile: the sections split at them and matched stretch by stretch)
   const connectorChainSections=(secs,controls,names)=>{
@@ -3639,6 +3818,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
     return { rec, edges };
   };
   // the profile of a sketch as flat faces in the sketch's own coordinates (z = 0)
+  // (a 2D drawing's faces at z = 0, as a sheet's region)
+  const drawingRegion = (dr) => {
+    const prism = dr.sketchOnPlane('XY').extrude(1);
+    return SM.upFaces(asShape(prism.faces.filter((fc) => fc.geomType === 'PLANE' && Math.abs(vec(fc.center)[2]) < 1e-7)));
+  };
   const sketchRegion = (sk) => {
     const prism = profileSolid(sk, (dr) => dr.sketchOnPlane('XY').extrude(1));
     const bottom = prism.faces.filter((fc) => fc.geomType === 'PLANE' && Math.abs(vec(fc.center)[2]) < 1e-7);
@@ -3727,7 +3911,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // (opts.batchCuts false: every cut made as its feature comes, as before; for comparisons in the tests)
   const canDefer = (f) => {
     if (opts.batchCuts === false || f.id === previewId || dense || !solids.length || solids.some((x) => x.sheet)) return false;
-    if (f.type === 'sketch') return !(f.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
+    if (f.type === 'sketch') return !f.plane?.face && !(f.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((f.type === 'extrude' || f.type === 'revolve') && f.op === 'cut') {
       if (f.scopeAll === false) return false;
       if (f.type === 'extrude' && !endsDefer(f)) return false;
@@ -3746,7 +3930,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
   let labNext = null; // the next feature to be built after the one running
   const labSheetCanWait = (g) => {
     if (!g || g.id === previewId) return false;
-    if (g.type === 'sketch') return !(g.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
+    if (g.type === 'sketch') return !g.plane?.face && !(g.constraints || []).some((k) => k.type === 'projected' && ['edge', 'vertex', 'section'].includes(k.src?.kind));
     if ((g.type === 'extrude' || g.type === 'revolve') && g.op === 'cut') {
       if (g.scopeAll === false) return false;
       if (g.type === 'extrude' && !endsDefer(g)) return false;
@@ -3871,17 +4055,37 @@ async function rebuild(doc, previewId = null, opts = {}) {
   };
   // The segments of a weldment path: lines { type: 'line', a, b } and arcs { type: 'arc', a, b, t0, t1, wire,
   // length } (3D), from a sketch's curves (construction left out) or a 3D sketch's edges.
+  // (each with key: the id of the sketch curve or 3D sketch segment it lies on, for Structural Member's groups)
   const memberPath = (id) => {
     const out = [];
     const addEdge = (e) => {
-      const a = vec(e.startPoint), b = vec(e.endPoint);
-      if (e.geomType === 'LINE') { if (len(sub(b, a)) > 1e-9) out.push({ type: 'line', a, b }); }
-      else out.push({ type: 'arc', a, b, t0: unit(vec(e.tangentAt(0))), t1: unit(vec(e.tangentAt(1))), wire: R.assembleWire([e.clone()]), length: R.measureLength(e) });
+      const a = vec(e.startPoint), b = vec(e.endPoint), mid = vec(e.pointAt(0.5));
+      if (e.geomType === 'LINE') { if (len(sub(b, a)) > 1e-9) out.push({ type: 'line', a, b, mid }); }
+      else out.push({ type: 'arc', a, b, mid, t0: unit(vec(e.tangentAt(0))), t1: unit(vec(e.tangentAt(1))), wire: R.assembleWire([e.clone()]), length: R.measureLength(e) });
     };
-    if (curves.has(id)) { const c = curves.get(id); for (const w of c.wires || [c.wire]) for (const e of w.edges) addEdge(e); return out; }
+    const tol = (g) => Math.max(1e-6, len(sub(g.b, g.a)) * 1e-7, (g.length || 0) * 1e-7);
+    if (curves.has(id)) {
+      const c = curves.get(id);
+      for (const w of c.wires || [c.wire]) for (const e of w.edges) addEdge(e);
+      const s3 = sketch3dOf(id);
+      if (s3?.segs) for (const g of out) {
+        const on = (x) => {
+          const t = x.type || 'line', A = s3.at.get(x.a), B = s3.at.get(x.b);
+          if (t === 'line') return A && B && len(sub(add(A, B), add(g.a, g.b))) < 2 * tol(g) && (len(sub(A, g.a)) < tol(g) || len(sub(A, g.b)) < tol(g));
+          if (t === 'arc' || t === 'circle') { const C = s3.at.get(x.c), r = t === 'circle' ? x.r : A && C && len(sub(A, C)); return C && r && Math.abs(len(sub(g.mid, C)) - r) < tol(g) && Math.abs(len(sub(g.a, C)) - r) < tol(g); }
+          return false;
+        };
+        g.key = s3.segs.find((x) => !x.construction && on(x))?.id ?? null;
+      }
+      return out;
+    }
     const sk = sketches.get(id);
     if (!sk) return out;
     for (const w of sketchWires(sk.sk, sk.frame)) for (const e of w.edges) addEdge(e);
+    for (const g of out) {
+      const q = S.toFrame2D(sk.frame, g.mid);
+      g.key = sk.sk.curves.find((c) => !c.construction && S.distToCurve(sk.sk, c, q[0], q[1]) < tol(g))?.id ?? null;
+    }
     return out;
   };
   // a path as a 3D polyline (sketch chains, 3D sketches, helices)
@@ -4105,7 +4309,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       };
       switch (f.type) {
         case 'sketch': {
-          const frame = orientFrame(resolveFrame(f.plane.ref, f.plane), f.plane.rot);
+          const frame = orientFrame(faceSketchFrame(f) || resolveFrame(f.plane.ref, f.plane), f.plane.rot);
           // (with cuts waiting: the body it was drawn on is worked out only if asked for, by sectionCurves)
           sketchBodies.set(f.id, pending.length ? { body: null, lazy: { base: body, tools: pending.map((x) => x.tool) }, frame, surfaces: surfaces.map((x) => x.shape) } : { body, frame, surfaces: surfaces.map((x) => x.shape) });
           if (f.entities) S.migrateSketch(f, vars);
@@ -4236,6 +4440,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const sections = refs.map((ref) => sectionOf(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
           if (refs.some(isFaceProfile)) res.features[f.id] = { ...(res.features[f.id] || {}), profiles: refs };
           const firstFrame = sections[0].frame;
+          // (its edges named by the sketch curves and points they came from, when straight along the sketch's normal from
+          // one sketch: see edgeGens)
+          {
+            const ids = refs.map((r) => (isFaceProfile(r) ? null : LR.sourceId(r))), one = ids[0] && ids.every((x) => x === ids[0]) ? sketches.get(ids[0]) : null;
+            const plain = !f.thin && !(Math.abs(ev(f.draft ?? 0)) > 1e-9) && !(f.draft2Own && Math.abs(ev(f.draft2 ?? 0)) > 1e-9);
+            if (one && plain) edgeGens?.set(f.id, { fr: one.frame, sk: one.sk }); else edgeGens?.delete(f.id);
+          }
           for (const sk of sections) {
             if (Math.abs(dot(sk.frame.n, firstFrame.n)) < 1 - 1e-7 || Math.abs(dot(sub(sk.frame.o, firstFrame.o), firstFrame.n)) > 1e-5) throw new Error('Extrude profiles must lie in the same plane');
             // Opposite sketch normals still extrude in the direction of the first selected profile.
@@ -6047,24 +6258,84 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // Weldment structural members: a standard (or custom) profile along every segment of a sketch / 3D
           // sketch, each segment its own body; corners mitred or butted, ends on another member coped to it
           const prof = profileDims(f, ev), sec = profileSection(prof);
-          const pp = piercePoint(sec.box, f.pierce || 'mc'), rot = ((f.rotate ? ev(f.rotate) : 0) * Math.PI) / 180;
-          const segs = [...new Set([f.path, ...(f.paths || [])].filter(Boolean))].flatMap((id) => memberPath(id).map((g) => ({ ...g, src: id })));
+          // groups (f.groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }]): the segments
+          // picked, each group with its own alignment and corners; none: every line and arc of the path sketches
+          const groups = (Array.isArray(f.groups) ? f.groups : []).filter((gr) => gr?.segs?.length);
+          let segs, lost = 0;
+          if (groups.length) {
+            const paths = new Map(), taken = new Set();
+            segs = [];
+            groups.forEach((gr, gi) => {
+              for (const k of gr.segs) {
+                if (taken.has(k.s + ':' + k.c)) continue;
+                taken.add(k.s + ':' + k.c);
+                if (!paths.has(k.s)) paths.set(k.s, memberPath(k.s));
+                const hit = paths.get(k.s).filter((g) => g.key === k.c);
+                if (!hit.length) lost++;
+                for (const g of hit) segs.push({ ...g, src: k.s, grp: gi });
+              }
+            });
+            if (!segs.length) throw new Error('The lines picked for the groups are no longer in their sketches: pick them again');
+          } else segs = [...new Set([f.path, ...(f.paths || [])].filter(Boolean))].flatMap((id) => memberPath(id).map((g) => ({ ...g, src: id })));
           if (!segs.length) throw new Error('Select a sketch or 3D sketch with the lines (and arcs) for the members');
+          const grpOf = (g) => (g.grp != null ? groups[g.grp] : null);
+          const setOf = (g, k, dflt) => { const v = grpOf(g)?.[k]; return v != null && v !== '' ? v : f[k] ?? dflt; };
           const size = Math.hypot(sec.box.x1 - sec.box.x0, sec.box.y1 - sec.box.y0), ext = size * 1.5 + 1;
           const tol = Math.max(1e-4, size * 1e-5);
-          const shiftSegs = (list) => list.map((g) => (g.type === 'circle' ? { ...g, c: [g.c[0] - pp[0], g.c[1] - pp[1]] } : { ...g, a: [g.a[0] - pp[0], g.a[1] - pp[1]], b: [g.b[0] - pp[0], g.b[1] - pp[1]], ...(g.m ? { m: [g.m[0] - pp[0], g.m[1] - pp[1]] } : {}) }));
-          const outerSegs = shiftSegs(sec.outer), innerSegs = sec.inner ? shiftSegs(sec.inner) : null;
-          // the profile's frame where a member leaves point A in direction d (its height kept upright)
-          const frameAt = (A, d) => {
-            let v = rej([0, 1, 0], d);
+          // the members of a chain (lines and arcs of one path joined end to end, two at each point between) all run the
+          // same way, so a profile that is not symmetric (a channel, an angle) faces the same way on each round a frame:
+          // the way most of its length runs (an arc's way first: an arc is not turned round), a line drawn the other
+          // way round turned round to it
+          {
+            const nodes = [], node = (src, q) => { let k = nodes.findIndex((x) => x.src === src && len(sub(x.p, q)) < tol); if (k < 0) { nodes.push({ src, p: q, n: 0 }); k = nodes.length - 1; } nodes[k].n++; return k; };
+            // (a chain: one path sketch's, or one group's)
+            const ends = segs.map((g) => { const src = g.grp != null ? 'grp' + g.grp : g.src; return [node(src, g.a), node(src, g.b)]; }), seen = new Set();
+            for (let i0 = 0; i0 < segs.length; i0++) {
+              if (seen.has(i0)) continue;
+              // the chain through segment i0 (as drawn): each segment with whether it runs against i0
+              const chain = [[i0, false]];
+              seen.add(i0);
+              for (let q = 0; q < chain.length; q++) {
+                const [i, rev] = chain[q];
+                for (const k of [0, 1]) {
+                  const nd = ends[i][k];
+                  if (nodes[nd].n !== 2) continue;
+                  const j = segs.findIndex((_, jj) => jj !== i && !seen.has(jj) && ends[jj].includes(nd));
+                  if (j < 0) continue;
+                  // (leaving i at its end b (k 1, as drawn), j runs on with i when it starts there)
+                  const iOut = (k === 1) !== rev, jStarts = ends[j][0] === nd;
+                  chain.push([j, iOut !== jStarts]);
+                  seen.add(j);
+                }
+              }
+              const w = (i) => (segs[i].type === 'line' ? len(sub(segs[i].b, segs[i].a)) : 1e9 * (segs[i].length || 1));
+              const against = chain.reduce((t, [i, rev]) => t + (rev ? w(i) : 0), 0), with_ = chain.reduce((t, [i, rev]) => t + (rev ? 0 : w(i)), 0);
+              for (const [i, rev] of chain) if (rev !== (against > with_) && segs[i].type === 'line') segs[i] = { ...segs[i], a: segs[i].b, b: segs[i].a };
+            }
+          }
+          const shiftSegs = (list, pp) => list.map((g) => (g.type === 'circle' ? { ...g, c: [g.c[0] - pp[0], g.c[1] - pp[1]] } : { ...g, a: [g.a[0] - pp[0], g.a[1] - pp[1]], b: [g.b[0] - pp[0], g.b[1] - pp[1]], ...(g.m ? { m: [g.m[0] - pp[0], g.m[1] - pp[1]] } : {}) }));
+          // (the profile through its pierce point, a group's own or the feature's)
+          const secs = new Map(), secFor = (g) => {
+            const key = setOf(g, 'pierce', 'mc');
+            if (!secs.has(key)) { const pp = piercePoint(sec.box, key); secs.set(key, { outerSegs: shiftSegs(sec.outer, pp), innerSegs: sec.inner ? shiftSegs(sec.inner, pp) : null }); }
+            return secs.get(key);
+          };
+          // the profile's frame where a member leaves point A in direction d: its height kept upright; in a sketch on an
+          // upright plane (a frame standing up), its height in the plane, square to the member, so that every member's
+          // profile faces the same side out of the plane, the upright ones as the level ones
+          const frameAt = (A, d, src, g) => {
+            const rot = ((ev(setOf(g, 'rotate', 0) || 0)) * Math.PI) / 180;
+            const pn = sketches.get(src)?.frame?.n;
+            let v = pn && Math.abs(dot(pn, [0, 1, 0])) < 1e-6 ? cross(pn, d) : rej([0, 1, 0], d);
             if (len(v) < 1e-6) v = rej(f.vertRef === 'x' ? [1, 0, 0] : [0, 0, -1], d);
             v = unit(v);
             let u = cross(v, d);
             if (rot) { const c = Math.cos(rot), sn = Math.sin(rot), u2 = add(mul(u, c), mul(v, sn)), v2 = add(mul(v, c), mul(u, -sn)); u = u2; v = v2; }
-            if (f.mirror) u = mul(u, -1);
+            if (setOf(g, 'mirror', false)) u = mul(u, -1);
             return { o: A, u, v, n: d };
           };
-          const faceAt = (fr, withHole) => {
+          const faceAt = (fr, withHole, g) => {
+            const { outerSegs, innerSegs } = secFor(g);
             let face = R.makeFace(loopWire(fr, outerSegs));
             if (withHole && innerSegs) face = R.addHolesInFace(face, [loopWire(fr, innerSegs)]);
             return face;
@@ -6072,18 +6343,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // the members' ends and how they meet
           const ms = segs.map((g, i) => ({ i, g, line: g.type === 'line', ends: [g.a, g.b], out: g.type === 'line' ? [unit(sub(g.a, g.b)), unit(sub(g.b, g.a))] : [mul(g.t0, -1), g.t1], trim: [null, null], cut: [0, 0] }));
           const near = (x, y) => len(sub(x, y)) < tol;
-          const groups = [];
+          const nodeGroups = [];
           for (const m of ms) for (const k of [0, 1]) {
             const q = m.ends[k];
-            let gr = groups.find((x) => near(x.p, q));
-            if (!gr) groups.push((gr = { p: q, ends: [] }));
+            let gr = nodeGroups.find((x) => near(x.p, q));
+            if (!gr) nodeGroups.push((gr = { p: q, ends: [] }));
             gr.ends.push({ m, k });
           }
-          const corner = f.corner || 'mitre';
-          // a corner between two ends: mitred or butted
+          const cornerOf = (E) => setOf(E.m.g, 'corner', 'mitre');
+          // a corner between two ends: mitred or butted (two groups': the later one trimmed to the earlier)
           const cornerPair = (E1, E2, gr) => {
             const straight = dot(E1.m.out[E1.k], E2.m.out[E2.k]) < -0.9999;
             if (straight || !E1.m.line || !E2.m.line) return;
+            const across = E1.m.g.grp !== E2.m.g.grp, corner = across ? (E1.m.g.grp < E2.m.g.grp ? 'butt2' : 'butt1') : cornerOf(E1);
+            if (corner === 'none') return;
             if (corner === 'mitre') {
               const n = unit(sub(mul(E1.m.out[E1.k], -1), mul(E2.m.out[E2.k], -1)));
               E1.m.trim[E1.k] = { kind: 'plane', p: gr.p, n }; E2.m.trim[E2.k] = { kind: 'plane', p: gr.p, n: mul(n, -1) };
@@ -6093,11 +6366,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
               C.m.trim[C.k] = { kind: 'cover', other: T.m, p: gr.p };
             }
           };
-          for (const gr of groups) {
+          for (const gr of nodeGroups) {
+            const corner = cornerOf(gr.ends[0]);
             if (gr.ends.length >= 3 && corner !== 'none') {
-              // e.g. a table's corner: the two rails of one sketch make the corner, the leg is trimmed to both
-              const bySrc = new Map();
-              for (const E of gr.ends) { if (!bySrc.has(E.m.g.src)) bySrc.set(E.m.g.src, []); bySrc.get(E.m.g.src).push(E); }
+              // e.g. a table's corner: the two rails of one sketch (or group) make the corner, the leg is trimmed to both
+              const bySrc = new Map(), keyOf = (E) => (E.m.g.grp != null ? 'grp' + E.m.g.grp : E.m.g.src);
+              for (const E of gr.ends) { if (!bySrc.has(keyOf(E))) bySrc.set(keyOf(E), []); bySrc.get(keyOf(E)).push(E); }
               const pair = [...bySrc.values()].find((l) => l.length === 2);
               if (pair) {
                 cornerPair(pair[0], pair[1], gr);
@@ -6105,7 +6379,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               }
               continue;
             }
-            if (gr.ends.length === 2 && corner !== 'none') {
+            if (gr.ends.length === 2 && (corner !== 'none' || gr.ends[0].m.g.grp !== gr.ends[1].m.g.grp)) {
               cornerPair(gr.ends[0], gr.ends[1], gr);
               continue;
             }
@@ -6126,14 +6400,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (m.line) {
               const d = unit(sub(m.g.b, m.g.a)), L = len(sub(m.g.b, m.g.a));
               const e0 = m.trim[0] ? ext : 0, e1 = m.trim[1] ? ext : 0;
-              const fr = frameAt(sub(m.g.a, mul(d, e0)), d);
-              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d);
-              m.solid = R.basicFaceExtrusion(faceAt(fr, true), new R.Vector(mul(d, L + e0 + e1)));
-              m.env = R.basicFaceExtrusion(faceAt(fr, false), new R.Vector(mul(d, L + e0 + e1)));
-              m.env0 = R.basicFaceExtrusion(faceAt(m.fr, false), new R.Vector(mul(d, L))); // (to the sketch ends)
+              const fr = frameAt(sub(m.g.a, mul(d, e0)), d, m.g.src, m.g);
+              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d, m.g.src, m.g);
+              m.solid = R.basicFaceExtrusion(faceAt(fr, true, m.g), new R.Vector(mul(d, L + e0 + e1)));
+              m.env = R.basicFaceExtrusion(faceAt(fr, false, m.g), new R.Vector(mul(d, L + e0 + e1)));
+              m.env0 = R.basicFaceExtrusion(faceAt(m.fr, false, m.g), new R.Vector(mul(d, L))); // (to the sketch ends)
             } else {
               // an arc: swept (no end trimming)
-              const fr = frameAt(m.g.a, m.g.t0), spine = m.g.wire;
+              const fr = frameAt(m.g.a, m.g.t0, m.g.src, m.g), spine = m.g.wire, { outerSegs, innerSegs } = secFor(m.g);
               const sw = (w) => { for (const tm of ['right', 'round', 'transformed']) { try { return R.genericSweep(w, spine, { frenet: false, transitionMode: tm }); } catch (e) { if (isFatal(e)) throw e; } } throw new Error('A curved member could not be swept'); };
               m.env = sw(loopWire(fr, outerSegs));
               m.solid = innerSegs ? m.env.cut(sw(loopWire(fr, innerSegs))) : m.env;
@@ -6185,7 +6459,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             applied.push({ op: 'add', tool: sh });
           }
           body = compoundOf(solids);
-          res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}`;
+          res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}` + (groups.length ? ` · ${groups.length} group${groups.length === 1 ? '' : 's'}` : '') + (lost ? ` · ${lost} line${lost === 1 ? '' : 's'} picked no longer in ${lost === 1 ? 'its sketch' : 'their sketches'}` : '');
           break;
         }
         case 'pipeRoute': {
@@ -6864,13 +7138,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (ids.length < 2) throw new Error('Select at least two profiles (in order)');
           const connectorControls=loftConnectionControls(f,ids);
           const thin = f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null;
+          const walls = thin && ids.some((id) => typeof id === 'string' && !sketches.get(id) && sketch3dOf(id)), thinR = walls ? null : thin;
           // each profile: one region (outline + holes), as 3D sections
           const profs = ids.map((id) => {
             const s = sketches.get(LR.sourceId(id));
             // (a 3D sketch: its one closed run of lines, arcs and splines, or a circle; it may be curved out of a plane)
             const s3 = !s && typeof id === 'string' ? sketch3dOf(id) : null;
             if (s3) {
-              if (thin) throw new Error('A thin loft needs sketch profiles (not a 3D sketch)');
               const closed = s3.runs.filter((x) => x.closed);
               if (closed.length !== 1) throw new Error(`${s3.f.name} must have exactly one closed chain or circle (it has ${closed.length})`);
               if (!closed[0].section) throw new Error(`${s3.f.name}: its smooth spline can't be a loft profile (use a spline segment, or lines and arcs)`);
@@ -6878,7 +7152,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             }
             if (!s) throw new Error('A profile sketch is missing, suppressed or has errors');
             const resolved = typeof id === 'string' ? { sketch: s.sk } : LR.resolveContour(s.sk, id);
-            const regions = thin ? S.thinRegions(resolved.sketch, thin.t, thin.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
+            const regions = thinR ? S.thinRegions(resolved.sketch, thinR.t, thinR.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
             if (regions.length !== 1) throw new Error(`${s.sk.name} must have exactly one closed profile (it has ${regions.length})`);
             return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)), holeKeys: regions[0].holes.map(LC.holeKey) };
           });
@@ -6887,7 +7161,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const holeControls = profs.map(() => []);
           if (connectorControls) profs.forEach((p, i) => {
             const c = connectorControls[i];
-            if (thin) {
+            if (thinR) {
               if (c.extra.length) throw new Error('More than one connector on a profile needs a loft that is not a thin feature');
               const nearest = (sec, q) => (q && sec.segs ? sec.segs.reduce((b, g) => (len(sub(g.a, q)) < len(sub(b, q)) ? g.a : b), sec.segs[0].a) : null);
               if (c.anchor) { holeControls[i] = p.holes.map((h) => ({ anchor: nearest(h, c.anchor), reverse: c.reverse })); connectorControls[i] = { ...c, anchor: nearest(p.outer, c.anchor) }; }
@@ -6896,7 +7170,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             p.outer = LC.splitSectionAt(p.outer, c.anchor);
             const order = LC.holeOrder(c.control, p.holeKeys);
             p.holes = order.map((k) => p.holes[k]); p.holeKeys = order.map((k) => p.holeKeys[k]);
-            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
+            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = c.source && LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
           });
           // (continuity C2: curvature-continuous through the profiles, the kernel's usual; C1: tangent-continuous;
           // smoothing: the surface evened out, with its own builder when either is asked for)
@@ -6930,7 +7204,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const names = profs.map((p) => p.name);
           const nh = profs[0].holes.length;
           if (profs.some((p) => p.holes.length !== nh)) throw new Error('Every profile needs the same number of holes (inner loops)');
-          const chained = !thin && connectorControls?.some((c) => c.extra.length);
+          const chained = !thinR && connectorControls?.some((c) => c.extra.length);
           let outerM = chained ? connectorChainSections(profs.map((p) => p.outer), connectorControls, names) : matchLoftSections(profs.map((p) => p.outer), names);
           if(connectorControls){if(!chained)outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
           const holesM = Array.from({ length: nh }, (_, i) => {
@@ -6939,17 +7213,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           });
           if (hasLoftEnds(f)) {
             const endWires = outerM.map(sectionWire);
-            const tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thin ? thin.t : 0 });
+            let tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thinR ? thinR.t : 0 });
+            tool = closeLoftEnds(tool, outerM[0], outerM.at(-1));
+            if (walls) tool = thinLoftWalls(tool, outerM[0], outerM.at(-1), thin);
             const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
             tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
             apply(f.op, tool, f.merge !== false, scope); break;
           }
           // with guides: the outline follows them and the holes (a thin loft's inside) move with it
-          const g = guides.length ? buildGuidedLoft(outerM, guides, names, holesM, thin ? thin.t : 0, { constrained: f.guideMethod === 'constrained', guideContinuity: f.guideContinuity || 'C0', build: buildLoft }) : null;
-          let tool = g ? g.shape : buildLoft(outerM.map(sectionWire));
+          const g = guides.length ? buildGuidedLoft(outerM, guides, names, holesM, thinR ? thinR.t : 0, { constrained: f.guideMethod === 'constrained', guideContinuity: f.guideContinuity || 'C0', build: buildLoft }) : null;
+          let tool = closeLoftEnds(g ? g.shape : buildLoft(outerM.map(sectionWire)), outerM[0], outerM.at(-1));
           if (guides.length) res.notes[f.id] = `${profs.length} profiles, ${guides.length} guide curve${guides.length === 1 ? '' : 's'}` + guideConstraintNote(g);
           for (let i = 0; i < nh; i++) tool = tool.cut(g ? g.holes[i] : buildLoft(holesM[i].map(sectionWire)));
           tool = unify(tool);
+          if (walls) tool = thinLoftWalls(tool, outerM[0], outerM.at(-1), thin);
           const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);
@@ -7369,7 +7646,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const k = (target - S0[i - 1]) / ((S0[i] - S0[i - 1]) || 1);
               return add(W3[i - 1], mul(sub(W3[i], W3[i - 1]), Math.max(0, Math.min(1, k))));
             };
-            return { at, corners, first: W3[0], last: W3[W3.length - 1] };
+            return { at, corners, first: W3[0], last: W3[W3.length - 1], W3, items: s ? S.curveChains(s.sk)[0].items : null, s };
           };
           const PA = profile(f.profileA, 'first'), PB0 = profile(f.profileB, 'second');
           // the profiles run the same way (the nearer ends together)
@@ -7388,9 +7665,119 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const rec = bodyRec(newId(f.id), shape, f.id);
           rec.sheet = sheet;
           solids.push(rec);
-          body = compoundOf(solids);
           applied.push({ op: 'add', tool: shape });
-          res.notes[f.id] = bent ? `${sheet.lofted.bendLines.length} bend${sheet.lofted.bendLines.length === 1 ? '' : 's'} between ${A.length - 1} strips (bent from flat facets)` : `Formed (smooth) — rolled from a flat pattern developed from the surface${sheet.lofted.bendLines.length ? `, with ${sheet.lofted.bendLines.length} sharp fold${sheet.lofted.bendLines.length === 1 ? '' : 's'} at its corners` : ''}`;
+          // flanges: at a profile, a flat ring (a flat sheet metal plate of its own) out past the profile's plane, away
+          // from the other profile, by its thickness. It goes round the profile with its gap closed straight across;
+          // its opening is the inside of the part there (the profile, or the profile less the thickness when the
+          // material is inside it), and it is as wide as set, sharp at the corners. Bolt holes on a line round its
+          // middle: at each corner and evenly between, at most the pitch apart.
+          let nFl = 0, nHoles = 0;
+          if (f.flangeA || f.flangeB) {
+            const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), pitch = ev(f.flPitch ?? 100);
+            if (!(W > 0)) throw new Error('The flange width must be greater than zero');
+            if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
+            if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
+            if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
+            if (hd > 0 && !(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+            const mid = (P) => mul(P.reduce(add, [0, 0, 0]), 1 / P.length);
+            // which way the material goes from strip i (into the sheet), at the first or second profile's end
+            const matAt = (i, atB) => {
+              const nn = atB ? cross(sub(B[i + 1], A[i + 1]), sub(B[i], A[i + 1])) : cross(sub(A[i + 1], A[i]), sub(B[i], A[i]));
+              return len(nn) > 1e-12 ? mul(unit(nn), f.flip ? -1 : 1) : null;
+            };
+            const miter = { lineJoinType: 'miter' };
+            for (const [P, on, which, atB, flipped] of [[PA, f.flangeA, 'first', false, false], [PB0, f.flangeB, 'second', true, swapB]]) {
+              if (!on) continue;
+              // the profile's plane: its sketch's, or a 3D sketch's when the profile lies flat in one
+              let fr = P.s?.frame;
+              if (!fr) {
+                const c = mid(P.W3);
+                let n = [0, 0, 0];
+                P.W3.forEach((q, i) => { n = add(n, cross(sub(q, c), sub(P.W3[(i + 1) % P.W3.length], c))); });
+                const size = Math.max(1, ...P.W3.map((q) => len(sub(q, c))));
+                if (len(n) < 1e-12 || P.W3.some((q) => Math.abs(dot(sub(q, c), unit(n))) > 1e-6 * size)) throw new Error(`A flange needs a flat profile: the ${which} profile does not lie in a plane`);
+                n = unit(n);
+                const u = levelX(n);
+                fr = { o: c, u, v: cross(n, u), n };
+              }
+              const to2 = (q) => S.toFrame2D(fr, q);
+              // the profile as 2D segments in its plane, in its own order, its gap closed by a line
+              const segs = [];
+              if (P.items) {
+                for (const { c, rev } of P.items) {
+                  let q = S.curvePoints(P.s.sk, c, 96);
+                  if (rev) q = [...q].reverse();
+                  if (c.type === 'line') segs.push({ type: 'line', a: q[0], b: q[q.length - 1] });
+                  else if (c.type === 'arc') segs.push({ type: 'arc', a: q[0], m: q[Math.floor(q.length / 2)], b: q[q.length - 1] });
+                  else for (let i = 1; i < q.length; i++) segs.push({ type: 'line', a: q[i - 1], b: q[i] });
+                }
+              } else {
+                const q = P.W3.map(to2);
+                for (let i = 1; i < q.length; i++) segs.push({ type: 'line', a: q[i - 1], b: q[i] });
+              }
+              const first = segs[0].a, last = segs[segs.length - 1].b;
+              if (Math.hypot(last[0] - first[0], last[1] - first[1]) > 1e-9) segs.push({ type: 'line', a: last, b: first });
+              // is the material outside the profile? (the strip's material direction against the loop's outward one,
+              // in the middle of the profile)
+              const L2 = P.W3.map(to2);
+              let area = 0;
+              L2.forEach((q, i) => { const r = L2[(i + 1) % L2.length]; area += q[0] * r[1] - r[0] * q[1]; });
+              let out = null;
+              for (let k = 0; k < A.length - 1 && out === null; k++) {
+                const i = (Math.floor((A.length - 1) / 2) + k) % (A.length - 1), m = matAt(i, atB);
+                const E = atB ? B : A, e0 = sub(E[i + 1], E[i]);
+                if (!m || len(e0) < 1e-12) continue;
+                const e = flipped ? mul(e0, -1) : e0, outward = area > 0 ? cross(e, fr.n) : cross(fr.n, e);
+                out = dot(m, outward) > 0;
+              }
+              if (out === null) throw new Error(`The ${which} profile's flange could not tell which side the material is on`);
+              let opening = loopDrawing({ segs });
+              if (!out) opening = opening.offset(-t, miter);
+              let dr = opening.offset(W, miter).cut(opening);
+              let holes = 0;
+              if (hd > 0) {
+                // the bolt line as points along it (each edge in turn, the way the loop runs), its corners marked
+                const wire = opening.offset(W / 2, miter).sketchOnPlane('XY').wire, Q = [], corner = [];
+                for (const e of wire.edges) {
+                  const nS = e.geomType === 'LINE' ? 1 : 64;
+                  let q = Array.from({ length: nS + 1 }, (_, i) => vec(e.pointAt(i / nS)).slice(0, 2));
+                  if (Q.length && Math.hypot(q[nS][0] - Q.at(-1)[0], q[nS][1] - Q.at(-1)[1]) < Math.hypot(q[0][0] - Q.at(-1)[0], q[0][1] - Q.at(-1)[1])) q.reverse();
+                  if (Q.length) q = q.slice(1);
+                  corner.push(Q.length ? Q.length - 1 : 0);
+                  Q.push(...q);
+                }
+                if (Math.hypot(Q[0][0] - Q.at(-1)[0], Q[0][1] - Q.at(-1)[1]) < 1e-7) Q.pop();
+                const M = Q.length, dir = (i, j) => { const d0 = [Q[j % M][0] - Q[i % M][0], Q[j % M][1] - Q[i % M][1]], l = Math.hypot(...d0) || 1; return [d0[0] / l, d0[1] / l]; };
+                const sharp = [...new Set(corner)].filter((i) => { const d0 = dir((i + M - 1) % M, i), d1 = dir(i, i + 1); return d0[0] * d1[0] + d0[1] * d1[1] < Math.cos(Math.PI / 180); }).sort((x, y) => x - y);
+                const starts = sharp.length ? sharp : [0], pts = [];
+                starts.forEach((s0, k) => {
+                  const s1 = k + 1 < starts.length ? starts[k + 1] : starts[0] + M, run = [Q[s0 % M]], acc = [0];
+                  for (let i = s0 + 1; i <= s1; i++) { run.push(Q[i % M]); acc.push(acc.at(-1) + Math.hypot(Q[i % M][0] - Q[(i - 1) % M][0], Q[i % M][1] - Q[(i - 1) % M][1])); }
+                  const Ltot = acc.at(-1), m = Math.max(1, Math.ceil(Ltot / pitch - 1e-9));
+                  for (let j = 0; j < m; j++) {
+                    const target = (Ltot * j) / m;
+                    let i = 1;
+                    while (i < acc.length - 1 && acc[i] < target) i++;
+                    const w = (target - acc[i - 1]) / ((acc[i] - acc[i - 1]) || 1);
+                    pts.push([run[i - 1][0] + (run[i][0] - run[i - 1][0]) * w, run[i - 1][1] + (run[i][1] - run[i - 1][1]) * w]);
+                  }
+                });
+                for (const [x, y] of pts) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+                holes = pts.length;
+              }
+              // out past the profile's plane, away from the other profile
+              const other = atB ? A : B, away = dot(sub(mid(other), mid(atB ? B : A)), fr.n) > 0 ? -1 : 1;
+              const fsheet = SM.baseFlange({ region: drawingRegion(dr), frame: fr, t: T, R: R0 > 0 ? R0 : T, K, reverse: away < 0 });
+              const fshape = SM.toSolid(fsheet), frec = bodyRec(newId(f.id), fshape, f.id);
+              frec.sheet = fsheet;
+              solids.push(frec);
+              applied.push({ op: 'add', tool: fshape });
+              nFl++; nHoles += holes;
+            }
+          }
+          body = compoundOf(solids);
+          const flNote = nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '';
+          res.notes[f.id] = (bent ? `${sheet.lofted.bendLines.length} bend${sheet.lofted.bendLines.length === 1 ? '' : 's'} between ${A.length - 1} strips (bent from flat facets)` : `Formed (smooth) — rolled from a flat pattern developed from the surface${sheet.lofted.bendLines.length ? `, with ${sheet.lofted.bendLines.length} sharp fold${sheet.lofted.bendLines.length === 1 ? '' : 's'} at its corners` : ''}`) + flNote;
           break;
         }
         case 'draft': {
@@ -8447,8 +8834,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!f.sketch) throw new Error('Select the sketch with the axis line (or sketch one: bottom centre to top centre)');
           const s = sketches.get(f.sketch), s3 = s ? null : sketch3dOf(f.sketch);
           if (!s && !s3) throw new Error('The sketch is missing, suppressed or has errors');
-          const pick = (lines) => { const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null; };
-          const noLine = (n) => new Error(n ? 'The sketch has more than one line: keep one line for the axis (bottom centre to top centre)' : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
+          // (the line picked for the axis, f.line; none picked: the sketch's one line, or its one solid line)
+          const pick = (lines) => {
+            if (f.line) { const l = lines.find((c) => c.id === f.line); if (!l) throw new Error('The axis line picked is no longer a line of the sketch: click another line in the view, or choose it under Axis'); return l; }
+            const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null;
+          };
+          const noLine = (n) => new Error(n ? `The sketch has ${n} lines: click the one for the axis in the view (bottom centre to top centre), or choose it under Axis` : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
           let o, tp, fr = null;
           if (s) {
             const lines = s.sk.curves.filter((c) => c.type === 'line'), line = pick(lines);
@@ -8458,7 +8849,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             o = W3(S.getPoint(s.sk, line.p1)); tp = W3(S.getPoint(s.sk, line.p2));
           } else {
             // (a 3D sketch's line, between its points as built; an older 3D sketch of just two points is one too)
-            const lines = s3.segs ? s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)) : s3.f.pts.length === 2 ? [{ a: s3.f.pts[0].id, b: s3.f.pts[1].id }] : [];
+            const lines = s3.segs ? s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)) : s3.f.pts.length === 2 ? [{ id: null, a: s3.f.pts[0].id, b: s3.f.pts[1].id }] : [];
             const line = pick(lines);
             if (!line) throw noLine(lines.length);
             o = s3.at.get(line.a); tp = s3.at.get(line.b);
@@ -8505,9 +8896,60 @@ async function rebuild(doc, previewId = null, opts = {}) {
             solids.push(rec);
             applied.push({ op: 'add', tool: shape });
           }
+          // flanges: at an end, a flat ring (a body of its own) out past the end by its thickness, its opening the inside
+          // of the part there (the sizes as given for inside sizes, else less the thickness across the wall's slope) and
+          // as wide as set, with bolt holes on a circle (a round end: evenly, straddling X; the circle in the middle of
+          // the flange unless set) or round the sides (a flat-sided end: at the corners of a line in the middle of the
+          // flange and evenly between them, at most the pitch apart)
+          let nFl = 0, nHoles = 0;
+          const ends = [['b', !!f.flangeBot, o, -1], ['t', !!f.flangeTop, add(tp, add(mul(X, ev(f.offX ?? 0)), mul(Y, ev(f.offY ?? 0)))), 1]];
+          if (ends.some((x) => x[1])) {
+            const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100);
+            if (!(W > 0)) throw new Error('The flange width must be greater than zero');
+            if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
+            if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
+            if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
+            const g0 = dims === 'inside' ? 0 : grow - t * slope;
+            const poly = (cs) => { let pen = R.draw(cs[0]); for (const q of cs.slice(1)) pen = pen.lineTo(q); return pen.close(); };
+            for (const [k, on, c, sgn] of ends) {
+              if (!on) continue;
+              const opening = SM.transitionEnd(spec(k), g0), holes = [];
+              let dr;
+              if (opening.kind === 'round') {
+                if (!(opening.r > 0)) throw new Error('The flange opening has no size (the part is thicker than its end)');
+                dr = R.drawCircle(opening.r + W).cut(R.drawCircle(opening.r));
+                if (hd > 0) {
+                  if (!(N >= 1 && N <= 360)) throw new Error('The number of bolt holes must be 1 to 360');
+                  const rb = pcd > 0 ? pcd / 2 : opening.r + W / 2;
+                  if (rb - hd / 2 <= opening.r + 1e-6 || rb + hd / 2 >= opening.r + W - 1e-6) throw new Error(`The bolt circle (Ø${+(2 * rb).toFixed(3)}) puts the holes off the flange (Ø${+(2 * opening.r).toFixed(3)} to Ø${+(2 * (opening.r + W)).toFixed(3)})`);
+                  for (let i = 0; i < N; i++) { const a = Math.PI / N + (2 * Math.PI * i) / N; holes.push([rb * Math.cos(a), rb * Math.sin(a)]); }
+                }
+              } else {
+                const outer = SM.transitionEnd(spec(k), g0 + W), mid = SM.transitionEnd(spec(k), g0 + W / 2);
+                dr = poly(outer.corners).cut(poly(opening.corners));
+                if (hd > 0) {
+                  if (!(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+                  mid.corners.forEach((p0, i) => {
+                    const p1 = mid.corners[(i + 1) % mid.M], m = Math.max(1, Math.ceil(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / pitch - 1e-9));
+                    for (let j = 0; j < m; j++) holes.push([p0[0] + ((p1[0] - p0[0]) * j) / m, p0[1] + ((p1[1] - p0[1]) * j) / m]);
+                  });
+                }
+              }
+              for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+              // (a flat sheet metal plate: its flat pattern, holes and all, goes with the parts' for cutting; the bottom
+              // one's material on the far side of its plane, away from the part)
+              const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: { o: c, u: X, v: Y, n: d }, t: T, R: R0 > 0 ? R0 : T, K, reverse: sgn < 0 });
+              const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+              rec.sheet = sheet;
+              solids.push(rec);
+              applied.push({ op: 'add', tool: shape });
+              nFl++; nHoles += holes.length;
+            }
+          }
           body = compoundOf(solids);
           const n = pieces.length;
-          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`);
+          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`)
+            + (nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '');
           break;
         }
         case 'smHem': {
@@ -8784,6 +9226,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
       res.errors.push([f.id, raw ? `The geometry kernel could not compute this ${f.type === 'moveBody' ? 'move' : 'feature'}${hint}` : e.message]);
     }
     noteRefs(f, res);
+    // (values using a dimension deleted while they used it: built with its last value, the feature failing)
+    for (const m of lostFailures(doc, f)) res.errors.push([f.id, m]);
     timing.features.push([f.name, Math.round(performance.now() - tf)]);
     // any other feature that changes the solid ends the run of blends
     if (body !== bodyIn && f.type !== 'fillet' && f.type !== 'chamfer') blendChain = null;

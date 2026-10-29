@@ -611,10 +611,10 @@ export class Viewport {
     }
     for (const c of curves) {
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(c.pts.map((q) => new THREE.Vector3(...q))),
-        new THREE.LineBasicMaterial({ color: c.state === 'preview' ? 0xf59e0b : c.state === 'selected' ? 0x2b7de9 : 0x7c3aed, depthTest: false }));
-      line.renderOrder = 6;
+        new THREE.LineBasicMaterial({ color: c.state === 'preview' ? 0xf59e0b : c.state === 'selected' ? 0x2b7de9 : c.state === 'picked' ? 0xf97316 : 0x7c3aed, depthTest: false }));
+      line.renderOrder = c.state === 'picked' ? 7 : 6;
       this.refGroup.add(line);
-      label(c.name, new THREE.Vector3(...c.pts[c.pts.length - 1]));
+      if (c.name) label(c.name, new THREE.Vector3(...c.pts[c.pts.length - 1]));
     }
     for (const t of threads) {
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(t.pts.map((q) => new THREE.Vector3(...q))),

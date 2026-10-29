@@ -1,5 +1,6 @@
 // Sketch edit mode: drawing tools with automatic relations, selection,
 // solver-driven dragging, Dimension, relations and Trim.
+import * as DIM from './dimids.js';
 import * as THREE from 'three';
 import * as G from './geometry.js';
 import * as S from './sketchmodel.js';
@@ -99,8 +100,9 @@ export class Sketcher {
     this.onFrame = () => this._frame();
   }
 
+  // (the global variables and the part's dimensions by their IDs, as they are now)
   get ev() {
-    const vars = this.app.result?.vars || {};
+    const vars = this.app.liveVars ? this.app.liveVars() : this.app.result?.vars || {};
     return (x) => evaluate(x, vars);
   }
 
@@ -640,12 +642,16 @@ export class Sketcher {
     if (this.f.airfoils?.length) this.f.airfoils = this.f.airfoils.filter((a) => S.getCurve(this.f, a.line));
     S.pruneRefs(this.f, this.sel || new Set());
     S.cleanup(this.f);
+    // (new dimensions given their IDs, kept in the undo step)
+    this.app.assignDimIds?.();
     const snap = this.snapshotData();
     if (this.hist[this.hist.length - 1] !== snap) {
       this.hist.push(snap);
       if (this.hist.length > 200) this.hist.shift();
       this.redoStack = [];
     }
+    // (one deleted that others use: warned)
+    this.app.checkLostDims?.();
     this.solve();
     this.analyze();
     for (const id of [...this.sel]) if (!this.exists(id)) this.sel.delete(id);
@@ -3169,11 +3175,14 @@ export class Sketcher {
       el.dataset.idx = i;
       const k = dm.k;
       const expr = !dm.preview && !isNumeric(k.value);
-      el.className = 'dim' + (k.driven ? ' driven' : '') + (this.sel.has(k.id) ? ' selected' : '') + (dm.preview ? ' preview' : '');
+      // (a dimension using one deleted while it used it: red, saying so)
+      const lost = !dm.preview && this.app.doc && DIM.usesLost(this.app.doc, k.value);
+      el.className = 'dim' + (k.driven ? ' driven' : '') + (this.sel.has(k.id) ? ' selected' : '') + (dm.preview ? ' preview' : '') + (lost ? ' lost' : '');
+      el.dataset.dimId = k.did || '';
       el.style.pointerEvents = dm.preview || this.patternDraft || (this.tool !== 'select' && this.tool !== 'dim') ? 'none' : 'auto';
       const txt = (dm.prefix || '') + (k.kind === 'angle' ? fmt(dm.value) : this.L(dm.value)) + (dm.suffix || '');
       el.innerHTML = (expr ? '<span class="sig">Σ</span>' : '') + (k.driven ? `(${txt})` : txt);
-      el.title = (k.driven ? 'Driven (reference) dimension' : expr ? `= ${k.kind === 'angle' ? k.value : lenText(k.value, this.app.units)}` : 'Click to modify') + ' · Drag to move the annotation';
+      el.title = (k.did ? k.did + ': ' : '') + (k.driven ? 'Driven (reference) dimension' : expr ? `= ${k.kind === 'angle' ? k.value : lenText(k.value, this.app.units)}` : 'Click to modify') + ' · Drag to move the annotation' + (lost ? '\n' + DIM.lostFailures(this.app.doc, { name: '', type: 'sketch', constraints: [k] }).join('\n') : '');
     });
     this._placeLabels();
   }
@@ -3379,7 +3388,7 @@ export class Sketcher {
     const el = document.createElement('div');
     el.className = 'modify';
     el.innerHTML = `
-      <div class="mh"><span>Modify</span><button data-a="ok" title="Save">✔</button><button data-a="cancel" title="Cancel">✖</button><button data-a="del" title="Delete dimension">🗑</button></div>
+      <div class="mh"><span>Modify</span>${k.did ? `<span class="mid" data-dim-id="${k.did}" title="Dimension ID: type it in another value to drive it from this one. Click to rename.">${k.did}</span>` : ''}<button data-a="ok" title="Save">✔</button><button data-a="cancel" title="Cancel">✖</button><button data-a="del" title="Delete dimension">🗑</button></div>
       <input type="text" spellcheck="false">
       ${k.kind === 'arcDist' ? `<div class="mcond">${[['center', 'Center'], ['min', 'Min'], ['max', 'Max']].map(([c, l]) => `<button data-c="${c}" class="${(k.cond || 'center') === c ? 'on' : ''}" title="${c === 'center' ? 'Center to center' : c === 'min' ? 'Minimum (arc to arc, nearest)' : 'Maximum (arc to arc, farthest)'}">${l}</button>`).join('')}</div>` : ''}
       <div class="merr"></div>`;
@@ -3421,6 +3430,9 @@ export class Sketcher {
       b.onclick = () => this.setArcCondition(k, b.dataset.c);
     });
     el.querySelector('[data-a=ok]').onclick = apply;
+    const idEl = el.querySelector('.mid');
+    if (idEl) idEl.onclick = () => { this.closeModify(); this.app.ui.renameDimension(k.did); };
+    if (k.value != null && this.app.doc && DIM.usesLost(this.app.doc, k.value)) err.textContent = DIM.lostFailures(this.app.doc, { name: '', constraints: [k], type: 'sketch' }).join(' ');
     el.querySelector('[data-a=cancel]').onclick = () => this.closeModify();
     el.querySelector('[data-a=del]').onclick = () => { this.closeModify(); this.deleteConstraint(k.id); };
     this.vp.labelsEl.appendChild(el);

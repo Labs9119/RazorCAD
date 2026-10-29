@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import { icon } from './icons.js';
 import { platform } from './platform.js';
-import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName, createFeature, insertFeature, newRev } from './model.js';
+import { materialById, MATERIALS, DEFAULT_BODY_COLOR, docJSON, stripThumbnail, fileStem, isDefaultName, createFeature, insertFeature, newRev, iconFor } from './model.js';
 import { STD_TYPES, makeStdPart, fitToHole, fitLength, stdLengths, lengthLabel, setParts, heightOf } from './stdparts.js';
 import { gauss } from './sketch3dmodel.js';
 import { fmt, evalEquations, isValidName } from './expr.js';
@@ -2156,19 +2156,67 @@ export class AssemblyEditor {
   // Edit in Context: the part opened with the other parts of the assembly in it as context bodies (transparent), where
   // they are from it, so it can be sketched on them, take their edges or be extruded up to them. The context bodies are
   // references only: left out of the part where it is used. Again on the same component: the context brought up to date.
+  // The parts a part takes its shape from in this assembly (its context bodies' parts), and theirs in turn: part ids
+  partDeps(partId, seen = new Set()) {
+    const p = this.part(partId);
+    for (const f of p?.doc?.features || []) {
+      if (f.type !== 'import' || !f.context?.comp || f.suppressed || (f.context.asm && this.doc.uid && f.context.asm !== this.doc.uid)) continue;
+      const q = this.comp(f.context.comp)?.part;
+      if (q && !seen.has(q)) { seen.add(q); this.partDeps(q, seen); }
+    }
+    return seen;
+  }
+  // Would component x as context of part `partId` make a circular reference (x is the same part, or its part already
+  // takes its shape from this one, directly or through others)? The chain of parts, or null
+  circularVia(partId, x) {
+    if (x.part === partId) return [this.part(partId)?.name || 'the part'];
+    if (!this.partDeps(x.part).has(partId)) return null;
+    return [this.part(x.part)?.name || x.name, this.part(partId)?.name || 'the part'];
+  }
+  // Edit Part (right-click a part, in the tree or the view): the part opened with every other part shown in the
+  // assembly brought in as context (Edit in Context, without asking which), its feature tree the one features go into
+  async editPart(id) {
+    const c = this.comp(id), p = c && this.part(c.part);
+    if (!p) return null;
+    if (this.isSub(p) || p.libKey) { this.app.toast('Edit Part works on parts made here (not sub-assemblies or library parts): open those instead', true); return null; }
+    const others = this.contextCandidates(c);
+    if (!others.length) { await this.openPart(c.id); this.app.status(`Editing ${p.name}: there are no other parts to show with it.`); return { ids: [] }; }
+    return this.editInContext(id, others.map((x) => x.id));
+  }
+  contextCandidates(c) {
+    return this.doc.components.filter((x) => x.id !== c.id && !this.eff(x).suppressed && !this.eff(x).hidden && this.part(x.part) && !this.isSub(this.part(x.part)));
+  }
   async editInContext(id, pick = null) {
     const a = this.app, c = this.comp(id), p = c && this.part(c.part);
     if (!p) return null;
     if (this.isSub(p) || p.libKey) { a.toast('Edit in Context works on parts made here (not sub-assemblies or library parts)', true); return null; }
-    const others = this.doc.components.filter((x) => x.id !== c.id && !this.eff(x).suppressed && !this.eff(x).hidden && this.part(x.part) && !this.isSub(this.part(x.part)));
+    const others = this.contextCandidates(c);
     if (!others.length) { a.toast('There are no other parts to show in context', true); return null; }
     let chosen = pick ? others.filter((x) => pick.includes(x.id)) : null;
+    // (parts that would make a circular reference are left out, with a warning: they take their shape from this one)
+    const refuseCircular = async (list) => {
+      const bad = list.map((x) => ({ x, via: this.circularVia(p.id, x) })).filter((r) => r.via);
+      if (!bad.length) return list;
+      const box = document.createElement('div');
+      box.dataset.circularRefused = '';
+      const p1 = document.createElement('p');
+      p1.textContent = `These can't be brought into ${p.name} as context: each would make a circular reference, so they are left out.`;
+      const ul = document.createElement('ul');
+      for (const { x, via } of bad) { const li = document.createElement('li'); li.textContent = via.length === 1 ? `${x.name}: another instance of ${p.name} itself` : `${x.name}: ${via[0]} already takes its shape from ${via[1]}`; ul.appendChild(li); }
+      const p2 = document.createElement('p');
+      p2.textContent = 'A part can only take its shape from parts that do not depend on it. Remove the reference in the other part first (its Context feature) to use it here.';
+      box.append(p1, ul, p2);
+      a.ui.modal('Circular reference not allowed', 'error', box, [{ label: 'OK', primary: true }]);
+      return list.filter((x) => !bad.some((r) => r.x === x));
+    };
+    if (chosen) chosen = await refuseCircular(chosen);
     if (!chosen) {
       const v = await a.ui.promptFields(`Edit ${c.name || p.name} in Context`, 'part', others.slice(0, 40).map((x, i) => ({ key: 'c' + i, label: x.name || this.part(x.part).name, type: 'check', value: others.length <= 12 })), 'The parts ticked come into the part as transparent context bodies, where they are in the assembly.');
       if (!v) return null;
-      chosen = others.slice(0, 40).filter((_, i) => v['c' + i]);
+      chosen = await refuseCircular(others.slice(0, 40).filter((_, i) => v['c' + i]));
       if (!chosen.length) return null;
     }
+    if (!chosen.length) { await this.openPart(c.id); this.contextOf = { asmTab: a.tabs[a.tabIndex], comp: c.id }; return { ids: [] }; }
     const ctx = [];
     await a.withProgress?.('Bringing in the context…', async () => {
       for (const x of chosen) {
@@ -2201,6 +2249,7 @@ export class AssemblyEditor {
     if (ids.length) a.setBodiesTransparent(ids, true);
     a.status(`Editing ${p.name} in context: ${ctx.length} part${ctx.length === 1 ? '' : 's'} in as transparent context bodies. Sketch on them, use their edges or extrude up to them; they are left out of the part in the assembly. Save the part to update the assembly.`);
     this.contextOf = { asmTab, comp: c.id };
+    a.showBanner(`Editing ${p.name} in ${this.doc.name || 'the assembly'}: features go into ${p.name}`, { label: 'Back to the Assembly', action: () => { a.showBanner(null); if (a.tabs.includes(asmTab)) a.activateTab(a.tabs.indexOf(asmTab)); } });
     return { ids: made };
   }
   // Context: another component's part as a STEP file where it is from the host component (the part edited), and a
@@ -2244,6 +2293,7 @@ export class AssemblyEditor {
   compMenu(c) {
     const sub = this.isSub(this.part(c.part));
     return [
+      ...(sub ? [] : [{ label: 'Edit Part', icon: 'edit', action: () => this.editPart(c.id) }]),
       { label: sub ? 'Open Sub-assembly' : 'Open Part', icon: sub ? 'assembly' : 'part', action: () => this.openPart(c.id) },
       ...(sub ? [c.flexible ? { label: 'Make Rigid', icon: 'fix', action: () => this.setFlexible(c.id, false) } : { label: 'Make Flexible', icon: 'float', action: () => this.setFlexible(c.id, true) }] : []),
       ...(sub ? [] : [{ label: 'Edit in Context…', icon: 'part', action: () => this.editInContext(c.id) }]),
@@ -3042,26 +3092,35 @@ export class AssemblyEditor {
       for (const sc of doc.components) {
         const o = cf?.comps?.[sc.id] || {}, sp = (doc.parts || []).find((x) => x.id === sc.part);
         const hid = 'hidden' in o ? o.hidden : !!sc.hidden, sup = 'suppressed' in o ? o.suppressed : !!sc.suppressed;
-        const isSub = this.isSub(sp), k = `${key}/${sc.id}`, open = this._openSubs.has(k);
+        const isSub = this.isSub(sp), k = `${key}/${sc.id}`, open = this._openSubs.has(k), has = isSub || featureRowsOf(sp).length;
         row({
           ic: isSub ? 'assembly' : 'component', label: sc.name, depth, cls: (hid ? 'hidden-item' : '') + (sup ? ' suppressed' : ''),
           title: `In ${doc.name || 'the sub-assembly'}: open it to change it`,
-          twisty: isSub ? (open ? '▼' : '▶') : '', onTwisty: isSub ? () => { if (open) this._openSubs.delete(k); else this._openSubs.add(k); this.renderTree(); } : null,
+          twisty: has ? (open ? '▼' : '▶') : '', onTwisty: has ? () => { if (open) this._openSubs.delete(k); else this._openSubs.add(k); this.renderTree(); } : null,
           selected: false,
           onClick: () => this.select({ kind: 'comp', id: top.id }),
           onDbl: () => sp && this.openPartDoc(sp),
         });
         if (isSub && open) subRows(sp.doc, 'config' in o ? o.config : (sc.config ?? null), top, k, depth + 1);
+        else if (open) featureRows(sp, depth + 1, () => this.openPartDoc(sp));
+      }
+    };
+    // a part's features, under it (to see; double-click one, or the part, to edit it)
+    const featureRowsOf = (p) => (p && !this.isSub(p) && Array.isArray(p.doc?.features) ? p.doc.features : []);
+    const featureRows = (p, depth, edit) => {
+      for (const f of featureRowsOf(p)) {
+        if (f.parent || (f.type === 'sketch' && featureRowsOf(p).some((g) => g !== f && g.type !== 'sketch' && (g.sketch === f.id || g.profile === f.id || g.path === f.id)))) continue;
+        row({ ic: iconFor(f), label: f.name, depth, cls: (f.suppressed ? 'suppressed' : '') + (f.type === 'import' && f.context ? ' hidden-item' : ''), title: `${f.name} (a feature of ${p.name}): double-click to edit the part`, onDbl: edit, featureOf: p.id });
       }
     };
     for (const c of this.doc.components) {
       const e = this.eff(c), p = this.part(c.part);
       const dof = this.dofs.get(c.id) || 0, mated = this.view().mates.some((m) => !m.suppressed && (m.a.comp === c.id || m.b.comp === c.id));
       const prefix = e.suppressed ? '' : c.fixed ? '(f) ' : dof > 0 || !mated ? '(-) ' : '';
-      const isSub = this.isSub(p), open = this._openSubs.has(c.id);
+      const isSub = this.isSub(p), open = this._openSubs.has(c.id), has = isSub || featureRowsOf(p).length;
       row({
         ic: isSub ? 'assembly' : 'component', label: prefix + c.name, depth: 1, cls: (e.hidden ? 'hidden-item' : '') + (e.suppressed ? ' suppressed' : ''),
-        twisty: isSub ? (open ? '▼' : '▶') : '', onTwisty: isSub ? () => { if (open) this._openSubs.delete(c.id); else this._openSubs.add(c.id); this.renderTree(); } : null,
+        twisty: has ? (open ? '▼' : '▶') : '', onTwisty: has ? () => { if (open) this._openSubs.delete(c.id); else this._openSubs.add(c.id); this.renderTree(); } : null,
         sub: this.partConfigs(p).length > 1 ? `(${this.configName(p, e.config)})` : '',
         title: c.fixed ? 'Fixed in place' : dof > 0 || !mated ? `Under defined: it can still move (${mated ? dof : 6} degree${(mated ? dof : 6) === 1 ? '' : 's'} of freedom) — drag it, or add mates` : 'Fully defined by its mates',
         selected: this.sel?.kind === 'comp' && this.sel.id === c.id,
@@ -3071,6 +3130,7 @@ export class AssemblyEditor {
         vis: e.suppressed ? null : { on: !e.hidden, toggle: () => this.setHidden(c.id, !e.hidden) },
       });
       if (isSub && open) subRows(p.doc, e.config, c, c.id, 2);
+      else if (open) featureRows(p, 2, () => this.editPart(c.id));
     }
     for (const pt of this.doc.compPatterns || []) row({
       ic: { linear: 'lpattern', circular: 'cpattern', mirror: 'mirror' }[pt.kind], label: pt.name, depth: 1,

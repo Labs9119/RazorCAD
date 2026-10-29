@@ -77,6 +77,10 @@
 <p><strong>Evaluate ▸ Configurations</strong> opens the design table (see the Configurations chapter).</p>
 <h2 id="equations-and-global-variables">Equations and global variables</h2>
 <p><strong>Tools ▸ Equations…</strong> holds global variables that can be used in any dimension or feature value. Example: <code>width = 120</code>, then set a depth to <code>width/4</code>. Each row shows the value it evaluates to; invalid or duplicate names are flagged.</p>
+<h3 id="dimension-ids-idx-dimension-ids">Dimension IDs</h3>
+<p>Every dimension has a short ID of its own: each sketch and 3D sketch dimension (reference ones too) and each value of a feature (an extrude's depth, a fillet's radius…). IDs are given when the dimension is made: D1, D2… from a counter that never goes back, so an ID is never given twice in a part. The ID shows as a small tag by the value in a feature's panel, in a 2D sketch dimension's Modify box, and in the tooltip of a dimension in the sketch. Click the tag to <strong>rename</strong> it (e.g. <code>Width</code>); every value that uses it is changed to the new name.</p>
+<p>Use an ID in any value as you would a global variable: set a depth to <code>D3 / 2</code> or <code>Width / 2</code> and it follows that dimension. (A reference dimension's ID can't drive others yet: its value is measured, not set.) IDs are also what a design table can list.</p>
+<p><strong>Deleting a dimension others use</strong> : a warning lists what uses it, with <strong>Undo</strong> to keep it. Deleted anyway, the values that used it fail: they hold its last value (so nothing moves), they show in red (a sketch dimension, a feature's value), and a feature with such a value shows as failing in the tree. Change them to drop the deleted ID and the failure goes. Hover a failing feature in the tree to see why; several reasons are shown as bullet points.</p>
 <p>Every value field accepts:</p>
 <div class="table-wrap"><table><thead><tr><th>Item</th><th>Examples</th></tr></thead><tbody><tr><td>Operators</td><td><code>+ - * / ^ %</code> and parentheses</td></tr><tr><td>Variables</td><td>Any name from Equations</td></tr><tr><td>Trigonometry (degrees)</td><td><code>sin cos tan asin acos atan</code></td></tr><tr><td>Other functions</td><td><code>sqrt abs min max round floor ceil pow</code></td></tr><tr><td>Constants</td><td><code>pi</code></td></tr><tr><td>Units of length</td><td><code>2in</code>, <code>30 mm</code>, <code>1.5cm</code>, <code>2ft</code>, <code>(w/2)*in</code> (see Units)</td></tr></tbody></table></div>
 <p>A value may start with <code>=</code>. Variable names start with a letter or underscore and can't be a function name.</p>
@@ -95,7 +99,7 @@
   <footer class="titleblock" aria-label="About this page">
     <div class="tb-cell tb-logo"><img src="/favicon.svg" alt="" width="44" height="44"></div>
     <div class="tb-cell tb-title"><span class="tb-label">Title</span><span class="tb-value tb-big">RazorCAD user manual</span></div>
-    <div class="tb-cell"><span class="tb-label">Rev</span><span class="tb-value">0.20.0-beta</span></div>
+    <div class="tb-cell"><span class="tb-label">Rev</span><span class="tb-value">0.21.0-beta</span></div>
     <div class="tb-cell"><span class="tb-label">Licence</span><span class="tb-value"><a href="https://github.com/Labs9119/RazorCAD/blob/main/LICENSE">GPL-3.0</a></span></div>
     <div class="tb-cell"><span class="tb-label">Source</span><span class="tb-value"><a href="https://github.com/Labs9119/RazorCAD">Labs9119/RazorCAD</a></span></div>
     <div class="tb-cell"><span class="tb-label">Kernel</span><span class="tb-value">OpenCascade</span></div>

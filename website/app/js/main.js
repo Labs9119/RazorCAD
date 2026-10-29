@@ -43,6 +43,7 @@ import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from 
 import * as P3 from './print3d.js';
 import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
 import { glb, viewportBodies } from './gltf.js';
+import * as DIM from './dimids.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -186,6 +187,9 @@ class App {
     this.viewport.setSection(null);
     this.clearCheckMarks();
     for (const f of doc.features) if (f.type === 'sketch' && !f.rev) f.rev = M.newRev();
+    this.assignDimIds(doc);
+    this._dimSnap = null;
+    this.checkLostDims();
     this.history = new M.History(); // each part (tab) has its own undo history
     this.history.reset(doc);
     this.ui.renderPM();
@@ -250,7 +254,56 @@ class App {
     } catch { return null; }
   }
 
+  // Dimension IDs given to the dimensions without one (a sketch's, a 3D sketch's, the values a feature shows)
+  assignDimIds(doc = this.doc) {
+    if (!doc?.features) return 0;
+    return DIM.assignDimIds(doc, (f) => this.ui.dimFieldKeys?.(f) || []);
+  }
+  // The variables a value can use now (the global variables and the dimensions by their IDs), as the part is
+  // (a sketch being edited included)
+  liveVars() {
+    const doc = this.doc, key = doc && JSON.stringify([doc.equations, doc.lostDims, DIM.dimsOf(doc).map((d) => [d.did, d.expr, d.driven])]);
+    if (this._liveVars?.key !== key) this._liveVars = { key, vars: doc ? DIM.docVariables(doc).vars : {} };
+    return this._liveVars.vars;
+  }
+  // Dimensions gone since last looked at (deleted with their sketch entity, their feature, or on their own) that other
+  // values still use: kept as lost, their last values held by those using them (which fail), with a warning that
+  // offers to undo it
+  checkLostDims() {
+    const doc = this.doc;
+    if (!doc?.features) return;
+    const now = new Map(DIM.dimsOf(doc).filter((d) => d.did).map((d) => [d.did, d]));
+    if (doc.lostDims) for (const id of Object.keys(doc.lostDims)) if (now.has(id)) delete doc.lostDims[id];
+    // (what was there the last time this part was looked at: another part's, or none, is no comparison)
+    const before = this._dimSnap?.doc === doc ? this._dimSnap.map : null;
+    const vars = this.liveVars();
+    this._dimSnap = { doc, map: new Map([...now.keys()].map((id) => [id, vars[id]])) };
+    if (!before) return;
+    const gone = [...before.keys()].filter((id) => !now.has(id) && !(doc.lostDims && id in doc.lostDims));
+    const used = gone.map((id) => ({ id, users: DIM.usersOf(doc, id), last: before.get(id) })).filter((x) => x.users.length);
+    if (!used.length) { DIM.pruneLost(doc); return; }
+    doc.lostDims ||= {};
+    for (const x of used) doc.lostDims[x.id] = Number.isFinite(x.last) ? x.last : 0;
+    this._liveVars = null;
+    const box = document.createElement('div');
+    box.dataset.dimDeleted = used.map((x) => x.id).join(',');
+    for (const x of used) {
+      const p = document.createElement('p');
+      p.textContent = `${x.id} is used by ${x.users.map((u) => u.text).join(', ')}.`;
+      box.appendChild(p);
+    }
+    const p2 = document.createElement('p');
+    p2.textContent = `Deleted, ${used.length === 1 ? 'it' : 'they'} can't drive them any more: they fail (shown in red, and their features as failing) and hold the last value until you change them. Undo to keep ${used.length === 1 ? 'it' : 'them'}.`;
+    box.appendChild(p2);
+    this.ui.modal(used.length === 1 ? `${used[0].id} is used by other dimensions` : 'Deleted dimensions are used by others', 'error', box, [
+      { label: 'Undo', action: () => { this.undo(); this._liveVars = null; this.checkLostDims(); this.rebuild(); } },
+      { label: 'Keep it deleted', primary: true },
+    ]);
+  }
+
   commit() {
+    this.assignDimIds();
+    this.checkLostDims();
     rememberPart(this);
     const prev = this.history.stack[this.history.idx];
     this.history.push(this.doc);
@@ -675,7 +728,11 @@ class App {
       if (this.result?.body?.key !== r.body.key) { this._forceMesh = true; this.rebuild(); return; }
       r.body = this.result.body;
     }
-    const { vars, errors: eqErrors } = evalEquations(doc.equations || []);
+    const { vars, errors: eqErrors } = DIM.docVariables(doc);
+    // (a feature failing for several reasons: one per line, as bullets)
+    const errs = new Map();
+    for (const [id, m] of r.errors) errs.set(id, errs.has(id) ? [...errs.get(id), m] : [m]);
+    r.errors = [...errs].map(([id, ms]) => [id, ms.length > 1 ? ms.map((m) => '• ' + m).join('\n') : ms[0]]);
     const sketches = new Map(), planes = new Map();
     for (const [fid, s] of Object.entries(r.sketches)) {
       const f = M.findFeature(doc, fid);
@@ -1655,6 +1712,66 @@ class App {
     return best;
   }
 
+  // A 3D sketch's points and its lines, circles and arcs in world coordinates, as the model has them now: { at (point id →
+  // Vector3), curve(seg) → Vector3[] or null, circle(seg) → { o, n, u, v, r } (u: the level direction square to its axis,
+  // where its seam angles are measured from) }; null when it has not been built
+  sketch3dGeometry(f) {
+    const P = this.result?.detected?.get(f?.id)?.pts;
+    if (!P || !Array.isArray(f.pts) || P.length !== f.pts.length) return null;
+    const at = new Map(f.pts.map((q, i) => [q.id, new THREE.Vector3(...P[i])]));
+    const circle = (g) => {
+      const o = at.get(g.c);
+      if (!o || !g.n) return null;
+      const n = new THREE.Vector3(...g.n).normalize(), up = this.doc.upAxis === 'z' ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+      let u = new THREE.Vector3().crossVectors(up, n);
+      u = u.length() > 1e-9 ? u.normalize() : new THREE.Vector3(1, 0, 0).addScaledVector(n, -n.x).normalize();
+      return { o, n, u, v: new THREE.Vector3().crossVectors(n, u), r: +g.r };
+    };
+    const curve = (g) => {
+      const t = g.type || 'line';
+      if (t === 'line') { const a = at.get(g.a), b = at.get(g.b); return a && b ? [a, b] : null; }
+      if (t !== 'circle' && t !== 'arc') return null;
+      const c = circle(g);
+      if (!c) return null;
+      let { u, v, r } = c, span = 2 * Math.PI;
+      if (t === 'arc') {
+        const A = at.get(g.a), B = at.get(g.b);
+        if (!A || !B) return null;
+        u = A.clone().sub(c.o); r = u.length(); u.normalize(); v = new THREE.Vector3().crossVectors(c.n, u);
+        const w = B.clone().sub(c.o);
+        span = Math.atan2(w.dot(v), w.dot(u));
+        if (span <= 1e-9) span += 2 * Math.PI;
+      }
+      return Array.from({ length: 65 }, (_, i) => c.o.clone().addScaledVector(u, r * Math.cos((span * i) / 64)).addScaledVector(v, r * Math.sin((span * i) / 64)));
+    };
+    return { at, curve, circle };
+  }
+
+  // A point (kind 'point') or a line, circle or arc (kind 'curve') of a 3D sketch before the reference being made, under
+  // the cursor: { sketch, point } or { sketch, curve }
+  sketch3dItemAt(e, kind) {
+    const vp = this.viewport, m = vp.screenPos(e), end = this.doc.features.indexOf(this.pm?.feature);
+    let best = null, bd = kind === 'point' ? 7 : 6;
+    for (const f of this.doc.features.slice(0, end < 0 ? undefined : end)) {
+      if (f.type !== 'sketch3d' || f.suppressed || this.result.errors.has(f.id)) continue;
+      const g3 = this.sketch3dGeometry(f);
+      if (!g3) continue;
+      if (kind === 'point') {
+        for (const [id, p] of g3.at) { const a = vp.project(p), d = Math.hypot(m.x - a.x, m.y - a.y); if (d < bd) { bd = d; best = { sketch: f.id, point: id }; } }
+        continue;
+      }
+      for (const g of Array.isArray(f.segs) ? f.segs : []) {
+        const pts = g3.curve(g);
+        if (!pts) continue;
+        for (let k = 1; k < pts.length; k++) {
+          const a = vp.project(pts[k - 1]), b = vp.project(pts[k]), d = S.segDist(m.x, m.y, a.x, a.y, b.x, b.y);
+          if (d < bd) { bd = d; best = { sketch: f.id, curve: g.id }; }
+        }
+      }
+    }
+    return best;
+  }
+
   // A point of a sketch shown in the view under the cursor (part mode): { sketch, point }.
   sketchPointAt(e) {
     const vp = this.viewport, m = vp.screenPos(e);
@@ -1674,12 +1791,28 @@ class App {
 
   // A curve (line, arc or circle) of a sketch shown in the view under the cursor (part mode):
   // { sketch, curve, at (a world point on it, near the cursor) }.
+  // A sketch's curve or a 3D sketch's segment as a polyline in the model ([[x, y, z]]), or null
+  sketchItemPolyline(sketchId, id) {
+    const f3 = M.findFeature(this.doc, sketchId), s2 = this.result.sketches?.get(sketchId);
+    if (f3?.type === 'sketch3d') { const g = (f3.segs || []).find((x) => x.id === id), q = g && this.sketch3dGeometry(f3)?.curve(g); return q ? q.map((v) => v.toArray()) : null; }
+    const c = s2?.sketch.curves.find((x) => x.id === id);
+    return c ? S.curvePoints(s2.sketch, c).map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) : null;
+  }
+
+  // Transition: the line of an earlier sketch or 3D sketch under the cursor, { sketch, line }
+  axisLineAt(e) {
+    const s3 = this.sketch3dItemAt(e, 'curve'), f3 = s3 && M.findFeature(this.doc, s3.sketch), g = f3?.segs?.find((x) => x.id === s3.curve);
+    if (g && (!g.type || g.type === 'line')) return { sketch: s3.sketch, line: g.id };
+    const c = this.sketchCurveAt(e), sk = c && this.result.sketches.get(c.sketch)?.sketch, cv = sk?.curves.find((x) => x.id === c.curve);
+    return cv?.type === 'line' ? { sketch: c.sketch, line: cv.id } : null;
+  }
+
   sketchCurveAt(e) {
     const vp = this.viewport, m = vp.screenPos(e);
     let best = null, bd = 6;
     for (const [id, s] of this.result.sketches) {
       const f = s.sketch;
-      const datum=this.pickMode()==='ref';
+      const datum=['ref','axisLine','memberSegs'].includes(this.pickMode());
       if(datum&&(f.suppressed||this.result.errors.has(id)||this.doc.features.indexOf(f)>=this.doc.features.indexOf(this.pm.feature)))continue;
       if (!datum&&!(this.vis.sketches && this.sketchShown(f)) && this.hoverSketchId !== id) continue;
       for (const c of f.curves) {
@@ -2366,8 +2499,9 @@ class App {
   setLoftConnection(ref,control,rerender=true){
     const pm=this.pm,f=pm.feature,key=LR.refKey(ref);
     try{
-      const source=this.result.sketches.get(LR.sourceId(ref));if(!source)throw new Error('The profile sketch is unavailable');
-      if(control){LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));LC.connectionExtras(source.sketch,ref,source.frame,control);}
+      const source=this.result.sketches.get(LR.sourceId(ref)),f3=!source&&M.findFeature(this.doc,LR.sourceId(ref));
+      if(!source&&f3?.type!=='sketch3d')throw new Error('The profile sketch is unavailable');
+      if(control&&source){LC.connectionAnchor(source.sketch,ref,source.frame,control,x=>this.result.ev(x));LC.connectionExtras(source.sketch,ref,source.frame,control);}
       f.loftCorrespondence={...(f.loftCorrespondence||{})};
       if(control)Object.defineProperty(f.loftCorrespondence,key,{value:{...control},enumerable:true,writable:true,configurable:true});else delete f.loftCorrespondence[key];
       f.correspondenceMode='manual';pm.loftConnector=null;pm.loftHover=null;this.preview(rerender);this.updateSketchDisplay();return true;
@@ -2376,7 +2510,9 @@ class App {
 
   loftConnectorTarget(e,pick=this.pm?.loftConnector){
     if(!pick)return null;
-    const f=this.pm?.feature,ref=f?.profiles[pick.index],source=ref&&this.result.sketches.get(LR.sourceId(ref));if(!source||LR.refKey(ref)!==pick.key)return null;
+    const f=this.pm?.feature,ref=f?.profiles[pick.index],source=ref&&this.result.sketches.get(LR.sourceId(ref));
+    if(!source&&ref&&LR.refKey(ref)===pick.key&&M.findFeature(this.doc,ref)?.type==='sketch3d')return this.loftConnectorTarget3d(e,pick,f,ref,M.findFeature(this.doc,ref));
+    if(!source||LR.refKey(ref)!==pick.key)return null;
     const options=LC.profileConnectionOptions(source.sketch,ref),graph=this.loftConnectionGraph(),row=graph?.sections[pick.index],m=this.viewport.screenPos(e),control=LC.connectionFor(f,ref)||{};
     if(options.circle){
       const hit=this.viewport.aimRay(e).ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(source.frame.n,source.frame.o),new THREE.Vector3());if(!hit)return null;
@@ -2406,6 +2542,35 @@ class App {
       points=[...row.points.slice(shift),...row.points.slice(0,shift)];
     }else if(pick.connector)return null;
     const next={...control,point:point.id};delete next.circle;delete next.angle;delete next.curve;delete next.at;if(!options.closed)next.reverse=false;
+    return {ref,control:next,p:target.p,points};
+  }
+
+  // loftConnectorTarget for a 3D sketch profile (f3): the point of it under the cursor, or a point on its circle
+  loftConnectorTarget3d(e,pick,f,ref,f3){
+    const g3=this.sketch3dGeometry(f3);if(!g3)return null;
+    const options=LC.sketch3dConnectionOptions(f3),row=this.loftConnectionGraph()?.sections[pick.index],m=this.viewport.screenPos(e),control=LC.connectionFor(f,ref)||{};
+    const near=(p)=>{const s=this.viewport.project(p);return Math.hypot(s.x-m.x,s.y-m.y);};
+    if(options.circle){
+      const c=g3.circle(f3.segs.find(g=>g.id===options.circle.curve));if(!c)return null;
+      const hit=this.viewport.aimRay(e).ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(c.n,c.o),new THREE.Vector3());if(!hit)return null;
+      const angleOf=(q)=>{const w=q.clone().sub(c.o);return Math.atan2(w.dot(c.v),w.dot(c.u));},angle=angleOf(hit);
+      const p=c.o.clone().addScaledVector(c.u,c.r*Math.cos(angle)).addScaledVector(c.v,c.r*Math.sin(angle));if(near(p)>12)return null;
+      const localAt=j=>row?.points[j]?angleOf(new THREE.Vector3(...row.points[j])):0;
+      const delta=angle-localAt(pick.connector||0),next={...control,circle:options.circle.curve,angle:(localAt(0)+delta)*180/Math.PI};delete next.point;
+      const points=row?.points.map(q=>new THREE.Vector3(...q).sub(c.o).applyAxisAngle(c.n,delta).add(c.o).toArray());
+      return {ref,control:next,p:p.toArray(),points};
+    }
+    let target=null,distance=12;
+    for(const {id} of options.points){const p=g3.at.get(id),d=p?near(p):Infinity;if(d<distance){target={id,p:p.toArray()};distance=d;}}
+    if(!target)return null;
+    let id=target.id,points=row?.points;
+    if(row){
+      const k=row.points.findIndex(p=>p.every((x,i)=>Math.abs(x-target.p[i])<1e-5));if(k<0)return null;
+      const shift=(k-(pick.connector||0)+row.points.length)%row.points.length,start=new THREE.Vector3(...row.points[shift]);
+      id=options.points.find(q=>g3.at.get(q.id)?.distanceTo(start)<1e-5)?.id;if(!id)return null;
+      points=[...row.points.slice(shift),...row.points.slice(0,shift)];
+    }else if(pick.connector)return null;
+    const next={...control,point:id};delete next.circle;delete next.angle;delete next.curve;delete next.at;
     return {ref,control:next,p:target.p,points};
   }
 
@@ -2607,6 +2772,8 @@ class App {
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
+    if (f.type === 'smTransition') return 'axisLine';
+    if (f.type === 'structMember' && this.pm.memberGroup != null) return 'memberSegs';
     if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
     if (f.type === 'printHinge') return 'edge';
     if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
@@ -2826,7 +2993,7 @@ class App {
     const marks=[];
     if(f&&this.pickMode()==='ref')for(const [i,r] of (f.refs||[]).entries()){
       let p=r.kind==='vertex'?r.p:r.kind==='point'?this.result.points?.get(r.id)?.toArray():null;
-      if(r.kind==='sketch'&&r.point){const s=this.result.sketches.get(r.sketch),q=s&&S.getPoint(s.sketch,r.point);if(q)p=G.toWorld(s.frame,q.x,q.y).toArray();}
+      if(r.kind==='sketch'&&r.point){const s=this.result.sketches.get(r.sketch),q=s&&S.getPoint(s.sketch,r.point);if(q)p=G.toWorld(s.frame,q.x,q.y).toArray();else p=this.sketch3dGeometry(M.findFeature(this.doc,r.sketch))?.at.get(r.point)?.toArray()??null;}
       if(p)marks.push({p,text:String(i+1),cls:'pick'});
     }
     vp.setPointMarks('reference-picks',marks.length?marks:null);
@@ -2918,6 +3085,7 @@ class App {
     const sel = this.selection?.kind === 'feature' ? this.selection.id : null;
     const sweep = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     const datumRefs=new Set(this.pm?.feature?.referenceDefinition?(this.pm.feature.refs||[]).filter(r=>r.id).map(r=>r.id):[]);
+    const datumPicking = (f) => ['ref', 'axisLine', 'memberSegs'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
     const state = (id) => (id === editing || id === sweep?.guide ? 'preview' : id === sel || id === this._hoverFeature || id === sweep?.path || datumRefs.has(id) ? 'selected' : 'normal');
     const axes = [], points = [];
     for (const f of this.doc.features) {
@@ -2932,10 +3100,32 @@ class App {
       if (this.mode === 'sketch3d' && this.sketch3d.f === f) continue;
       const st = state(f.id);
       const cv = res.curves.get(f.id), many = Array.isArray(cv?.[0]?.[0]); // (some curves are several pieces)
-      const shown = this.refVisKind(f) ? this.refShown(f) : this.vis.axes;
+      const shown = (this.refVisKind(f) ? this.refShown(f) : this.vis.axes) || (f.type === 'sketch3d' && datumPicking(f));
       if (shown || st !== 'normal') for (const pts of many ? cv : [cv]) curves.push({ id: f.id, name: f.name, pts, state: st });
       // a 3D sketch being edited: its points, numbered
       if (f.type === 'sketch3d' && st === 'preview') (res.detected?.get(f.id)?.pts || []).forEach((p, i) => points.push({ id: f.id + ':' + i, name: 'P' + (i + 1), p: new THREE.Vector3(...p), state: 'preview' }));
+    }
+    if (this.pm?.kind === 'feature' && ['plane', 'axis', 'point'].includes(this.pm.feature.type)) for (const r of this.pm.feature.refs || []) {
+      const f3 = r.kind === 'sketch' && r.curve ? M.findFeature(this.doc, r.sketch) : null, g = f3?.type === 'sketch3d' && (f3.segs || []).find((x) => x.id === r.curve);
+      const pts = g && this.sketch3dGeometry(f3)?.curve(g);
+      if (pts) curves.push({ id: f3.id + '/' + g.id, name: '', pts: pts.map((q) => q.toArray()), state: 'picked' });
+    }
+    // Structural Member groups' lines: the group being picked for orange, the others highlighted
+    if (this.pm?.kind === 'feature' && this.pm.feature.type === 'structMember' && Array.isArray(this.pm.feature.groups)) {
+      this.pm.feature.groups.forEach((gr, gi) => {
+        for (const k of gr.segs || []) {
+          const pts = this.sketchItemPolyline(k.s, k.c);
+          if (pts) curves.push({ id: `${this.pm.feature.id}/g${gi}/${k.s}/${k.c}`, name: '', pts, state: gi === this.pm.memberGroup ? 'picked' : 'selected' });
+        }
+      });
+    }
+    // a Transition's axis line picked: orange
+    if (this.pm?.kind === 'feature' && this.pm.feature.type === 'smTransition' && this.pm.feature.sketch && this.pm.feature.line) {
+      const tf = this.pm.feature, f3 = M.findFeature(this.doc, tf.sketch), s2 = res.sketches?.get(tf.sketch);
+      let pts = null;
+      if (f3?.type === 'sketch3d') { const g = (f3.segs || []).find((x) => x.id === tf.line), q = g && this.sketch3dGeometry(f3)?.curve(g); pts = q ? q.map((v) => v.toArray()) : null; }
+      else if (s2) { const c = s2.sketch.curves.find((x) => x.id === tf.line); pts = c ? S.curvePoints(s2.sketch, c).map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) : null; }
+      if (pts) curves.push({ id: tf.id + '/axis', name: '', pts, state: 'picked' });
     }
     // cosmetic threads: a helix just off the bore / shaft (at most 60 turns drawn)
     const threads = [];
@@ -2996,7 +3186,7 @@ class App {
       if(referencePicking&&(this.sketcher.projectionSource==='model'||this.sketcher.projectionSource?.startsWith('sketch:')&&id!==this.sketcher.projectionSource.slice(7)))continue;
       const pmSketch = this.pm?.kind === 'feature' && (this.pm.feature.sketch === id || (['revolve','surfRevolve'].includes(this.pm.feature.type)&&this.pm.profilePick===false&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature)));
       const selected = (this.selection?.kind === 'feature' && this.selection.id === id) || this.hoverSketchId === id;
-      const datumPicking=this.pickMode()==='ref'&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
+      const datumPicking=['ref','axisLine','memberSegs'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
       if ((this.vis.sketches && this.sketchShown(s.sketch)) || pmSketch || selected || loft || datumPicking || (referencePicking && this.doc.features.findIndex((f) => f.id === id) < this.doc.features.findIndex((f) => f.id === editing))) {
         const polylines = s.sketch.curves.filter((c) => !loft || !c.ctrlOf).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: c.construction }));
         for (const polys of Object.values(s.textPolys || {})) for (const pts of polys) polylines.push({ pts, construction: false });
@@ -3472,6 +3662,11 @@ class App {
     const o = face.normal.clone().multiplyScalar(face.d);
     return G.frameFromNormal(o, face.normal);
   }
+  // A sketch plane on a flat model face: the face's plane and the face itself (the point picked on it and its normal),
+  // so the sketch follows the face when the model changes
+  faceSketchPlane(face, p) {
+    return { ref: 'face', frame: G.frameToJSON(this.faceFrame(face)), face: { p: p ? [...p] : face.center.toArray(), n: face.normal.toArray() } };
+  }
 
   // ------------------------------------------------------------ viewport input
   wireViewport() {
@@ -3534,6 +3729,32 @@ class App {
     const mode = this.pickMode();
     if(mode==='loftConnector'){try{const target=this.loftConnectorTarget(e);if(target)this.setLoftConnection(target.ref,target.control);else this.toast('Choose a start vertex on this profile, or a point on its circle',true);}catch(error){this.toast(error.message,true);}return;}
     if (mode === 'loftContour') { this.loftClick(e); return; }
+    if (mode === 'memberSegs') {
+      // Structural Member: a line or arc of an earlier sketch or 3D sketch clicked goes into the group being picked
+      // for (out of any other); clicked again, out of it
+      const f = this.pm.feature, gr = f.groups?.[this.pm.memberGroup];
+      const s3 = this.sketch3dItemAt(e, 'curve'), c2 = s3 ? null : this.sketchCurveAt(e), hit = s3 ? { s: s3.sketch, c: s3.curve } : c2 ? { s: c2.sketch, c: c2.curve } : null;
+      if (!gr || !hit) { this.toast('Click a line or arc of a sketch or 3D sketch to put it in the group'); return; }
+      const same = (k) => k.s === hit.s && k.c === hit.c, had = gr.segs.some(same);
+      for (const g of f.groups) g.segs = g.segs.filter((k) => !same(k));
+      if (!had) gr.segs.push(hit);
+      this.updateSketchDisplay?.();
+      this.updateRefGeometry();
+      this.ui.renderPM();
+      this.preview(true);
+      return;
+    }
+    if (mode === 'axisLine') {
+      // Transition: a line of an earlier sketch or 3D sketch clicked is its axis
+      const hit = this.axisLineAt(e);
+      if (!hit) { this.toast('Click a line of a sketch or 3D sketch for the axis (bottom centre to top centre)'); return; }
+      Object.assign(this.pm.feature, { sketch: hit.sketch, line: hit.line });
+      this.updateSketchDisplay?.();
+      this.updateRefGeometry();
+      this.ui.renderPM();
+      this.preview(true);
+      return;
+    }
     if (mode === 'section') {
       // a flat face or a plane: the section moves onto it
       const p = this.pickAt(e);
@@ -3554,6 +3775,8 @@ class App {
       // (a sketch shown in the view: its points, lines, circles and arcs)
       const sp = this.allows('vertex') ? this.sketchPointAt(e) : null;
       if (sp) return this.togglePlaneRef({ kind: 'sketch', sketch: sp.sketch, point: sp.point });
+      const p3 = this.allows('vertex') ? this.sketch3dItemAt(e, 'point') : null;
+      if (p3) return this.togglePlaneRef({ kind: 'sketch', ...p3 });
       const ed = this.allows('edge') ? vp.pickEdge(e, 5) : null;
       if (ed) return this.togglePlaneRef({ kind: 'edge', p: ed.edge.mid,...(this.result.bodies?.[vp.edgeBody[ed.index]]?.id?{body:this.result.bodies[vp.edgeBody[ed.index]].id}:{}) });
       const sc = this.allows('edge') ? this.sketchCurveAt(e) : null;
@@ -3561,6 +3784,10 @@ class App {
         const c = S.getCurve(this.result.sketches.get(sc.sketch)?.sketch, sc.curve);
         if (c && (['line', 'circle', 'arc'].includes(c.type)||this.pm?.feature?.type!=='axis'&&c.type==='spline')) return this.togglePlaneRef({ kind: 'sketch', sketch: sc.sketch, curve: sc.curve });
       }
+      // (a 3D sketch's line, circle or arc, for an axis; a plane or point takes the whole 3D sketch as a curve, below,
+      // for along a path: its lines, circles and arcs one by one are in the references list)
+      const c3 = this.allows('edge') && this.pm?.feature?.type === 'axis' ? this.sketch3dItemAt(e, 'curve') : null;
+      if (c3) return this.togglePlaneRef({ kind: 'sketch', ...c3 });
       if(['plane','point'].includes(this.pm?.feature?.type)){
         const m=vp.screenPos(e);let best=null,distance=6;
         for(const [id,curve] of this.result.curves||[]){
@@ -3693,8 +3920,7 @@ class App {
     const face = this.viewport.faceInfo(p.hit.face);
     if (this.pm?.kind === 'selectPlane') {
       if (!face.planar) { this.toast('Select a flat face (or a plane) to sketch on'); return; }
-      const frame = this.faceFrame(face);
-      return this.createSketchOn({ ref: 'face', frame: G.frameToJSON(frame) });
+      return this.createSketchOn(this.faceSketchPlane(face, p.hit.point.toArray()));
     }
     if (this.pm) return;
     this.select({ kind: 'face', face, point: p.hit.point.toArray() });
@@ -3939,7 +4165,7 @@ class App {
         const fp = p.hit.point.toArray(), bid = this.result.bodies?.[bi]?.id;
         items.push({ label: 'Appearance…', icon: 'appearance', action: () => this.ui.showAppearance({ kind: 'face', p: fp, body: bid }) });
         if (face.planar) {
-          items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn({ ref: 'face', frame: G.frameToJSON(this.faceFrame(face)) }) });
+          items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn(this.faceSketchPlane(face, fp)) });
           items.push({ label: 'Normal To', icon: 'normalTo', action: () => this.viewport.normalTo(this.faceFrame(face)) });
           items.push({ label: 'Export Face as DXF…', icon: 'dxf', action: () => this.exportFaceDXF() });
         }
@@ -3982,7 +4208,7 @@ class App {
     if (this.pm) this.cancelPM();
     const s = this.selection;
     if (s?.kind === 'plane') return this.createSketchOn({ ref: s.id });
-    if (s?.kind === 'face' && s.face.planar) return this.createSketchOn({ ref: 'face', frame: G.frameToJSON(this.faceFrame(s.face)) });
+    if (s?.kind === 'face' && s.face.planar) return this.createSketchOn(this.faceSketchPlane(s.face, s.point));
     if (s?.kind === 'feature') {
       const f = M.findFeature(this.doc, s.id);
       if (f?.type === 'plane') return this.createSketchOn({ ref: f.id });
@@ -4242,6 +4468,13 @@ class App {
     this.warnDenseMesh(type);
     let preSketch = null;
     if (type === 'sketch3d') return this.newSketch3D();
+    // (Transition from inside a sketch or 3D sketch with one line selected: that line is its axis)
+    let preLine = null;
+    if (type === 'smTransition' && (this.mode === 'sketch' || this.mode === 'sketch3d')) {
+      const sk = this.mode === 'sketch' ? this.sketcher : this.sketch3d, ids = [...(sk.sel || [])];
+      const isLine = (id) => (this.mode === 'sketch' ? S.getCurve(sk.f, id)?.type === 'line' : (sk.f.segs || []).some((g) => g.id === id && (!g.type || g.type === 'line')));
+      if (ids.length === 1 && isLine(ids[0])) preLine = ids[0];
+    }
     if (this.mode === 'sketch') preSketch = this.exitSketch(true);
     else if (this.mode === 'sketch3d') { const s3 = this.exitSketch3D(true); if (type === 'smTransition') preSketch = s3; }
     if (this.pm) this.cancelPM();
@@ -4255,11 +4488,14 @@ class App {
       const isAxis = (x) => (x?.type === 'sketch' && x.curves.some((c) => c.type === 'line')) || (x?.type === 'sketch3d' && (x.segs || []).some((g) => !g.type || g.type === 'line'));
       const drawn = (x) => (x.type === 'sketch' ? x.curves : x.segs || []).filter((c) => !c.construction).length;
       let sk = isAxis(preSketch) ? preSketch : isAxis(selF) ? selF : null;
+      const before = doc.features.slice(0, M.rollbackIndex(doc)).reverse().filter((x) => isAxis(x) && !x.suppressed);
       if (!sk) {
         const used = new Set(doc.features.flatMap((x) => M.sketchesUsedBy(x)));
-        sk = doc.features.slice(0, M.rollbackIndex(doc)).reverse().find((x) => isAxis(x) && !x.suppressed && !used.has(x.id) && drawn(x) <= 1) || null;
+        sk = before.find((x) => !used.has(x.id) && drawn(x) <= 1) || null;
       }
-      if (!sk) {
+      // (sketches with several lines there: the panel opens and the axis line is clicked in one of them)
+      if (!sk && before.length) this.status('Click the axis line (bottom centre to top centre) in a sketch or 3D sketch, or choose it under Axis.');
+      else if (!sk) {
         this.pendingFeature = { type, op, opts };
         this.pendingTool = 'line';
         this.startSketch();
@@ -4269,7 +4505,7 @@ class App {
         }
         return;
       }
-      props.sketch = sk.id;
+      if (sk) { props.sketch = sk.id; if (preLine && sk === preSketch) props.line = preLine; }
     }
     if (M.SKETCH_FEATURES.has(type) && !['surfPlanar','revolve','surfExtrude','surfRevolve'].includes(type)) {
       let sk = preSketch || (selF?.type === 'sketch' ? selF : null);
@@ -4489,10 +4725,15 @@ class App {
       this.status('Ready');
       return;
     }
-    if(pm.kind==='feature'&&(pm.feature.referenceDefinition&&['plane','axis','point'].includes(pm.feature.type)||['loft','surfLoft'].includes(pm.feature.type)&&LC.hasManualConnections(pm.feature))){
-      clearTimeout(this._previewTimer);await this.rebuild();
-      if(this.pm!==pm)return;
-      const error=this.result.errors.get(pm.feature.id);if(error){this.toast(error,true);return;}
+    // A feature that fails is not added to the tree (nor, being edited, changed): built as it is now, it says why
+    // and stays open, to be put right or cancelled with ✕
+    if (pm.kind === 'feature' && !this.isSuppressed(pm.feature)) {
+      clearTimeout(this._previewTimer);
+      await this.rebuild();
+      for (let i = 0; i < 200 && this.kernel.pending && this.pm === pm; i++) await new Promise((r) => setTimeout(r, 50));
+      if (this.pm !== pm) return;
+      const error = this.result.errors.get(pm.feature.id);
+      if (error) { this.refuseFeature(pm, error); return; }
     }
     clearTimeout(this._previewTimer);
     this.pm = null;
@@ -4509,6 +4750,23 @@ class App {
     const err = pm.kind === 'feature' && this.result.errors.get(pm.feature.id);
     if (err) this.toast(`${pm.feature.name}: ${err}`, true);
     this.status('Ready');
+  }
+
+  // ✔ on a feature that fails: why, and what to do (it stays open; nothing is added to the tree)
+  refuseFeature(pm, error) {
+    const f = pm.feature, what = pm.isNew ? `${f.name} can't be added` : `${f.name} can't be changed this way`;
+    breadcrumb(`Refused: ${f.name}: ${error}`);
+    const box = document.createElement('div');
+    box.dataset.featureRefused = f.id;
+    const p1 = document.createElement('p'), p2 = document.createElement('p');
+    p1.textContent = error;
+    p2.textContent = pm.isNew
+      ? 'It is not added to the feature tree while it fails. Change its settings (the panel stays open), or click ✕ to cancel it.'
+      : 'Your change is not kept while it fails. Change its settings (the panel stays open), or click ✕ to cancel the edit and keep the feature as it was.';
+    box.append(p1, p2);
+    this.ui.modal(what, 'error', box, [{ label: 'Keep editing', primary: true }]);
+    this.ui.renderPM();
+    this.status(`${what}: ${error}`);
   }
 
   cancelPM() {
@@ -5278,6 +5536,7 @@ class App {
     this.macros?.sync(prev);
     this.selection = null;
     this.dirty = true;
+    this._dimSnap = null; this.checkLostDims();
     this.refresh();
     this.updateTitle();
     this.status('Undo');
