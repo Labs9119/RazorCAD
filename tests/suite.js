@@ -811,24 +811,24 @@ const UI = {
 
   async 'print-printer-list'() {
     // the Print Profile dialog's printers: chosen on a starting profile, a copy of it with that printer's bed, used by
-    // the part; another chosen on the copy changes its bed, a size from listings (not the maker's page) says so; a bed
-    // size typed clears the printer
+    // the part; another chosen on the copy changes its bed, a size from listings (not the maker's page: the X1C) says
+    // so; a bed size typed clears the printer
     const a=window.app,P3=await import('/js/print3d.js'),prefs=a.ui.prefs,before=JSON.stringify(prefs.printProfiles||[]),bad=[];
     await a.newDocument?.();closeModals();
-    if(P3.PRINTERS.length<14||!P3.PRINTERS.some(x=>/^Prusa/.test(x.name))||!P3.PRINTERS.some(x=>/^Bambu Lab/.test(x.name)))bad.push('the list');
+    if(P3.PRINTERS.length<18||!P3.PRINTERS.every(x=>x.bed.length===3&&x.bed.every(v=>v>=100&&v<=400))||!P3.PRINTERS.some(x=>/^Prusa/.test(x.name))||!P3.PRINTERS.some(x=>/^Bambu Lab/.test(x.name)))bad.push('the list');
     a.ui.showPrintProfiles();await wait(50);
     const pick=v=>{const s=document.querySelector('[data-print-printer]');s.value=v;s.dispatchEvent(new Event('change'));};
     pick('Prusa CORE One');await wait(50);
     let p=a.printProfile();
     if(p.name!=='PLA, Prusa CORE One'||p.bed.join()!=='250,220,270'||p.printer!=='Prusa CORE One')bad.push(`after CORE One: ${JSON.stringify(p)}`);
     if(document.querySelector('[data-print-printer-check]'))bad.push('a checked size flagged');
-    pick('Bambu Lab A1');await wait(50);p=a.printProfile();
-    if(p.name!=='PLA, Prusa CORE One'||p.bed.join()!=='256,256,256')bad.push(`after A1: ${JSON.stringify(p)}`);
+    pick('Bambu Lab X1C');await wait(50);p=a.printProfile();
+    if(p.name!=='PLA, Prusa CORE One'||p.bed.join()!=='256,256,256')bad.push(`after X1C: ${JSON.stringify(p)}`);
     if(!document.querySelector('[data-print-printer-check]'))bad.push('a size from listings not flagged');
     const x=document.querySelector('[data-print-field="bedX"]');x.value='240';x.dispatchEvent(new Event('change'));await wait(50);p=a.printProfile();
     if(p.bed.join()!=='240,256,256'||p.printer)bad.push(`after typing: ${JSON.stringify(p)}`);
     closeModals();prefs.printProfiles=JSON.parse(before);a.ui.savePrefs();delete a.doc.print;
-    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab A1 (flagged: from listings), a bed size typed clears the printer`};
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab X1C (flagged: from listings), a bed size typed clears the printer`};
   },
 
   // Features that take a 3D sketch where they took a sketch (tests/sketch3d-input-cases.js): Hole, Boss, Snap Hook and

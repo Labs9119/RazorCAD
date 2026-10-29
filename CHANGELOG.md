@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 21:35 — 3D Print: printer bed sizes from the makers' own pages
+
+- The Print Profile dialog's printers: every size but the Bambu Lab X1C's is now confirmed on the maker's own page
+  or store, so the dialog no longer asks you to check them. The Bambu Lab H2D has the size one nozzle prints
+  (325 × 320 × 325 mm), not the two nozzles' together.
+- New in the list: Bambu Lab P2S, X2D and H2S, and Creality Ender-3 V3 Plus.
+
 ## 2026-10-29 19:48 — 3D sketches picked in the view for references, thin lofts and connectors on 3D profiles
 
 - **Reference Axis**, **Point** and **Plane**: a click on a 3D sketch's point picks it, and for an axis a click on its
