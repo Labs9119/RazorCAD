@@ -3398,6 +3398,8 @@ class App {
     } else if (['sweep','surfSweep'].includes(f.type) && target && ['sketch','sketch3d','helix','compCurve','projCurve'].includes(target.type)) {
       if(kind==='sketch'){this.hoverSketchId=id;this.updateSketchDisplay();this.status('Activate a sweep slot and select its contour in the canvas.');return true;}
       return this.setSweepReference(id,this.pm.sweepSlot||(f.profileType==='circle'?'path':'profile'));
+    } else if (f.type === 'smTransition' && target && ['sketch', 'sketch3d'].includes(target.type)) {
+      key = 'sketch';
     } else {
       const fields = { sketch: ['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'surfPlanar', 'helix', 'wrap'], feature: ['lpattern', 'cpattern', 'mirror'] };
       if (fields[kind]?.includes(f.type)) key = kind;
@@ -4230,20 +4232,21 @@ class App {
     let preSketch = null;
     if (type === 'sketch3d') return this.newSketch3D();
     if (this.mode === 'sketch') preSketch = this.exitSketch(true);
-    else if (this.mode === 'sketch3d') this.exitSketch3D(true);
+    else if (this.mode === 'sketch3d') { const s3 = this.exitSketch3D(true); if (type === 'smTransition') preSketch = s3; }
     if (this.pm) this.cancelPM();
     const doc = this.doc, sel = this.selection;
     const selF = sel?.kind === 'feature' ? M.findFeature(doc, sel.id) : null;
     const props = {};
     if (op) props.op = op;
     if (type === 'smTransition') {
-      // the axis line's sketch: the one just sketched or selected, or the last unused one holding just a line;
-      // none: pick a plane and sketch the line, then the transition carries on
-      const isAxis = (x) => x?.type === 'sketch' && x.curves.some((c) => c.type === 'line');
+      // the axis line's sketch (or 3D sketch): the one just sketched or selected, or the last unused one holding just
+      // a line; none: pick a plane and sketch the line, then the transition carries on
+      const isAxis = (x) => (x?.type === 'sketch' && x.curves.some((c) => c.type === 'line')) || (x?.type === 'sketch3d' && (x.segs || []).some((g) => !g.type || g.type === 'line'));
+      const drawn = (x) => (x.type === 'sketch' ? x.curves : x.segs || []).filter((c) => !c.construction).length;
       let sk = isAxis(preSketch) ? preSketch : isAxis(selF) ? selF : null;
       if (!sk) {
         const used = new Set(doc.features.flatMap((x) => M.sketchesUsedBy(x)));
-        sk = doc.features.slice(0, M.rollbackIndex(doc)).reverse().find((x) => isAxis(x) && !x.suppressed && !used.has(x.id) && x.curves.filter((c) => !c.construction).length <= 1) || null;
+        sk = doc.features.slice(0, M.rollbackIndex(doc)).reverse().find((x) => isAxis(x) && !x.suppressed && !used.has(x.id) && drawn(x) <= 1) || null;
       }
       if (!sk) {
         this.pendingFeature = { type, op, opts };

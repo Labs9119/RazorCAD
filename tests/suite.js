@@ -776,6 +776,39 @@ const UI = {
     return { ok: true, detail: 'Two rails in one multi-curve sketch, construction rail selection, unrelated geometry excluded, dependencies and measured deformation' };
   },
 
+  // Transition / Reducer on a 3D sketch's line (300 square to Ø200, 400 high, in 2 parts): upright, the same part as
+  // from a sketch line on the Front plane (X the model's X: the same volume); tilted 30°, the same volume again; the
+  // panel lists the 3D sketch, and clicking it in the tree picks it
+  async 'transition-3d-sketch-axis'() {
+    const a = window.app, S = await import('/js/sketchmodel.js');
+    const vol = async () => (await Promise.all(a.result.bodies.map(async (b) => (await a.kernel.request('measure', { refs: [{ kind: 'body', id: b.id }] })).items[0].volume))).reduce((x, y) => x + y, 0);
+    const line2d = (d) => { const sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }); S.addLine(sk, S.addPoint(sk, 0, 0), S.addPoint(sk, 0, 400)); d.features.push(sk); return sk; };
+    const line3d = (q) => (d) => {
+      const s3 = M.createFeature(d, 'sketch3d');
+      s3.pts = [{ id: 'p1', x: 0, y: 0, z: 0 }, { id: 'p2', x: q[0], y: q[1], z: q[2] }]; s3.segs = [{ id: 's1', a: 'p1', b: 'p2' }]; s3.nextId = 3;
+      d.features.push(s3); return s3;
+    };
+    const build = async (make) => {
+      const d = M.newDoc(), ax = make(d), f = M.createFeature(d, 'smTransition', { sketch: ax.id });
+      d.features.push(f);
+      await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild();
+      return { errors: [...a.result.errors].map((e) => e[1]), n: a.result.bodies.length, v: await vol(), f, ax };
+    };
+    const flat = await build(line2d), up = await build(line3d([0, 400, 0])), c = Math.cos(Math.PI / 6), sn = Math.sin(Math.PI / 6);
+    const tilt = await build(line3d([0, 400 * c, 400 * sn]));
+    const bad = [], close = (x, y) => Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(y));
+    for (const [name, r] of [['sketch line', flat], ['3D sketch, upright', up], ['3D sketch, tilted', tilt]]) if (r.errors.length || r.n !== 2 || !(r.v > 0)) bad.push(`${name}: ${r.n} bodies, ${r.errors.join('; ')}`);
+    if (!bad.length && !(close(up.v, flat.v) && close(tilt.v, flat.v))) bad.push(`volumes ${flat.v}, ${up.v}, ${tilt.v}`);
+    // (the panel: the 3D sketch in the axis list; a click on it in the tree picks it)
+    a.editFeature(tilt.f.id);
+    const opts = [...document.querySelectorAll('#pm select')].flatMap((x) => [...x.options].map((o) => o.value));
+    if (!opts.includes(tilt.ax.id)) bad.push('the 3D sketch is not in the panel');
+    a.pm.feature.sketch = null;
+    if (!a.pmPick('helix', tilt.ax.id) || a.pm.feature.sketch !== tilt.ax.id) bad.push('a click in the tree did not pick the 3D sketch');
+    a.cancelPM();
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `2 parts each way, ${+flat.v.toFixed(1)} mm³ from a sketch line, a 3D sketch's upright line and one tilted 30°; listed and picked in the panel` };
+  },
+
   async 'print-printer-list'() {
     // the Print Profile dialog's printers: chosen on a starting profile, a copy of it with that printer's bed, used by
     // the part; another chosen on the copy changes its bed, a size from listings (not the maker's page) says so; a bed

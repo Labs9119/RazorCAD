@@ -8347,22 +8347,39 @@ async function rebuild(doc, previewId = null, opts = {}) {
         }
         case 'smTransition': {
           // a transition / reducer: two ends (round or a polygon) on the axis of a sketch line (bottom centre
-          // to top centre: its length is the height), in equal parts, each a sheet metal body of its own
+          // to top centre: its length is the height), in equal parts, each a sheet metal body of its own. The line is
+          // in a sketch or a 3D sketch.
           if (!f.sketch) throw new Error('Select the sketch with the axis line (or sketch one: bottom centre to top centre)');
-          const s = sketches.get(f.sketch);
-          if (!s) throw new Error('The sketch is missing, suppressed or has errors');
-          const lines = s.sk.curves.filter((c) => c.type === 'line'), solid = lines.filter((c) => !c.construction);
-          const line = lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null;
-          if (!line) throw new Error(lines.length ? 'The sketch has more than one line: keep one line for the axis (bottom centre to top centre)' : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
-          const q1 = S.getPoint(s.sk, line.p1), q2 = S.getPoint(s.sk, line.p2), fr = s.frame;
-          const W3 = (q) => add(add(fr.o, mul(fr.u, q.x)), mul(fr.v, q.y));
-          let o = W3(q1), tp = W3(q2);
+          const s = sketches.get(f.sketch), s3 = s ? null : doc.features.find((x) => x.id === f.sketch && x.type === 'sketch3d');
+          const P3d = s3 && res.detected[s3.id]?.pts;
+          if (!s && !P3d) throw new Error('The sketch is missing, suppressed or has errors');
+          const pick = (lines) => { const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null; };
+          const noLine = (n) => new Error(n ? 'The sketch has more than one line: keep one line for the axis (bottom centre to top centre)' : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
+          let o, tp, fr = null;
+          if (s) {
+            const lines = s.sk.curves.filter((c) => c.type === 'line'), line = pick(lines);
+            if (!line) throw noLine(lines.length);
+            fr = s.frame;
+            const W3 = (q) => add(add(fr.o, mul(fr.u, q.x)), mul(fr.v, q.y));
+            o = W3(S.getPoint(s.sk, line.p1)); tp = W3(S.getPoint(s.sk, line.p2));
+          } else {
+            // (a 3D sketch's line, between its points as built; an older 3D sketch of just two points is one too)
+            const at = new Map((s3.pts || []).map((q, i) => [q.id, P3d[i]]));
+            const lines = Array.isArray(s3.segs) ? s3.segs.filter((g) => (!g.type || g.type === 'line') && at.has(g.a) && at.has(g.b)) : P3d.length === 2 ? [{ a: s3.pts[0].id, b: s3.pts[1].id }] : [];
+            const line = pick(lines);
+            if (!line) throw noLine(lines.length);
+            o = at.get(line.a); tp = at.get(line.b);
+          }
           if (f.reverse) [o, tp] = [tp, o];
           const h = len(sub(tp, o));
           if (!(h > 1e-6)) throw new Error('The axis line has no length');
           const d = unit(sub(tp, o));
-          // X: in the sketch plane, square to the line; turned about the axis by the rotation
-          const X0 = unit(cross(d, fr.n)), Y0 = cross(d, X0), rot = (ev(f.rotation ?? 0) * Math.PI) / 180;
+          // X: in the sketch plane, square to the line; from a 3D sketch (no plane): level, square to the line and the
+          // up axis (Y then toward the top), or the model's X when the line is upright. Turned about the axis by the
+          // rotation.
+          const up = docUp === 'z' ? [0, 0, 1] : [0, 1, 0], level = cross(up, d);
+          const X0 = fr ? unit(cross(d, fr.n)) : len(level) > 1e-9 ? unit(level) : unit(sub([1, 0, 0], mul(d, d[0])));
+          const Y0 = cross(d, X0), rot = (ev(f.rotation ?? 0) * Math.PI) / 180;
           const X = add(mul(X0, Math.cos(rot)), mul(Y0, Math.sin(rot))), Y = cross(d, X);
           const t = ev(f.thickness), R0 = ev(f.radius ?? 0), K = sheetKFactor(f, R0, t);
           if (!(t > 0)) throw new Error('The thickness must be greater than zero');

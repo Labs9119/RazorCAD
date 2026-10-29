@@ -543,7 +543,7 @@ const PM_SCHEMAS = {
   ],
   smTransition: [
     { title: 'Axis', fields: [
-      { key: 'sketch', type: 'sketch', label: 'Sketch (one line)' },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (one line)', with3d: true },
       { key: 'reverse', type: 'check', label: 'Swap the bottom and top ends' },
       { key: 'aHint', type: 'hint', text: 'The line runs from the bottom centre to the top centre: its length is the height and it places the part. Change the line (or its dimension) to change the height.' },
     ] },
@@ -553,7 +553,7 @@ const PM_SCHEMAS = {
       { key: 'offX', type: 'expr', label: 'Top offset across (X)', unit: 'mm' },
       { key: 'offY', type: 'expr', label: 'Top offset out of the sketch (Y)', unit: 'mm' },
       { key: 'rotation', type: 'expr', label: 'Rotation about the axis', unit: '°' },
-      { key: 'pHint', type: 'hint', text: 'X lies in the sketch plane, square to the line; Y is out of the sketch plane. Offset the top for an eccentric reducer or an offset transition.' },
+      { key: 'pHint', type: 'hint', text: (f, a) => (findFeature(a.doc, f.sketch)?.type === 'sketch3d' ? 'From a 3D sketch, X is level, square to the line (the model X axis when the line is upright); Y is square to both, toward the top. Offset the top for an eccentric reducer or an offset transition.' : 'X lies in the sketch plane, square to the line; Y is out of the sketch plane. Offset the top for an eccentric reducer or an offset transition.') },
     ] },
     { title: 'Parts', fields: [
       { key: 'parts', type: 'expr', label: 'Number of equal parts', unit: '' },
@@ -4189,7 +4189,7 @@ export class UI {
           body.appendChild(this.row(null, lab, 'check'));
         } else {
           let options = typeof fd.options === 'function' ? fd.options(f, doc) : fd.options;
-          if (fd.type === 'sketch') options = [['', '— select a sketch —'], ...before.filter((x) => x.type === 'sketch').map((x) => [x.id, x.name])];
+          if (fd.type === 'sketch') options = [['', '— select a sketch —'], ...before.filter((x) => x.type === 'sketch' || (fd.with3d && x.type === 'sketch3d')).map((x) => [x.id, x.name])];
           if (fd.type === 'feature') options = [['', '— select a feature —'], ...before.filter((x) => !PATTERN_SKIP.has(x.type) && !x.suppressed).map((x) => [x.id, x.name])];
           if (fd.type === 'axis') {
             options = [['v', 'Sketch vertical axis'], ['u', 'Sketch horizontal axis'], ...axisCandidates(findFeature(doc, f.sketch || LR.sourceId(f.profiles?.[0])))];

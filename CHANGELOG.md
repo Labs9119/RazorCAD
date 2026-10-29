@@ -6,6 +6,12 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 17:43 — Transition / Reducer on a 3D sketch line
+
+- **Transition / Reducer** takes its axis from a line in a 3D sketch too: pick the 3D sketch in the panel or the
+  tree, or start the tool while editing it. X is level, square to the line (the model's X axis when the line is
+  upright), and Y points toward the top.
+
 ## 2026-10-29 16:59 — Tests: about 15 minutes on GitHub, and steadier
 
 - The regression tests on GitHub run on 6 machines side by side (`run_tests.py --shard`), some 15 minutes instead of

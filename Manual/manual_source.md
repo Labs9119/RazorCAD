@@ -1346,7 +1346,7 @@ A sheet metal part between two open profile sketches (each one chain of lines an
 
 Cones, concentric and eccentric reducers, square-, rectangle-, triangle-, pentagon- and hexagon-to-round transitions (either way up) and polygon frustums. {idx:Transition / Reducer}{idx:reducer}
 
-- Sizes, offset and rotation are set in the panel; sizes can be inside, outside or mean. A sketch line from bottom centre to top centre places the part and sets its height; change the line and the part follows. Started with no sketch, it asks for a plane and opens the Line tool.
+- Sizes, offset and rotation are set in the panel; sizes can be inside, outside or mean. A line from bottom centre to top centre, in a sketch or a 3D sketch, places the part and sets its height; change the line and the part follows. In a sketch, X lies in the sketch plane, square to the line; from a 3D sketch (which has no plane), X is level, square to the line (the model's X axis when the line is upright), and Y points toward the top. Started with no sketch, it asks for a plane and opens the Line tool.
 - The part is made from a number of equal pieces, each a sheet metal body with its own flat pattern: a cone from one piece or more, a flat-sided transition from two or more, with seams at the middle of the flat sides or at the corners.
 - **Formed** (rolled, with a set number of forming lines per corner or round the whole part) or **bent** (bump formed with a set number of bends).
 
