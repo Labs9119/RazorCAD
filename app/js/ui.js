@@ -1604,7 +1604,8 @@ const PM_SCHEMAS = {
   ],
   structMember: [
     { title: 'Profile', fields: [{ key: 'profile', type: 'profileSel' }] },
-    { title: 'Path', fields: [
+    { title: 'Groups', fields: [{ key: 'groups', type: 'memberGroups' }] },
+    { title: 'Path', show: (f) => !(f.groups || []).some((g) => g.segs?.length), fields: [
       { key: 'path', type: 'pathSel', label: 'Sketch / 3D sketch' },
       { key: 'paths', type: 'curveList' },
       { key: 'pHint', type: 'hint', text: 'Every line (and arc) of the sketch becomes a member, its own body. Add more sketches / 3D sketches (the list) for a frame in 3D, e.g. the top of a table and its legs: the joints between them are treated too. Arcs (or the bends of a 3D sketch with a bend radius) become bent members.' },
@@ -4085,6 +4086,8 @@ export class UI {
           if (!L.length) ul.appendChild(el('div', { class: 'li pm-hint' }, 'No corners selected'));
           L.forEach((v, i) => { const li = el('div', { class: 'li sel' }, `${icon('point')}<span>Corner&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`); li.querySelector('.x').onclick = () => { L.splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); }; ul.appendChild(li); });
           body.appendChild(ul);
+        } else if (fd.type === 'memberGroups') {
+          this.renderMemberGroups(body, f);
         } else if (fd.type === 'vertexRadii') {
           this.renderVertexRadii(body, f);
         } else if (fd.type === 'edgePoints') {
@@ -5170,6 +5173,40 @@ export class UI {
     render();
     this.modal('Tolerance Stack-Up', 'measure', box, [{ label: 'Close', primary: true }]);
     return { box, render, get current() { return cur; } };
+  }
+
+  // Structural Member groups: each group's lines (picked in the view while it is the one being picked for), its own
+  // corners and alignment (blank: the feature's), added and removed here
+  renderMemberGroups(body, f) {
+    const a = this.app, pm = a.pm;
+    if (!Array.isArray(f.groups)) f.groups = [];
+    body.appendChild(el('div', { class: 'pm-hint' }, 'Optional: pick the lines for the members yourself, in groups. <b>Add Group</b>, then click lines and arcs of sketches or 3D sketches in the view (again to take one out). Each group has its own corners and alignment; where two groups meet, the later one is trimmed to the earlier. With no groups, every line of the Path sketches is a member.'));
+    const done = () => { a.updateRefGeometry(); a.updateSketchDisplay?.(); this.renderPM(); a.preview(true); };
+    f.groups.forEach((gr, gi) => {
+      const on = pm.memberGroup === gi, n = gr.segs?.length || 0;
+      const row = el('div', { class: 'li' + (on ? ' sel' : ''), 'data-member-group': gi }, `<span>Group ${gi + 1}: ${n} line${n === 1 ? '' : 's'}${on ? ' — click lines in the view' : ''}</span><span class="x" title="Remove the group">✕</span>`);
+      row.onclick = (e) => { if (e.target.classList.contains('x')) return; pm.memberGroup = on ? null : gi; done(); };
+      row.querySelector('.x').onclick = (e) => { e.stopPropagation(); f.groups.splice(gi, 1); pm.memberGroup = null; done(); };
+      body.appendChild(row);
+      if (!on) return;
+      const sel = (key, label, options) => {
+        const s = el('select', { 'data-member-group-field': key });
+        for (const [v, t] of [['', 'As the feature'], ...options]) s.appendChild(el('option', { value: v, selected: (gr[key] ?? '') === v }, esc(t)));
+        s.onchange = () => { gr[key] = s.value || null; a.preview(true); };
+        body.appendChild(this.row(label, s));
+      };
+      sel('corner', 'Corners', [['mitre', 'Mitre'], ['butt1', 'Butt (first member trimmed)'], ['butt2', 'Butt (second member trimmed)'], ['none', 'None']]);
+      sel('pierce', 'Line runs through', PIERCE);
+      body.appendChild(this.row('Rotate profile', this.exprInput(gr.rotate ?? '', '°', (v) => { gr.rotate = v === '' ? null : v; a.preview(); }, { optional: true })));
+      const cb = el('input', { type: 'checkbox', 'data-member-group-field': 'mirror' });
+      cb.checked = !!gr.mirror;
+      cb.onchange = () => { gr.mirror = cb.checked; a.preview(true); };
+      const lab = el('label'); lab.append(cb, ' Mirror profile');
+      body.appendChild(this.row(null, lab, 'check'));
+    });
+    const add = el('button', { class: 'btn', 'data-member-group-add': '' }, 'Add Group');
+    add.onclick = () => { f.groups.push({ segs: [] }); pm.memberGroup = f.groups.length - 1; done(); };
+    body.appendChild(add);
   }
 
   modal(title, ic, body, buttons) {

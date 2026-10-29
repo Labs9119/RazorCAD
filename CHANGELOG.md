@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 23:03 — Structural Member: segments picked in groups
+
+- **Groups**: pick the lines and arcs for the members yourself, from sketches and 3D sketches, clicked in the view,
+  in as many groups as wanted. Each group has its own corners, pierce point, rotation and mirror. Where two groups
+  meet, the later is trimmed to the earlier. Without groups, every line of the Path sketches is a member, as before.
+- Tests: member-groups (tests/member-group-cases.js), the lengths where groups meet by hand.
+
 ## 2026-10-29 22:57 — Transition / Reducer on one line of a sketch or 3D sketch with several
 
 - The axis can be any line of a sketch or 3D sketch with several (a duct route): click it in the view while the

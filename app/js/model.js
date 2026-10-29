@@ -200,7 +200,7 @@ export const SKETCH_FEATURES = new Set(['extrude', 'revolve', 'surfExtrude', 'su
 
 // Sketches a feature uses (they are hidden and shown under it in the tree once used).
 export function sketchesUsedBy(f) {
-  return [...new Set([f.sketch, f.profile, f.path, f.guide, f.profileA, f.profileB, ...(Array.isArray(f.profiles) ? f.profiles : []), ...(f.guides || [])].map((x) => typeof x === 'string' ? x : x?.sketch).filter(Boolean))];
+  return [...new Set([f.sketch, f.profile, f.path, f.guide, f.profileA, f.profileB, ...(Array.isArray(f.profiles) ? f.profiles : []), ...(f.guides || []), ...(f.type === 'structMember' && Array.isArray(f.groups) ? f.groups.flatMap((g) => (g.segs || []).map((k) => k.s)) : [])].map((x) => typeof x === 'string' ? x : x?.sketch).filter(Boolean))];
 }
 
 export function iconFor(f) {
@@ -339,7 +339,8 @@ export function createFeature(doc, type, props = {}) {
     endCap: { faces: [], capType: 'outside', thickness: 3 },
     // a triangular plate between two flat faces: legs d1 / d2, thickness, corner chamfer, position along the corner
     weldGusset: { faces: [], d1: 75, d2: 75, thickness: 6, chamfer: 10, position: 'mid', offset: 0 },
-    structMember: { path: null, paths: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar' },
+    // groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }] (none: every line of the paths)
+    structMember: { path: null, paths: [], groups: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar' },
     // faces: picked faces of any bodies (solid or surface), copied as they are; knit: touching copies become one surface body
     surfCopy: { faces: [], knit: true },
     knit: { bodies: [], solid: true, tolerance: 0.01, merge: true },

@@ -1524,6 +1524,7 @@ Pick a profile and a sketch or 3D sketch: every line and arc of it becomes a mem
 
 Sizes come from AS/NZS or EN/ISO tables, or enter your own dimensions.
 
+- **Groups** {idx:Structural Member, groups}: instead of every line of the Path sketches, pick the lines yourself. **Add Group**, then click lines and arcs of sketches or 3D sketches in the view (they show while you pick; the group's lines are orange, other groups' highlighted); click one again to take it out. Click a group in the list to pick for it again. Each group has its own **Corners**, **Line runs through**, **Rotate profile** and **Mirror profile** (blank: as the feature). Where two groups meet, the later group is trimmed to the earlier one, which runs on over the corner. A line picked that is no longer in its sketch is left out, and the note says so.
 - **Corners** where two members meet end to end: **Mitre**, **Butt** (first or second member trimmed) or **None** (members meet at the sketch points). **Trimmed ends**: square cut on the face, or coped to the other member's outside.
 - A member ending on the middle of another (a T-joint), or under a corner (a table leg), is trimmed to it, square on its face. Pipes and round bars are always coped (fish-mouthed).
 - **Alignment**: which point of the profile the sketch line runs through (centre, corners or edges), a profile rotation, and mirror.

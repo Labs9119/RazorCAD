@@ -954,6 +954,32 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):'a fillet with no edges refused (dialog, panel open, not added); a failing edit refused and ✕ kept the block; a good edit accepted'};
   },
 
+  // Structural Member groups (tests/member-group-cases.js): segments picked, groups trimmed one to another
+  async 'member-groups'() {
+    const {run}=await import('/tests/member-group-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
+    // in the app: Add Group, a click on the rectangle's near long side puts it in (orange), again takes it out, once
+    // more in; ✔: one member, 400 long
+    const a=window.app,S=await import('/js/sketchmodel.js'),{Vector3}=await import('three'),d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}}),bad=[];
+    const p=[[-200,-100],[200,-100],[200,100],[-200,100]].map(q=>S.addPoint(sk,...q));p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));
+    const f=M.createFeature(d,'structMember',{ptype:'shs',size:'50x50x3 SHS',path:sk.id,paths:[sk.id]});d.features.push(sk,f);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();
+    if(a.result.bodies.length!==4)bad.push(`before: ${a.result.bodies.length} members`);
+    a.editFeature(f.id);await wait(100);
+    document.querySelector('[data-member-group-add]')?.click();await wait(50);
+    if(a.pm.memberGroup!==0||a.pickMode()!=='memberSegs')bad.push('Add Group did not start picking');
+    const vp=a.viewport,rc=vp.canvas.getBoundingClientRect(),q=vp.project(new Vector3(0,0,100)),click=()=>a.handleClick({clientX:rc.left+q.x,clientY:rc.top+q.y,button:0,ctrlKey:false,shiftKey:false,altKey:false,preventDefault(){},stopPropagation(){}});
+    click();await wait(30);const k0=JSON.stringify(a.pm.feature.groups[0].segs);
+    click();await wait(30);const k1=a.pm.feature.groups[0].segs.length;
+    click();await wait(30);
+    if(k0!==JSON.stringify([{s:sk.id,c:sk.curves[0].id}])||k1!==0)bad.push(`clicks: ${k0}, then ${k1}`);
+    await a.okPM();await wait(80);await until(()=>!a.kernel.pending);
+    const L=a.result.bodies.filter(b=>b.member).map(b=>b.member.length);
+    if(a.pm||L.length!==1||Math.abs(L[0]-400)>1e-6)bad.push(`after ✔: ${JSON.stringify(L)} ${a.pm?.kind||''}`);
+    closeModals();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases (lengths by hand where groups meet, one line, a line gone, a 3D sketch's line); in the app a line clicked into a group, out and in again, ✔: one member`};
+  },
+
   // Structural members round a frame face the same way whichever way each line was drawn (tests/member-orientation-cases.js)
   async 'member-orientation'() {
     const {run}=await import('/tests/member-orientation-cases.js'),native=await run({threads:threadsPerKernel()});

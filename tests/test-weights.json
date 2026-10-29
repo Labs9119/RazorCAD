@@ -194,6 +194,7 @@
  "failing-feature-refused": 5000,
  "sketch3d-dimension-preview": 1500,
  "transition-axis-line-pick": 15000,
+ "member-groups": 10000,
  "speed-mode": 876,
  "standard-feature-workflows": 16606,
  "standard-parts": 808,

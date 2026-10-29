@@ -4053,17 +4053,37 @@ async function rebuild(doc, previewId = null, opts = {}) {
   };
   // The segments of a weldment path: lines { type: 'line', a, b } and arcs { type: 'arc', a, b, t0, t1, wire,
   // length } (3D), from a sketch's curves (construction left out) or a 3D sketch's edges.
+  // (each with key: the id of the sketch curve or 3D sketch segment it lies on, for Structural Member's groups)
   const memberPath = (id) => {
     const out = [];
     const addEdge = (e) => {
-      const a = vec(e.startPoint), b = vec(e.endPoint);
-      if (e.geomType === 'LINE') { if (len(sub(b, a)) > 1e-9) out.push({ type: 'line', a, b }); }
-      else out.push({ type: 'arc', a, b, t0: unit(vec(e.tangentAt(0))), t1: unit(vec(e.tangentAt(1))), wire: R.assembleWire([e.clone()]), length: R.measureLength(e) });
+      const a = vec(e.startPoint), b = vec(e.endPoint), mid = vec(e.pointAt(0.5));
+      if (e.geomType === 'LINE') { if (len(sub(b, a)) > 1e-9) out.push({ type: 'line', a, b, mid }); }
+      else out.push({ type: 'arc', a, b, mid, t0: unit(vec(e.tangentAt(0))), t1: unit(vec(e.tangentAt(1))), wire: R.assembleWire([e.clone()]), length: R.measureLength(e) });
     };
-    if (curves.has(id)) { const c = curves.get(id); for (const w of c.wires || [c.wire]) for (const e of w.edges) addEdge(e); return out; }
+    const tol = (g) => Math.max(1e-6, len(sub(g.b, g.a)) * 1e-7, (g.length || 0) * 1e-7);
+    if (curves.has(id)) {
+      const c = curves.get(id);
+      for (const w of c.wires || [c.wire]) for (const e of w.edges) addEdge(e);
+      const s3 = sketch3dOf(id);
+      if (s3?.segs) for (const g of out) {
+        const on = (x) => {
+          const t = x.type || 'line', A = s3.at.get(x.a), B = s3.at.get(x.b);
+          if (t === 'line') return A && B && len(sub(add(A, B), add(g.a, g.b))) < 2 * tol(g) && (len(sub(A, g.a)) < tol(g) || len(sub(A, g.b)) < tol(g));
+          if (t === 'arc' || t === 'circle') { const C = s3.at.get(x.c), r = t === 'circle' ? x.r : A && C && len(sub(A, C)); return C && r && Math.abs(len(sub(g.mid, C)) - r) < tol(g) && Math.abs(len(sub(g.a, C)) - r) < tol(g); }
+          return false;
+        };
+        g.key = s3.segs.find((x) => !x.construction && on(x))?.id ?? null;
+      }
+      return out;
+    }
     const sk = sketches.get(id);
     if (!sk) return out;
     for (const w of sketchWires(sk.sk, sk.frame)) for (const e of w.edges) addEdge(e);
+    for (const g of out) {
+      const q = S.toFrame2D(sk.frame, g.mid);
+      g.key = sk.sk.curves.find((c) => !c.construction && S.distToCurve(sk.sk, c, q[0], q[1]) < tol(g))?.id ?? null;
+    }
     return out;
   };
   // a path as a 3D polyline (sketch chains, 3D sketches, helices)
@@ -6236,9 +6256,28 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // Weldment structural members: a standard (or custom) profile along every segment of a sketch / 3D
           // sketch, each segment its own body; corners mitred or butted, ends on another member coped to it
           const prof = profileDims(f, ev), sec = profileSection(prof);
-          const pp = piercePoint(sec.box, f.pierce || 'mc'), rot = ((f.rotate ? ev(f.rotate) : 0) * Math.PI) / 180;
-          const segs = [...new Set([f.path, ...(f.paths || [])].filter(Boolean))].flatMap((id) => memberPath(id).map((g) => ({ ...g, src: id })));
+          // groups (f.groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }]): the segments
+          // picked, each group with its own alignment and corners; none: every line and arc of the path sketches
+          const groups = (Array.isArray(f.groups) ? f.groups : []).filter((gr) => gr?.segs?.length);
+          let segs, lost = 0;
+          if (groups.length) {
+            const paths = new Map(), taken = new Set();
+            segs = [];
+            groups.forEach((gr, gi) => {
+              for (const k of gr.segs) {
+                if (taken.has(k.s + ':' + k.c)) continue;
+                taken.add(k.s + ':' + k.c);
+                if (!paths.has(k.s)) paths.set(k.s, memberPath(k.s));
+                const hit = paths.get(k.s).filter((g) => g.key === k.c);
+                if (!hit.length) lost++;
+                for (const g of hit) segs.push({ ...g, src: k.s, grp: gi });
+              }
+            });
+            if (!segs.length) throw new Error('The lines picked for the groups are no longer in their sketches: pick them again');
+          } else segs = [...new Set([f.path, ...(f.paths || [])].filter(Boolean))].flatMap((id) => memberPath(id).map((g) => ({ ...g, src: id })));
           if (!segs.length) throw new Error('Select a sketch or 3D sketch with the lines (and arcs) for the members');
+          const grpOf = (g) => (g.grp != null ? groups[g.grp] : null);
+          const setOf = (g, k, dflt) => { const v = grpOf(g)?.[k]; return v != null && v !== '' ? v : f[k] ?? dflt; };
           const size = Math.hypot(sec.box.x1 - sec.box.x0, sec.box.y1 - sec.box.y0), ext = size * 1.5 + 1;
           const tol = Math.max(1e-4, size * 1e-5);
           // the members of a chain (lines and arcs of one path joined end to end, two at each point between) all run the
@@ -6247,7 +6286,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // way round turned round to it
           {
             const nodes = [], node = (src, q) => { let k = nodes.findIndex((x) => x.src === src && len(sub(x.p, q)) < tol); if (k < 0) { nodes.push({ src, p: q, n: 0 }); k = nodes.length - 1; } nodes[k].n++; return k; };
-            const ends = segs.map((g) => [node(g.src, g.a), node(g.src, g.b)]), seen = new Set();
+            // (a chain: one path sketch's, or one group's)
+            const ends = segs.map((g) => { const src = g.grp != null ? 'grp' + g.grp : g.src; return [node(src, g.a), node(src, g.b)]; }), seen = new Set();
             for (let i0 = 0; i0 < segs.length; i0++) {
               if (seen.has(i0)) continue;
               // the chain through segment i0 (as drawn): each segment with whether it runs against i0
@@ -6271,22 +6311,29 @@ async function rebuild(doc, previewId = null, opts = {}) {
               for (const [i, rev] of chain) if (rev !== (against > with_) && segs[i].type === 'line') segs[i] = { ...segs[i], a: segs[i].b, b: segs[i].a };
             }
           }
-          const shiftSegs = (list) => list.map((g) => (g.type === 'circle' ? { ...g, c: [g.c[0] - pp[0], g.c[1] - pp[1]] } : { ...g, a: [g.a[0] - pp[0], g.a[1] - pp[1]], b: [g.b[0] - pp[0], g.b[1] - pp[1]], ...(g.m ? { m: [g.m[0] - pp[0], g.m[1] - pp[1]] } : {}) }));
-          const outerSegs = shiftSegs(sec.outer), innerSegs = sec.inner ? shiftSegs(sec.inner) : null;
+          const shiftSegs = (list, pp) => list.map((g) => (g.type === 'circle' ? { ...g, c: [g.c[0] - pp[0], g.c[1] - pp[1]] } : { ...g, a: [g.a[0] - pp[0], g.a[1] - pp[1]], b: [g.b[0] - pp[0], g.b[1] - pp[1]], ...(g.m ? { m: [g.m[0] - pp[0], g.m[1] - pp[1]] } : {}) }));
+          // (the profile through its pierce point, a group's own or the feature's)
+          const secs = new Map(), secFor = (g) => {
+            const key = setOf(g, 'pierce', 'mc');
+            if (!secs.has(key)) { const pp = piercePoint(sec.box, key); secs.set(key, { outerSegs: shiftSegs(sec.outer, pp), innerSegs: sec.inner ? shiftSegs(sec.inner, pp) : null }); }
+            return secs.get(key);
+          };
           // the profile's frame where a member leaves point A in direction d: its height kept upright; in a sketch on an
           // upright plane (a frame standing up), its height in the plane, square to the member, so that every member's
           // profile faces the same side out of the plane, the upright ones as the level ones
-          const frameAt = (A, d, src) => {
+          const frameAt = (A, d, src, g) => {
+            const rot = ((ev(setOf(g, 'rotate', 0) || 0)) * Math.PI) / 180;
             const pn = sketches.get(src)?.frame?.n;
             let v = pn && Math.abs(dot(pn, [0, 1, 0])) < 1e-6 ? cross(pn, d) : rej([0, 1, 0], d);
             if (len(v) < 1e-6) v = rej(f.vertRef === 'x' ? [1, 0, 0] : [0, 0, -1], d);
             v = unit(v);
             let u = cross(v, d);
             if (rot) { const c = Math.cos(rot), sn = Math.sin(rot), u2 = add(mul(u, c), mul(v, sn)), v2 = add(mul(v, c), mul(u, -sn)); u = u2; v = v2; }
-            if (f.mirror) u = mul(u, -1);
+            if (setOf(g, 'mirror', false)) u = mul(u, -1);
             return { o: A, u, v, n: d };
           };
-          const faceAt = (fr, withHole) => {
+          const faceAt = (fr, withHole, g) => {
+            const { outerSegs, innerSegs } = secFor(g);
             let face = R.makeFace(loopWire(fr, outerSegs));
             if (withHole && innerSegs) face = R.addHolesInFace(face, [loopWire(fr, innerSegs)]);
             return face;
@@ -6294,18 +6341,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // the members' ends and how they meet
           const ms = segs.map((g, i) => ({ i, g, line: g.type === 'line', ends: [g.a, g.b], out: g.type === 'line' ? [unit(sub(g.a, g.b)), unit(sub(g.b, g.a))] : [mul(g.t0, -1), g.t1], trim: [null, null], cut: [0, 0] }));
           const near = (x, y) => len(sub(x, y)) < tol;
-          const groups = [];
+          const nodeGroups = [];
           for (const m of ms) for (const k of [0, 1]) {
             const q = m.ends[k];
-            let gr = groups.find((x) => near(x.p, q));
-            if (!gr) groups.push((gr = { p: q, ends: [] }));
+            let gr = nodeGroups.find((x) => near(x.p, q));
+            if (!gr) nodeGroups.push((gr = { p: q, ends: [] }));
             gr.ends.push({ m, k });
           }
-          const corner = f.corner || 'mitre';
-          // a corner between two ends: mitred or butted
+          const cornerOf = (E) => setOf(E.m.g, 'corner', 'mitre');
+          // a corner between two ends: mitred or butted (two groups': the later one trimmed to the earlier)
           const cornerPair = (E1, E2, gr) => {
             const straight = dot(E1.m.out[E1.k], E2.m.out[E2.k]) < -0.9999;
             if (straight || !E1.m.line || !E2.m.line) return;
+            const across = E1.m.g.grp !== E2.m.g.grp, corner = across ? (E1.m.g.grp < E2.m.g.grp ? 'butt2' : 'butt1') : cornerOf(E1);
+            if (corner === 'none') return;
             if (corner === 'mitre') {
               const n = unit(sub(mul(E1.m.out[E1.k], -1), mul(E2.m.out[E2.k], -1)));
               E1.m.trim[E1.k] = { kind: 'plane', p: gr.p, n }; E2.m.trim[E2.k] = { kind: 'plane', p: gr.p, n: mul(n, -1) };
@@ -6315,11 +6364,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
               C.m.trim[C.k] = { kind: 'cover', other: T.m, p: gr.p };
             }
           };
-          for (const gr of groups) {
+          for (const gr of nodeGroups) {
+            const corner = cornerOf(gr.ends[0]);
             if (gr.ends.length >= 3 && corner !== 'none') {
-              // e.g. a table's corner: the two rails of one sketch make the corner, the leg is trimmed to both
-              const bySrc = new Map();
-              for (const E of gr.ends) { if (!bySrc.has(E.m.g.src)) bySrc.set(E.m.g.src, []); bySrc.get(E.m.g.src).push(E); }
+              // e.g. a table's corner: the two rails of one sketch (or group) make the corner, the leg is trimmed to both
+              const bySrc = new Map(), keyOf = (E) => (E.m.g.grp != null ? 'grp' + E.m.g.grp : E.m.g.src);
+              for (const E of gr.ends) { if (!bySrc.has(keyOf(E))) bySrc.set(keyOf(E), []); bySrc.get(keyOf(E)).push(E); }
               const pair = [...bySrc.values()].find((l) => l.length === 2);
               if (pair) {
                 cornerPair(pair[0], pair[1], gr);
@@ -6327,7 +6377,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               }
               continue;
             }
-            if (gr.ends.length === 2 && corner !== 'none') {
+            if (gr.ends.length === 2 && (corner !== 'none' || gr.ends[0].m.g.grp !== gr.ends[1].m.g.grp)) {
               cornerPair(gr.ends[0], gr.ends[1], gr);
               continue;
             }
@@ -6348,14 +6398,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (m.line) {
               const d = unit(sub(m.g.b, m.g.a)), L = len(sub(m.g.b, m.g.a));
               const e0 = m.trim[0] ? ext : 0, e1 = m.trim[1] ? ext : 0;
-              const fr = frameAt(sub(m.g.a, mul(d, e0)), d, m.g.src);
-              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d, m.g.src);
-              m.solid = R.basicFaceExtrusion(faceAt(fr, true), new R.Vector(mul(d, L + e0 + e1)));
-              m.env = R.basicFaceExtrusion(faceAt(fr, false), new R.Vector(mul(d, L + e0 + e1)));
-              m.env0 = R.basicFaceExtrusion(faceAt(m.fr, false), new R.Vector(mul(d, L))); // (to the sketch ends)
+              const fr = frameAt(sub(m.g.a, mul(d, e0)), d, m.g.src, m.g);
+              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d, m.g.src, m.g);
+              m.solid = R.basicFaceExtrusion(faceAt(fr, true, m.g), new R.Vector(mul(d, L + e0 + e1)));
+              m.env = R.basicFaceExtrusion(faceAt(fr, false, m.g), new R.Vector(mul(d, L + e0 + e1)));
+              m.env0 = R.basicFaceExtrusion(faceAt(m.fr, false, m.g), new R.Vector(mul(d, L))); // (to the sketch ends)
             } else {
               // an arc: swept (no end trimming)
-              const fr = frameAt(m.g.a, m.g.t0, m.g.src), spine = m.g.wire;
+              const fr = frameAt(m.g.a, m.g.t0, m.g.src, m.g), spine = m.g.wire, { outerSegs, innerSegs } = secFor(m.g);
               const sw = (w) => { for (const tm of ['right', 'round', 'transformed']) { try { return R.genericSweep(w, spine, { frenet: false, transitionMode: tm }); } catch (e) { if (isFatal(e)) throw e; } } throw new Error('A curved member could not be swept'); };
               m.env = sw(loopWire(fr, outerSegs));
               m.solid = innerSegs ? m.env.cut(sw(loopWire(fr, innerSegs))) : m.env;
@@ -6407,7 +6457,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             applied.push({ op: 'add', tool: sh });
           }
           body = compoundOf(solids);
-          res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}`;
+          res.notes[f.id] = `${ms.length} member${ms.length === 1 ? '' : 's'}: ${prof.label}` + (groups.length ? ` · ${groups.length} group${groups.length === 1 ? '' : 's'}` : '') + (lost ? ` · ${lost} line${lost === 1 ? '' : 's'} picked no longer in ${lost === 1 ? 'its sketch' : 'their sketches'}` : '');
           break;
         }
         case 'pipeRoute': {

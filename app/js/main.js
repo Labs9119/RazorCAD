@@ -1734,6 +1734,14 @@ class App {
 
   // A curve (line, arc or circle) of a sketch shown in the view under the cursor (part mode):
   // { sketch, curve, at (a world point on it, near the cursor) }.
+  // A sketch's curve or a 3D sketch's segment as a polyline in the model ([[x, y, z]]), or null
+  sketchItemPolyline(sketchId, id) {
+    const f3 = M.findFeature(this.doc, sketchId), s2 = this.result.sketches?.get(sketchId);
+    if (f3?.type === 'sketch3d') { const g = (f3.segs || []).find((x) => x.id === id), q = g && this.sketch3dGeometry(f3)?.curve(g); return q ? q.map((v) => v.toArray()) : null; }
+    const c = s2?.sketch.curves.find((x) => x.id === id);
+    return c ? S.curvePoints(s2.sketch, c).map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) : null;
+  }
+
   // Transition: the line of an earlier sketch or 3D sketch under the cursor, { sketch, line }
   axisLineAt(e) {
     const s3 = this.sketch3dItemAt(e, 'curve'), f3 = s3 && M.findFeature(this.doc, s3.sketch), g = f3?.segs?.find((x) => x.id === s3.curve);
@@ -1747,7 +1755,7 @@ class App {
     let best = null, bd = 6;
     for (const [id, s] of this.result.sketches) {
       const f = s.sketch;
-      const datum=this.pickMode()==='ref'||this.pickMode()==='axisLine';
+      const datum=['ref','axisLine','memberSegs'].includes(this.pickMode());
       if(datum&&(f.suppressed||this.result.errors.has(id)||this.doc.features.indexOf(f)>=this.doc.features.indexOf(this.pm.feature)))continue;
       if (!datum&&!(this.vis.sketches && this.sketchShown(f)) && this.hoverSketchId !== id) continue;
       for (const c of f.curves) {
@@ -2708,6 +2716,7 @@ class App {
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
     if (f.type === 'smTransition') return 'axisLine';
+    if (f.type === 'structMember' && this.pm.memberGroup != null) return 'memberSegs';
     if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
     if (f.type === 'printHinge') return 'edge';
     if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
@@ -3019,7 +3028,7 @@ class App {
     const sel = this.selection?.kind === 'feature' ? this.selection.id : null;
     const sweep = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     const datumRefs=new Set(this.pm?.feature?.referenceDefinition?(this.pm.feature.refs||[]).filter(r=>r.id).map(r=>r.id):[]);
-    const datumPicking = (f) => ['ref', 'axisLine'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
+    const datumPicking = (f) => ['ref', 'axisLine', 'memberSegs'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
     const state = (id) => (id === editing || id === sweep?.guide ? 'preview' : id === sel || id === this._hoverFeature || id === sweep?.path || datumRefs.has(id) ? 'selected' : 'normal');
     const axes = [], points = [];
     for (const f of this.doc.features) {
@@ -3043,6 +3052,15 @@ class App {
       const f3 = r.kind === 'sketch' && r.curve ? M.findFeature(this.doc, r.sketch) : null, g = f3?.type === 'sketch3d' && (f3.segs || []).find((x) => x.id === r.curve);
       const pts = g && this.sketch3dGeometry(f3)?.curve(g);
       if (pts) curves.push({ id: f3.id + '/' + g.id, name: '', pts: pts.map((q) => q.toArray()), state: 'picked' });
+    }
+    // Structural Member groups' lines: the group being picked for orange, the others highlighted
+    if (this.pm?.kind === 'feature' && this.pm.feature.type === 'structMember' && Array.isArray(this.pm.feature.groups)) {
+      this.pm.feature.groups.forEach((gr, gi) => {
+        for (const k of gr.segs || []) {
+          const pts = this.sketchItemPolyline(k.s, k.c);
+          if (pts) curves.push({ id: `${this.pm.feature.id}/g${gi}/${k.s}/${k.c}`, name: '', pts, state: gi === this.pm.memberGroup ? 'picked' : 'selected' });
+        }
+      });
     }
     // a Transition's axis line picked: orange
     if (this.pm?.kind === 'feature' && this.pm.feature.type === 'smTransition' && this.pm.feature.sketch && this.pm.feature.line) {
@@ -3111,7 +3129,7 @@ class App {
       if(referencePicking&&(this.sketcher.projectionSource==='model'||this.sketcher.projectionSource?.startsWith('sketch:')&&id!==this.sketcher.projectionSource.slice(7)))continue;
       const pmSketch = this.pm?.kind === 'feature' && (this.pm.feature.sketch === id || (['revolve','surfRevolve'].includes(this.pm.feature.type)&&this.pm.profilePick===false&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature)));
       const selected = (this.selection?.kind === 'feature' && this.selection.id === id) || this.hoverSketchId === id;
-      const datumPicking=['ref','axisLine'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
+      const datumPicking=['ref','axisLine','memberSegs'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
       if ((this.vis.sketches && this.sketchShown(s.sketch)) || pmSketch || selected || loft || datumPicking || (referencePicking && this.doc.features.findIndex((f) => f.id === id) < this.doc.features.findIndex((f) => f.id === editing))) {
         const polylines = s.sketch.curves.filter((c) => !loft || !c.ctrlOf).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: c.construction }));
         for (const polys of Object.values(s.textPolys || {})) for (const pts of polys) polylines.push({ pts, construction: false });
@@ -3654,6 +3672,21 @@ class App {
     const mode = this.pickMode();
     if(mode==='loftConnector'){try{const target=this.loftConnectorTarget(e);if(target)this.setLoftConnection(target.ref,target.control);else this.toast('Choose a start vertex on this profile, or a point on its circle',true);}catch(error){this.toast(error.message,true);}return;}
     if (mode === 'loftContour') { this.loftClick(e); return; }
+    if (mode === 'memberSegs') {
+      // Structural Member: a line or arc of an earlier sketch or 3D sketch clicked goes into the group being picked
+      // for (out of any other); clicked again, out of it
+      const f = this.pm.feature, gr = f.groups?.[this.pm.memberGroup];
+      const s3 = this.sketch3dItemAt(e, 'curve'), c2 = s3 ? null : this.sketchCurveAt(e), hit = s3 ? { s: s3.sketch, c: s3.curve } : c2 ? { s: c2.sketch, c: c2.curve } : null;
+      if (!gr || !hit) { this.toast('Click a line or arc of a sketch or 3D sketch to put it in the group'); return; }
+      const same = (k) => k.s === hit.s && k.c === hit.c, had = gr.segs.some(same);
+      for (const g of f.groups) g.segs = g.segs.filter((k) => !same(k));
+      if (!had) gr.segs.push(hit);
+      this.updateSketchDisplay?.();
+      this.updateRefGeometry();
+      this.ui.renderPM();
+      this.preview(true);
+      return;
+    }
     if (mode === 'axisLine') {
       // Transition: a line of an earlier sketch or 3D sketch clicked is its axis
       const hit = this.axisLineAt(e);
