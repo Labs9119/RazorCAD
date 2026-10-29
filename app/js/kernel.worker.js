@@ -666,6 +666,72 @@ let refLog = null;
 const refFound = (ref, hit, moved) => { if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; } return hit; };
 const refLost = (ref) => { if (refLog) refLog.lost.push(ref); return null; };
 
+// ------------------------------------------------------------ edges named by the extrusion that made them
+// An edge an extrusion made is named (ref.gen) by what in its sketch it came from: a curve (seen along the extrusion
+// the edge lies on it: a cap edge, or where the extrusion's walls meet the body) with the level along the extrusion
+// it is at ('first', 'last' or its number, of how many), or a sketch point (a side edge along the extrusion from it).
+// When the model changes, the edge is looked for by its name first (where its extrusion has it now) and by where it
+// was only when that does not settle it, so another edge that has come to lie where it was is not taken for it.
+// (Set by rebuild: the extrusions built so far, by feature id: { fr: the sketch's frame, sk: the sketch })
+let edgeGens = null;
+const genSamples = (c) => (c.gs ||= [0.2, 0.5, 0.8].map((t) => vec(c.e.pointAt(t))));
+// What made edge info c in extrusion g ({ c: curve id } or { pt: point id }, with s: its height along it), or null;
+// want: only that curve or point
+function genMatch(g, c, tol, want = null) {
+  const { fr, sk } = g, Q = genSamples(c), s = Q.map((q) => dot(sub(q, fr.o), fr.n)), xy = Q.map((q) => S.toFrame2D(fr, q));
+  if (c.t === 'LINE' && c.d && Math.abs(dot(c.d, fr.n)) > 1 - 1e-9) {
+    if (want?.c) return null;
+    const [x, y] = xy[1], p = (want ? sk.points.filter((q) => q.id === want.pt) : sk.points).find((q) => Math.hypot(q.x - x, q.y - y) < tol);
+    return p ? { pt: p.id, s: s[1] } : null;
+  }
+  if (want?.pt) return null;
+  // (a spline or an ellipse is measured against its points, closer together than the tolerance)
+  const near = (k) => xy.every(([x, y]) => S.distToCurve(sk, k, x, y) < (['line', 'arc', 'circle'].includes(k.type) ? tol : 1e3 * tol));
+  const k = (want ? sk.curves.filter((q) => q.id === want.c) : sk.curves).find((q) => !q.construction && near(q));
+  return k ? { c: k.id, s: (s[0] + s[1] + s[2]) / 3 } : null;
+}
+// The edges of the body extrusion g made from curve or point m, in levels along the extrusion (the edges at one
+// height together), lowest first; null for bodies with very many edges
+function genLevels(g, body, m, tol) {
+  const all = edgeInfos(body);
+  if (all.length > 4000) return null;
+  const same = [];
+  for (const c of all) { const k = genMatch(g, c, tol, m); if (k) same.push([k.s, c]); }
+  same.sort((a, b) => a[0] - b[0]);
+  const levels = [];
+  for (const [h, c] of same) { const L = levels.at(-1); if (L && h - L.s < tol * 10) L.cs.push(c); else levels.push({ s: h, cs: [c] }); }
+  return levels;
+}
+const genTol = (body) => Math.max(1e-5, bbox(body).diag * 1e-6);
+// The name of edge e of the body (the latest extrusion that made it), or null
+function nameEdge(body, e) {
+  if (!edgeGens?.size) return null;
+  const all = edgeInfos(body), c = all.find((x) => x.e === e) || all.find((x) => x.e.wrapped.IsSame(e.wrapped));
+  if (!c) return null;
+  const tol = genTol(body);
+  for (const [f, g] of [...edgeGens].reverse()) {
+    const m = genMatch(g, c, tol);
+    if (!m) continue;
+    const levels = genLevels(g, body, m, tol), i = levels ? levels.findIndex((L) => L.cs.includes(c)) : -1;
+    if (i < 0) return null;
+    return { f, ...(m.c ? { c: m.c } : { pt: m.pt }), at: i === levels.length - 1 ? 'last' : i === 0 ? 'first' : i, of: levels.length };
+  }
+  return null;
+}
+// The edge named ref.gen in the body as it is now, or null when its name does not settle it
+function edgeByName(body, ref) {
+  const n = ref.gen, g = edgeGens?.get(n?.f);
+  if (!g || (n.c ? !g.sk.curves.some((k) => k.id === n.c) : !g.sk.points.some((q) => q.id === n.pt))) return null;
+  const levels = genLevels(g, body, n, genTol(body));
+  if (!levels?.length) return null;
+  const L = n.at === 'last' ? levels.at(-1) : n.at === 'first' ? levels[0] : levels.length === n.of ? levels[n.at] : null;
+  const cs = (L?.cs || []).filter((c) => !ref.t || c.t === ref.t);
+  if (cs.length < 2) return cs[0] || null;
+  // (several there: the curve's edge split by another feature; the one clearly nearest its old place)
+  const b = bbox(body), r = nearestTwo(cs, ref.box ? mapIntoBox(ref.p, ref.box, b) : ref.p, (c) => c.e);
+  return r.best && r.second > r.bd * 1.6 + b.diag * 1e-6 ? r.best : null;
+}
+
 // The faces on the two sides of an edge, [{ t: surface type, n: outward normal (planes) }], and between
 // two planes whether the edge is convex (an outside corner, cv: 1) or concave (an inside one, cv: -1): an
 // edge reference keeps them (fn), so a moved edge is found again and a different one is not taken for it.
@@ -707,7 +773,11 @@ function findEdgeInfo(body, ref) {
   // (an edge found near, not at, the old place must have the same faces on its sides, when they are known)
   const fits = (c) => !Array.isArray(ref.fn) || sameSides(edgeSides(c), ref.fn);
   const raw = search(ref.p);
-  if (raw.best && raw.bd < Math.max(1e-3, b.diag * 1e-4)) return refFound(ref, raw.best, false);
+  // (an edge where it was, made by what its name says: that edge; another edge there now: the edge by its name)
+  const named = refLog && ref.gen && edgeGens?.get(ref.gen.f);
+  if (raw.best && raw.bd < Math.max(1e-3, b.diag * 1e-4) && (!named || genMatch(named, raw.best, genTol(body), ref.gen))) return refFound(ref, raw.best, false);
+  // (one by its name with other faces beside it, or the other kind of corner, is not it)
+  if (named) { const c = edgeByName(body, ref); if (c && fits(c)) return refFound(ref, c, true); }
   const mapped = ref.box ? search(mapIntoBox(ref.p, ref.box, b)) : null;
   const choices = [raw, mapped].filter((r) => r && ok(r) && fits(r.best)).sort((x, y) => x.bd - y.bd);
   if (choices.length) return refFound(ref, choices[0].best, true);
@@ -755,6 +825,12 @@ function updateEdgeRef(ref, e, body) {
   const circ = ref.t === 'CIRCLE' ? circleOf(e) : null;
   if (circ) Object.assign(ref, { r: circ.r, c: circ.c, n: circ.n }); else { delete ref.r; delete ref.c; delete ref.n; }
   ref.box = { min: b.min, max: b.max };
+  // its name, by the extrusion that made it (while a feature is rebuilt; worked out when new or moved): a new name
+  // is written back to the part
+  if (refLog && edgeGens && (!ref.gen || !was || len(sub(was, ref.p)) > 1e-6)) {
+    const nm = nameEdge(body, e);
+    if (JSON.stringify(nm) !== JSON.stringify(ref.gen ?? null)) { if (nm) ref.gen = nm; else delete ref.gen; refLog.moved = true; }
+  }
 }
 
 // ------------------------------------------------------------ persistent face references
@@ -2510,6 +2586,8 @@ function noteRefs(f, res) {
 
 async function rebuild(doc, previewId = null, opts = {}) {
   docUp = doc.upAxis === 'z' ? 'z' : 'y';
+  // (a partial rebuild inside another, for Shell: the same extrusions, added to the other's)
+  if (!opts.partial || !edgeGens) edgeGens = new Map();
   const t0 = performance.now();
   // the active configuration: its variable values and the features it suppresses (or un-suppresses)
   const cfg = doc.activeConfig ? (doc.configs || []).find((c) => c.id === doc.activeConfig) : null;
@@ -4335,6 +4413,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const sections = refs.map((ref) => sectionOf(ref, f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null));
           if (refs.some(isFaceProfile)) res.features[f.id] = { ...(res.features[f.id] || {}), profiles: refs };
           const firstFrame = sections[0].frame;
+          // (its edges named by the sketch curves and points they came from, when straight along the sketch's normal from
+          // one sketch: see edgeGens)
+          {
+            const ids = refs.map((r) => (isFaceProfile(r) ? null : LR.sourceId(r))), one = ids[0] && ids.every((x) => x === ids[0]) ? sketches.get(ids[0]) : null;
+            const plain = !f.thin && !(Math.abs(ev(f.draft ?? 0)) > 1e-9) && !(f.draft2Own && Math.abs(ev(f.draft2 ?? 0)) > 1e-9);
+            if (one && plain) edgeGens?.set(f.id, { fr: one.frame, sk: one.sk }); else edgeGens?.delete(f.id);
+          }
           for (const sk of sections) {
             if (Math.abs(dot(sk.frame.n, firstFrame.n)) < 1 - 1e-7 || Math.abs(dot(sub(sk.frame.o, firstFrame.o), firstFrame.n)) > 1e-5) throw new Error('Extrude profiles must lie in the same plane');
             // Opposite sketch normals still extrude in the direction of the first selected profile.

@@ -1293,7 +1293,7 @@ Right-click a vertex and choose **Reference Point** to preselect it. Coordinate 
 
 ## References that follow edits
 
-Features that use picked edges and faces (fillets, chamfers, shells, drafts, axes…) find them again after the model changes. An edge remembers the faces on its two sides and whether it is an outside or inside corner. When a dimension moves it so far that other edges now lie nearer its old place, the right edge is still found, and an edge of another kind is not taken for it. A face that moved is found as the face facing the same way that is clearly nearest. A reference found again this way is updated, so it keeps following the model. {idx:references}
+Features that use picked edges and faces (fillets, chamfers, shells, drafts, axes…) find them again after the model changes. An edge made by an extrusion (a boss, cut or pocket from a sketch, without draft or thin walls) is also named by what made it: the sketch curve it runs along and which end of the extrusion it is at (its top or bottom rim, a pocket's floor), or the sketch point it runs from. After a change it is looked for by that name first, so when you move a circle in a sketch of several, a fillet on its boss goes with it, even if another boss now stands where it was. Other edges, and named ones the name does not settle (an edge split in two by a later cut, say), are found by where they were. An edge remembers the faces on its two sides and whether it is an outside or inside corner. When a dimension moves it so far that other edges now lie nearer its old place, the right edge is still found, and an edge of another kind is not taken for it. A face that moved is found as the face facing the same way that is clearly nearest. A reference found again this way is updated, so it keeps following the model. {idx:references}
 
 ## Fix References
 
@@ -2189,7 +2189,7 @@ Editing a feature meshes again only the faces and edges it changed, and a part r
 
 | Problem | What to do |
 |---|---|
-| A fillet or projected edge loses its edge after a big change | Edges are found again by their geometry and the faces beside them (see References that follow edits). If one is still lost, **Tools ▸ Fix References** lists it: Edit to re-pick it, or Remove missing. |
+| A fillet or projected edge loses its edge after a big change | Edges made by an extrusion are found by what made them; others by their geometry and the faces beside them (see References that follow edits). If one is still lost, **Tools ▸ Fix References** lists it: Edit to re-pick it, or Remove missing. |
 | A mate moved to the wrong face, or shows a red ! | Mates find their faces again by geometry. A face that is gone is listed in **Tools ▸ Fix Mates**: edit the mate to pick it again. |
 | A sketch on a model face doesn't follow the face | Sketches put on faces before version 0.20.1 keep only the plane: right-click the sketch ▸ Change Sketch Plane… and click the face again. If the note says the face is no longer in the model, pick the face it should be on. |
 | Project Edges can't see a sketch | It only sees visible sketches earlier in the history. Show the sketch first. |

@@ -300,8 +300,11 @@ tools/make_icon.py       generates assets/razorcad.ico
 ```
 
 ## Limitations and next steps
-- **Edge references are re-found by geometry, not by true topological naming.** Large or ambiguous changes
-  can lose a fillet edge or projected edge; the feature then shows an error so you can re-pick.
+- **Only edges made by an extrusion are named by what made them.** Those (the edges of extruded bosses, cuts and
+  pockets, without draft or thin walls) are found again by the sketch curve or point they came from, even when
+  another edge comes to lie where they were. Other edges (from revolves, sweeps, lofts, fillets…) are re-found by
+  geometry and the faces beside them, so a large or ambiguous change can lose one; the feature then shows an
+  error so you can re-pick.
 - **Sketches on model faces follow the face along its normal** (when the part gets taller, the sketch goes up with
   it), not across it, and a face is found again by geometry like edges are. Sketches on faces from before
   version 0.20.1 stay where they are until they are put on the face again (Change Sketch Plane).

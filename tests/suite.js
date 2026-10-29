@@ -831,6 +831,12 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab X1C (flagged: from listings), a bed size typed clears the printer`};
   },
 
+  // Edges named by the extrusion that made them, found again by their name after a change (tests/edge-name-cases.js)
+  async 'edge-names'() {
+    const {run}=await import('/tests/edge-name-cases.js'),native=await run({threads:threadsPerKernel()});
+    return {ok:native.ok,detail:native.ok?`${native.results.length} cases: a fillet stays with its boss when another boss comes to its place; a pocket's floor edge and a block's corner edge follow`:JSON.stringify(native.results.filter(x=>!x.ok))};
+  },
+
   // Sketches on model faces follow the face (tests/face-sketch-cases.js); in the app a sketch started on a face clicked
   // keeps the face (the point clicked and its normal), and the block made taller takes the sketch and its boss up
   async 'face-sketch-follows'() {

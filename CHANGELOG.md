@@ -6,6 +6,17 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 21:46 — Edges named by the extrusion that made them
+
+- An edge picked for a fillet, chamfer or other feature that an extrusion made (a boss, cut or pocket from a
+  sketch, without draft or thin walls) is named by the sketch curve it runs along and the level along the
+  extrusion it is at (first, last, or its number), or the sketch point it runs from. After a change it is looked
+  for by its name first: a fillet on one of several bosses from one sketch stays with its boss when the circles
+  are moved, even when another boss comes to its old place. Other edges, and names that do not settle it, are
+  found by where they were, as before. Names are added to a part's edges the first time it is rebuilt.
+- README and manual: the limit on edge references changed to say which edges are named.
+- Tests: edge-names (tests/edge-name-cases.js).
+
 ## 2026-10-29 21:41 — Sketches on model faces follow the face
 
 - A sketch put on a flat face keeps the face (the point clicked on it and its normal). When the model changes so
