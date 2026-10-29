@@ -3816,6 +3816,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
     return { rec, edges };
   };
   // the profile of a sketch as flat faces in the sketch's own coordinates (z = 0)
+  // (a 2D drawing's faces at z = 0, as a sheet's region)
+  const drawingRegion = (dr) => {
+    const prism = dr.sketchOnPlane('XY').extrude(1);
+    return SM.upFaces(asShape(prism.faces.filter((fc) => fc.geomType === 'PLANE' && Math.abs(vec(fc.center)[2]) < 1e-7)));
+  };
   const sketchRegion = (sk) => {
     const prism = profileSolid(sk, (dr) => dr.sketchOnPlane('XY').extrude(1));
     const bottom = prism.faces.filter((fc) => fc.geomType === 'PLANE' && Math.abs(vec(fc.center)[2]) < 1e-7);
@@ -8692,9 +8697,60 @@ async function rebuild(doc, previewId = null, opts = {}) {
             solids.push(rec);
             applied.push({ op: 'add', tool: shape });
           }
+          // flanges: at an end, a flat ring (a body of its own) out past the end by its thickness, its opening the inside
+          // of the part there (the sizes as given for inside sizes, else less the thickness across the wall's slope) and
+          // as wide as set, with bolt holes on a circle (a round end: evenly, straddling X; the circle in the middle of
+          // the flange unless set) or round the sides (a flat-sided end: at the corners of a line in the middle of the
+          // flange and evenly between them, at most the pitch apart)
+          let nFl = 0, nHoles = 0;
+          const ends = [['b', !!f.flangeBot, o, -1], ['t', !!f.flangeTop, add(tp, add(mul(X, ev(f.offX ?? 0)), mul(Y, ev(f.offY ?? 0)))), 1]];
+          if (ends.some((x) => x[1])) {
+            const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100);
+            if (!(W > 0)) throw new Error('The flange width must be greater than zero');
+            if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
+            if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
+            if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
+            const g0 = dims === 'inside' ? 0 : grow - t * slope;
+            const poly = (cs) => { let pen = R.draw(cs[0]); for (const q of cs.slice(1)) pen = pen.lineTo(q); return pen.close(); };
+            for (const [k, on, c, sgn] of ends) {
+              if (!on) continue;
+              const opening = SM.transitionEnd(spec(k), g0), holes = [];
+              let dr;
+              if (opening.kind === 'round') {
+                if (!(opening.r > 0)) throw new Error('The flange opening has no size (the part is thicker than its end)');
+                dr = R.drawCircle(opening.r + W).cut(R.drawCircle(opening.r));
+                if (hd > 0) {
+                  if (!(N >= 1 && N <= 360)) throw new Error('The number of bolt holes must be 1 to 360');
+                  const rb = pcd > 0 ? pcd / 2 : opening.r + W / 2;
+                  if (rb - hd / 2 <= opening.r + 1e-6 || rb + hd / 2 >= opening.r + W - 1e-6) throw new Error(`The bolt circle (Ø${+(2 * rb).toFixed(3)}) puts the holes off the flange (Ø${+(2 * opening.r).toFixed(3)} to Ø${+(2 * (opening.r + W)).toFixed(3)})`);
+                  for (let i = 0; i < N; i++) { const a = Math.PI / N + (2 * Math.PI * i) / N; holes.push([rb * Math.cos(a), rb * Math.sin(a)]); }
+                }
+              } else {
+                const outer = SM.transitionEnd(spec(k), g0 + W), mid = SM.transitionEnd(spec(k), g0 + W / 2);
+                dr = poly(outer.corners).cut(poly(opening.corners));
+                if (hd > 0) {
+                  if (!(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+                  mid.corners.forEach((p0, i) => {
+                    const p1 = mid.corners[(i + 1) % mid.M], m = Math.max(1, Math.ceil(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / pitch - 1e-9));
+                    for (let j = 0; j < m; j++) holes.push([p0[0] + ((p1[0] - p0[0]) * j) / m, p0[1] + ((p1[1] - p0[1]) * j) / m]);
+                  });
+                }
+              }
+              for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+              // (a flat sheet metal plate: its flat pattern, holes and all, goes with the parts' for cutting; the bottom
+              // one's material on the far side of its plane, away from the part)
+              const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: { o: c, u: X, v: Y, n: d }, t: T, R: R0 > 0 ? R0 : T, K, reverse: sgn < 0 });
+              const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+              rec.sheet = sheet;
+              solids.push(rec);
+              applied.push({ op: 'add', tool: shape });
+              nFl++; nHoles += holes.length;
+            }
+          }
           body = compoundOf(solids);
           const n = pieces.length;
-          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`);
+          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`)
+            + (nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '');
           break;
         }
         case 'smHem': {

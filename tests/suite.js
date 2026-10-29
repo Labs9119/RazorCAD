@@ -831,6 +831,23 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${P3.PRINTERS.length} printers; a copy of PLA made for the Prusa CORE One (250 × 220 × 270), changed to the Bambu Lab X1C (flagged: from listings), a bed size typed clears the printer`};
   },
 
+  // Transition flanges (tests/transition-flange-cases.js): flat rings at the ends with bolt holes, each against its
+  // volume by hand; and the panel's Flanges group shows the hole settings for the kind of end flanged
+  async 'transition-flanges'() {
+    const {run}=await import('/tests/transition-flange-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
+    const a=window.app,d=M.newDoc(),S=await import('/js/sketchmodel.js'),s=M.createFeature(d,'sketch',{plane:{ref:'front'}});S.addLine(s,S.addPoint(s,0,0),S.addPoint(s,0,300));
+    const f=M.createFeature(d,'smTransition',{sketch:s.id,bShape:'square',bSize:400,tShape:'round',tD:200,parts:4});d.features.push(s,f);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);a.editFeature(f.id);await wait(80);
+    const bad=[],text=()=>document.querySelector('#pm')?.textContent||'';
+    const seen=()=>{const t=text();return {w:t.includes('Width (out from the opening)'),holes:t.includes('Bolt holes on a round flange'),pitch:t.includes('holes at most this far apart')};};
+    let v=seen();if(v.w||v.holes||v.pitch)bad.push(`no flange, yet shown: ${JSON.stringify(v)}`);
+    f.flangeBot=true;a.ui.renderPM();await wait(30);v=seen();if(!v.w||v.holes||!v.pitch)bad.push(`square flange: ${JSON.stringify(v)}`);
+    f.flangeTop=true;a.ui.renderPM();await wait(30);v=seen();if(!v.w||!v.holes||!v.pitch)bad.push(`both: ${JSON.stringify(v)}`);
+    a.cancelPM?.();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
+  },
+
   // Edges named by the extrusion that made them, found again by their name after a change (tests/edge-name-cases.js)
   async 'edge-names'() {
     const {run}=await import('/tests/edge-name-cases.js'),native=await run({threads:threadsPerKernel()});

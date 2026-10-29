@@ -6,6 +6,15 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 21:53 — Transition / Reducer: flanges with bolt holes
+
+- **Flanges** group: a flat bolting ring at the bottom and/or top end, each a flat sheet metal plate of its own
+  (its flat pattern, holes and all, goes with the parts' for cutting), out past the end by its thickness. Its
+  opening is the inside of the part there; width, thickness and bolt hole diameter are set. A round flange has
+  its holes evenly on a bolt circle (the middle of the flange, or a diameter set), straddling X; a flat-sided one
+  at the corners of a line round the middle of the flange and evenly along each side, at most a set distance apart.
+- Tests: transition-flanges (tests/transition-flange-cases.js), each flange against its volume by hand.
+
 ## 2026-10-29 21:46 — Edges named by the extrusion that made them
 
 - An edge picked for a fillet, chamfer or other feature that an extrusion made (a boss, cut or pocket from a

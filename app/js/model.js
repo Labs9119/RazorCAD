@@ -399,6 +399,10 @@ export function createFeature(doc, type, props = {}) {
       tShape: 'round', tD: 200, tSize: 150, tW: 200, tL: 150, tBasis: 'side',
       offX: 0, offY: 0, rotation: 0, parts: 2, seamAt: 'mid', seamShift: false, seamAngle: 0, seamGap: 0,
       method: 'formed', divs: 6, divsRound: 24, radius: 0, thickness: 2, kFactor: 0.44, dims: 'inside',
+      // flanges at the ends (flat rings, bodies of their own): width out from the opening, thickness, bolt hole
+      // diameter (0: none), holes on a round flange and their circle (0: the middle of the flange), the most a
+      // flat-sided flange's holes are apart
+      flangeBot: false, flangeTop: false, flW: 40, flT: 6, flHoleD: 10, flHoles: 8, flPCD: 0, flPitch: 100,
     },
     // extruded from an open profile (or a circle, rolled): direction 'one' | 'reverse' | 'mid'; side 'one' |
     // 'other' | 'mid' (material left of the profile's direction, right, or half each side); radius: inside

@@ -370,6 +370,8 @@ function convertFound(f, a) {
 const smCircle = (f, a) => { const sk = a?.doc?.features.find((x) => x.id === f.sketch); const cs = (sk?.curves || []).filter((c) => !c.construction); return cs.length === 1 && cs[0].type === 'circle'; };
 // Transition ends (k: 'b' bottom, 't' top)
 const trRound = (f) => f.bShape === 'round' && f.tShape === 'round';
+// (the ends with a flange: any of them round, any of them flat-sided)
+const trFlanged = (f) => [f.flangeBot && f.bShape, f.flangeTop && f.tShape].filter(Boolean);
 const TR_SHAPES = [['round', 'Round'], ['square', 'Square'], ['rect', 'Rectangle'], ['tri', 'Triangle'], ['pent', 'Pentagon'], ['hex', 'Hexagon']];
 const TR_BASIS = { side: 'Side length', flats: 'Across flats (inscribed Ø)', corners: 'Across corners (circumscribed Ø)' };
 const trEnd = (k, title) => ({ title, fields: [
@@ -565,6 +567,17 @@ const PM_SCHEMAS = {
       { key: 'seamAngle', type: 'expr', label: 'First seam at (from X)', unit: '°', show: (f) => trRound(f) },
       { key: 'seamGap', type: 'expr', label: 'Gap at each seam', unit: 'mm', show: (f) => trRound(f) },
       { key: 'sHint', type: 'hint', text: (f) => (trRound(f) ? 'A cone can be rolled from one part, or from two or more equal parts welded together.' : 'With a flat-sided end the transition is made from two or more equal parts welded together; the number of parts must divide its number of sides (a square: 2 or 4).') },
+    ] },
+    { title: 'Flanges', fields: [
+      { key: 'flangeBot', type: 'check', label: 'Flange at the bottom end' },
+      { key: 'flangeTop', type: 'check', label: 'Flange at the top end' },
+      { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => trFlanged(f).length },
+      { key: 'flHoles', type: 'expr', label: 'Bolt holes on a round flange', unit: '', show: (f) => trFlanged(f).includes('round') },
+      { key: 'flPCD', type: 'expr', label: 'Bolt circle diameter (0: the middle of the flange)', unit: 'mm', show: (f) => trFlanged(f).includes('round') },
+      { key: 'flPitch', type: 'expr', label: 'Flat-sided flange: holes at most this far apart', unit: 'mm', show: (f) => trFlanged(f).some((x) => x !== 'round') },
+      { key: 'flHint', type: 'hint', text: 'Each flange is a flat ring of its own (a body: cut it from plate), out past the end by its thickness. Its opening is the inside of the part at that end. A round flange has its holes evenly on the bolt circle, straddling X; a flat-sided one has a hole at each corner of a line round the middle of the flange and more along each side, evenly, at most the pitch apart.', show: (f) => trFlanged(f).length },
     ] },
     { title: 'Manufacturing Method', fields: [
       { key: 'method', type: 'select', label: 'Method', options: [['formed', 'Formed (rolled smooth)'], ['bent', 'Bent (bump formed: press-brake bends)']] },
