@@ -835,7 +835,7 @@ const UI = {
   // the 3D-printing fasteners square to the face under each point, Sketch Pattern, Helix, Reference Axis and Point,
   // Loft, Lofted Bend, Sprue and Runners; and the panels list 3D sketches for them
   async 'sketch3d-inputs'() {
-    const {run}=await import('/tests/sketch3d-input-cases.js'),native=await run({threads:threadsPerKernel()});
+    const {run}=await import('/tests/sketch3d-input-cases.js'),native=await run({threads:threadsPerKernel()}),{Vector3}=await import('three');
     if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
     const a=window.app,d=M.newDoc(),s3=M.createFeature(d,'sketch3d');s3.pts=[{id:'p1',x:0,y:0,z:0},{id:'p2',x:0,y:10,z:0}];s3.segs=[{id:'s1',a:'p1',b:'p2'}];d.features.push(s3);
     const missing=[];
@@ -851,7 +851,37 @@ const UI = {
       await a.newDocument?.();closeModals();const doc=JSON.parse(JSON.stringify(d)),f=M.createFeature(doc,type,props);doc.features.push(f);await a.setDoc(doc);
       a.editFeature(f.id);const found=[...document.querySelectorAll(sel)].some(x=>type==='axis'||x.value===s3.id);if(!found)missing.push(type);a.cancelPM();
     }
-    return {ok:!missing.length,detail:missing.length?`no 3D sketch in the panel of ${missing.join(', ')}`:native.results.map(x=>x.name).join('; ')+'; listed in the panels (Reference Axis, Loft and the rest) and picked in the tree'};
+    // (Reference Axis: a click on the 3D sketch's line in the view picks it, drawn orange; a click on its end, the point)
+    {
+      await a.newDocument?.();closeModals();const doc=JSON.parse(JSON.stringify(d)),ax=M.createFeature(doc,'axis',{referenceDefinition:true,axisType:'references',refs:[]});doc.features.push(ax);await a.setDoc(doc);
+      a.editFeature(ax.id);a.viewport.setStandardView('front',false);a.viewport.zoomToFit(null,false);await wait(160);a.viewport.camera.updateMatrixWorld(true);
+      const v=viewEvents(),[x1,y1]=v.toScreen(new Vector3(0,0,0)),[x2,y2]=v.toScreen(new Vector3(0,10,0));
+      await v.click((x1+x2)/2,(y1+y2)/2);await wait(150);await until(()=>!a.kernel.pending);
+      const r=a.pm?.feature?.refs?.[0],line=r?.kind==='sketch'&&r.sketch===s3.id&&r.curve==='s1';
+      const orange=(a.viewport.refGroup?.children||[]).some(o=>o.material?.color?.getHex?.()===0xf97316);
+      await v.click(x2,y2);await wait(150);await until(()=>!a.kernel.pending);
+      const r2=a.pm?.feature?.refs?.[1],point=r2?.kind==='sketch'&&r2.sketch===s3.id&&r2.point==='p2';
+      if(!line||!orange||!point)missing.push(`the axis's 3D sketch picks (${Math.round(Math.hypot(x2-x1,y2-y1))} px long): ${JSON.stringify(a.pm?.feature?.refs)}, drawn orange ${orange}`);
+      a.cancelPM();
+    }
+    // (Loft: manual connectors on 3D sketch profiles: a start vertex from the panel's list, and one clicked in the view)
+    {
+      await a.newDocument?.();closeModals();const doc=M.newDoc(),sq=(h,at)=>[[-h,at,-h],[h,at,-h],[h,at,h],[-h,at,h]];
+      const mk=(pts)=>{const f=M.createFeature(doc,'sketch3d');f.pts=pts.map(([x,y,z],i)=>({id:'p'+(i+1),x,y,z}));f.segs=[0,1,2,3].map(i=>({id:'s'+(i+1),a:'p'+(i+1),b:'p'+((i+1)%4+1)}));doc.features.push(f);return f;};
+      const A=mk(sq(10,0)),B=mk(sq(5,30)),lf=M.createFeature(doc,'loft',{profiles:[A.id,B.id],correspondenceMode:'manual',loftCorrespondence:{}});doc.features.push(lf);await a.setDoc(doc);await a.rebuild();
+      a.editFeature(lf.id);await wait(200);await until(()=>!a.kernel.pending);
+      const sel=document.querySelector('[data-loft-connector-point="1"]'),opts=sel?[...sel.options].map(o=>o.textContent):[];
+      if(!sel||!opts.includes('Point 2')||document.querySelector('[data-loft-manual]')?.disabled)missing.push(`the Loft's connectors on 3D sketch profiles: ${opts.join(', ')||'none'}`);
+      else{
+        sel.value='p2';sel.dispatchEvent(new Event('change'));await wait(200);await until(()=>!a.kernel.pending);
+        const c=a.pm.feature.loftCorrespondence?.[B.id];if(c?.point!=='p2'||a.result.errors.has(lf.id))missing.push(`the Loft's 3D connector from the list: ${JSON.stringify(c)} ${a.result.errors.get(lf.id)||''}`);
+        a.activateLoftConnector(1);a.viewport.setStandardView('iso',false);a.viewport.zoomToFit(null,false);await wait(160);a.viewport.camera.updateMatrixWorld(true);
+        const v=viewEvents();await v.click(...v.toScreen(new Vector3(5,30,5)));await wait(200);await until(()=>!a.kernel.pending);
+        const c2=a.pm.feature.loftCorrespondence?.[B.id];if(c2?.point!=='p3'||a.result.errors.has(lf.id))missing.push(`the Loft's 3D connector clicked: ${JSON.stringify(c2)} ${a.result.errors.get(lf.id)||''}`);
+      }
+      a.cancelPM();
+    }
+    return {ok:!missing.length,detail:missing.length?`3D sketch inputs: ${missing.join('; ')}`:native.results.map(x=>x.name).join('; ')+'; listed in the panels (Reference Axis, Loft and the rest) and picked in the tree; an axis\'s 3D sketch line and point clicked in the view; Loft connectors on 3D sketch points, from the list and clicked'};
   },
 
   async 'print-joints'() {

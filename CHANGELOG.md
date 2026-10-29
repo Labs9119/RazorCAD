@@ -6,6 +6,18 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 19:48 — 3D sketches picked in the view for references, thin lofts and connectors on 3D profiles
+
+- **Reference Axis**, **Point** and **Plane**: a click on a 3D sketch's point picks it, and for an axis a click on its
+  line, circle or arc; picked ones are drawn orange. Earlier 3D sketches show while a reference is being made.
+- **Loft**: a thin loft takes 3D sketch profiles (the solid loft's walls, square to its sides, sharp at the corners),
+  and manual connectors attach to a 3D sketch profile's points or its circle's seam angle, from the panel or a click.
+- Fixed: a loft from a 3D sketch profile that is not flat (a saddle) was left open at its ends, so it was a shell and
+  not a solid; its ends are now closed (a surface through a profile that is not flat) and it is sewn into a solid.
+- README: its list of limits brought up to date (Feature Scope limits cuts; Project Edges sees absorbed sketches).
+- Tests: tests/test-weights.json counts the two newest tests (their GitHub times estimated from a local run, scaled by
+  the median ratio of the other tests' times there and here, until the next refresh from a GitHub log).
+
 ## 2026-10-29 18:10 — 3D sketches for holes, bosses, patterns, helices, axes, lofts and runners
 
 - **Hole**, **Boss**, **Snap Hook**, **Nut Pocket**, **Insert Hole** and **Screw Hole for Plastic** take a 3D sketch's

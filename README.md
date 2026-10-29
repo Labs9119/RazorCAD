@@ -304,12 +304,11 @@ tools/make_icon.py       generates assets/razorcad.ico
   can lose a fillet edge or projected edge; the feature then shows an error so you can re-pick.
 - **Sketches on model faces are stored as fixed planes.** They don't follow the face if the model changes;
   use a reference plane driven by an equation when that matters.
-- **Project Edges and outside references only see visible sketches** (not ones absorbed into features),
-  and only sketches earlier in the history.
-- **STL bodies with thousands of faces can't be filleted or chamfered**, and they don't offer pickable edges.
-- **Cuts act on every body they reach** (there is no feature scope yet), and a fillet can't blend across two
-  separate bodies that only touch.
-  Booleans on them work but are slower.
+- **Snapping and dimensions to other sketches only see visible sketches** (not ones absorbed into features);
+  Project Edges and Intersection Curve see those too. All of them see only sketches earlier in the history.
+- **STL bodies with more than about 2,500 faces can't be filleted or chamfered**, and they don't offer pickable
+  edges. Booleans on them work but are slower.
+- **A fillet can't blend across two separate bodies that only touch.**
 
 ## License
 RazorCAD is free software: you can redistribute it and/or modify it under the terms of the

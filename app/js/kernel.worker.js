@@ -3279,10 +3279,88 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const loftConnectionControls=(f,ids)=>{
     if(!LC.hasManualConnections(f))return null;
     return ids.map(ref=>{
+      const s3=f.type==='loft'&&typeof ref==='string'&&!sketches.get(ref)?sketch3dOf(ref):null;
+      if(s3){const control=LC.connectionFor(f,ref);return {anchor:sketch3dAnchor(s3,control),extra:(control?.extra||[]).map(id=>sketch3dAnchor(s3,{point:id})),reverse:!!control?.reverse,control,source:null,ref};}
       const source=sketches.get(LR.sourceId(ref));if(!source||curves.has(ref))throw new Error('Manual connectors require sketch profile contours; use Automatic for 3D curve profiles');
       const control=LC.connectionFor(f,ref);
       return {anchor:LC.connectionAnchor(source.sk,ref,source.frame,control,ev),extra:LC.connectionExtras(source.sk,ref,source.frame,control),reverse:!!control?.reverse,control,source,ref};
     });
+  };
+  // A 3D sketch profile's connector point: one of its points (control.point), or a seam angle on its circle (control.circle,
+  // angle: from the level direction square to its axis, as its section starts)
+  const sketch3dAnchor=(s3,control)=>{
+    if(!control)return null;
+    if(control.point){const p=s3.at.get(control.point);if(!p)throw new Error(`${s3.f.name}: a connector point is missing; reselect it`);return p;}
+    if(control.circle){
+      const g=(s3.segs||[]).find(x=>x.id===control.circle&&x.type==='circle');if(!g)throw new Error(`${s3.f.name}: the circular connector source changed; reselect it`);
+      const o=s3.at.get(g.c),n=unit(g.n),u=levelX(n),v=cross(n,u),angle=ev(control.angle??0)*Math.PI/180;
+      if(!Number.isFinite(angle))throw new Error('The connector seam angle must be finite');
+      return add(o,add(mul(u,+g.r*Math.cos(angle)),mul(v,+g.r*Math.sin(angle))));
+    }
+    if(control.curve)throw new Error(`${s3.f.name}: a connector inside a curve needs a sketch profile; pick one of the 3D sketch's points`);
+    return null;
+  };
+  // A loft that starts or ends at a profile that is not flat (a 3D sketch's saddle) has no end faces (the kernel makes
+  // them only when both are flat): its ends closed, with a filling surface through a profile that is not flat, and the
+  // loft sewn into a solid
+  const closeLoftEnds=(tool,first,last)=>{
+    const flat=(sec)=>{
+      if(sec.circle)return true;
+      const pts=sec.segs.flatMap(g=>[g.a,g.m,g.c1,g.c2].filter(Boolean)),c=mul(pts.reduce(add,[0,0,0]),1/pts.length),P=sec.segs.map(g=>g.a);
+      let n=[0,0,0];P.forEach((q,i)=>{n=add(n,cross(sub(q,c),sub(P[(i+1)%P.length],c)));});
+      if(len(n)<1e-12)return false;
+      const size=Math.max(1,...pts.map(q=>len(sub(q,c))));n=unit(n);
+      return pts.every(q=>Math.abs(dot(sub(q,c),n))<1e-7*size);
+    };
+    if(flat(first)&&flat(last))return tool;
+    const secs=[first,last],wires=secs.map(sectionWire),faces=tool.faces,tol=1e-4*Math.max(1,bbox(tool).diag);
+    const on=(e,w)=>new R.DistanceQuery(R.makeVertex(vec(e.pointAt(0.5)))).distanceTo(w)<tol;
+    try{
+      // (an end face the kernel did make is kept)
+      const missing=wires.map((w,i)=>({w,sec:secs[i]})).filter(({w})=>!faces.some(fc=>{const es=fc.edges;try{return es.length>0&&es.every(e=>on(e,w));}finally{es.forEach(e=>e.delete());}}));
+      if(!missing.length)return tool;
+      const oc=R.getOC(),sw=new oc.BRepBuilderAPI_Sewing(tol,true,true,true,false),failed='The loft\'s end at a profile that is not flat could not be closed';
+      try{
+        for(const fc of faces)sw.Add(fc.wrapped);
+        for(const {w,sec} of missing){let cap;try{cap=flat(sec)?R.makeFace(w):R.makeNonPlanarFace(w);}catch(e){if(isFatal(e))throw e;throw new Error(failed);}sw.Add(cap.wrapped);}
+        sw.Perform(new oc.Message_ProgressRange());
+        if(sw.NbFreeEdges())throw new Error(failed);
+        const shell=R.iterTopo(sw.SewedShape(),'shell').next().value;
+        if(!shell)throw new Error(failed);
+        const ms=new oc.BRepBuilderAPI_MakeSolid(shell);let solid;
+        try{solid=R.cast(ms.Solid());}finally{ms.delete();}
+        oc.BRepLib.OrientClosedSolid(solid.wrapped);
+        if(!(preciseVolume(solid)>0))throw new Error(failed);
+        return solid;
+      }finally{sw.delete();}
+    }finally{faces.forEach(x=>x.delete());wires.forEach(w=>w.delete());}
+  };
+  // A thin loft with a 3D sketch profile: the loft's side walls t thick (one: outward, other: inward, mid: half each way),
+  // open at its first and last profile (the faces whose every edge lies on one of them)
+  const thinLoftWalls=(tool,first,last,thin)=>{
+    const oc=R.getOC(),wires=[sectionWire(first),sectionWire(last)],faces=tool.faces,tol=1e-4*Math.max(1,bbox(tool).diag);
+    try{
+      const on=(e,w)=>new R.DistanceQuery(R.makeVertex(vec(e.pointAt(0.5)))).distanceTo(w)<tol;
+      const ends=faces.filter(fc=>{const es=fc.edges;try{return es.length>0&&wires.some(w=>es.every(e=>on(e,w)));}finally{es.forEach(e=>e.delete());}});
+      if(ends.length!==2)throw new Error('The thin loft could not find its two end profiles');
+      // (sharp corners, as a thin loft from sketches has; round ones when the kernel can't make them sharp)
+      const walls=(d)=>{
+        for(const join of [oc.GeomAbs_JoinType.GeomAbs_Intersection,oc.GeomAbs_JoinType.GeomAbs_Arc]){
+          const L=ocList(ends),sp=stack?.get(),mk=new oc.BRepOffsetAPI_MakeThickSolid();let out=null;
+          try{
+            mk.MakeThickSolidByJoin(tool.wrapped,L,d,Math.max(1e-7,Math.min(1e-4,Math.abs(d)*1e-3)),oc.BRepOffset_Mode.BRepOffset_Skin,join===oc.GeomAbs_JoinType.GeomAbs_Intersection,false,join,false);
+            if(!mk.IsDone())continue;
+            const raw=mk.Shape();try{out=R.cast(raw);}finally{raw.delete();}
+            if(solidsOf(out).length&&preciseVolume(out)>0){const ok=out;out=null;return ok;}
+          }catch(e){if(isFatal(e))throw e;}
+          finally{out?.delete();L.delete();mk.delete();if(sp!=null)stack.set(sp);}
+        }
+        throw new Error('The thin loft\'s walls could not be made this thick (try thinner walls, or the other side)');
+      };
+      const t=thin.t;
+      if(!(t>0))throw new Error('The wall thickness must be greater than zero');
+      return thin.dir==='mid'?unify(walls(t/2).fuse(walls(-t/2))):walls(thin.dir==='other'?-t:t);
+    }finally{faces.forEach(x=>x.delete());wires.forEach(w=>w.delete());}
   };
   // (several connectors on each profile: the sections split at them and matched stretch by stretch)
   const connectorChainSections=(secs,controls,names)=>{
@@ -6864,13 +6942,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (ids.length < 2) throw new Error('Select at least two profiles (in order)');
           const connectorControls=loftConnectionControls(f,ids);
           const thin = f.thin ? { t: ev(f.thinT), dir: f.thinDir || 'one' } : null;
+          const walls = thin && ids.some((id) => typeof id === 'string' && !sketches.get(id) && sketch3dOf(id)), thinR = walls ? null : thin;
           // each profile: one region (outline + holes), as 3D sections
           const profs = ids.map((id) => {
             const s = sketches.get(LR.sourceId(id));
             // (a 3D sketch: its one closed run of lines, arcs and splines, or a circle; it may be curved out of a plane)
             const s3 = !s && typeof id === 'string' ? sketch3dOf(id) : null;
             if (s3) {
-              if (thin) throw new Error('A thin loft needs sketch profiles (not a 3D sketch)');
               const closed = s3.runs.filter((x) => x.closed);
               if (closed.length !== 1) throw new Error(`${s3.f.name} must have exactly one closed chain or circle (it has ${closed.length})`);
               if (!closed[0].section) throw new Error(`${s3.f.name}: its smooth spline can't be a loft profile (use a spline segment, or lines and arcs)`);
@@ -6878,7 +6956,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             }
             if (!s) throw new Error('A profile sketch is missing, suppressed or has errors');
             const resolved = typeof id === 'string' ? { sketch: s.sk } : LR.resolveContour(s.sk, id);
-            const regions = thin ? S.thinRegions(resolved.sketch, thin.t, thin.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
+            const regions = thinR ? S.thinRegions(resolved.sketch, thinR.t, thinR.dir) : resolved.region ? [resolved.region] : S.profileRegions(resolved.sketch);
             if (regions.length !== 1) throw new Error(`${s.sk.name} must have exactly one closed profile (it has ${regions.length})`);
             return { name: s.sk.name, outer: loftSection(s.frame, regions[0].outer.segs), holes: regions[0].holes.map((h) => loftSection(s.frame, h.segs)), holeKeys: regions[0].holes.map(LC.holeKey) };
           });
@@ -6887,7 +6965,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const holeControls = profs.map(() => []);
           if (connectorControls) profs.forEach((p, i) => {
             const c = connectorControls[i];
-            if (thin) {
+            if (thinR) {
               if (c.extra.length) throw new Error('More than one connector on a profile needs a loft that is not a thin feature');
               const nearest = (sec, q) => (q && sec.segs ? sec.segs.reduce((b, g) => (len(sub(g.a, q)) < len(sub(b, q)) ? g.a : b), sec.segs[0].a) : null);
               if (c.anchor) { holeControls[i] = p.holes.map((h) => ({ anchor: nearest(h, c.anchor), reverse: c.reverse })); connectorControls[i] = { ...c, anchor: nearest(p.outer, c.anchor) }; }
@@ -6896,7 +6974,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             p.outer = LC.splitSectionAt(p.outer, c.anchor);
             const order = LC.holeOrder(c.control, p.holeKeys);
             p.holes = order.map((k) => p.holes[k]); p.holeKeys = order.map((k) => p.holeKeys[k]);
-            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
+            holeControls[i] = p.holeKeys.map((key, k) => { const anchor = c.source && LC.holeAnchor(c.source.sk, c.ref, c.source.frame, c.control, key, ev); if (anchor) p.holes[k] = LC.splitSectionAt(p.holes[k], anchor); return { anchor, reverse: false }; });
           });
           // (continuity C2: curvature-continuous through the profiles, the kernel's usual; C1: tangent-continuous;
           // smoothing: the surface evened out, with its own builder when either is asked for)
@@ -6930,7 +7008,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const names = profs.map((p) => p.name);
           const nh = profs[0].holes.length;
           if (profs.some((p) => p.holes.length !== nh)) throw new Error('Every profile needs the same number of holes (inner loops)');
-          const chained = !thin && connectorControls?.some((c) => c.extra.length);
+          const chained = !thinR && connectorControls?.some((c) => c.extra.length);
           let outerM = chained ? connectorChainSections(profs.map((p) => p.outer), connectorControls, names) : matchLoftSections(profs.map((p) => p.outer), names);
           if(connectorControls){if(!chained)outerM=LC.applySectionConnections(outerM,profs.map(p=>p.outer),connectorControls,true);loftConnectionInfo(f,ids,outerM,true);}
           const holesM = Array.from({ length: nh }, (_, i) => {
@@ -6939,17 +7017,20 @@ async function rebuild(doc, previewId = null, opts = {}) {
           });
           if (hasLoftEnds(f)) {
             const endWires = outerM.map(sectionWire);
-            const tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thin ? thin.t : 0 });
+            let tool = buildEndLoft(f, ids, endWires, false, { holes: holesM.map(loop => loop.map(sectionWire)), guides, matched: outerM, holesMatched: holesM, names, slack: thinR ? thinR.t : 0 });
+            tool = closeLoftEnds(tool, outerM[0], outerM.at(-1));
+            if (walls) tool = thinLoftWalls(tool, outerM[0], outerM.at(-1), thin);
             const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
             tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
             apply(f.op, tool, f.merge !== false, scope); break;
           }
           // with guides: the outline follows them and the holes (a thin loft's inside) move with it
-          const g = guides.length ? buildGuidedLoft(outerM, guides, names, holesM, thin ? thin.t : 0, { constrained: f.guideMethod === 'constrained', guideContinuity: f.guideContinuity || 'C0', build: buildLoft }) : null;
-          let tool = g ? g.shape : buildLoft(outerM.map(sectionWire));
+          const g = guides.length ? buildGuidedLoft(outerM, guides, names, holesM, thinR ? thinR.t : 0, { constrained: f.guideMethod === 'constrained', guideContinuity: f.guideContinuity || 'C0', build: buildLoft }) : null;
+          let tool = closeLoftEnds(g ? g.shape : buildLoft(outerM.map(sectionWire)), outerM[0], outerM.at(-1));
           if (guides.length) res.notes[f.id] = `${profs.length} profiles, ${guides.length} guide curve${guides.length === 1 ? '' : 's'}` + guideConstraintNote(g);
           for (let i = 0; i < nh; i++) tool = tool.cut(g ? g.holes[i] : buildLoft(holesM[i].map(sectionWire)));
           tool = unify(tool);
+          if (walls) tool = thinLoftWalls(tool, outerM[0], outerM.at(-1), thin);
           const scope = (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false ? f.scope || [] : null;
           tools.set(f.id, { shape: tool, op: f.op, merge: f.merge !== false, scope });
           apply(f.op, tool, f.merge !== false, scope);

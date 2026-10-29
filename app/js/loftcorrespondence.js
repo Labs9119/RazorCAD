@@ -15,6 +15,15 @@ function loopOptions(sk,subset,segs,closed){
   const curves=closed&&!circle?[...new Set(segs.map(g=>g.sourceCurve).filter(Boolean))]:[];
   return {circle:circle?{curve:circle.id,c:S.getPoint(sk,circle.c),r:segs[0].r}:null,points:[...new Map(points.map(p=>[p.id,p])).values()],curves,segs};
 }
+// A 3D sketch profile's connector choices: the ends of its lines and arcs and its splines' points ({ id }), or its one
+// circle ({ curve }); it has no holes and no starts inside a curve
+export function sketch3dConnectionOptions(f){
+  const segs=Array.isArray(f.segs)?f.segs.filter(g=>!g.construction):null;
+  const circle=segs?.length===1&&segs[0].type==='circle'?{curve:segs[0].id}:null,ids=[];
+  if(!segs)for(const q of f.pts||[])ids.push(q.id);
+  else if(!circle)for(const g of segs)for(const id of g.type==='spline'?g.pts||[]:g.type==='circle'?[]:[g.a,g.b])if(id&&!ids.includes(id))ids.push(id);
+  return {points:ids.map(id=>({id})),circle,closed:true,curves:[],segs:[],holes:[]};
+}
 // A hole's stable key: its boundary curves
 export const holeKey=loop=>JSON.stringify([...new Set(loop.segs.map(g=>g.sourceCurve).filter(Boolean))].sort());
 export function profileConnectionOptions(sk,ref){

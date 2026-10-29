@@ -5774,7 +5774,7 @@ export class UI {
     const a=this.app,pm=a.pm,active=LC.hasManualConnections(f),refs=f.profiles||[];
     body.classList.add('datum-definition');body.dataset.loftCorrespondence='';
     const graph=a.result?.info?.[f.id]?.loftConnections;body.dataset.graph=graph?.signature===JSON.stringify(f)?JSON.stringify(graph):'';
-    const blocked=refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type!=='sketch')?'Manual connectors currently require sketch profiles.':null;
+    const blocked=refs.some(r=>{const t=findFeature(a.doc,LR.sourceId(r))?.type;return t!=='sketch'&&!(t==='sketch3d'&&f.type==='loft');})?'Manual connectors currently require sketch (or, in a Loft, 3D sketch) profiles.':null;
     const enabled=el('input',{type:'checkbox','data-loft-manual':''});enabled.checked=active;enabled.disabled=!!blocked&&!active;
     enabled.onchange=()=>{
       if(pm.loftDraft?.curves.length){a.toast('Add or clear the current contour before editing connectors',true);this.renderPM();return;}
@@ -5782,29 +5782,34 @@ export class UI {
     };
     const label=el('label');label.append(enabled,document.createTextNode(' Edit profile connectors'));body.appendChild(this.row(null,label,'check'));
     if(blocked)body.appendChild(el('div',{class:'pm-hint'},blocked+' Choose Automatic correspondence to continue.'));
+    const thinWalls=f.type==='loft'&&refs.some(r=>findFeature(a.doc,LR.sourceId(r))?.type==='sketch3d');
     if(active&&!blocked){
-      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin?' Thin: each wall starts at its vertex nearest the start.':'')));
+      body.appendChild(el('div',{class:'pm-hint'},'Drag a numbered connector endpoint onto another profile vertex, or use Pick start below. Moving one attachment shifts the cyclic correspondence of the whole contour. Circles also accept a seam angle. A start inside a curve adds a point to that profile there (to match another profile with one more).'+(f.thin&&!thinWalls?' Thin: each wall starts at its vertex nearest the start.':'')));
       refs.forEach((ref,i)=>{
-        const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{};if(!source)return;
+        // (a 3D sketch profile: its points, or its circle's seam angle; no holes, no start inside a curve)
+        const source=a.result.sketches.get(LR.sourceId(ref)),control=LC.connectionFor(f,ref)||{},f3=!source&&findFeature(a.doc,LR.sourceId(ref));if(!source&&f3?.type!=='sketch3d')return;
+        const itemName=id=>source?SM.itemName(source.sketch,id):sketch3dItemName(f3,id);
         const heading=el('div',{},`<b>${i+1}. ${esc(LR.describeRef(a.doc,ref))}</b>`);body.appendChild(heading);
         try{
-          const options=LC.profileConnectionOptions(source.sketch,ref),pick=el('button',{class:'pm-btn'+(pm.loftConnector?.key===LR.refKey(ref)?' on':''),'data-loft-connector-pick':i,disabled:!options.circle&&!options.points.length,onclick:()=>a.activateLoftConnector(i)},'Pick start in canvas');body.appendChild(pick);
+          const options=source?LC.profileConnectionOptions(source.sketch,ref):LC.sketch3dConnectionOptions(f3),pick=el('button',{class:'pm-btn'+(pm.loftConnector?.key===LR.refKey(ref)?' on':''),'data-loft-connector-pick':i,disabled:!options.circle&&!options.points.length,onclick:()=>a.activateLoftConnector(i)},'Pick start in canvas');body.appendChild(pick);
           if(options.circle){
-            let angle=0;const p=graph?.signature===JSON.stringify(f)&&graph.sections[i]?.points[0];if(p){const q=G.toLocal(source.frame,source.frame.o.clone().fromArray(p));angle=Math.atan2(q.y-options.circle.c.y,q.x-options.circle.c.x)*180/Math.PI;}
+            let angle=0;const p=graph?.signature===JSON.stringify(f)&&graph.sections[i]?.points[0];
+            if(p&&source){const q=G.toLocal(source.frame,source.frame.o.clone().fromArray(p));angle=Math.atan2(q.y-options.circle.c.y,q.x-options.circle.c.x)*180/Math.PI;}
+            else if(p){const c=a.sketch3dGeometry(f3)?.circle(f3.segs.find(g=>g.id===options.circle.curve));if(c){const w=c.o.clone().fromArray(p).sub(c.o);angle=Math.atan2(w.dot(c.v),w.dot(c.u))*180/Math.PI;}}
             const input=this.exprInput(control.circle?control.angle??0:angle,'°',value=>{const next={...control,circle:options.circle.curve,angle:value};delete next.point;a.setLoftConnection(ref,next,false);});input.dataset.loftConnectorAngle=i;body.appendChild(this.row('Seam angle',input));
           }else{
             const select=el('select',{'data-loft-connector-point':i,'aria-label':'Profile start vertex'});select.appendChild(el('option',{value:''},'Automatic start'));
-            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
-            if(options.curves.length&&!f.thin)select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
+            for(const p of options.points)select.appendChild(el('option',{value:p.id},esc(itemName(p.id))));
+            if(options.curves.length&&(!f.thin||thinWalls))select.appendChild(el('option',{value:'@curve'},'Inside a curve…'));
             select.value=control.curve?'@curve':control.point||'';
             select.onchange=()=>{const next={...control};delete next.point;delete next.curve;delete next.at;if(select.value==='@curve'){next.curve=options.curves[0];next.at=50;}else if(select.value){next.point=select.value;if(!options.closed)next.reverse=false;}a.setLoftConnection(ref,next);};body.appendChild(this.row('Start vertex',select));
             if(control.curve)this.loftCurveStart(body,options,source,control,next=>a.setLoftConnection(ref,next,false),i);
             // (more connectors after the start, in order round the profile: as many on every profile, vertex to vertex)
-            if(control.point&&options.closed&&!f.thin){
+            if(control.point&&options.closed&&(!f.thin||thinWalls)){
               const extra=control.extra||[];
               extra.forEach((id,k)=>{
                 const pick=el('select',{'data-loft-connector-extra':`${i}:${k}`,'aria-label':`Connector ${k+2} vertex`});
-                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(SM.itemName(source.sketch,p.id))));
+                for(const p of options.points)pick.appendChild(el('option',{value:p.id},esc(itemName(p.id))));
                 pick.value=id;pick.onchange=()=>a.setLoftConnection(ref,{...control,extra:extra.map((x,j)=>j===k?pick.value:x)});
                 const drop=el('button',{class:'pm-btn','data-loft-connector-extra-remove':`${i}:${k}`,title:'Remove this connector','aria-label':'Remove this connector',onclick:()=>a.setLoftConnection(ref,{...control,extra:extra.filter((_,j)=>j!==k)})},'✕');
                 const row=this.row(`Connector ${k+2}`,pick);row.appendChild(drop);body.appendChild(row);
@@ -5813,7 +5818,7 @@ export class UI {
               if(free.length)body.appendChild(el('button',{class:'pm-btn','data-loft-connector-extra-add':i,onclick:()=>a.setLoftConnection(ref,{...control,extra:[...extra,free[0].id]})},'Add connector'));
             }
           }
-          if(options.holes.length&&!f.thin)this.loftHoleControls(body,f,ref,i,options,source,control);
+          if(options.holes.length&&(!f.thin||thinWalls))this.loftHoleControls(body,f,ref,i,options,source,control);
           const reverse=el('input',{type:'checkbox','data-loft-connector-reverse':i});reverse.checked=!!control.reverse;
           reverse.onchange=()=>{const next={...control,reverse:reverse.checked};if(!options.closed)delete next.point;a.setLoftConnection(ref,next);};
           const label=el('label');label.append(reverse,document.createTextNode(' Reverse traversal'));body.appendChild(this.row(null,label,'check'));

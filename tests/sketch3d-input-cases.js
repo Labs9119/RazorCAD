@@ -6,7 +6,8 @@ import {fixture as moldFixture} from '/tests/mold-cases.js';
 // volume), or the geometry worked out by hand. A block 40 × 20 × 10 (x ±20, z ±10, y 0 to 10) for the features at
 // points: from a 3D sketch each goes square to the face its point is on, so one on the top face and one on the side
 // face take out (or add) twice what one from a sketch on the top face does (a nut pocket without its clearance hole,
-// which runs through the part). The helix: within 1e-5 of its radius (the kernel's helix is an approximation).
+// which runs through the part). The helix: within 1e-5 of its radius (the kernel's helix is an approximation). Thin lofts
+// and manual loft connectors from 3D sketches: as from sketches, and the walls' volumes by hand.
 const s3d=(doc,pts,segs=[])=>{const f=M.createFeature(doc,'sketch3d');f.pts=pts.map(([x,y,z],i)=>({id:'p'+(i+1),x,y,z}));f.segs=segs;f.nextId=pts.length+segs.length+1;doc.features.push(f);return f;};
 const chain=(n,closed)=>Array.from({length:closed?n:n-1},(_,i)=>({id:'s'+(i+1),a:'p'+(i+1),b:'p'+((i+1)%n+1)}));
 // (a sketch on a plane `at` above Top: (x, y) on it is (x, at, −y) in the model)
@@ -69,7 +70,42 @@ export async function run({threads=1}={}){
       const in3d=await build(d=>{const a=s3d(d,sq(10,0),chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});d.features.push(f);return f;});
       const saddle=await build(d=>{const a=s3d(d,[[-10,0,-10],[10,4,-10],[10,0,10],[-10,4,10]],chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});d.features.push(f);return f;});
       results.push({name:'Loft from 3D sketch profiles: the same as from sketches',ok:!flat.errors.length&&!in3d.errors.length&&flat.v>1000&&close(in3d.v,flat.v),flat:flat.v,in3d:in3d.v,errors:[...flat.errors,...in3d.errors]});
-      results.push({name:'Loft from a saddle (a closed 3D chain out of a plane)',ok:!saddle.errors.length&&saddle.v>1000&&Math.abs(saddle.v-flat.v)>1,volume:saddle.v,errors:saddle.errors});
+      // (closed at the saddle by a filling surface: between the lofts from the 20 square flat at y 4 and at y 0, (30 − h) · 700 / 3)
+      results.push({name:'Loft from a saddle (a closed 3D chain out of a plane), closed there',ok:!saddle.errors.length&&saddle.v>26*700/3+1&&saddle.v<30*700/3-1,volume:saddle.v,between:[26*700/3,30*700/3],errors:saddle.errors});
+    }
+    // ---- Thin loft from 3D sketch profiles (the solid loft's walls): a 20 square at y 0 to the same at y 30, walls 2 thick
+    // outward (one), inward (other) or 1 each way (mid): (24² − 20²) · 30, (20² − 16²) · 30, (22² − 18²) · 30, and the
+    // same as a thin loft from sketches; a Ø20 cylinder from two 3D circles, outward: π (12² − 10²) · 30
+    {
+      const sq=(h,at)=>[[-h,at,-h],[h,at,-h],[h,at,h],[-h,at,h]];
+      for(const [dir,want] of [['one',(24*24-20*20)*30],['other',(20*20-16*16)*30],['mid',(22*22-18*18)*30]]){
+        const in3d=await build(d=>{const a=s3d(d,sq(10,0),chain(4,true)),b=s3d(d,sq(10,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id],thin:true,thinT:2,thinDir:dir});d.features.push(f);return f;});
+        const flat=await build(d=>{const a=planeSketch(d,0,s=>poly(s,[[-10,-10],[10,-10],[10,10],[-10,10]],true)),b=planeSketch(d,30,s=>poly(s,[[-10,-10],[10,-10],[10,10],[-10,10]],true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id],thin:true,thinT:2,thinDir:dir});d.features.push(f);return f;});
+        results.push({name:`Thin loft from 3D sketch profiles (${dir}): its walls, as from sketches`,ok:!in3d.errors.length&&!flat.errors.length&&close(in3d.v,want,1e-5)&&close(flat.v,want,1e-5),in3d:in3d.v,flat:flat.v,expected:want,errors:[...in3d.errors,...flat.errors]});
+      }
+      const tube=await build(d=>{const a=s3d(d,[[0,0,0]],[{id:'k1',type:'circle',c:'p1',r:10,n:[0,1,0]}]),b=s3d(d,[[0,30,0]],[{id:'k1',type:'circle',c:'p1',r:10,n:[0,1,0]}]);const f=M.createFeature(d,'loft',{profiles:[a.id,b.id],thin:true,thinT:2});d.features.push(f);return f;});
+      const want=Math.PI*(144-100)*30;
+      results.push({name:'Thin loft between two 3D circles: a tube',ok:!tube.errors.length&&close(tube.v,want,1e-5),volume:tube.v,expected:want,errors:tube.errors});
+      // (a tapered one with a saddle: it builds, less than the solid loft)
+      const solid=await build(d=>{const a=s3d(d,[[-10,0,-10],[10,4,-10],[10,0,10],[-10,4,10]],chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});d.features.push(f);return f;});
+      const thin=await build(d=>{const a=s3d(d,[[-10,0,-10],[10,4,-10],[10,0,10],[-10,4,10]],chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id],thin:true,thinT:1,thinDir:'other'});d.features.push(f);return f;});
+      results.push({name:'Thin loft from a saddle to a square',ok:!thin.errors.length&&thin.v>100&&thin.v<solid.v-100,volume:thin.v,solid:solid.v,errors:[...solid.errors,...thin.errors]});
+    }
+    // ---- Manual loft connectors on 3D sketch profiles: a 20 square at y 0 to a 10 square at y 30, the first's corner
+    // (−10, −10) joined to the second's (5, −5) (a quarter turn): as the same connectors on sketches, and unlike the
+    // automatic loft; a 3D circle (Ø20, its seam 30° round from X) to the 10 square: as a sketch circle's seam at 30°
+    {
+      const sq=(h,at)=>[[-h,at,-h],[h,at,-h],[h,at,h],[-h,at,h]];
+      const manual=(f,pairs)=>{f.correspondenceMode='manual';f.loftCorrespondence=Object.fromEntries(pairs);};
+      // (on a sketch, (x, y) is (x, at, −y): the 3D square's p1 (−10, 0, −10) is the sketch's (−10, 10), its p2 (5, 30, −5) the sketch's (5, 5))
+      const ids2=(s,pts)=>{const p=pts.map(q=>S.addPoint(s,...q));p.forEach((id,i)=>S.addLine(s,id,p[(i+1)%p.length]));return p;};
+      const auto=await build(d=>{const a=s3d(d,sq(10,0),chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});d.features.push(f);return f;});
+      const in3d=await build(d=>{const a=s3d(d,sq(10,0),chain(4,true)),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});manual(f,[[a.id,{point:'p1'}],[b.id,{point:'p2'}]]);d.features.push(f);return f;});
+      const flat=await build(d=>{let A,B;const a=planeSketch(d,0,s=>{A=ids2(s,[[-10,-10],[10,-10],[10,10],[-10,10]]);}),b=planeSketch(d,30,s=>{B=ids2(s,[[-5,-5],[5,-5],[5,5],[-5,5]]);});const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});manual(f,[[a.id,{point:A[3]}],[b.id,{point:B[2]}]]);d.features.push(f);return f;});
+      results.push({name:'Loft connectors on 3D sketch points: as on sketches, unlike automatic',ok:!auto.errors.length&&!in3d.errors.length&&!flat.errors.length&&close(in3d.v,flat.v,1e-5)&&Math.abs(in3d.v-auto.v)>1,in3d:in3d.v,flat:flat.v,auto:auto.v,errors:[...auto.errors,...in3d.errors,...flat.errors]});
+      const c3=await build(d=>{const a=s3d(d,[[0,0,0]],[{id:'k1',type:'circle',c:'p1',r:10,n:[0,1,0]}]),b=s3d(d,sq(5,30),chain(4,true));const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});manual(f,[[a.id,{circle:'k1',angle:30}],[b.id,{point:'p1'}]]);d.features.push(f);return f;});
+      const c2=await build(d=>{let B,K;const a=planeSketch(d,0,s=>{K=S.addCircle(s,S.addPoint(s,0,0),10);}),b=planeSketch(d,30,s=>{B=ids2(s,[[-5,-5],[5,-5],[5,5],[-5,5]]);});const f=M.createFeature(d,'loft',{profiles:[a.id,b.id]});manual(f,[[a.id,{circle:K,angle:30}],[b.id,{point:B[3]}]]);d.features.push(f);return f;});
+      results.push({name:'Loft connector on a 3D circle\'s seam angle: as on a sketch circle',ok:!c3.errors.length&&!c2.errors.length&&c3.v>1000&&close(c3.v,c2.v,1e-5),in3d:c3.v,flat:c2.v,errors:[...c3.errors,...c2.errors]});
     }
     // ---- Lofted Bend between two open chains (at y 0 and y 50), from sketches and from 3D sketches (the same); and with
     // the second's corner raised out of its plane
