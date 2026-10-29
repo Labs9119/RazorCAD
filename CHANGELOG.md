@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 22:46 — Structural Member: profiles face the same way round a frame
+
+- Fixed: a member whose sketch line was drawn the other way round from the rest had its profile turned 180°
+  (a channel in a U frame facing the wrong way). Along a chain of members every member now runs the same way (the
+  way most of its length runs), so a channel or angle faces the same way round the whole frame.
+- Fixed: in a frame standing up (a sketch on an upright plane) the upright members were turned 90° from the level
+  ones. Every member's height now lies in the frame's plane, square to it, and each profile faces the same side
+  out of the plane.
+- Tests: member-orientation (tests/member-orientation-cases.js), a U of 75 PFC and a rectangle, flat and standing.
+
 ## 2026-10-29 22:11 — Lofted Bend: flanges with bolt holes
 
 - **Flanges** group, as on a Transition: a flat bolting ring at the first and/or second profile, a flat sheet metal

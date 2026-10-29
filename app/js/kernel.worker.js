@@ -6241,11 +6241,44 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!segs.length) throw new Error('Select a sketch or 3D sketch with the lines (and arcs) for the members');
           const size = Math.hypot(sec.box.x1 - sec.box.x0, sec.box.y1 - sec.box.y0), ext = size * 1.5 + 1;
           const tol = Math.max(1e-4, size * 1e-5);
+          // the members of a chain (lines and arcs of one path joined end to end, two at each point between) all run the
+          // same way, so a profile that is not symmetric (a channel, an angle) faces the same way on each round a frame:
+          // the way most of its length runs (an arc's way first: an arc is not turned round), a line drawn the other
+          // way round turned round to it
+          {
+            const nodes = [], node = (src, q) => { let k = nodes.findIndex((x) => x.src === src && len(sub(x.p, q)) < tol); if (k < 0) { nodes.push({ src, p: q, n: 0 }); k = nodes.length - 1; } nodes[k].n++; return k; };
+            const ends = segs.map((g) => [node(g.src, g.a), node(g.src, g.b)]), seen = new Set();
+            for (let i0 = 0; i0 < segs.length; i0++) {
+              if (seen.has(i0)) continue;
+              // the chain through segment i0 (as drawn): each segment with whether it runs against i0
+              const chain = [[i0, false]];
+              seen.add(i0);
+              for (let q = 0; q < chain.length; q++) {
+                const [i, rev] = chain[q];
+                for (const k of [0, 1]) {
+                  const nd = ends[i][k];
+                  if (nodes[nd].n !== 2) continue;
+                  const j = segs.findIndex((_, jj) => jj !== i && !seen.has(jj) && ends[jj].includes(nd));
+                  if (j < 0) continue;
+                  // (leaving i at its end b (k 1, as drawn), j runs on with i when it starts there)
+                  const iOut = (k === 1) !== rev, jStarts = ends[j][0] === nd;
+                  chain.push([j, iOut !== jStarts]);
+                  seen.add(j);
+                }
+              }
+              const w = (i) => (segs[i].type === 'line' ? len(sub(segs[i].b, segs[i].a)) : 1e9 * (segs[i].length || 1));
+              const against = chain.reduce((t, [i, rev]) => t + (rev ? w(i) : 0), 0), with_ = chain.reduce((t, [i, rev]) => t + (rev ? 0 : w(i)), 0);
+              for (const [i, rev] of chain) if (rev !== (against > with_) && segs[i].type === 'line') segs[i] = { ...segs[i], a: segs[i].b, b: segs[i].a };
+            }
+          }
           const shiftSegs = (list) => list.map((g) => (g.type === 'circle' ? { ...g, c: [g.c[0] - pp[0], g.c[1] - pp[1]] } : { ...g, a: [g.a[0] - pp[0], g.a[1] - pp[1]], b: [g.b[0] - pp[0], g.b[1] - pp[1]], ...(g.m ? { m: [g.m[0] - pp[0], g.m[1] - pp[1]] } : {}) }));
           const outerSegs = shiftSegs(sec.outer), innerSegs = sec.inner ? shiftSegs(sec.inner) : null;
-          // the profile's frame where a member leaves point A in direction d (its height kept upright)
-          const frameAt = (A, d) => {
-            let v = rej([0, 1, 0], d);
+          // the profile's frame where a member leaves point A in direction d: its height kept upright; in a sketch on an
+          // upright plane (a frame standing up), its height in the plane, square to the member, so that every member's
+          // profile faces the same side out of the plane, the upright ones as the level ones
+          const frameAt = (A, d, src) => {
+            const pn = sketches.get(src)?.frame?.n;
+            let v = pn && Math.abs(dot(pn, [0, 1, 0])) < 1e-6 ? cross(pn, d) : rej([0, 1, 0], d);
             if (len(v) < 1e-6) v = rej(f.vertRef === 'x' ? [1, 0, 0] : [0, 0, -1], d);
             v = unit(v);
             let u = cross(v, d);
@@ -6315,14 +6348,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (m.line) {
               const d = unit(sub(m.g.b, m.g.a)), L = len(sub(m.g.b, m.g.a));
               const e0 = m.trim[0] ? ext : 0, e1 = m.trim[1] ? ext : 0;
-              const fr = frameAt(sub(m.g.a, mul(d, e0)), d);
-              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d);
+              const fr = frameAt(sub(m.g.a, mul(d, e0)), d, m.g.src);
+              m.d = d; m.L = L; m.fr = frameAt(m.g.a, d, m.g.src);
               m.solid = R.basicFaceExtrusion(faceAt(fr, true), new R.Vector(mul(d, L + e0 + e1)));
               m.env = R.basicFaceExtrusion(faceAt(fr, false), new R.Vector(mul(d, L + e0 + e1)));
               m.env0 = R.basicFaceExtrusion(faceAt(m.fr, false), new R.Vector(mul(d, L))); // (to the sketch ends)
             } else {
               // an arc: swept (no end trimming)
-              const fr = frameAt(m.g.a, m.g.t0), spine = m.g.wire;
+              const fr = frameAt(m.g.a, m.g.t0, m.g.src), spine = m.g.wire;
               const sw = (w) => { for (const tm of ['right', 'round', 'transformed']) { try { return R.genericSweep(w, spine, { frenet: false, transitionMode: tm }); } catch (e) { if (isFatal(e)) throw e; } } throw new Error('A curved member could not be swept'); };
               m.env = sw(loopWire(fr, outerSegs));
               m.solid = innerSegs ? m.env.cut(sw(loopWire(fr, innerSegs))) : m.env;

@@ -1526,6 +1526,7 @@ Sizes come from AS/NZS or EN/ISO tables, or enter your own dimensions.
 - **Corners** where two members meet end to end: **Mitre**, **Butt** (first or second member trimmed) or **None** (members meet at the sketch points). **Trimmed ends**: square cut on the face, or coped to the other member's outside.
 - A member ending on the middle of another (a T-joint), or under a corner (a table leg), is trimmed to it, square on its face. Pipes and round bars are always coped (fish-mouthed).
 - **Alignment**: which point of the profile the sketch line runs through (centre, corners or edges), a profile rotation, and mirror.
+- **Which way a profile faces** {idx:Structural Member, orientation}: along a chain of members (lines and arcs joined end to end) every member runs the same way, whichever way each line was drawn, so a channel or angle faces the same way round the whole frame (all its webs out, or all in; **Mirror** turns them all). A member's height is kept upright; in a sketch on an upright plane (a frame standing up, such as one on Front) it lies in the plane, square to the member, so every member's profile faces the same side out of the plane, the upright ones as the level ones.
 
 ## Trim/Extend
 

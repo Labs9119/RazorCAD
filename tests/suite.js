@@ -848,6 +848,12 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
   },
 
+  // Structural members round a frame face the same way whichever way each line was drawn (tests/member-orientation-cases.js)
+  async 'member-orientation'() {
+    const {run}=await import('/tests/member-orientation-cases.js'),native=await run({threads:threadsPerKernel()});
+    return {ok:native.ok,detail:native.ok?`${native.results.length} cases: a U of 75 PFC and a rectangle, lines drawn either way, every channel the same way round`:JSON.stringify(native.results.filter(x=>!x.ok))};
+  },
+
   // Lofted Bend flanges (tests/loft-flange-cases.js): flat rings round the profiles, by hand for either material side
   async 'loft-flanges'() {
     const {run}=await import('/tests/loft-flange-cases.js'),native=await run({threads:threadsPerKernel()});
