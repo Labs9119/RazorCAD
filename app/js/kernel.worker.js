@@ -8782,8 +8782,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!f.sketch) throw new Error('Select the sketch with the axis line (or sketch one: bottom centre to top centre)');
           const s = sketches.get(f.sketch), s3 = s ? null : sketch3dOf(f.sketch);
           if (!s && !s3) throw new Error('The sketch is missing, suppressed or has errors');
-          const pick = (lines) => { const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null; };
-          const noLine = (n) => new Error(n ? 'The sketch has more than one line: keep one line for the axis (bottom centre to top centre)' : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
+          // (the line picked for the axis, f.line; none picked: the sketch's one line, or its one solid line)
+          const pick = (lines) => {
+            if (f.line) { const l = lines.find((c) => c.id === f.line); if (!l) throw new Error('The axis line picked is no longer a line of the sketch: click another line in the view, or choose it under Axis'); return l; }
+            const solid = lines.filter((c) => !c.construction); return lines.length === 1 ? lines[0] : solid.length === 1 ? solid[0] : null;
+          };
+          const noLine = (n) => new Error(n ? `The sketch has ${n} lines: click the one for the axis in the view (bottom centre to top centre), or choose it under Axis` : 'Draw a line in the sketch from the bottom centre to the top centre (its length is the height)');
           let o, tp, fr = null;
           if (s) {
             const lines = s.sk.curves.filter((c) => c.type === 'line'), line = pick(lines);
@@ -8793,7 +8797,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             o = W3(S.getPoint(s.sk, line.p1)); tp = W3(S.getPoint(s.sk, line.p2));
           } else {
             // (a 3D sketch's line, between its points as built; an older 3D sketch of just two points is one too)
-            const lines = s3.segs ? s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)) : s3.f.pts.length === 2 ? [{ a: s3.f.pts[0].id, b: s3.f.pts[1].id }] : [];
+            const lines = s3.segs ? s3.segs.filter((g) => (!g.type || g.type === 'line') && s3.at.has(g.a) && s3.at.has(g.b)) : s3.f.pts.length === 2 ? [{ id: null, a: s3.f.pts[0].id, b: s3.f.pts[1].id }] : [];
             const line = pick(lines);
             if (!line) throw noLine(lines.length);
             o = s3.at.get(line.a); tp = s3.at.get(line.b);

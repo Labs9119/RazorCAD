@@ -6,6 +6,14 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 22:57 — Transition / Reducer on one line of a sketch or 3D sketch with several
+
+- The axis can be any line of a sketch or 3D sketch with several (a duct route): click it in the view while the
+  panel is open (earlier sketches and 3D sketches show; the line picked is drawn orange), choose it under **Axis
+  line**, or start Transition from inside the sketch with the line selected. Before, a 3D sketch (or sketch) with
+  more than one line was refused, and with no one-line sketch there Transition started a new sketch instead.
+- Tests: transition-axis-line-pick.
+
 ## 2026-10-29 22:52 — 3D sketch dimensions shown while they are placed
 
 - **Dimension** in a 3D sketch: as in a 2D sketch, the dimension shows in orange as soon as the line (or second

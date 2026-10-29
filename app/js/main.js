@@ -1734,12 +1734,20 @@ class App {
 
   // A curve (line, arc or circle) of a sketch shown in the view under the cursor (part mode):
   // { sketch, curve, at (a world point on it, near the cursor) }.
+  // Transition: the line of an earlier sketch or 3D sketch under the cursor, { sketch, line }
+  axisLineAt(e) {
+    const s3 = this.sketch3dItemAt(e, 'curve'), f3 = s3 && M.findFeature(this.doc, s3.sketch), g = f3?.segs?.find((x) => x.id === s3.curve);
+    if (g && (!g.type || g.type === 'line')) return { sketch: s3.sketch, line: g.id };
+    const c = this.sketchCurveAt(e), sk = c && this.result.sketches.get(c.sketch)?.sketch, cv = sk?.curves.find((x) => x.id === c.curve);
+    return cv?.type === 'line' ? { sketch: c.sketch, line: cv.id } : null;
+  }
+
   sketchCurveAt(e) {
     const vp = this.viewport, m = vp.screenPos(e);
     let best = null, bd = 6;
     for (const [id, s] of this.result.sketches) {
       const f = s.sketch;
-      const datum=this.pickMode()==='ref';
+      const datum=this.pickMode()==='ref'||this.pickMode()==='axisLine';
       if(datum&&(f.suppressed||this.result.errors.has(id)||this.doc.features.indexOf(f)>=this.doc.features.indexOf(this.pm.feature)))continue;
       if (!datum&&!(this.vis.sketches && this.sketchShown(f)) && this.hoverSketchId !== id) continue;
       for (const c of f.curves) {
@@ -2699,6 +2707,7 @@ class App {
     if (['loft', 'surfLoft'].includes(f.type) && this.pm.loftEndSlot) return 'faces';
     if (this.loftPicking()) return 'loftContour';
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
+    if (f.type === 'smTransition') return 'axisLine';
     if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
     if (f.type === 'printHinge') return 'edge';
     if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
@@ -3010,7 +3019,7 @@ class App {
     const sel = this.selection?.kind === 'feature' ? this.selection.id : null;
     const sweep = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     const datumRefs=new Set(this.pm?.feature?.referenceDefinition?(this.pm.feature.refs||[]).filter(r=>r.id).map(r=>r.id):[]);
-    const datumPicking = (f) => this.pickMode() === 'ref' && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
+    const datumPicking = (f) => ['ref', 'axisLine'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
     const state = (id) => (id === editing || id === sweep?.guide ? 'preview' : id === sel || id === this._hoverFeature || id === sweep?.path || datumRefs.has(id) ? 'selected' : 'normal');
     const axes = [], points = [];
     for (const f of this.doc.features) {
@@ -3034,6 +3043,14 @@ class App {
       const f3 = r.kind === 'sketch' && r.curve ? M.findFeature(this.doc, r.sketch) : null, g = f3?.type === 'sketch3d' && (f3.segs || []).find((x) => x.id === r.curve);
       const pts = g && this.sketch3dGeometry(f3)?.curve(g);
       if (pts) curves.push({ id: f3.id + '/' + g.id, name: '', pts: pts.map((q) => q.toArray()), state: 'picked' });
+    }
+    // a Transition's axis line picked: orange
+    if (this.pm?.kind === 'feature' && this.pm.feature.type === 'smTransition' && this.pm.feature.sketch && this.pm.feature.line) {
+      const tf = this.pm.feature, f3 = M.findFeature(this.doc, tf.sketch), s2 = res.sketches?.get(tf.sketch);
+      let pts = null;
+      if (f3?.type === 'sketch3d') { const g = (f3.segs || []).find((x) => x.id === tf.line), q = g && this.sketch3dGeometry(f3)?.curve(g); pts = q ? q.map((v) => v.toArray()) : null; }
+      else if (s2) { const c = s2.sketch.curves.find((x) => x.id === tf.line); pts = c ? S.curvePoints(s2.sketch, c).map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) : null; }
+      if (pts) curves.push({ id: tf.id + '/axis', name: '', pts, state: 'picked' });
     }
     // cosmetic threads: a helix just off the bore / shaft (at most 60 turns drawn)
     const threads = [];
@@ -3094,7 +3111,7 @@ class App {
       if(referencePicking&&(this.sketcher.projectionSource==='model'||this.sketcher.projectionSource?.startsWith('sketch:')&&id!==this.sketcher.projectionSource.slice(7)))continue;
       const pmSketch = this.pm?.kind === 'feature' && (this.pm.feature.sketch === id || (['revolve','surfRevolve'].includes(this.pm.feature.type)&&this.pm.profilePick===false&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature)));
       const selected = (this.selection?.kind === 'feature' && this.selection.id === id) || this.hoverSketchId === id;
-      const datumPicking=this.pickMode()==='ref'&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
+      const datumPicking=['ref','axisLine'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
       if ((this.vis.sketches && this.sketchShown(s.sketch)) || pmSketch || selected || loft || datumPicking || (referencePicking && this.doc.features.findIndex((f) => f.id === id) < this.doc.features.findIndex((f) => f.id === editing))) {
         const polylines = s.sketch.curves.filter((c) => !loft || !c.ctrlOf).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: c.construction }));
         for (const polys of Object.values(s.textPolys || {})) for (const pts of polys) polylines.push({ pts, construction: false });
@@ -3637,6 +3654,17 @@ class App {
     const mode = this.pickMode();
     if(mode==='loftConnector'){try{const target=this.loftConnectorTarget(e);if(target)this.setLoftConnection(target.ref,target.control);else this.toast('Choose a start vertex on this profile, or a point on its circle',true);}catch(error){this.toast(error.message,true);}return;}
     if (mode === 'loftContour') { this.loftClick(e); return; }
+    if (mode === 'axisLine') {
+      // Transition: a line of an earlier sketch or 3D sketch clicked is its axis
+      const hit = this.axisLineAt(e);
+      if (!hit) { this.toast('Click a line of a sketch or 3D sketch for the axis (bottom centre to top centre)'); return; }
+      Object.assign(this.pm.feature, { sketch: hit.sketch, line: hit.line });
+      this.updateSketchDisplay?.();
+      this.updateRefGeometry();
+      this.ui.renderPM();
+      this.preview(true);
+      return;
+    }
     if (mode === 'section') {
       // a flat face or a plane: the section moves onto it
       const p = this.pickAt(e);
@@ -4350,6 +4378,13 @@ class App {
     this.warnDenseMesh(type);
     let preSketch = null;
     if (type === 'sketch3d') return this.newSketch3D();
+    // (Transition from inside a sketch or 3D sketch with one line selected: that line is its axis)
+    let preLine = null;
+    if (type === 'smTransition' && (this.mode === 'sketch' || this.mode === 'sketch3d')) {
+      const sk = this.mode === 'sketch' ? this.sketcher : this.sketch3d, ids = [...(sk.sel || [])];
+      const isLine = (id) => (this.mode === 'sketch' ? S.getCurve(sk.f, id)?.type === 'line' : (sk.f.segs || []).some((g) => g.id === id && (!g.type || g.type === 'line')));
+      if (ids.length === 1 && isLine(ids[0])) preLine = ids[0];
+    }
     if (this.mode === 'sketch') preSketch = this.exitSketch(true);
     else if (this.mode === 'sketch3d') { const s3 = this.exitSketch3D(true); if (type === 'smTransition') preSketch = s3; }
     if (this.pm) this.cancelPM();
@@ -4363,11 +4398,14 @@ class App {
       const isAxis = (x) => (x?.type === 'sketch' && x.curves.some((c) => c.type === 'line')) || (x?.type === 'sketch3d' && (x.segs || []).some((g) => !g.type || g.type === 'line'));
       const drawn = (x) => (x.type === 'sketch' ? x.curves : x.segs || []).filter((c) => !c.construction).length;
       let sk = isAxis(preSketch) ? preSketch : isAxis(selF) ? selF : null;
+      const before = doc.features.slice(0, M.rollbackIndex(doc)).reverse().filter((x) => isAxis(x) && !x.suppressed);
       if (!sk) {
         const used = new Set(doc.features.flatMap((x) => M.sketchesUsedBy(x)));
-        sk = doc.features.slice(0, M.rollbackIndex(doc)).reverse().find((x) => isAxis(x) && !x.suppressed && !used.has(x.id) && drawn(x) <= 1) || null;
+        sk = before.find((x) => !used.has(x.id) && drawn(x) <= 1) || null;
       }
-      if (!sk) {
+      // (sketches with several lines there: the panel opens and the axis line is clicked in one of them)
+      if (!sk && before.length) this.status('Click the axis line (bottom centre to top centre) in a sketch or 3D sketch, or choose it under Axis.');
+      else if (!sk) {
         this.pendingFeature = { type, op, opts };
         this.pendingTool = 'line';
         this.startSketch();
@@ -4377,7 +4415,7 @@ class App {
         }
         return;
       }
-      props.sketch = sk.id;
+      if (sk) { props.sketch = sk.id; if (preLine && sk === preSketch) props.line = preLine; }
     }
     if (M.SKETCH_FEATURES.has(type) && !['surfPlanar','revolve','surfExtrude','surfRevolve'].includes(type)) {
       let sk = preSketch || (selF?.type === 'sketch' ? selF : null);

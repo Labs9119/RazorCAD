@@ -395,7 +395,8 @@ export function createFeature(doc, type, props = {}) {
     // t (top): Shape 'round' | 'square' | 'rect' | 'tri' | 'pent' | 'hex'; D (round), Size + Basis
     // ('side' | 'flats' | 'corners'), W × L (rect). dims: 'inside' | 'outside' | 'mean'
     smTransition: {
-      sketch: null, reverse: false,
+      // line: the axis line picked in the sketch or 3D sketch (null: its one line)
+      sketch: null, line: null, reverse: false,
       bShape: 'square', bD: 300, bSize: 300, bW: 400, bL: 300, bBasis: 'side',
       tShape: 'round', tD: 200, tSize: 150, tW: 200, tL: 150, tBasis: 'side',
       offX: 0, offY: 0, rotation: 0, parts: 2, seamAt: 'mid', seamShift: false, seamAngle: 0, seamGap: 0,

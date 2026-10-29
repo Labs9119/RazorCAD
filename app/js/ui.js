@@ -370,6 +370,14 @@ function convertFound(f, a) {
 const smCircle = (f, a) => { const sk = a?.doc?.features.find((x) => x.id === f.sketch); const cs = (sk?.curves || []).filter((c) => !c.construction); return cs.length === 1 && cs[0].type === 'circle'; };
 // Transition ends (k: 'b' bottom, 't' top)
 const trRound = (f) => f.bShape === 'round' && f.tShape === 'round';
+// (a Transition's axis line choices: the lines of its sketch or 3D sketch, with "the only line" when it has one)
+const trLines = (f, a) => {
+  const sk = f.sketch ? (a.result?.sketches.get(f.sketch)?.sketch || findFeature(a.doc, f.sketch)) : null;
+  if (!sk) return [];
+  const lines = sk.type === 'sketch3d' ? (sk.segs || []).filter((g) => !g.type || g.type === 'line').map((g) => [g.id, `${sketch3dItemName(sk, g.id)} ${g.id}${g.construction ? ' (construction)' : ''}`])
+    : (sk.curves || []).filter((c) => c.type === 'line').map((c) => [c.id, `${SM.itemName(sk, c.id)}${c.construction ? ' (construction)' : ''}`]);
+  return [['', lines.length === 1 ? 'Its line' : 'Click one in the view…'], ...lines];
+};
 // (the ends with a flange: any of them round, any of them flat-sided)
 const trFlanged = (f) => [f.flangeBot && f.bShape, f.flangeTop && f.tShape].filter(Boolean);
 const TR_SHAPES = [['round', 'Round'], ['square', 'Square'], ['rect', 'Rectangle'], ['tri', 'Triangle'], ['pent', 'Pentagon'], ['hex', 'Hexagon']];
@@ -557,7 +565,8 @@ const PM_SCHEMAS = {
   ],
   smTransition: [
     { title: 'Axis', fields: [
-      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (one line)', with3d: true },
+      { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch with the axis line', with3d: true },
+      { key: 'line', type: 'select', label: 'Axis line', options: (f, a) => trLines(f, a), show: (f, a) => trLines(f, a).length > 2 || !!f.line },
       { key: 'reverse', type: 'check', label: 'Swap the bottom and top ends' },
       { key: 'aHint', type: 'hint', text: 'The line runs from the bottom centre to the top centre: its length is the height and it places the part. Change the line (or its dimension) to change the height.' },
     ] },
@@ -4272,6 +4281,7 @@ export class UI {
               if(fd.key==='extent'&&revUpTo(f)){pm.revolveEndPick=true;pm.profilePick=false;pm.scopePick=false;}
             }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
+            if (f.type === 'smTransition' && fd.key === 'sketch') { f.line = null; a.updateRefGeometry(); this.renderPM(); }
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
             if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;

@@ -809,6 +809,52 @@ const UI = {
     return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `2 parts each way, ${+flat.v.toFixed(1)} mm³ from a sketch line, a 3D sketch's upright line and one tilted 30°; listed and picked in the panel` };
   },
 
+  // Transition on one line of a sketch or 3D sketch with several: a 3D sketch route (up 400, across 300, out 300) and a
+  // 2D sketch with two lines. Without a line picked: refused, saying so; with its line picked: the same part as from a
+  // sketch of just that line. In the app, Transition started with only the route there opens its panel (no new sketch),
+  // a click on the route's upright line picks it (drawn orange), the panel lists the lines, and ✔ adds it
+  async 'transition-axis-line-pick'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),{Vector3}=await import('three'),bad=[];
+    const vol=async()=>(await Promise.all(a.result.bodies.map(async(b)=>(await a.kernel.request('measure',{refs:[{kind:'body',id:b.id}]})).items[0].volume))).reduce((x,y)=>x+y,0);
+    const route=(d)=>{const s3=M.createFeature(d,'sketch3d');s3.pts=[[0,0,0],[0,400,0],[300,400,0],[300,400,300]].map(([x,y,z],i)=>({id:'p'+(i+1),x,y,z}));s3.segs=[1,2,3].map(i=>({id:'s'+i,a:'p'+i,b:'p'+(i+1)}));s3.nextId=8;d.features.push(s3);return s3;};
+    const two=(d)=>{const sk=M.createFeature(d,'sketch',{plane:{ref:'front'}});S.addLine(sk,S.addPoint(sk,100,0),S.addPoint(sk,100,300));S.addLine(sk,S.addPoint(sk,0,0),S.addPoint(sk,0,400));d.features.push(sk);return sk;};
+    const one=(d)=>{const sk=M.createFeature(d,'sketch',{plane:{ref:'front'}});S.addLine(sk,S.addPoint(sk,0,0),S.addPoint(sk,0,400));d.features.push(sk);return sk;};
+    const build=async(make,line)=>{const d=M.newDoc(),ax=make(d),f=M.createFeature(d,'smTransition',{sketch:ax.id,line:line?line(ax):null});d.features.push(f);await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();return {errors:[...a.result.errors].map(e=>e[1]),v:a.result.bodies.length?await vol():0,f,ax};};
+    const want=await build(one);
+    const none3=await build(route),pick3=await build(route,()=>'s1');
+    const none2=await build(two),pick2=await build(two,(sk)=>sk.curves[1].id);
+    const close=(x,y)=>Math.abs(x-y)<=1e-6*Math.max(1,Math.abs(y));
+    if(want.errors.length||!(want.v>0))bad.push(`one line: ${want.errors}`);
+    if(!none3.errors.some(e=>/has 3 lines: click the one for the axis/.test(e)))bad.push(`route, none picked: ${none3.errors}`);
+    if(!none2.errors.some(e=>/has 2 lines/.test(e)))bad.push(`two lines, none picked: ${none2.errors}`);
+    if(pick3.errors.length||!close(pick3.v,want.v))bad.push(`route, its upright line: ${pick3.errors} ${pick3.v} (want ${want.v})`);
+    if(pick2.errors.length||!close(pick2.v,want.v))bad.push(`two lines, the 400 one: ${pick2.errors} ${pick2.v}`);
+    // in the app: only the route there
+    const d=M.newDoc(),r3=route(d);await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();
+    a.startFeature('smTransition');await wait(150);
+    if(a.mode==='sketch'||a.pm?.feature?.type!=='smTransition')bad.push(`started: mode ${a.mode}, panel ${a.pm?.feature?.type}`);
+    else{
+      const vp=a.viewport,rc=vp.canvas.getBoundingClientRect(),q=vp.project(new Vector3(0,200,0));
+      a.handleClick({clientX:rc.left+q.x,clientY:rc.top+q.y,button:0,ctrlKey:false,shiftKey:false,altKey:false,preventDefault(){},stopPropagation(){}});await wait(50);
+      const f=a.pm.feature;
+      if(f.sketch!==r3.id||f.line!=='s1')bad.push(`the click picked ${f.sketch} / ${f.line}`);
+      const opts=[...document.querySelectorAll('#pm select')].flatMap(x=>[...x.options].map(o=>o.value));
+      if(!['s1','s2','s3'].every(x=>opts.includes(x)))bad.push('the panel does not list the lines');
+      await a.okPM();await wait(50);
+      if(a.pm||!a.doc.features.some(x=>x.type==='smTransition'&&x.line==='s1')||a.result.errors.size)bad.push(`✔: panel ${a.pm?.kind}, errors ${JSON.stringify([...a.result.errors])}`);
+      closeModals();
+    }
+    // from inside the 3D sketch with its second line selected: that line
+    {
+      const d2=M.newDoc(),r=route(d2);await a.newDocument?.();closeModals();await a.setDoc(d2);await a.rebuild();
+      a.editSketch3D(r.id);await wait(80);a.sketch3d.sel=new Set(['s2']);
+      a.startFeature('smTransition');await wait(150);
+      if(a.pm?.feature?.sketch!==r.id||a.pm.feature.line!=='s2')bad.push(`from the 3D sketch: ${a.pm?.feature?.sketch} / ${a.pm?.feature?.line}`);
+      a.cancelPM();
+    }
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`none picked: refused, saying so; picked: the same ${+want.v.toFixed(1)} mm³ from a 3D route and a two-line sketch; in the app a click on the route's line picked it and ✔ added it; a line selected in the 3D sketch taken`};
+  },
+
   async 'print-printer-list'() {
     // the Print Profile dialog's printers: chosen on a starting profile, a copy of it with that printer's bed, used by
     // the part; another chosen on the copy changes its bed, a size from listings (not the maker's page: the X1C) says
