@@ -117,7 +117,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 | **Command ribbon** | Tabs of tool buttons: **Features**, **Sketch**, **Surfaces**, **Sheet Metal**, **Fast Structure**, **Evaluate** and **Claude**. Buttons with a shortcut show the key in their bottom-right corner. |
 | **Feature tree** | The part's history, with folders for Solid Bodies, Sheet Metal Bodies and Surface Bodies, the material, the planes and every feature. An eye column on the right shows or hides each item. |
 | **Configurations tab** | Next to the Feature tree and the Property panel at the top of the left panel (see the Configurations chapter) |
-| **Property panel** | Opens in place of the tree while you create or edit a feature. ✔ accepts ([[Enter]]), ✕ cancels ([[Esc]]). |
+| **Property panel** | Opens in place of the tree while you create or edit a feature. ✔ accepts ([[Enter]]), ✕ cancels ([[Esc]]). A feature that fails is not accepted {idx:feature, refused}: ✔ shows a dialog saying why, and the panel stays open to put it right; a new one is not added to the tree, and an edit that makes a feature fail is not kept (✕ leaves it as it was). |
 | **Heads-up toolbar** | Above the 3D view: view orientation, display style, selection filters, visibility (eye button) and section view |
 | **Confirm corner** | The top-right corner of the view holds ✔ / ✕ for the active feature or sketch |
 | **Status line and progress bar** | Bottom left. Long operations (opening, rebuilding, importing, meshing, exporting) show progress here. The rebuild time is shown at the right; when features have errors it shows their number in red: click it for Fix References. |

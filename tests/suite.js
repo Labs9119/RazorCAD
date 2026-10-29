@@ -848,6 +848,34 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
   },
 
+  // ✔ on a feature that fails: it is not added to the tree; a dialog says why and the panel stays open. A good one is
+  // added; an edit that makes a feature fail is not kept (✕ brings it back as it was)
+  async 'failing-feature-refused'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}}),bad=[];
+    const p=[[0,0],[40,0],[40,20],[0,20]].map(q=>S.addPoint(sk,...q));p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));
+    const block=M.createFeature(d,'extrude',{sketch:sk.id,depth:10});d.features.push(sk,block);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);
+    const n0=a.doc.features.length;
+    // a fillet with no edges picked: refused
+    a.startFeature('fillet');await wait(150);const fil=a.pm?.feature;
+    await a.okPM();await wait(50);
+    const dlg=document.querySelector('[data-feature-refused]');
+    if(!dlg||!/can't be added/.test(dlg.closest('.modal')?.textContent||''))bad.push('no dialog saying it can\'t be added');
+    if(a.pm?.feature!==fil)bad.push('the panel closed');
+    closeModals();a.cancelPM();await wait(50);
+    if(a.doc.features.length!==n0)bad.push(`the tree has ${a.doc.features.length - n0} more features`);
+    // an edit that fails (depth 0): not kept; ✕ keeps the block as it was
+    a.editFeature(block.id);await wait(100);a.pm.feature.depth=0;await a.okPM();await wait(50);
+    if(!document.querySelector('[data-feature-refused]'))bad.push('a failing edit was not refused');
+    closeModals();a.cancelPM();await wait(150);await until(()=>!a.kernel.pending);await a.rebuild();
+    if(M.findFeature(a.doc,block.id).depth!==10||a.result.errors.size)bad.push(`after ✕: depth ${M.findFeature(a.doc,block.id).depth}, errors ${JSON.stringify([...a.result.errors])}`);
+    // a good one: added
+    a.editFeature(block.id);await wait(100);a.pm.feature.depth=15;await a.okPM();await wait(50);
+    if(document.querySelector('[data-feature-refused]')||a.pm||M.findFeature(a.doc,block.id).depth!==15)bad.push('a good edit was not accepted');
+    closeModals();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'a fillet with no edges refused (dialog, panel open, not added); a failing edit refused and ✕ kept the block; a good edit accepted'};
+  },
+
   // Structural members round a frame face the same way whichever way each line was drawn (tests/member-orientation-cases.js)
   async 'member-orientation'() {
     const {run}=await import('/tests/member-orientation-cases.js'),native=await run({threads:threadsPerKernel()});

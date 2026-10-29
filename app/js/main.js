@@ -4597,10 +4597,15 @@ class App {
       this.status('Ready');
       return;
     }
-    if(pm.kind==='feature'&&(pm.feature.referenceDefinition&&['plane','axis','point'].includes(pm.feature.type)||['loft','surfLoft'].includes(pm.feature.type)&&LC.hasManualConnections(pm.feature))){
-      clearTimeout(this._previewTimer);await this.rebuild();
-      if(this.pm!==pm)return;
-      const error=this.result.errors.get(pm.feature.id);if(error){this.toast(error,true);return;}
+    // A feature that fails is not added to the tree (nor, being edited, changed): built as it is now, it says why
+    // and stays open, to be put right or cancelled with ✕
+    if (pm.kind === 'feature' && !this.isSuppressed(pm.feature)) {
+      clearTimeout(this._previewTimer);
+      await this.rebuild();
+      for (let i = 0; i < 200 && this.kernel.pending && this.pm === pm; i++) await new Promise((r) => setTimeout(r, 50));
+      if (this.pm !== pm) return;
+      const error = this.result.errors.get(pm.feature.id);
+      if (error) { this.refuseFeature(pm, error); return; }
     }
     clearTimeout(this._previewTimer);
     this.pm = null;
@@ -4617,6 +4622,23 @@ class App {
     const err = pm.kind === 'feature' && this.result.errors.get(pm.feature.id);
     if (err) this.toast(`${pm.feature.name}: ${err}`, true);
     this.status('Ready');
+  }
+
+  // ✔ on a feature that fails: why, and what to do (it stays open; nothing is added to the tree)
+  refuseFeature(pm, error) {
+    const f = pm.feature, what = pm.isNew ? `${f.name} can't be added` : `${f.name} can't be changed this way`;
+    breadcrumb(`Refused: ${f.name}: ${error}`);
+    const box = document.createElement('div');
+    box.dataset.featureRefused = f.id;
+    const p1 = document.createElement('p'), p2 = document.createElement('p');
+    p1.textContent = error;
+    p2.textContent = pm.isNew
+      ? 'It is not added to the feature tree while it fails. Change its settings (the panel stays open), or click ✕ to cancel it.'
+      : 'Your change is not kept while it fails. Change its settings (the panel stays open), or click ✕ to cancel the edit and keep the feature as it was.';
+    box.append(p1, p2);
+    this.ui.modal(what, 'error', box, [{ label: 'Keep editing', primary: true }]);
+    this.ui.renderPM();
+    this.status(`${what}: ${error}`);
   }
 
   cancelPM() {

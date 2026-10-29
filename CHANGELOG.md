@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-29 22:49 — A feature that fails is not added to the tree
+
+- ✔ on a feature that fails (no edges picked, a depth of 0, a shape the kernel can't make…) no longer adds it to
+  the feature tree with an error: a dialog says why, and the panel stays open to put it right or ✕ to cancel. An
+  edit that makes a feature fail is not kept either. Suppressed features are accepted as before.
+- Tests: failing-feature-refused.
+
 ## 2026-10-29 22:46 — Structural Member: profiles face the same way round a frame
 
 - Fixed: a member whose sketch line was drawn the other way round from the rest had its profile turned 180°

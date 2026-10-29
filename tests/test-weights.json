@@ -191,6 +191,7 @@
  "transition-flanges": 15000,
  "loft-flanges": 11000,
  "member-orientation": 6000,
+ "failing-feature-refused": 5000,
  "speed-mode": 876,
  "standard-feature-workflows": 16606,
  "standard-parts": 808,
