@@ -2308,8 +2308,9 @@ const UI = {
     }
   },
 
-  // Settings: one window (File / Tools ▸ Settings…) with the look, units and up axis, your gauges and the other
-  // settings' editors; a change applies at once: Z up for the part, inches, a gauge of your own deleted
+  // Settings: one window (File / Tools ▸ Settings…) of pages with the look, units and up axis, your gauges and the
+  // other settings' editors; a change applies at once: Z up for the part, inches, a gauge of your own deleted, inches
+  // for new parts
   async 'settings-window'() {
     const a = window.app;
     if (a.mode === 'drawing') { const i = a.tabs.findIndex((t) => t.kind !== 'drawing'); if (i >= 0) await a.activateTab(i); }
@@ -2326,16 +2327,74 @@ const UI = {
       units.value = 'in'; units.dispatchEvent(new Event('change'));
       const gaugeBefore = box.querySelectorAll('.pm-list .li .x').length;
       box.querySelector('.pm-list .li .x')?.click();
+      const nu = rowOf('Units for new parts');
+      nu.value = 'in'; nu.dispatchEvent(new Event('change'));
+      const newIn = prefs.newUnits === 'in';
       const sections = [...box.querySelectorAll('.settings-sec h4')].map((x) => x.textContent).join(', ');
-      const buttons = box.querySelectorAll('.settings-btns .pm-btn').length;
-      const ok = inFile && inTools && a.doc.upAxis === 'z' && a.units === 'in' && gaugeBefore === 1 && !(prefs.gauges || []).length && buttons === 5 && /Appearance/.test(sections);
-      return { ok, detail: `File ${inFile}, Tools ${inTools}; ${sections}; up ${a.doc.upAxis}, units ${a.units}, gauges ${gaugeBefore} → ${(prefs.gauges || []).length}, ${buttons} buttons` };
+      const buttons = box.querySelectorAll('.settings-btns .pm-btn').length, pages = [...box.querySelectorAll('.settings-nav button')].map((b) => b.textContent).join(', ');
+      const ok = inFile && inTools && a.doc.upAxis === 'z' && a.units === 'in' && gaugeBefore === 1 && !(prefs.gauges || []).length && buttons >= 5 && /Window/.test(sections) && /STEP/.test(sections) && /Export/.test(pages) && newIn;
+      return { ok, detail: `File ${inFile}, Tools ${inTools}; pages ${pages}; ${sections}; up ${a.doc.upAxis}, units ${a.units}, gauges ${gaugeBefore} → ${(prefs.gauges || []).length}, ${buttons} buttons, new parts in inches ${newIn}` };
     } finally {
       closeModals();
+      delete prefs.newUnits;
       a.setUpAxis('y'); a.setUnits('mm');
       if (gaugesWere) prefs.gauges = gaugesWere; else delete prefs.gauges;
       a.ui.savePrefs();
     }
+  },
+
+  // Settings ▸ Export: STEP as AP242 (the default), AP214 and AP203 (the file's FILE_SCHEMA; AP242 again after them),
+  // in inches (the file's unit, the 40 mm edge 1.5748 in), without colours, the author and organisation in its header;
+  // STL as ASCII; the DXF settings opened from Settings have a Back button (and Cancel) back to Settings ▸ Export; the
+  // gear beside Save and Rebuild opens Settings
+  async 'export-settings'() {
+    const a = window.app, bad = [], prefs = a.ui.prefs ||= {}, was = prefs.export, S = await import('/js/sketchmodel.js'), EO = await import('/js/exportopts.js');
+    if (a.mode === 'drawing') { const i = a.tabs.findIndex((t) => t.kind !== 'drawing'); if (i >= 0) await a.activateTab(i); }
+    await a.newDocument?.(); closeModals();
+    const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const q = [[0, 0], [40, 0], [40, 20], [0, 20]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+    d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 10 }));
+    await a.setDoc(d); await a.rebuild(); await wait(100);
+    const step = async (o) => { if (o) prefs.export = o; else delete prefs.export; return new TextDecoder().decode(await a.stepBytes()); };
+    const schema = (t) => /FILE_SCHEMA\s*\(\s*\(\s*'([^' {]+)/.exec(t)?.[1] || '?';
+    try {
+      const t0 = await step(null);
+      if (!/AP242/.test(schema(t0)) || !/COLOUR_RGB/.test(t0) || !/'RazorCAD'/.test(t0)) bad.push(`default: ${schema(t0)}, colours ${/COLOUR_RGB/.test(t0)}`);
+      const t1 = await step({ stepSchema: 'ap214' });
+      if (schema(t1) !== 'AUTOMOTIVE_DESIGN') bad.push(`AP214: ${schema(t1)}`);
+      const t2 = await step({ stepSchema: 'ap203', stepUnit: 'in', stepColors: false, stepAuthor: 'Jo Test', stepOrg: "O'Brien Ltd" });
+      if (schema(t2) !== 'CONFIG_CONTROL_DESIGN') bad.push(`AP203: ${schema(t2)}`);
+      if (!/'INCH'/i.test(t2) || !/1\.5748/.test(t2)) bad.push('not in inches');
+      if (/COLOUR_RGB/.test(t2)) bad.push('colours written');
+      const fn = /FILE_NAME\s*\(([^;]*)\);/.exec(t2)?.[1] || '';
+      if (!fn.includes("('Jo Test')") || !fn.includes("('O''Brien Ltd')") || !fn.includes("'RazorCAD'")) bad.push(`header ${fn}`);
+      const t3 = await step(null);
+      if (!/AP242/.test(schema(t3)) || /'INCH'/i.test(t3)) bad.push(`after: ${schema(t3)}`);
+      const stl = new TextDecoder().decode((await a.kernel.exportBody('stl', null, {}, EO.kernelExportOpts(EO.exportOptions({ export: { stlFormat: 'ascii' } })))).slice(0, 5));
+      if (stl !== 'solid') bad.push(`STL ${stl}`);
+      // the DXF settings from Settings ▸ Export: Back, and Cancel, come back to it
+      a.ui.showSettings('export'); await wait(50);
+      const dxfBtn = () => [...document.querySelectorAll('.settings-page:not([hidden]) .pm-btn')].find((b) => b.textContent === 'DXF Settings…');
+      dxfBtn()?.click(); await wait(50);
+      const back = document.querySelector('.modal-backbtn');
+      if (!back || document.querySelector('.settings')) bad.push('no Back button');
+      back?.click(); await wait(50);
+      if (document.querySelector('.settings .settings-page:not([hidden])')?.dataset.page !== 'export') bad.push('Back did not go to Settings ▸ Export');
+      dxfBtn()?.click(); await wait(50);
+      [...document.querySelectorAll('.modal-f button')].find((b) => b.textContent === 'Cancel')?.click(); await wait(50);
+      if (!document.querySelector('.settings')) bad.push('Cancel did not go back to Settings');
+      closeModals();
+      a.ui.showDxfSettings();
+      if (document.querySelector('.modal-backbtn')) bad.push('Back button without Settings');
+      closeModals();
+      document.querySelector('#menubar .mb-quick button[title="Settings"]')?.click(); await wait(50);
+      if (!document.querySelector('.settings')) bad.push('the gear does not open Settings');
+    } finally {
+      closeModals();
+      if (was) prefs.export = was; else delete prefs.export;
+      a.ui.savePrefs();
+    }
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : 'AP242 by default, AP214, AP203 in inches without colours with the header; AP242 again; ASCII STL; Back and Cancel to Settings ▸ Export; the gear' };
   },
 
   // Sketch Fillet where a spline meets a line or an arc: R5 at the corner of a line along −X and a spline through

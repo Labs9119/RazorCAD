@@ -112,7 +112,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 
 | Area | What it does |
 |---|---|
-| **Menu bar** | File, Edit, View, Insert, Tools, Help. Next to the menus are quick buttons for **Save**, **Save As**, **Rebuild** and **Search commands** (the magnifier). |
+| **Menu bar** | File, Edit, View, Insert, Tools, Help. Next to the menus are quick buttons for **Save**, **Save As**, **Rebuild**, **Settings** (the gear) and **Search commands** (the magnifier). |
 | **Document tabs** | Each open part or drawing has its own tab. ✕ closes a tab and asks to save. |
 | **Command ribbon** | Tabs of tool buttons: **Features**, **Sketch**, **Surfaces**, **Sheet Metal**, **Fast Structure**, **Evaluate** and **Claude**. Buttons with a shortcut show the key in their bottom-right corner. |
 | **Feature tree** | The part's history, with folders for Solid Bodies, Sheet Metal Bodies and Surface Bodies, the material, the planes and every feature. An eye column on the right shows or hides each item. |
@@ -139,12 +139,18 @@ The layout is kept in `prefs.json` in RazorCAD's data folder.
 
 ## Settings
 
-**File ▸ Settings…** or **Tools ▸ Settings…** (in parts, assemblies and drawings) has everything you can set in one place; a change applies at once: {idx:settings}{idx:preferences}
+The gear next to Save and Rebuild (or **File ▸ Settings…** / **Tools ▸ Settings…**, in parts, assemblies and drawings) opens **Settings**: everything you can set in one place, on pages down its left side. A change applies at once. {idx:settings}{idx:preferences}
 
-- **Appearance**: theme, language, the size of the toolbar icons, and the Sketch toolbar's layout (all tools, or grouped in flyout menus).
-- **Units and Axes**: the units of the part, assembly or drawing shown, and its up axis (also used for new parts).
-- **Sheet Metal Gauges**: the gauges you saved (from a sheet metal feature's **Gauge** row, **Save…**); delete the ones you no longer want.
-- **More Settings**: DXF Settings, Customize Shortcuts, Customize Toolbars, Claude Settings and the Getting Started Tour.
+- **General**: the units of the part, assembly or drawing shown; the **units for new parts** (and assemblies); the up axis (also used for new parts); how often **auto-save** runs (every 20 seconds, every minute, every 5 minutes, or off); and, in the desktop app, whether RazorCAD checks for updates when it starts.
+- **Display**: theme, language, the size of the toolbar icons, the Sketch toolbar's layout (all tools, or grouped in flyout menus), and the 3D view's **projection** (orthographic or perspective).
+- **Export** {idx:export settings}: how files are written.
+  - **STEP** {idx:STEP, AP242}{idx:STEP, AP214}{idx:STEP, AP203}: the **format**: **AP242** (the default: the newest, read by most programs, and the one that carries semantic PMI), **AP214** or **AP203** for older programs. The **units in the file** (millimetres, inches or metres; the part is the same size, only the file's unit changes). Whether the bodies' **colours** are written. The **author** and **organisation** put in the file's header. For parts, single bodies and assemblies.
+  - **STL**: **binary** (smaller) or **ASCII** (text), and the **quality**: how finely curved faces are cut into triangles (coarse, normal, fine).
+  - **DXF**: **DXF Settings…** (layers, colours, line types and options for flat patterns and faces).
+- **Sheet Metal**: the gauges you saved (from a sheet metal feature's **Gauge** row, **Save…**); delete the ones you no longer want.
+- **Customize**: Customize Shortcuts, Customize Toolbars, Claude Settings and the Getting Started Tour.
+
+A window opened from Settings (DXF Settings, the shortcut and toolbar editors, Claude Settings) has a **‹ Settings** button at its top left that goes back to the page you came from; its own buttons (Save, Cancel, Close) go back there too, and ✕ closes it.
 
 ## Language and theme
 
@@ -248,7 +254,7 @@ Several parts and drawings can be open at once, each in its own tab. New, Open a
 
 ## Auto-save and recovery
 
-Auto-save starts once a part has been saved for the first time. While the part has unsaved changes it is written next to the part file, at most every 20 seconds, as `Name.autosave.rcad`. The title bar shows the time of the last auto-save. Saving the part removes the auto-save file. {idx:auto-save}{idx:recovery}
+Auto-save starts once a part has been saved for the first time. While the part has unsaved changes it is written next to the part file, at most every 20 seconds (**Settings ▸ General ▸ Auto-save** sets how often, or turns it off), as `Name.autosave.rcad`. The title bar shows the time of the last auto-save. Saving the part removes the auto-save file. {idx:auto-save}{idx:recovery}
 
 If RazorCAD closes with unsaved changes, opening the part again offers to **recover** the auto-saved version. It is also marked in the recent list.
 
@@ -299,8 +305,8 @@ Volumes of bodies with B-spline faces (imported NURBS, IGES) are measured exactl
 
 | Command | Result |
 |---|---|
-| **File ▸ Export ▸ STEP…** | An exact B-rep. Each body is written as its own named, coloured solid. |
-| **File ▸ Export ▸ STL…** | A binary mesh |
+| **File ▸ Export ▸ STEP…** | An exact B-rep. Each body is written as its own named, coloured solid. AP242 unless **Settings ▸ Export** says otherwise (AP214, AP203, the file's units, colours, author) |
+| **File ▸ Export ▸ STL…** | A mesh: binary, or ASCII, and as fine as **Settings ▸ Export ▸ STL** sets |
 | **File ▸ Export ▸ glTF (.glb)…** | The bodies as the view shows them, for web viewers and AR {idx:glTF}: each a mesh with its colour and its render look's metalness and roughness, in metres, Y up |
 | Evaluate ▸ **Export OBJ** / **Export 3MF** | A mesh; 3MF is written in millimetres |
 | Right-click a body ▸ **Export Body as STEP…** | One body only |
@@ -2127,9 +2133,9 @@ DWG import and export: DWG is a closed format with no free reader or writer that
 
 ## 3D Annotations
 
-**Evaluate ▸ 3D Annotation** puts product and manufacturing information on the model itself (model based definition) {idx:3D annotations}{idx:MBD}{idx:PMI}{idx:GD&T}: a **Note**, a **Dimension** between two points (its value measured, or given) with its tolerances, a **Geometric tolerance** (a feature control frame: the characteristic, a Ø zone if ticked, the tolerance and the datums), a **Datum** letter or a **Surface finish** (Ra). Fill in the dialog, then click the point on the model it is about (two points for a dimension). Each shows as a label with a leader to its point and follows the view. **Tools ▸ 3D Annotations…** lists them, to delete them or hide them all. Exported to STEP (whole part), datums, geometric tolerances and dimensions go into the file as semantic PMI (AP242), each on the face it points at, for programs that read AP242 PMI; notes and surface finishes go in as properties of the part. A STEP file with PMI opened in RazorCAD shows its datums, tolerances and dimensions as 3D annotations.
+**Evaluate ▸ 3D Annotation** puts product and manufacturing information on the model itself (model based definition) {idx:3D annotations}{idx:MBD}{idx:PMI}{idx:GD&T}: a **Note**, a **Dimension** between two points (its value measured, or given) with its tolerances, a **Geometric tolerance** (a feature control frame: the characteristic, a Ø zone if ticked, the tolerance and the datums), a **Datum** letter or a **Surface finish** (Ra). Fill in the dialog, then click the point on the model it is about (two points for a dimension). Each shows as a label with a leader to its point and follows the view. **Tools ▸ 3D Annotations…** lists them, to delete them or hide them all. Exported to STEP (whole part, as AP242 in millimetres: the default of Settings ▸ Export), datums, geometric tolerances and dimensions go into the file as semantic PMI (AP242), each on the face it points at, for programs that read AP242 PMI; notes and surface finishes go in as properties of the part. A STEP file with PMI opened in RazorCAD shows its datums, tolerances and dimensions as 3D annotations.
 
-They are saved with the part, and a **STEP export** of the part carries them: each annotation is written as a property of the part with its kind, its text and the points it refers to (the file is AP242). Programs that read STEP properties show them; they are not semantic GD&T that a measuring machine program can use directly. {idx:STEP, AP242}
+They are saved with the part, and a **STEP export** of the part carries them: each annotation is written as a property of the part with its kind, its text and the points it refers to (in AP242, AP214 and AP203 files alike). Programs that read STEP properties show them; they are not semantic GD&T that a measuring machine program can use directly. {idx:STEP, AP242}
 
 ## Tolerance Stack-Up
 

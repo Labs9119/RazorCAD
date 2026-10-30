@@ -9442,10 +9442,53 @@ function updateProjections(f, frame, body, sketches, surfaceShapes = []) {
   return lost;
 }
 
+// STEP as Settings ▸ Export sets it (o: { schema: 'ap242' | 'ap214' | 'ap203', unit: 'mm' | 'in' | 'm', colors }).
+// OpenCascade's STEP parameters are global: they go back to AP242 in millimetres after each file (the PMI writer and
+// the other exports expect them so).
+const STEP_SCHEMA = { ap242: 5, ap214: 4, ap203: 3 }, STEP_UNIT = { mm: 'MM', in: 'INCH', m: 'M' };
+function setStepParams(oc, o = {}) {
+  // (a writer made once first: the first one made sets OpenCascade's STEP parameters up)
+  if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+  oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM');
+  oc.Interface_Static.SetCVal('write.step.unit', STEP_UNIT[o.unit] || 'MM');
+  oc.Interface_Static.SetIVal('write.step.schema', STEP_SCHEMA[o.schema] || 5);
+  oc.Interface_Static.SetIVal('write.surfacecurve.mode', 1);
+  oc.Interface_Static.SetIVal('write.precision.mode', 0);
+}
+// An XCAF document (doc: its TDocStd_Document) written as STEP: the file's bytes. assembly: OpenCascade's
+// write.step.assembly (1: always as an assembly, 2: only when it has components).
+function writeStepDoc(doc, o = {}, assembly = 2) {
+  const oc = R.getOC();
+  setStepParams(oc, o);
+  const session = new oc.XSControl_WorkSession();
+  const writer = new oc.STEPCAFControl_Writer(session, false);
+  const pr = new oc.Message_ProgressRange();
+  try {
+    writer.SetColorMode(o.colors !== false);
+    writer.SetLayerMode(true);
+    writer.SetNameMode(true);
+    setStepParams(oc, o);
+    oc.Interface_Static.SetIVal('write.step.assembly', assembly);
+    if (!writer.Perform(doc, 'export.step', pr)) throw new Error('The STEP file could not be written');
+    const file = oc.FS.readFile('/export.step');
+    oc.FS.unlink('/export.step');
+    return file;
+  } finally {
+    pr.delete(); writer.delete(); session.delete();
+    setStepParams(oc, {});
+  }
+}
+// shapes [{ shape, name, color }] as STEP, each a named (coloured) product.
+function exportSTEPFile(shapes, o = {}) {
+  const doc = R.createAssembly(shapes);
+  try { return writeStepDoc(doc.wrapped, o); } finally { doc.delete(); }
+}
+
 // Export all bodies, or just one (bodyId). `info` maps body ids to { name, color } so the
 // STEP file carries each body's name and material colour. opts.print { R (nine numbers: model to print axes), bed
 // [x, y] }: for printing (3MF, OBJ, STL), the mesh turned into the build orientation, its lowest point on the bed
-// (z = 0) and its middle over the bed's middle.
+// (z = 0) and its middle over the bed's middle. opts.step: the STEP options (exportSTEPFile); opts.stl { ascii,
+// quality: 'coarse' | 'normal' | 'fine' }.
 async function exportBody(format, bodyId = null, info = {}, opts = {}) {
   if (!lastBody && !lastSurfaces.length) throw new Error('There is no body to export');
   let list = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
@@ -9476,13 +9519,13 @@ async function exportBody(format, bodyId = null, info = {}, opts = {}) {
   const shape = compoundOf(list);
   let blob;
   if (format === 'step') {
-    blob = R.exportSTEP(list.map((s) => ({ shape: s.shape, name: info[s.id]?.name || lastName, ...(info[s.id]?.color ? { color: linearHex(info[s.id].color) } : {}) })), { unit: 'mm' });
+    return exportSTEPFile(list.map((s) => ({ shape: s.shape, name: info[s.id]?.name || lastName, ...(info[s.id]?.color ? { color: linearHex(info[s.id].color) } : {}) })), opts.step || {});
   } else if (format === 'obj' || format === '3mf') {
     const parts = list.map((r) => ({ name: info[r.id]?.name || lastName, ...meshArrays(r.shape) }));
     return format === 'obj' ? new TextEncoder().encode(objText(parts)) : threeMF(parts);
   } else {
-    const b = bbox(shape);
-    blob = shape.blobSTL({ binary: true, tolerance: Math.max(0.002, b.diag * 0.0002), angularTolerance: 0.1 });
+    const b = bbox(shape), [tol, ang] = { coarse: [0.001, 0.3], fine: [0.00005, 0.05] }[opts.stl?.quality] || [0.0002, 0.1];
+    blob = shape.blobSTL({ binary: !opts.stl?.ascii, tolerance: Math.max(0.002, b.diag * tol), angularTolerance: ang });
   }
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -9738,7 +9781,7 @@ const linearHex = (hex) => '#' + linearRGB(hex).map((c) => Math.round(c * 255).t
 // STEP export of an assembly with its structure: each part once, as a shape of its own in the configuration used
 // (with its colour, p.exportColor, and its bodies' own colours); each (sub-)assembly an assembly of its
 // components, placed as they are and named after them. Suppressed components are left out.
-async function exportAssemblySTEP(docJson) {
+async function exportAssemblySTEP(docJson, opts = {}) {
   const asm = JSON.parse(docJson);
   const oc = R.getOC();
   const keep = [];
@@ -9820,26 +9863,10 @@ async function exportAssemblySTEP(docJson) {
   if (!top) throw new Error('The assembly has no parts to export');
   tool.UpdateAssemblies();
   progress(null, 'Writing the STEP file…');
-  oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM');
-  oc.Interface_Static.SetCVal('write.step.unit', 'MM');
-  const session = new oc.XSControl_WorkSession();
-  const writer = new oc.STEPCAFControl_Writer(session, false);
   try {
-    writer.SetColorMode(true);
-    writer.SetLayerMode(true);
-    writer.SetNameMode(true);
-    oc.Interface_Static.SetIVal('write.surfacecurve.mode', 1);
-    oc.Interface_Static.SetIVal('write.precision.mode', 0);
-    oc.Interface_Static.SetIVal('write.step.assembly', 1);
-    oc.Interface_Static.SetIVal('write.step.schema', 5);
-    const pr = new oc.Message_ProgressRange();
-    keep.push(pr);
-    if (!writer.Perform(doc, 'asm-export.step', pr)) throw new Error('The STEP file could not be written');
-    const file = oc.FS.readFile('/asm-export.step');
-    oc.FS.unlink('/asm-export.step');
-    return { bytes: file, ...stats };
+    return { bytes: writeStepDoc(doc, opts, 1), ...stats };
   } finally {
-    writer.delete(); session.delete(); doc.delete();
+    doc.delete();
     for (const x of keep) { try { x.delete(); } catch { /* gone */ } }
   }
 }
@@ -12688,8 +12715,7 @@ async function handleMessage(e) {
       const list = lastSolids.filter((s) => !lastContext.has(s.id));
       if (!list.length) throw new Error('There is no solid to export');
       const shape = list.length === 1 ? list[0].shape : compoundOf(list);
-      // (a writer made once first: the first one made sets OpenCascade's STEP parameters up, the schema too)
-      if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+      setStepParams(oc, {});
       const text = oc.LabPMI.WriteStep(shape.wrapped, data.name || lastName, data.spec || '');
       if (!text) throw new Error('The STEP file could not be written');
       result = { text };
@@ -12705,7 +12731,7 @@ async function handleMessage(e) {
       const blob = R.exportSTEP(placed, { unit: 'mm' });
       result = { text: await blob.text() };
     } else if (type === 'exportAssemblySTEP') {
-      result = await exportAssemblySTEP(data.doc);
+      result = await exportAssemblySTEP(data.doc, data.opts || {});
       transfer = [result.bytes.buffer];
     } else if (type === 'asmInterference') {
       result = await asmInterference(data.doc);

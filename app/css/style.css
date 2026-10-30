@@ -615,7 +615,17 @@ svg.ref-arrows { position: absolute; left: 0; top: 0; pointer-events: none; z-in
 .measure-label { position: absolute; transform: translate(-50%, -130%); background: #d97706; color: #fff; font-size: 12px; font-weight: 600; padding: 2px 7px; border-radius: 4px; pointer-events: none; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
 .measure-kv b { color: #92400e; }
 /* Settings */
-.settings { min-width: 420px; max-width: 560px; }
+.settings { display: flex; gap: 14px; width: 640px; max-width: 100%; min-height: 380px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; flex: 0 0 128px; padding-right: 10px; border-right: 1px solid var(--border-soft); }
+.settings-nav button { text-align: left; border: 0; background: none; color: var(--text); padding: 6px 10px; border-radius: 3px; cursor: pointer; font: inherit; }
+.settings-nav button:hover { background: var(--hover); }
+.settings-nav button.on { background: var(--accent); color: #fff; }
+.settings-pages { flex: 1; min-width: 0; }
+.settings-check { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.settings .pm-hint { margin-bottom: 4px; }
+@media (max-width: 640px) { .settings { flex-direction: column; width: auto; } .settings-nav { flex-direction: row; flex-wrap: wrap; flex-basis: auto; border-right: 0; border-bottom: 1px solid var(--border-soft); padding: 0 0 6px; } }
+.modal-backbtn { border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 3px; cursor: pointer; padding: 1px 8px; font: inherit; font-weight: 400; }
+.modal-backbtn:hover { background: var(--hover); }
 .settings-sec { margin: 0 0 12px; }
 .settings-sec h4 { margin: 0 0 6px; font-size: 13px; }
 .settings-btns { display: flex; flex-wrap: wrap; gap: 6px; }

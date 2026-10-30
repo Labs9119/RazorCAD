@@ -6,6 +6,19 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 12:12 — Settings button; export settings; Back to Settings
+
+- A **Settings** button (the gear) next to Save and Rebuild. Settings is now in pages: General, Display, Export,
+  Sheet Metal and Customize.
+- **Export settings:** STEP as **AP242** (the default, the newest), AP214 or AP203; the file's units (mm, in, m);
+  colours on or off; the author and organisation in the header (parts, bodies and assemblies). STL binary or ASCII,
+  and coarse, normal or fine.
+- **General:** units for new parts and assemblies; how often auto-save runs (or off); the start-up update check.
+  **Display:** the 3D view's projection.
+- Windows opened from Settings (DXF Settings, shortcuts, toolbars, Claude) have a **‹ Settings** button back to the
+  page they came from; their Save / Cancel / Close go back there too. DXF Settings' Reset to Defaults stays in the window.
+- Tests: export-settings; settings-window updated.
+
 ## 2026-10-31 11:52 — Deleting keeps sketches; Transition spigots and slip-on flanges; partial route paths; construction lines
 
 - Deleting a feature deletes only that feature: its sketch or 3D sketch (and any feature it was made from) stays.
