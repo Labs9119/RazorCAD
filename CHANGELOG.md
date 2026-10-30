@@ -6,6 +6,18 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 12:55 — Photographed render scenes
+
+- The render places (outdoors, forest, office, workshop, store) are now real 360° HDR photographs in place of shapes;
+  sky, overcast and sunset are photographs too, and there is a new Warehouse. Each lights the part (sun, sky, windows
+  and lamps at their real brightness), shows in its reflections and is the backdrop.
+- The part stands on the photograph's ground (projected under it, seen from the view's height), with its shadow and a
+  soft contact shadow where it meets the floor. The sun is put at the view's right, with the key light;
+  Lighting ▸ Turn the place chooses what is behind the part.
+- The photographs are looked up per pixel (straight lines stay straight). Made by tools/make_scenes.py from CC0 HDRIs
+  from Poly Haven (app/scenes/CREDITS.md). The realistic view uses a place's light once it has loaded.
+- Tests: render-scenes (the photographs load and show; turning the place changes the picture).
+
 ## 2026-10-31 12:12 — Settings button; export settings; Back to Settings
 
 - A **Settings** button (the gear) next to Save and Rebuild. Settings is now in pages: General, Display, Export,

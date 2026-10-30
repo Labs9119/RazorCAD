@@ -41,7 +41,7 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import * as P3 from './print3d.js';
-import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
+import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment, loadScene, photoReady } from './render.js';
 import * as LT from './lights.js';
 import * as PP from './pathpick.js';
 import { activeLights } from './lights.js';
@@ -1080,7 +1080,10 @@ class App {
   toggleRealistic(on = !this.realisticView) {
     if (this.mode !== 'part' && on) { this.toast('The realistic view is for parts', true); return; }
     this.realisticView = !!on;
-    if (on) this._viewEnv ||= environment(this.viewport.renderer, this.doc.render?.env || 'studio');
+    const sc = this.doc.render?.env || 'studio';
+    // (a photographed place: the studio's light until its own has loaded, then its own)
+    if (on && !photoReady(sc)) loadScene(sc).then(() => { if (this.realisticView && (this.doc.render?.env || 'studio') === sc) { this._viewEnv?.dispose(); this._viewEnv = null; this.toggleRealistic(true); } }, (e) => this.toast(e.message, true));
+    if (on) this._viewEnv ||= environment(this.viewport.renderer, sc);
     this.viewport.setRealistic(on, this._viewEnv?.texture);
     this.pushBody(true);
     this.ui.renderCommandManager();
@@ -5401,7 +5404,7 @@ class App {
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
-    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], lights: activeLights(this.doc.render), envStrength: this.doc.render?.envStrength ?? 1, keyLight: this.doc.render?.keyLight !== false, onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], lights: activeLights(this.doc.render), envStrength: this.doc.render?.envStrength ?? 1, keyLight: this.doc.render?.keyLight !== false, placeTurn: this.doc.render?.placeTurn || 0, onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
     if (o.quiet) return img;
     const box = document.createElement('div');
     box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
@@ -5422,11 +5425,14 @@ class App {
       { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor !== false },
       { key: 'envStrength', label: 'Scene light (0 to 1)', type: 'expr', value: prev.envStrength ?? 1 },
       { key: 'keyLight', label: 'Scene key light (renders)', type: 'check', value: prev.keyLight !== false },
-    ], 'For renders and the realistic view. Kept with the part. Spotlights (Render ▸ Spotlights) add to the scene’s light.');
+      { key: 'placeTurn', label: 'Turn the place (degrees, photographed places)', type: 'expr', value: prev.placeTurn ?? 0 },
+    ], 'For renders and the realistic view. Kept with the part. Spotlights (Render ▸ Spotlights) add to the scene’s light. The photographed places (outdoors, forest, workshop, warehouse, office, store…) are real 360° photographs: the part stands on their ground, lit by them, with the sun (or the brightest light) at the view’s right. Turn the place to choose what is behind the part (the sun and the shadow turn with it).');
     if (!v) return;
     const es = Math.max(0, Math.min(1, +this.result.ev(String(v.envStrength))));
-    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor, envStrength: Number.isFinite(es) ? es : 1, keyLight: !!v.keyLight };
+    const turn = (((+this.result.ev(String(v.placeTurn)) || 0) % 360) + 360) % 360;
+    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor, envStrength: Number.isFinite(es) ? es : 1, keyLight: !!v.keyLight, placeTurn: +turn.toFixed(1) };
     if (this.doc.render.envStrength === 1) delete this.doc.render.envStrength;
+    if (!this.doc.render.placeTurn) delete this.doc.render.placeTurn;
     if (this.doc.render.keyLight) delete this.doc.render.keyLight;
     this.commit();
     if (this._viewEnv) { this._viewEnv.dispose(); this._viewEnv = null; }

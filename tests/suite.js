@@ -2866,8 +2866,8 @@ const UI = {
   },
 
   // Render scenes: a block rendered in every scene; each picture's corners show the scene's background (its colour, or
-  // the top and bottom of its gradient; a place (outdoors, forest, office…) shows behind the part), the part lit (not black) in each, and no two scenes alike; the Lighting
-  // dialog offers them all
+  // the top and bottom of its gradient; a photographed place (garden, forest, workshop…) shows behind the part, its
+  // HDR lighting loaded), the part lit (not black) in each, and no two scenes alike; the Lighting dialog offers them all
   async 'render-scenes'() {
     const a = window.app, R = await import('/js/render.js'), S = await import('/js/sketchmodel.js');
     const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
@@ -2883,8 +2883,9 @@ const UI = {
       const im = await new Promise((res) => { const x = new Image(); x.onload = () => res(x); x.src = img.url; });
       const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d'); g.drawImage(im, 0, 0);
       const px = g.getImageData(0, 0, W, H).data, at = (x, y) => { const i = (y * W + x) * 4; return [px[i], px[i + 1], px[i + 2]]; };
-      if (sc.bg === 'place') {
-        // (a place: its surroundings behind the part, not one flat colour)
+      if (sc.photo) {
+        // (a photographed place: its surroundings behind the part, not one flat colour; its lighting loaded)
+        if (!R.photoReady(id)) bad.push(`${id}: its lighting did not load`);
         const tones = new Set(); for (let x = 0; x < W; x += 3) for (let y = 0; y < H; y += 3) if (Math.abs(x - W / 2) > W / 4 || Math.abs(y - H / 2) > H / 4) tones.add(at(x, y).map((v) => v >> 4).join());
         if (tones.size < 6) bad.push(`${id}: the place does not show behind the part (${tones.size} tones)`);
       } else {
@@ -2900,6 +2901,12 @@ const UI = {
     }
     const ids = Object.keys(means);
     for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) if (means[ids[i]].every((v, k) => Math.abs(v - means[ids[j]][k]) < 2)) bad.push(`${ids[i]} and ${ids[j]} look the same`);
+    // (a photographed place turned (Lighting ▸ Turn the place): another side of it behind the part)
+    const was = a.doc.render;
+    const shot = async (t) => { a.doc.render = { ...(was || {}), placeTurn: t }; return (await a.renderView({ size: `${W}x${H}`, env: 'warehouse', floor: true, exposure: 1, quality: 1, quiet: true }))?.url; };
+    const [u0, u1] = [await shot(0), await shot(120)];
+    if (was) a.doc.render = was; else delete a.doc.render;
+    if (!u0 || u0 === u1) bad.push('turning the place does not change the picture');
     // (the Lighting dialog lists every scene)
     const p = a.renderLighting(); await wait(100);
     const opts = [...document.querySelectorAll('.modal select option')].map((o) => o.value);

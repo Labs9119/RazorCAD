@@ -1,9 +1,11 @@
 // Photorealistic rendering of the part as the view shows it: each body in a look (polished or brushed metal, plastic,
-// rubber, paint, glass…) of its colour, lit by a scene (studio, showroom, workshop, sky, sunset…) and a key light casting soft shadows on a
-// floor, tone mapped; decals (pictures on flat faces) on it. One frame, at the size asked, as a PNG data URL.
+// rubber, paint, glass…) of its colour, lit by a scene (a studio, or a photographed place: a workshop, a warehouse, a
+// garden, a sunset…) and a key light casting soft shadows on a floor, tone mapped; decals (pictures on flat faces) on
+// it. One frame, at the size asked, as a PNG data URL.
 import * as THREE from 'three';
 import { boxMapped, boxMappedDepth, tileTexture } from './appearances.js';
 import { makeSpots } from './lights.js';
+import { parseHDR } from './hdr.js';
 
 export const LOOKS = {
   auto: { name: 'From the material' },
@@ -22,37 +24,62 @@ const BY_MATERIAL = { steel: 'cast', stainless: 'brushed', al6061: 'brushed', br
 export const lookFor = (look, materialId) => (look && look !== 'auto' && LOOKS[look] ? look : BY_MATERIAL[materialId] || 'powder');
 
 // The scenes a render can be set in: the environment that lights and reflects in the part, the background behind it
-// (a colour, a gradient from top to bottom, or 'place': the surroundings themselves, a little out of focus) and the
-// key light's colour and strength.
+// (a colour, or a gradient from top to bottom) and the key light's colour and strength. photo: a photographed place
+// (a 360° HDR photograph, app/scenes/<id>.hdr and .jpg, made by tools/make_scenes.py from CC0 photographs from Poly
+// Haven): it lights the part and is the backdrop behind it; sun: its brightest direction [azimuth, elevation] in
+// degrees (its sun, or its windows and lights), where the key light is put (the place turned so it is at the view's
+// right, then by turn (degrees) more: its best side behind the part).
 export const SCENES = {
   studio: { name: 'Studio', bg: 0xe9ebee },
   white: { name: 'Studio on white', bg: 0xffffff },
   cove: { name: 'Soft gradient (infinity cove)', bg: [0xffffff, 0xd3d8de] },
   dark: { name: 'Dark studio', bg: [0x34383e, 0x0b0c0e], key: [0xffffff, 1.3] },
   showroom: { name: 'Showroom', bg: [0xf4f0ea, 0xd6cdc1], key: [0xfff1de, 1.1] },
-  sky: { name: 'Outdoor sky', bg: 0xdfe9f4 },
-  overcast: { name: 'Overcast', bg: [0xd9dde2, 0xaeb3b9], key: [0xffffff, 0.55] },
-  sunset: { name: 'Sunset', bg: [0x4f6c9c, 0xf0b07a], key: [0xffb36b, 1.25] },
   night: { name: 'Night (blue)', bg: [0x22324f, 0x05080f], key: [0xb8ccff, 1] },
-  outdoors: { name: 'Outdoors (park)', bg: 'place', key: [0xfff2dc, 1.3] },
-  forest: { name: 'Forest', bg: 'place', key: [0xfff0c8, 1.05] },
-  office: { name: 'Office', bg: 'place', key: [0xffffff, 0.9] },
-  workshop: { name: 'Workshop', bg: 'place', key: [0xf2f4ff, 1] },
-  store: { name: 'Store', bg: 'place', key: [0xffffff, 0.9] },
+  sky: { name: 'Outdoors: field, clear sky', photo: true, sun: [36.6, 8.4], key: [0xfff4e2, 0.9] },
+  outdoors: { name: 'Outdoors: garden', photo: true, sun: [36.6, 64.7], turn: 150, key: [0xfff6e8, 0.9] },
+  forest: { name: 'Forest (misty)', photo: true, sun: [75.9, 42.2], turn: 150, key: [0xffffff, 0.35] },
+  overcast: { name: 'Overcast (hillside)', photo: true, sun: [30.9, 19.7], turn: 150, key: [0xffffff, 0.3] },
+  sunset: { name: 'Sunset (waterfront)', photo: true, sun: [36.6, 2.8], turn: 150, key: [0xffc58f, 0.8] },
+  workshop: { name: 'Workshop (machine shop)', photo: true, sun: [47.8, 25.3], key: [0xfff8f0, 0.45] },
+  warehouse: { name: 'Warehouse', photo: true, sun: [2.8, 36.6], key: [0xfffaf2, 0.45] },
+  office: { name: 'Office', photo: true, sun: [36.6, 70.3], key: [0xfff8ee, 0.45] },
+  store: { name: 'Store (home décor)', photo: true, sun: [-75.9, 14.1], key: [0xfff6ea, 0.45] },
 };
 
-// A scene's background for a render: its colour, its gradient as a texture filling the frame, or the place itself (a
-// cube of it as seen from the part, sharper than the lighting's).
-function background(renderer, id) {
-  const bg = (SCENES[id] || SCENES.studio).bg;
-  if (bg === 'place') {
-    const rt = new THREE.WebGLCubeRenderTarget(1024, { type: THREE.HalfFloatType }), scene = envScene(id);
-    new THREE.CubeCamera(0.1, 1000, rt).update(renderer, scene);
-    disposeScene(scene);
-    rt.texture.needsPMREMUpdate = true; // (blurred for the background: made into a PMREM by the renderer)
-    rt.texture.dispose = () => rt.dispose();
-    return rt.texture;
-  }
+// The photographed places, loaded once: light (the HDR, an equirectangular texture) and backdrop (the photograph).
+const photos = new Map();
+const scenesUrl = (f) => new URL(`../scenes/${f}`, import.meta.url).href;
+export const photoReady = (id) => !SCENES[id]?.photo || !!photos.get(id + ':light')?.tex;
+// (resolves with the scene's lighting texture, and with backdrop: its photograph too)
+export async function loadScene(id, backdrop = false) {
+  if (!SCENES[id]?.photo) return null;
+  const once = (key, make) => {
+    let p = photos.get(key);
+    if (!p) { p = { promise: make().then((tex) => { p.tex = tex; return tex; }, (e) => { photos.delete(key); throw e; }) }; photos.set(key, p); }
+    return p.promise;
+  };
+  const light = once(id + ':light', async () => {
+    const res = await fetch(scenesUrl(id + '.hdr'));
+    if (!res.ok) throw new Error(`The ${SCENES[id].name} scene could not be loaded (${res.status})`);
+    const { width, height, data } = parseHDR(await res.arrayBuffer());
+    const t = new THREE.DataTexture(data, width, height, THREE.RGBAFormat, THREE.HalfFloatType);
+    Object.assign(t, { mapping: THREE.EquirectangularReflectionMapping, colorSpace: THREE.LinearSRGBColorSpace, magFilter: THREE.LinearFilter, minFilter: THREE.LinearFilter, generateMipmaps: false, needsUpdate: true });
+    return t;
+  });
+  if (!backdrop) return light;
+  await once(id + ':backdrop', async () => {
+    const t = await new THREE.TextureLoader().loadAsync(scenesUrl(id + '.jpg'));
+    Object.assign(t, { mapping: THREE.EquirectangularReflectionMapping, colorSpace: THREE.SRGBColorSpace, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    return t;
+  });
+  return light;
+}
+
+
+// A scene's background for a render: its colour, or its gradient as a texture filling the frame.
+function background(id) {
+  const bg = (SCENES[id] || SCENES.studio).bg ?? 0xe9ebee;
   if (!Array.isArray(bg)) return new THREE.Color(bg);
   const cv = document.createElement('canvas');
   cv.width = 2; cv.height = 256;
@@ -64,9 +91,13 @@ function background(renderer, id) {
   return t;
 }
 
-// A scene's environment (what lights the part and shows in its reflections) as a PMREM texture
+// A scene's environment (what lights the part and shows in its reflections) as a PMREM texture (a photographed place
+// not loaded yet (loadScene): the studio's)
 export function environment(renderer, kind) {
-  const scene = envScene(kind), pm = new THREE.PMREMGenerator(renderer);
+  const pm = new THREE.PMREMGenerator(renderer), photo = SCENES[kind]?.photo && photos.get(kind + ':light')?.tex;
+  // (through a copy of the texture, let go after: each renderer that uses the cached one would keep a hold on it)
+  if (photo) { const t = photo.clone(), rt = pm.fromEquirectangular(t); t.dispose(); pm.dispose(); return rt; }
+  const scene = envScene(SCENES[kind]?.photo ? 'studio' : kind);
   const rt = pm.fromScene(scene, 0.035);
   pm.dispose();
   disposeScene(scene);
@@ -74,9 +105,8 @@ export function environment(renderer, kind) {
 }
 const disposeScene = (scene) => scene.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
 
-// A scene's surroundings, built of shapes, some glowing (the lights), seen from the part's place (the floor 5 below):
-// a studio's soft grey room with a big light overhead and panels at the sides, a sky's dome and sun, a forest's trees,
-// an office's desks and windows, a store's shelves…
+// A studio's surroundings, built of shapes, some glowing (the lights), seen from the part's place (the floor 5 below):
+// a soft grey room with a big light overhead and panels at the sides, a dark one, a showroom…
 function envScene(kind) {
   const scene = new THREE.Scene();
   const glow = (k) => (Array.isArray(k) ? new THREE.Color(...k) : new THREE.Color(k, k, k));
@@ -103,71 +133,7 @@ function envScene(kind) {
   let seed = 7;
   const rand = (a = 0, b = 1) => { seed = (seed * 16807) % 2147483647; return a + ((seed - 1) / 2147483646) * (b - a); };
   const around = (n, r0, r1, fn) => { for (let i = 0; i < n; i++) { const a = rand(0, Math.PI * 2), r = rand(r0, r1); fn(Math.cos(a) * r, Math.sin(a) * r, i); } };
-  if (kind === 'outdoors') {
-    dome(rgb(0x5f97d6), [1.3, 1.42, 1.55], rgb(0x55704a), 3.5);
-    sun([40, 70, 30], [34, 31, 27]);
-    ground(99, 0x5c8a3c);
-    block(200, 0.05, 7, 0, -4.95, 18, 0xc4b494);
-    for (let i = 0; i < 9; i++) { const a = (i / 9) * Math.PI * 2 + 0.3; ball(rand(22, 34), Math.cos(a) * 94, -5, Math.sin(a) * 94, 0x7f9d86, 0.3); }
-    for (const [x, y, z, r] of [[-30, 60, -50, 12], [-18, 62, -54, 9], [50, 55, -20, 14], [10, 66, 60, 11]]) ball(r, x, y, z, [1.7, 1.75, 1.8], 0.35);
-    around(26, 28, 80, (x, z) => { const h = rand(5, 8); block(0.9, h, 0.9, x, -5, z, 0x5a4230); ball(rand(3.5, 6), x, -5 + h + 2.5, z, rand() < 0.5 ? 0x3f6b2e : 0x4c7a34); });
-  } else if (kind === 'forest') {
-    dome([0.8, 1.05, 1.4], [0.95, 1.1, 0.85], rgb(0x3b3426), 2.5);
-    sun([25, 80, 30], [22, 20, 14], 3);
-    ground(99, 0x5c5139);
-    around(170, 12, 95, (x, z) => { const h = rand(28, 50); block(1.1, h * 0.3, 1.1, x, -5, z, 0x4a3626); cone(rand(4, 7), h * 0.8, x, -5 + h * 0.2, z, rand() < 0.5 ? 0x22402a : 0x2e4f2f); });
-    around(30, 14, 60, (x, z) => ball(rand(1.2, 2.5), x, -4.6, z, 0x3d5a2a, 0.6));
-  } else if (kind === 'office') {
-    room(90, 14, 70, 0xc5c8ca);
-    block(90, 0.05, 70, 0, -5, 0, 0x4d535b);
-    for (let x = -36; x <= 36; x += 12) for (let z = -24; z <= 24; z += 12) panel(5, 5, [x, 8.9, z], [x, 0, z], 5);
-    panel(84, 9, [0, 3.5, -34.8], [0, 3.5, 0], [2.3, 2.7, 3.3]);
-    for (let x = -40; x <= 40; x += 10) block(0.5, 10, 0.4, x, -1, -34.5, 0x3b3f44);
-    block(90, 4, 0.5, 0, -5, -34.6, 0xb5b8ba);
-    for (const [x, z, r] of [[-20, -14, 0], [0, -17, 0], [20, -14, 0], [-24, 14, 1], [22, 16, 1]]) {
-      const f = r ? 1 : -1;
-      block(10, 0.4, 5, x, -1.6, z, 0xd8cfc0);
-      block(0.4, 3.4, 4.6, x - 4.6, -5, z, 0x7c8288); block(0.4, 3.4, 4.6, x + 4.6, -5, z, 0x7c8288);
-      block(3.2, 2, 0.2, x, -1.2, z + f * 1.6, 0x1d1f22);
-      block(3, 2.4, 3, x, -5, z - f * 3.6, 0x2b2e33); block(3, 3.2, 0.5, x, -2.6, z - f * 5, 0x2b2e33);
-    }
-    for (const [x, z] of [[-40, -28], [40, -28], [-6, 30]]) { block(1.8, 2, 1.8, x, -5, z, 0x8b5a3c); ball(2.2, x, -0.5, z, 0x3f7a3a, 1.2); }
-    for (const z of [-10, 0, 10]) block(3, 7, 9.5, 43.4, -5, z, 0xa7abaf);
-    panel(16, 6, [-44.9, 2, 0], [0, 2, 0], 1.5);
-  } else if (kind === 'workshop') {
-    room(90, 22, 70, 0x57544e);
-    block(90, 0.05, 70, 0, -5, 0, 0x77736c);
-    for (const [w, d, x, z] of [[90, 0.3, 0, -34.8], [90, 0.3, 0, 34.8], [0.3, 70, -44.8, 0], [0.3, 70, 44.8, 0]]) block(w, 6, d, x, -5, z, 0x3e5566);
-    for (const x of [-30, -10, 10, 30]) panel(1.2, 50, [x, 16.8, 0], [x, 0, 0], 9);
-    panel(26, 10, [0, 9, -34.8], [0, 9, 0], [3.4, 3.8, 4.6]);
-    block(26, 4.2, 5.5, -2, -5, -30, 0x3a3a3a); block(26, 0.8, 6, -2, -0.8, -30, 0x8a6a45);
-    block(30, 9, 0.3, -2, 0, -34.4, 0x8d7b60);
-    block(8, 10, 7, -32, -5, 10, 0x5e7a68); block(6, 4, 6, -32, 5, 8, 0x4a5f52);
-    block(18, 6, 5, 30, -5, 14, 0x6a7f8c); block(5, 4, 5, 23, 1, 14, 0x55666f);
-    block(7, 9, 3, -18, -5, 32.5, 0xa8322b);
-    for (const z of [-20, -8, 4]) { block(4, 16, 10, 42, -5, z, 0x6d7378); for (const y of [-1, 4, 9]) block(3.5, 2.5, 8.5, 41.6, y, z, 0xd9822b); }
-  } else if (kind === 'store') {
-    room(100, 16, 80, 0xeeeeec);
-    block(100, 0.05, 80, 0, -5, 0, 0xcfcdc8);
-    for (let x = -42; x <= 42; x += 12) panel(1.2, 70, [x, 10.9, 0], [x, 0, 0], 8);
-    const goods = [0xd94a3a, 0x3a7bd5, 0xf2c230, 0x4caf50, 0xff8c1a, 0xf4f4f4, 0x8e44ad, 0x1abc9c];
-    for (const z of [-28, -16, 16, 28]) for (const [x0, x1] of [[-44, -8], [8, 44]]) {
-      block(x1 - x0, 9, 3, (x0 + x1) / 2, -5, z, 0xd2d4d6);
-      for (const side of [-1.6, 1.6]) for (const y of [-4, -1, 2]) for (let x = x0 + 0.3; x < x1 - 1.5;) { const w = rand(1.1, 2.4); block(w - 0.15, rand(1.5, 2.6), 0.8, x + w / 2, y, z + side, goods[Math.floor(rand(0, goods.length))]); x += w; }
-      block(x1 - x0, 1.4, 3.2, (x0 + x1) / 2, 6, z, 0xc23b2c);
-    }
-    for (const z of [-30, -15, 0, 15, 30]) { block(2, 12, 12, 49, -5, z, 0xbfc4c8); panel(10, 9, [47.9, 2, z], [0, 2, z], [2.4, 2.6, 2.8]); }
-    panel(40, 2.5, [0, 12.5, -39.9], [0, 12.5, 0], [1.8, 0.3, 0.25]);
-  } else if (kind === 'sky') {
-    dome(rgb(0x9cc4ee), rgb(0xf4f7fb), rgb(0x6b6158));
-    sun([40, 70, 30], [30, 28, 25]);
-  } else if (kind === 'overcast') {
-    dome([1.5, 1.55, 1.6], [1.25, 1.28, 1.3], rgb(0x55534f), 2);
-    panel(120, 120, [0, 90, 0], [0, 0, 0], 1.8);
-  } else if (kind === 'sunset') {
-    dome([0.45, 0.65, 1.15], [1.8, 0.95, 0.45], [0.42, 0.33, 0.28], 4);
-    sun([70, 9, 25], [40, 20, 8], 5);
-  } else if (kind === 'dark') {
+  if (kind === 'dark') {
     room(60, 30, 60, 0x060708);
     panel(24, 14, [0, 24.5, 0], [0, 0, 0], 7);
     panel(3, 22, [-28, 10, 6], [0, 8, 0], 9);
@@ -200,6 +166,63 @@ function envScene(kind) {
   return scene;
 }
 
+// A contact shadow under the part (on the floor at box.min.y): the part seen from below the floor through a parallel
+// camera looking up, each point the darker the nearer the floor, blurred, on a plane on the floor (soft, darkest where
+// the part meets the floor, as the light from all round leaves it). Added to scene; returns { dispose }.
+function contactShadow(r, scene, group, box, R) {
+  const res = 512, size = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) + R * 1.2, height = Math.max(R * 0.35, (box.max.y - box.min.y) * 0.5);
+  const opt = { type: THREE.HalfFloatType };
+  const rt = new THREE.WebGLRenderTarget(res, res, opt), rt2 = new THREE.WebGLRenderTarget(res, res, opt);
+  const cam = new THREE.OrthographicCamera(-size / 2, size / 2, size / 2, -size / 2, 0, height);
+  const cx = (box.min.x + box.max.x) / 2, cz = (box.min.z + box.max.z) / 2, y0 = box.min.y;
+  cam.position.set(cx, y0, cz);
+  cam.rotation.x = Math.PI / 2; // (looking up)
+  cam.updateMatrixWorld();
+  // (black, its opacity falling from 1 at the floor to 0 at `height`, squared: the contact darkest)
+  const dm = new THREE.MeshDepthMaterial({ side: THREE.DoubleSide });
+  dm.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('gl_FragColor = vec4( vec3( 1.0 - fragCoordZ ), opacity );', 'float k = 1.0 - fragCoordZ; gl_FragColor = vec4( vec3( 0.0 ), k * k );'); };
+  dm.depthTest = false; dm.depthWrite = false;
+  const only = new THREE.Scene(), parent = group.parent;
+  only.overrideMaterial = dm;
+  only.add(group);
+  const clear = r.getClearColor(new THREE.Color()), clearA = r.getClearAlpha();
+  r.setClearColor(0x000000, 0);
+  r.setRenderTarget(rt); r.clear(); r.render(only, cam);
+  parent.add(group);
+  // (blurred: across, then down, twice, the second time finer)
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+    uniforms: { map: { value: null }, step: { value: new THREE.Vector2() } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `uniform sampler2D map; uniform vec2 step; varying vec2 vUv;
+      void main() { vec4 s = texture2D(map, vUv) * 0.1633;
+        s += (texture2D(map, vUv - step) + texture2D(map, vUv + step)) * 0.1531;
+        s += (texture2D(map, vUv - 2.0 * step) + texture2D(map, vUv + 2.0 * step)) * 0.12245;
+        s += (texture2D(map, vUv - 3.0 * step) + texture2D(map, vUv + 3.0 * step)) * 0.0918;
+        s += (texture2D(map, vUv - 4.0 * step) + texture2D(map, vUv + 4.0 * step)) * 0.051;
+        gl_FragColor = s; }`,
+    depthTest: false, depthWrite: false,
+  }));
+  const qs = new THREE.Scene(), qc = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  qs.add(quad);
+  const blur = (px) => {
+    quad.material.uniforms.map.value = rt.texture; quad.material.uniforms.step.value.set(px / res, 0);
+    r.setRenderTarget(rt2); r.render(qs, qc);
+    quad.material.uniforms.map.value = rt2.texture; quad.material.uniforms.step.value.set(0, px / res);
+    r.setRenderTarget(rt); r.render(qs, qc);
+  };
+  const soft = (res * R * 0.07) / size;
+  blur(soft); blur(soft * 0.4);
+  r.setRenderTarget(null);
+  r.setClearColor(clear, clearA);
+  quad.geometry.dispose(); quad.material.dispose(); dm.dispose(); rt2.dispose();
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(size, size).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ map: rt.texture, transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }));
+  plane.scale.y = -1; // (the picture from below is the floor's mirror image)
+  plane.position.set(cx, y0 + R * 1e-4, cz);
+  plane.renderOrder = 1;
+  scene.add(plane);
+  return { dispose: () => { scene.remove(plane); plane.geometry.dispose(); plane.material.dispose(); rt.dispose(); } };
+}
+
 // The part's decals in the view (a group of textured quads on the faces), replaced each time.
 export function showDecals(vp, list) {
   if (vp._decals) { vp.scene.remove(vp._decals); vp._decals.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); }); vp._decals = null; }
@@ -225,7 +248,8 @@ export function showDecals(vp, list) {
 // Render the viewport's bodies: opts { width, height, looks: [look per body], colors: [colour per body], hidden: Set
 // of body indices, env: a scene's id (SCENES), floor, exposure, background (CSS colour or null: the scene's),
 // lights (spotlights, lights.js), envStrength (the scene's environment, 0 to 1), keyLight (false: the scene's key light
-// off), decals: [{ src, p, n, w, h, angle }] }. Resolves with { url, width, height }.
+// off), placeTurn (degrees: a photographed place turned about the vertical from where its sun is at the view's right,
+// the sun and the key light with it), decals: [{ src, p, n, w, h, angle }] }. Resolves with { url, width, height }.
 // opts.groups: [{ index: Uint32Array (triangles' vertex indices), spec }] (appearances.js) in place of the looks and
 // colours by body: each its own material, with its texture and holes (and the holes in the shadows).
 export async function renderImage(vp, opts = {}) {
@@ -241,13 +265,14 @@ export async function renderImage(vp, opts = {}) {
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.shadowMap.enabled = opts.floor !== false;
     r.shadowMap.type = THREE.PCFSoftShadowMap;
-    const sc = SCENES[opts.env] ? opts.env : 'studio', scene = new THREE.Scene(), env = environment(r, sc);
+    const sc = SCENES[opts.env] ? opts.env : 'studio', S = SCENES[sc], scene = new THREE.Scene();
+    if (S.photo) await loadScene(sc, !opts.background);
+    const env = environment(r, sc);
     scene.environment = env.texture;
     scene.environmentIntensity = opts.envStrength ?? 1;
-    // (a place behind the part: drawn first, its own scene, through a perspective camera facing the same way (a cube
-    // background through a parallel view would only fill a few pixels))
-    const place = !opts.background && SCENES[sc].bg === 'place' ? new THREE.Scene() : null;
-    if (place) { place.background = background(r, sc); place.backgroundBlurriness = 0.03; } else scene.background = opts.background ? new THREE.Color(opts.background) : background(r, sc);
+    // (a photographed place behind the part: drawn first, its own scene, as the photograph is (not tone mapped again))
+    const place = !opts.background && S.photo ? new THREE.Scene() : null, photo = place && photos.get(sc + ':backdrop').tex.clone();
+    if (!place) scene.background = opts.background ? new THREE.Color(opts.background) : background(sc);
     // (the bodies, each its own mesh sharing the view's points and normals)
     const geo = vp.bodyGeo, mesh = vp.mesh, tris = mesh?.triangles;
     if (!geo || !tris) throw new Error('There is no model to render');
@@ -301,33 +326,95 @@ export async function renderImage(vp, opts = {}) {
       cam.left = cx - w; cam.right = cx + w; cam.top = cy + h; cam.bottom = cy - h;
     }
     cam.updateProjectionMatrix();
-    // (the place seen nearly level, the way the view faces: looking down on the part would show only the floor)
-    const placeCam = new THREE.PerspectiveCamera(55, width / height, 0.1, 10);
+    // (a photographed place turned about the vertical so its sun (or brightest light) is at the view's right, where the
+    // key light is: the part's light, shadow and reflections agree with the place behind it)
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion), keyAz = Math.abs(right.x) + Math.abs(right.z) > 1e-6 ? Math.atan2(right.z, right.x) : 0;
+    const t0 = S.photo ? (((S.turn || 0) + (+opts.placeTurn || 0)) * Math.PI) / 180 : 0, turn = S.photo ? (S.sun[0] * Math.PI) / 180 - keyAz + t0 : 0, sunAz = keyAz - t0;
+    scene.environmentRotation.set(0, turn, 0);
+    // (the place: the photograph on a dome whose lower half is flattened into a ground at the part's floor, as seen from
+    // a point as high above it as the camera is, the camera's own place: the photograph's ground goes on under the part
+    // and takes its shadow. Seen through a perspective camera like the view's (a parallel view: a narrow one along it,
+    // framing the same at the part). A view from below the floor: the place seen level, as a backdrop behind.)
+    let placeCam = null, dome = null;
+    if (place) {
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), floorY = box.min.y;
+      if (cam.isPerspectiveCamera) placeCam = cam.clone();
+      else {
+        const fov = 24, up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion), halfH = (cam.top - cam.bottom) / 2 / cam.zoom;
+        const depth = centre.clone().sub(cam.position).dot(fwd);
+        const at = cam.position.clone().addScaledVector(right, (cam.left + cam.right) / 2 / cam.zoom).addScaledVector(up, (cam.top + cam.bottom) / 2 / cam.zoom).addScaledVector(fwd, depth);
+        placeCam = new THREE.PerspectiveCamera(fov, width / height, 1, 10);
+        placeCam.quaternion.copy(cam.quaternion);
+        placeCam.position.copy(at).addScaledVector(fwd, -halfH / Math.tan((fov * Math.PI) / 360));
+      }
+      const h = placeCam.position.y - floorY;
+      if (h > R * 0.05) {
+        const radius = Math.max(h * 30, R * 60), g = new THREE.SphereGeometry(radius, 256, 128);
+        g.scale(1, 1, -1);
+        const pos = g.getAttribute('position'), v = new THREE.Vector3(), y1 = (-h * 3) / 2;
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i);
+          if (v.y < 0) { v.multiplyScalar(v.y < y1 ? -h / v.y : 1 - (v.y * v.y) / (3 * y1 * y1)); v.toArray(pos.array, 3 * i); }
+        }
+        const e = opts.exposure ?? 1;
+        // (the photograph looked up per pixel by the direction from the dome's middle (its points were only moved
+        // along it), not spread over its triangles: straight lines stay straight, also where the ground's long thin
+        // triangles meet the horizon)
+        dome = new THREE.Mesh(g, new THREE.ShaderMaterial({
+          uniforms: { map: { value: photo }, gain: { value: e } },
+          vertexShader: 'varying vec3 vDir; void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+          fragmentShader: `uniform sampler2D map; uniform float gain; varying vec3 vDir;
+            void main() {
+              vec3 d = normalize(vDir);
+              vec2 uv = vec2(atan(d.z, d.x) * 0.15915494309189535 + 0.5, asin(clamp(d.y, -1.0, 1.0)) * 0.3183098861837907 + 0.5);
+              gl_FragColor = vec4(texture2D(map, uv).rgb * gain, 1.0);
+              #include <colorspace_fragment>
+            }`,
+          depthWrite: false, toneMapped: false,
+        }));
+        dome.position.set(placeCam.position.x, floorY + h, placeCam.position.z);
+        dome.rotation.y = turn;
+        place.add(dome);
+        Object.assign(placeCam, { near: Math.max(h * 0.01, R * 0.01), far: radius * 2.5 });
+      } else {
+        const f = fwd, pitch = Math.max(-0.12, Math.min(0.35, Math.asin(Math.max(-1, Math.min(1, f.y))))), hz = Math.hypot(f.x, f.z) > 1e-6 ? new THREE.Vector2(f.x, f.z).normalize() : new THREE.Vector2(0, -1);
+        placeCam = new THREE.PerspectiveCamera(55, width / height, 0.1, 10);
+        placeCam.lookAt(hz.x * Math.cos(pitch), Math.sin(pitch), hz.y * Math.cos(pitch));
+        Object.assign(place, { background: photo, backgroundIntensity: opts.exposure ?? 1 });
+        place.backgroundRotation.set(0, turn, 0);
+      }
+      placeCam.aspect = width / height;
+      placeCam.clearViewOffset?.();
+      placeCam.updateProjectionMatrix();
+    }
     const draw = () => {
       if (!place) { r.render(scene, cam); return; }
-      const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), pitch = Math.max(-0.12, Math.min(0.35, Math.asin(Math.max(-1, Math.min(1, f.y)))));
-      const h = Math.hypot(f.x, f.z) > 1e-6 ? new THREE.Vector2(f.x, f.z).normalize() : new THREE.Vector2(0, -1);
-      placeCam.position.set(0, 0, 0);
-      placeCam.lookAt(h.x * Math.cos(pitch), Math.sin(pitch), h.y * Math.cos(pitch));
+      r.toneMapping = THREE.NoToneMapping;
       r.render(place, placeCam);
+      r.toneMapping = THREE.ACESFilmicToneMapping;
       r.autoClear = false; r.clearDepth(); r.render(scene, cam); r.autoClear = true;
     };
     let key = null, keyAt = null;
     if (opts.floor !== false && opts.keyLight !== false) {
-      const [kc, ki] = SCENES[sc].key || [0xffffff, 1.15];
+      const [kc, ki] = S.key || [0xffffff, 1.15];
       key = new THREE.DirectionalLight(kc, ki);
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
-      key.position.copy(centre).add(new THREE.Vector3(0, R * 3, 0)).addScaledVector(right, R * 1.2);
+      if (S.photo) {
+        const el = (Math.min(65, Math.max(25, S.sun[1])) * Math.PI) / 180;
+        key.position.copy(centre).add(new THREE.Vector3(Math.cos(el) * Math.cos(sunAz), Math.sin(el), Math.cos(el) * Math.sin(sunAz)).multiplyScalar(R * 3.2));
+      } else key.position.copy(centre).add(new THREE.Vector3(0, R * 3, 0)).addScaledVector(right, R * 1.2);
       key.target.position.copy(centre);
       key.castShadow = true;
       key.shadow.mapSize.set(2048, 2048);
-      Object.assign(key.shadow.camera, { left: -R * 1.6, right: R * 1.6, top: R * 1.6, bottom: -R * 1.6, near: R * 0.1, far: R * 8 });
+      const sR = R * (S.photo ? 2.6 : 1.6);
+      Object.assign(key.shadow.camera, { left: -sR, right: sR, top: sR, bottom: -sR, near: R * 0.1, far: R * 8 });
       key.shadow.radius = 6; key.shadow.bias = -R * 1e-5;
       scene.add(key, key.target);
       keyAt = key.position.clone();
     }
+    // (a photographed place: the shadow its own light (the sky, the ceiling: not shadowed) leaves out, under the part)
+    const contact = S.photo && opts.floor !== false ? contactShadow(r, scene, group, box, R) : null;
     if (opts.floor !== false) {
-      const floor = new THREE.Mesh(new THREE.PlaneGeometry(R * 40, R * 40), new THREE.ShadowMaterial({ opacity: 0.28 }));
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(R * 40, R * 40), new THREE.ShadowMaterial({ opacity: S.photo ? 0.6 : 0.28, depthWrite: false }));
       floor.rotation.x = -Math.PI / 2;
       floor.position.set(centre.x, box.min.y - R * 1e-3, centre.z);
       floor.receiveShadow = true;
@@ -370,7 +457,8 @@ export async function renderImage(vp, opts = {}) {
     }
     env.dispose();
     for (const s of spots) s.dispose();
-    (place || scene).background?.dispose?.();
+    contact?.dispose();
+    if (place) { photo.dispose(); dome?.geometry.dispose(); dome?.material.dispose(); } else scene.background?.dispose?.();
     group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); o.customDepthMaterial?.dispose(); } });
     return { url, width, height };
   } finally { r.dispose(); r.forceContextLoss?.(); }

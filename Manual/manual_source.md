@@ -1108,7 +1108,7 @@ Appearances are saved with the part and go with it into assemblies (as colours: 
 
 The **Render** tab {idx:Render tab} has the rendering tools: **Render**, **Quick Render**, **Realistic View**, **Lighting**, **Add Appearance**, **Appearances** (the tab), **Edit Material**, **Decal**, **Decals** and **Export glTF** (for other viewers and renderers).
 
-**Realistic View** {idx:realistic view} shows the part in the view as it renders: every face physically based (metals reflect, glass is clear, textures and gratings as they are), lit by the render scene. Click it again to go back to the normal shaded view. **Lighting** sets the **scene** {idx:render scenes} (below), the exposure and the floor's shadow, for renders and the realistic view; it is kept with the part. **Quick Render** renders the view at its size in one pass.
+**Realistic View** {idx:realistic view} shows the part in the view as it renders: every face physically based (metals reflect, glass is clear, textures and gratings as they are), lit by the render scene. Click it again to go back to the normal shaded view. **Lighting** sets the **scene** {idx:render scenes} (below), the exposure, the floor's shadow and how far a photographed place is turned, for renders and the realistic view; it is kept with the part. **Quick Render** renders the view at its size in one pass.
 
 **Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the **Quality** (Draft: one pass; Good: 16 passes, Best: 64, each with the view and the light moved a little and the passes averaged, for smooth edges and soft shadows), the **Scene**, a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them; faces and bodies with an appearance render with it (its texture, finish and holes). **Save PNG…** writes the picture. The settings are kept with the part.
 
@@ -1121,17 +1121,20 @@ The **scenes** light the part, show in its reflections and sit behind it:
 | Soft gradient (infinity cove) | A brighter, softer studio on a white-to-grey gradient |
 | Dark studio | A black room with a light overhead and tall strip lights at the sides (rim highlights), on a dark gradient |
 | Showroom | A warm room with rows of ceiling spotlights, on a warm cream gradient |
-| Outdoor sky | A blue sky with the sun, on pale blue |
-| Overcast | An even, bright grey sky: soft light, faint shadows |
-| Sunset | A low warm sun and an orange horizon under a blue sky, on a blue-to-orange gradient |
 | Night (blue) | A dark blue room with a cool light on one side and a warm one on the other, on a dark blue gradient |
-| Outdoors (park) | A park: grass, trees, hills and clouds under the sun, seen behind the part |
-| Forest | Among tall conifers on the forest floor, light from above, seen behind the part |
-| Office | Desks, monitors, ceiling lights and a window wall, seen behind the part |
-| Workshop | A concrete floor, workbench, machines and racks under strip lights, seen behind the part |
-| Store | Shelves of brightly coloured goods, fridges and strip lights, seen behind the part |
+| Outdoors: field, clear sky | A mown field with trees under a clear sky and a low sun |
+| Outdoors: garden | A formal garden of clipped hedges and flower beds under a cloudy blue sky |
+| Forest (misty) | A pine forest in the mist: soft, even light |
+| Overcast (hillside) | A rocky hillside above a valley under a grey sky: soft light, faint shadows |
+| Sunset (waterfront) | A stone promenade by the water in Venice at sunset |
+| Workshop (machine shop) | A machine shop: concrete floor, castings, machines and an overhead crane |
+| Warehouse | An empty warehouse: concrete floor, metal-clad walls and strip lights |
+| Office | A sunny office with desks, monitors and big windows |
+| Store (home décor) | A home décor shop with chandeliers, sofas and sample racks |
 
-The last five are **places**: the place itself shows behind the part, a little out of focus and nearly level whichever way the view looks, and it lights the part and shows in its reflections.
+The last nine are **photographed places** {idx:photographed places}{idx:HDRI}: real 360° HDR photographs. The place lights the part (its sun, sky, windows and lamps as bright as they really are), shows in its reflections, and is the backdrop. The part **stands on the place's ground**: the photograph's ground carries on under the part, seen from as high as the view looks from, with the part's shadow and a soft contact shadow where it meets the floor. So the view's angle matters: looking down on the part shows mostly the ground (a concrete floor, grass, paving); a lower view shows more of the place behind it. A perspective view (View ▸ Perspective) suits them best.
+
+The sun (or the brightest light) is put at the view's right, where the key light is, so the part's light, its shadow and the place agree. **Lighting ▸ Turn the place** (degrees) turns the place about the vertical to choose what is behind the part; the sun, the key light and the shadow turn with it. Where the photograph's ground is not flat (hedges, the water's edge), turn the place until the part stands on open ground. The photographs are from Poly Haven (CC0); `app/scenes/CREDITS.md` lists them.
 
 ### Spotlights {idx:spotlights}{idx:studio lighting}
 
