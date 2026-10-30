@@ -1126,6 +1126,16 @@ The **scenes** light the part, show in its reflections and sit behind it:
 
 The last five are **places**: the place itself shows behind the part, a little out of focus and nearly level whichever way the view looks, and it lights the part and shows in its reflections.
 
+### Spotlights {idx:spotlights}{idx:studio lighting}
+
+**Render ▸ Spotlights** (or **Add Spotlight**, or **+ Spotlight** in the Appearances tab) places lights of your own around the part, as in a photo studio: a key light, a fill, a rim light, a coloured accent. They light **renders** and the **realistic view** only; the ordinary view is not changed. While the Spotlights panel is open the realistic view is on, and each light shines on the part as you change or drag it.
+
+- **In the view:** each light shows as a yellow **lamp**, a ring where it is **aimed**, and its beam's cone. Drag a lamp to move the light across the screen; **Shift+drag** moves it nearer to or farther from what it points at, along its beam. Drag the ring onto the part to aim the light at that point of its surface (off the part, the ring moves across the screen).
+- **In the panel:** the list of lights (click one to edit it; **+ Add Spotlight**, **Delete**), and for the light picked: its **Name**, **On**, **Colour** (with warm, neutral, daylight and coloured presets), **Brightness**, **Cone angle** (how wide the beam is), **Soft edge** (a hard-edged or soft-edged pool of light), **Casts shadows**, and where it is (**Light at**) and where it points (**Aimed at**) as X, Y, Z. **Aim at the Part** points it at the part's middle; **Light from the View** puts it where the view looks from, pointing the same way.
+- **Scene lighting:** the scene (Lighting…) still lights the part. Turn its **Scene light** down and its **Scene key light** off to light the part with the spotlights alone, as in a dark studio; the **Dark studio** scene suits this.
+
+✔ keeps the lights (with the part; Undo takes them back), ✗ puts them back as they were. The Appearances tab lists them under the appearances: double-click one to edit, right-click to turn it off or delete it. In multi-pass renders each spotlight's shadows are softened, more for a softer edge.
+
 **Render ▸ Decal** {idx:decal} puts a picture (a logo, a label) on a flat face: open the picture, give its width and angle, then click the face where its middle goes. Decals show in the view and in renders, are saved with the part, and are not geometry. **Tools ▸ Decals…** lists them, to delete them.
 
 ## Exploded views of a part

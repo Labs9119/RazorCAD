@@ -42,6 +42,8 @@ import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import * as P3 from './print3d.js';
 import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
+import * as LT from './lights.js';
+import { activeLights } from './lights.js';
 import * as AP from './appearances.js';
 import { glb, viewportBodies } from './gltf.js';
 import * as DIM from './dimids.js';
@@ -827,6 +829,7 @@ class App {
   // Show the result's mesh; skipped when the same mesh is already shown with the same colours
   // and hidden bodies (re-uploading it and rebuilding its picking structure takes time).
   pushBody(force = false) {
+    this.applyRenderLights();
     const colors = this.bodyColors(), hidden = this.hiddenBodyIndices(), glass = this.transparentBodyIndices();
     const faces = JSON.stringify(this.doc.appearance?.faces || []) + JSON.stringify(this.doc.appearances || []) + (this.realisticView ? '|real' : '');
     // an exploded view shown: the bodies moved apart (the display only)
@@ -838,6 +841,7 @@ class App {
     const byIndex = new Map();
     (this.result.bodies || []).forEach((b, i) => { const o = offs.get(b.id); if (o) byIndex.set(i, o); });
     this.viewport.setBody(byIndex.size ? offsetMesh(this.result.body, byIndex) : this.result.body, colors, hidden, glass);
+    this.viewport._shadowFlags();
     this._exLines = drawExplodeLines(this.viewport, this._exLines, this.explodeShowLines === false ? [] : [...offs].filter(([, o]) => Math.hypot(...o) > 1e-9).map(([id, o]) => { const c = this.bodyCenter(id); return c ? [c, c.map((x, i) => x + o[i])] : null; }).filter(Boolean));
     // face appearances: those an import gave, then the part's own (each stored face found again by its point)
     const pairs = [];
@@ -898,6 +902,169 @@ class App {
       if (arr) c.setRGB(arr[v], arr[v + 1], arr[v + 2]); else c.set(0xc3cad4);
       return AP.plainSpec(c.getHex(), lookOf[vp.faceBody?.[fi] ?? 0] || {});
     });
+  }
+
+  // The part's spotlights and environment strength in the realistic view (set again only when they change)
+  applyRenderLights() {
+    if (this.mode !== 'part' && this.mode !== 'sketch') return;
+    const list = activeLights(this.doc?.render), env = this.doc?.render?.envStrength ?? 1;
+    const sig = this.realisticView ? JSON.stringify([list, env]) : '';
+    if (sig === this._lightSig) return;
+    this._lightSig = sig;
+    this.viewport.setSpotLights(this.realisticView ? list : [], { envStrength: env });
+  }
+
+  // ------------------------------------------------------------ Spotlights
+  // The Spotlights tool: the part's lights listed in the panel, the one picked edited there (colour, brightness, cone,
+  // softness, shadows, place and aim as numbers) and in the view (drag its lamp to move it, Shift+drag to move it nearer
+  // or farther along its beam, drag its aim ring onto the part to point it); the realistic view on meanwhile, the light
+  // shining as it is dragged. opts { add: true } adds a spotlight first; { id } picks that one. ✔ keeps the lights,
+  // ✗ puts them back as they were.
+  startLights(opts = {}) {
+    if (this.mode !== 'part') { this.toast('Spotlights are set in a part (close the sketch first)', true); return null; }
+    if (!this.result?.bodies?.length) { this.toast('There is no body to light yet', true); return null; }
+    if (this.pm) this.cancelPM();
+    const doc = this.doc;
+    const snapshot = JSON.stringify({ lights: doc.render?.lights || null, envStrength: doc.render?.envStrength ?? null, keyLight: doc.render?.keyLight ?? null });
+    doc.render ||= { size: '1920x1080', env: 'studio', floor: true, exposure: 1, quality: 16 };
+    doc.render.lights ||= [];
+    this.pm = { kind: 'lights', title: 'Spotlights', snapshot, wasRealistic: !!this.realisticView, sel: opts.id || doc.render.lights[0]?.id || null };
+    if (opts.add || !doc.render.lights.length) this.addSpotLight(false);
+    if (!this.realisticView) this.toggleRealistic(true);
+    this.ui.renderPM();
+    this.lightsChanged();
+    this.showLightsInView();
+    this.status('Spotlights: drag a lamp to move it (Shift+drag: nearer or farther along its beam); drag its ring onto the part to aim it. ✔ keeps them.');
+    return this.pm;
+  }
+  // (the part's centre and size, for placing lights)
+  lightFrame() {
+    const g = this.viewport.bodyGeo;
+    g.computeBoundingSphere();
+    return { centre: g.boundingSphere.center.clone(), R: Math.max(g.boundingSphere.radius, 1) };
+  }
+  addSpotLight(refresh = true) {
+    const list = this.doc.render.lights, { centre, R } = this.lightFrame();
+    const l = LT.newSpotLight(list, centre, R, this.viewport.viewCam.quaternion);
+    list.push(l);
+    if (this.pm?.kind === 'lights') this.pm.sel = l.id;
+    if (refresh) { this.ui.renderPM(); this.lightsChanged(); this.showLightsInView(); }
+    return l;
+  }
+  // (the view zoomed out, if need be, to show every light's lamp and aim with the part)
+  showLightsInView() {
+    const vp = this.viewport, list = this.doc.render?.lights || [], box = new THREE.Box3();
+    const out = list.some((l) => [l.pos, l.aim].some((p) => { const s = vp.project(new THREE.Vector3(...p)); return s.x < 20 || s.y < 20 || s.x > vp.width - 20 || s.y > vp.height - 20; }));
+    if (!out) return;
+    for (const l of list) { box.expandByPoint(new THREE.Vector3(...l.pos)); box.expandByPoint(new THREE.Vector3(...l.aim)); }
+    vp.zoomToFit(box);
+  }
+  selectedLight() { return this.pm?.kind === 'lights' ? this.doc.render?.lights?.find((l) => l.id === this.pm.sel) || null : null; }
+  // The lights changed: the realistic view's lights and the handles set again (`moved`: only that light moved or
+  // changed, while it is dragged: its light in the view set again, nothing made anew)
+  lightsChanged(moved = null) {
+    if (moved && !moved.suppressed && this.realisticView) {
+      this.viewport.updateSpotLight(moved);
+      this._lightSig = JSON.stringify([activeLights(this.doc.render), this.doc.render?.envStrength ?? 1]);
+    } else this.applyRenderLights();
+    this.viewport.setLightHandles(this.pm?.kind === 'lights' ? this.doc.render?.lights || [] : [], this.pm?.sel);
+  }
+  deleteSpotLight(id) {
+    const r = this.doc.render;
+    if (!r?.lights) return;
+    r.lights = r.lights.filter((l) => l.id !== id);
+    if (this.pm?.kind === 'lights') { if (this.pm.sel === id) this.pm.sel = r.lights[0]?.id || null; this.ui.renderPM(); this.lightsChanged(); return; }
+    if (!r.lights.length) delete r.lights;
+    this.commit(); this.applyRenderLights(); this.ui.renderAppearances();
+  }
+  suppressSpotLight(id, on) {
+    const l = this.doc.render?.lights?.find((x) => x.id === id);
+    if (!l) return;
+    if (on) l.suppressed = true; else delete l.suppressed;
+    if (this.pm?.kind === 'lights') { this.ui.renderPM(); this.lightsChanged(); return; }
+    this.commit(); this.applyRenderLights(); this.ui.renderAppearances();
+  }
+  finishLights(ok) {
+    const pm = this.pm, r = this.doc.render;
+    this.pm = null;
+    this._lightDrag = null;
+    this.viewport.setLightHandles(null);
+    if (!ok) {
+      const o = JSON.parse(pm.snapshot);
+      for (const k of ['lights', 'envStrength', 'keyLight']) { if (o[k] == null) delete r[k]; else r[k] = o[k]; }
+    } else {
+      if (!r.lights?.length) delete r.lights;
+      this.commit();
+    }
+    if (!pm.wasRealistic && this.realisticView) this.toggleRealistic(false);
+    this.applyRenderLights();
+    this.ui.renderPM();
+    this.ui.renderAppearances();
+    this.ui.renderCommandManager();
+    const n = r.lights?.length || 0;
+    this.status(ok ? `${n} spotlight${n === 1 ? '' : 's'}: ${n ? 'they light' : 'none in'} renders and the realistic view.` : 'Ready');
+  }
+  // (the light handle under the pointer: { light, handle: 'pos' | 'aim' }, within 10 pixels)
+  lightHandleAt(e) {
+    const vp = this.viewport, m = vp.screenPos(e);
+    let best = null, bd = 11;
+    for (const l of this.doc.render?.lights || []) for (const h of ['aim', 'pos']) {
+      const s = vp.project(new THREE.Vector3(...l[h])), d = Math.hypot(s.x - m.x, s.y - m.y);
+      if (d < bd) { bd = d; best = { light: l, handle: h }; }
+    }
+    return best;
+  }
+  lightDown(e) {
+    if (this.pm?.kind !== 'lights' || e.button !== 0) return false;
+    const h = this.lightHandleAt(e);
+    if (!h) return false;
+    const vp = this.viewport;
+    vp.controls.drag = null; // (the press moves the light: no view rotation)
+    try { vp.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (this.pm.sel !== h.light.id) { this.pm.sel = h.light.id; this.ui.renderPM(); }
+    this._lightDrag = { ...h, from: { clientX: e.clientX, clientY: e.clientY }, start: [...h.light[h.handle]], pos0: [...h.light.pos] };
+    this.lightsChanged();
+    return true;
+  }
+  lightMove(e) {
+    const d = this._lightDrag;
+    if (!d) return false;
+    const vp = this.viewport, l = d.light, r3 = (v) => v.toArray().map((x) => +x.toFixed(2));
+    if (d.handle === 'pos' && e.shiftKey) {
+      // (nearer or farther along the beam)
+      const P0 = new THREE.Vector3(...d.pos0), A = new THREE.Vector3(...l.aim), dir = P0.clone().sub(A).normalize(), d0 = P0.distanceTo(A);
+      l.pos = r3(A.clone().addScaledVector(dir, Math.max(d0 * 0.05, d0 + vp.dragAlong(dir, P0, d.from, e))));
+    } else {
+      let p = null;
+      // (the aim: onto the part under the pointer, when it is over the part; else across the screen at the
+      // handle's depth)
+      if (d.handle === 'aim') { const fh = this.faceAt(e); if (fh) p = fh.hit.point.clone(); }
+      if (!p) {
+        const n = new THREE.Vector3(0, 0, 1).applyQuaternion(vp.viewCam.quaternion), plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, new THREE.Vector3(...d.start));
+        p = vp.aimRay(e).ray.intersectPlane(plane, new THREE.Vector3());
+      }
+      if (!p) return true;
+      l[d.handle] = r3(p);
+    }
+    this.lightsChanged(l);
+    this.ui.updateLightFields?.(l);
+    return true;
+  }
+  lightUp() {
+    if (!this._lightDrag) return false;
+    this._lightDrag = null;
+    this.ui.renderPM();
+    this.lightsChanged();
+    return true;
+  }
+  // (a light aimed at the part's centre; a light put where the view looks from, aimed where it looks)
+  aimLightAtPart(l) { const { centre } = this.lightFrame(); l.aim = centre.toArray().map((x) => +x.toFixed(2)); this.ui.renderPM(); this.lightsChanged(); }
+  lightFromView(l) {
+    const { centre, R } = this.lightFrame(), back = new THREE.Vector3(0, 0, 1).applyQuaternion(this.viewport.viewCam.quaternion);
+    const d = Math.max(R * 2.5, new THREE.Vector3(...l.pos).distanceTo(new THREE.Vector3(...l.aim)));
+    l.aim = centre.toArray().map((x) => +x.toFixed(2));
+    l.pos = centre.clone().addScaledVector(back, d).toArray().map((x) => +x.toFixed(2));
+    this.ui.renderPM(); this.lightsChanged();
   }
 
   // The realistic view: every face physically based (metal, plastic, glass…), lit by the render scene, in the view
@@ -3845,9 +4012,9 @@ class App {
     const vp = this.viewport;
     const asm = () => (this.mode === 'drawing' && this.drawing?.vpEvent ? this.drawing : null);
     const exT = () => (this.pm?.kind === 'explode' ? this.explodeTool : null);
-    vp.onPointerDown = (e) => { if (this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e) || this.freeformDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
-    vp.onPointerMoveImmediate = (e) => { if (this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e) || this.freeformMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
-    vp.onPointerUp = (e) => { if (this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e) || this.freeformUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
+    vp.onPointerDown = (e) => { if (this.lightDown(e) || this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e) || this.freeformDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
+    vp.onPointerMoveImmediate = (e) => { if (this.lightMove(e) || this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e) || this.freeformMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
+    vp.onPointerUp = (e) => { if (this.lightUp(e) || this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e) || this.freeformUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
     vp.onDoubleClick = (e) => { if (asm()) asm().vpEvent('dbl', e); else if (this.mode === 'sketch') this.sketcher.doubleClick(); else if (this.mode === 'sketch3d') this.sketch3d.doubleClick(); };
     vp.onLeave = () => {
       if (asm()) { asm().vpEvent('leave'); return; }
@@ -3892,6 +4059,7 @@ class App {
     if (this.pm?.kind === 'annotate') { this.annotateClick(e); return; }
     if (this.pm?.kind === 'decal') { this.decalClick(e); return; }
     if (this.pm?.kind === 'appearance') { this.appearanceClick(e); return; }
+    if (this.pm?.kind === 'lights') return;
     // cycling through overlapping bodies: Shift+left-click steps back, a plain click on the spot selects
     if (this.cycleAllowed()) {
       const c = this._cycle;
@@ -4890,6 +5058,7 @@ class App {
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(true);
     if (pm.kind === 'appearance') return this.finishAppearance(true);
+    if (pm.kind === 'lights') return this.finishLights(true);
     if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate' || pm.kind === 'decal') return this.cancelPM();
     if (pm.kind === 'section') {
       // (a view of the model only: the cut stays, its arrow goes; nothing is built again)
@@ -4953,6 +5122,7 @@ class App {
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(false);
     if (pm.kind === 'appearance') return this.finishAppearance(false);
+    if (pm.kind === 'lights') return this.finishLights(false);
     if (pm.kind === 'section') { this.clearSection(); this.status('Ready'); return; } // (the cut taken away; nothing built again)
     clearTimeout(this._previewTimer);
     this.pm = null;
@@ -5121,12 +5291,13 @@ class App {
       bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
       o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1, quality: +v.quality || 1 };
       this._renderOpts = o;
-      if (JSON.stringify(this.doc.render || null) !== JSON.stringify(o)) { this.doc.render = { ...o }; changed = true; }
+      const was = this.doc.render || {};
+      if (Object.keys(o).some((k) => JSON.stringify(was[k]) !== JSON.stringify(o[k]))) { this.doc.render = { ...was, ...o }; changed = true; }
       if (changed) this.commit();
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
-    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], lights: activeLights(this.doc.render), envStrength: this.doc.render?.envStrength ?? 1, keyLight: this.doc.render?.keyLight !== false, onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
     if (o.quiet) return img;
     const box = document.createElement('div');
     box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
@@ -5145,9 +5316,14 @@ class App {
       { key: 'env', label: 'Scene', type: 'select', options: Object.entries(SCENES).map(([k, sc]) => [k, sc.name]), value: prev.env || 'studio' },
       { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure ?? 1 },
       { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor !== false },
-    ], 'For renders and the realistic view. Kept with the part.');
+      { key: 'envStrength', label: 'Scene light (0 to 1)', type: 'expr', value: prev.envStrength ?? 1 },
+      { key: 'keyLight', label: 'Scene key light (renders)', type: 'check', value: prev.keyLight !== false },
+    ], 'For renders and the realistic view. Kept with the part. Spotlights (Render ▸ Spotlights) add to the scene’s light.');
     if (!v) return;
-    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor };
+    const es = Math.max(0, Math.min(1, +this.result.ev(String(v.envStrength))));
+    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor, envStrength: Number.isFinite(es) ? es : 1, keyLight: !!v.keyLight };
+    if (this.doc.render.envStrength === 1) delete this.doc.render.envStrength;
+    if (this.doc.render.keyLight) delete this.doc.render.keyLight;
     this.commit();
     if (this._viewEnv) { this._viewEnv.dispose(); this._viewEnv = null; }
     if (this.realisticView) { this.realisticView = false; this.toggleRealistic(true); }

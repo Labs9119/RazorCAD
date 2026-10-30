@@ -1,6 +1,7 @@
 // 3D viewport: orthographic camera, CAD-style mouse controls, body/edge
 // rendering, reference planes, face picking, standard views and section view.
 import * as THREE from 'three';
+import { makeSpots, placeSpot, handleGroup } from './lights.js';
 import { CadControls } from './cadcontrols.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import * as G from './geometry.js';
@@ -86,13 +87,15 @@ export class Viewport {
     this.perspective = false;
     this.pcam = new THREE.PerspectiveCamera(PERSP_FOV, 1, 1, 1e5);
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a96a8, 1.6));
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x8a96a8, 1.6);
+    this.scene.add(hemi);
     const key = new THREE.DirectionalLight(0xffffff, 1.5);
     key.position.set(0.4, 0.8, 1);
     this.camera.add(key);
     const fill = new THREE.DirectionalLight(0xffffff, 0.45);
     fill.position.set(-1, -0.4, 0.3);
     this.camera.add(fill);
+    this.viewLights = [hemi, key, fill].map((l) => ({ l, k: l.intensity }));
 
     this.controls = new CadControls(this.camera, canvas, {
       getPivot: () => this.rotationPivot(),
@@ -163,8 +166,9 @@ export class Viewport {
     p.quaternion.copy(o.quaternion);
     p.aspect = (this.width || 1) / (this.height || 1);
     const s = this._depthBox, dist = s ? p.position.distanceTo(s.center) : d, R = s ? s.radius * 1.1 : d;
+    // (near: well in front of the model, so what is between it and the view (lights, handles) is drawn too)
     p.far = dist + R + d;
-    p.near = Math.max(p.far / 2e4, d / 200, dist - R);
+    p.near = Math.max(p.far / 1e4, d / 100);
     p.updateProjectionMatrix();
     p.updateMatrixWorld();
     return p;
@@ -327,6 +331,7 @@ export class Viewport {
       }
       this._looks = grp;
       this.bodyGroup.add(grp);
+      this._shadowFlags?.();
     }
     // (the faces those meshes draw left out of the body's drawing: the drawn geometry made again when they change)
     const same = faces.size === (this.lookFaces?.size || 0) && [...faces].every((f) => this.lookFaces.has(f));
@@ -363,6 +368,58 @@ export class Viewport {
   setRealistic(on, env = null) {
     this.realistic = !!on;
     this.scene.environment = on ? env : null;
+    this._applySpots();
+  }
+
+  // The part's spotlights (lights.js), shining in the realistic view only: list (the lights that shine), opts
+  // { envStrength } (the scene's environment, 0 to 1). While there are spotlights the view's own lights are dimmed
+  // so the spotlights show as they render.
+  setSpotLights(list, opts = {}) {
+    this._spotList = list || [];
+    this._envStrength = opts.envStrength ?? 1;
+    this._applySpots();
+  }
+  _applySpots() {
+    if (this._spots) { this.scene.remove(this._spots); this._spots.traverse((o) => o.isSpotLight && o.dispose()); this._spots = null; }
+    const list = this.realistic ? this._spotList || [] : [];
+    this.scene.environmentIntensity = this.realistic ? this._envStrength ?? 1 : 1;
+    for (const v of this.viewLights) v.l.intensity = v.k * (list.length ? 0.3 : 1);
+    this._spotShadows = list.some((l) => l.shadows !== false);
+    if (list.length) {
+      const R = this._depthBox?.radius || this.bodyGeo?.boundingSphere?.radius || 100, g = new THREE.Group();
+      for (const s of makeSpots(list, R, 1024)) g.add(s, s.target);
+      this._spots = g;
+      this.scene.add(g);
+    }
+    if (this._spotShadows && !this.renderer.shadowMap.enabled) { this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; }
+    this._shadowFlags();
+  }
+  // (the body and its looks casting and taking the spotlights' shadows, while any spotlight has shadows)
+  _shadowFlags() {
+    const on = !!(this.realistic && this._spotShadows && this._spots);
+    this.bodyGroup?.traverse((o) => { if (o.isMesh) { o.castShadow = on; o.receiveShadow = on; } });
+  }
+  // A spotlight moved, turned or changed while it is dragged: its light in the view set again (no new lights)
+  updateSpotLight(l) {
+    const s = this._spots?.children.find((o) => o.isSpotLight && o.userData.light === l.id);
+    if (s) placeSpot(s, l);
+    if (this._spotList) { const i = this._spotList.findIndex((x) => x.id === l.id); if (i >= 0) this._spotList[i] = l; }
+  }
+
+  // The spotlights' handles (lights.js handleGroup) shown in the view, sel the light being edited; null: none
+  setLightHandles(list, sel = null) {
+    if (this._lightHandles) {
+      this.scene.remove(this._lightHandles);
+      this._lightHandles.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+      this.frameCallbacks.delete(this._sizeLightHandles);
+      this._lightHandles = null;
+    }
+    if (!list?.length) return;
+    this._lightHandles = handleGroup(list, sel);
+    this.scene.add(this._lightHandles);
+    this._sizeLightHandles ||= () => { this._lightHandles?.traverse((o) => { if (o.isMesh && o.userData.px) o.scale.setScalar(this.wppAt(o.position) * o.userData.px); }); };
+    this.frameCallbacks.add(this._sizeLightHandles);
+    this._sizeLightHandles();
   }
 
   // ---- surface analysis shown on the bodies: { kind: 'zebra' | 'curvature' | 'draft', … } or null
@@ -1345,6 +1402,13 @@ export class Viewport {
   // ------------------------------------------------------------ helpers
   worldPerPixel() {
     return (this.camera.top - this.camera.bottom) / this.camera.zoom / (this.height || 1);
+  }
+
+  // World units per pixel at a point (in perspective, nearer points have fewer)
+  wppAt(p) {
+    if (!this.perspective) return this.worldPerPixel();
+    const cam = this.viewCam, fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion), z = Math.max(cam.near, p.clone().sub(cam.position).dot(fwd));
+    return (2 * z * Math.tan((PERSP_FOV * Math.PI) / 360)) / (this.height || 1);
   }
 
   project(world) {

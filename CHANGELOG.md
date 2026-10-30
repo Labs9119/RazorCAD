@@ -6,6 +6,21 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 11:18 — Spotlights for renders and the realistic view
+
+- **Render ▸ Spotlights** and **Add Spotlight** (also **+ Spotlight** in the Appearances tab): place and aim lights of
+  your own, as in a photo studio. They light renders and the realistic view only; while the panel is open the
+  realistic view is on and the light changes on the part as you drag it.
+- In the view: drag a light's lamp to move it (Shift+drag along its beam), drag its ring onto the part to aim it; its
+  cone is drawn. In the panel: name, on/off, colour (warm, neutral, daylight and coloured presets), brightness, cone
+  angle, soft edge, shadows, position and aim as numbers, Aim at the Part, Light from the View.
+- Scene lighting: the scene's own light can be turned down and its key light off (also in Lighting…), for spotlights
+  alone. Renders soften each spotlight's shadows over the passes.
+- The Appearances tab lists the spotlights (double-click to edit; right-click to turn off or delete).
+- Fixes: the Render dialog no longer replaces the part's other render settings; in perspective, things between the
+  model and the view are no longer cut away.
+- Test spotlights.
+
 ## 2026-10-31 11:07 — Perspective view
 
 - **Perspective** in the heads-up toolbar (and View ▸ Perspective / Orthographic, and the Display Style list): the

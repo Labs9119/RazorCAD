@@ -3,6 +3,7 @@
 // floor, tone mapped; decals (pictures on flat faces) on it. One frame, at the size asked, as a PNG data URL.
 import * as THREE from 'three';
 import { boxMapped, boxMappedDepth, tileTexture } from './appearances.js';
+import { makeSpots } from './lights.js';
 
 export const LOOKS = {
   auto: { name: 'From the material' },
@@ -223,7 +224,8 @@ export function showDecals(vp, list) {
 
 // Render the viewport's bodies: opts { width, height, looks: [look per body], colors: [colour per body], hidden: Set
 // of body indices, env: a scene's id (SCENES), floor, exposure, background (CSS colour or null: the scene's),
-// decals: [{ src, p, n, w, h, angle }] }. Resolves with { url, width, height }.
+// lights (spotlights, lights.js), envStrength (the scene's environment, 0 to 1), keyLight (false: the scene's key light
+// off), decals: [{ src, p, n, w, h, angle }] }. Resolves with { url, width, height }.
 // opts.groups: [{ index: Uint32Array (triangles' vertex indices), spec }] (appearances.js) in place of the looks and
 // colours by body: each its own material, with its texture and holes (and the holes in the shadows).
 export async function renderImage(vp, opts = {}) {
@@ -241,6 +243,7 @@ export async function renderImage(vp, opts = {}) {
     r.shadowMap.type = THREE.PCFSoftShadowMap;
     const sc = SCENES[opts.env] ? opts.env : 'studio', scene = new THREE.Scene(), env = environment(r, sc);
     scene.environment = env.texture;
+    scene.environmentIntensity = opts.envStrength ?? 1;
     // (a place behind the part: drawn first, its own scene, through a perspective camera facing the same way (a cube
     // background through a parallel view would only fill a few pixels))
     const place = !opts.background && SCENES[sc].bg === 'place' ? new THREE.Scene() : null;
@@ -310,7 +313,7 @@ export async function renderImage(vp, opts = {}) {
       r.autoClear = false; r.clearDepth(); r.render(scene, cam); r.autoClear = true;
     };
     let key = null, keyAt = null;
-    if (opts.floor !== false) {
+    if (opts.floor !== false && opts.keyLight !== false) {
       const [kc, ki] = SCENES[sc].key || [0xffffff, 1.15];
       key = new THREE.DirectionalLight(kc, ki);
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
@@ -322,12 +325,21 @@ export async function renderImage(vp, opts = {}) {
       key.shadow.radius = 6; key.shadow.bias = -R * 1e-5;
       scene.add(key, key.target);
       keyAt = key.position.clone();
+    }
+    if (opts.floor !== false) {
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(R * 40, R * 40), new THREE.ShadowMaterial({ opacity: 0.28 }));
       floor.rotation.x = -Math.PI / 2;
       floor.position.set(centre.x, box.min.y - R * 1e-3, centre.z);
       floor.receiveShadow = true;
       scene.add(floor);
     } else scene.add(new THREE.HemisphereLight(0xffffff, 0x808080, 0.6));
+    // (the part's spotlights (lights.js), each moved a little about its place pass by pass, more the softer it is)
+    const spots = makeSpots(opts.lights || [], R);
+    for (const s of spots) scene.add(s, s.target);
+    const spotAt = spots.map((s) => {
+      const d = s.position.clone().sub(s.target.position).normalize(), u = new THREE.Vector3().crossVectors(d, Math.abs(d.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+      return { p: s.position.clone(), u, v: new THREE.Vector3().crossVectors(d, u), r: R * 0.25 * (0.3 + s.penumbra) };
+    });
     // (passes: each with the camera moved by part of a pixel (smooth edges) and the key light by part of its size (soft
     // shadows), averaged; Halton points spread them evenly)
     const n = Math.max(1, Math.min(256, Math.round(opts.samples ?? 1)));
@@ -341,6 +353,7 @@ export async function renderImage(vp, opts = {}) {
         const jx = halton(k + 1, 2) - 0.5, jy = halton(k + 1, 3) - 0.5;
         cam.setViewOffset(width, height, jx, jy, width, height);
         if (key) { const a = 2 * Math.PI * halton(k + 1, 5), rr = Math.sqrt(halton(k + 1, 7)) * R * 0.35; key.position.copy(keyAt).addScaledVector(lu, Math.cos(a) * rr).addScaledVector(lv, Math.sin(a) * rr); }
+        spots.forEach((s, i) => { const q = spotAt[i], a = 2 * Math.PI * halton(k + 1, 11), rr = Math.sqrt(halton(k + 1, 13)) * q.r; s.position.copy(q.p).addScaledVector(q.u, Math.cos(a) * rr).addScaledVector(q.v, Math.sin(a) * rr); });
         draw();
         gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, px);
         for (let i = 0; i < acc.length; i++) acc[i] += px[i];
@@ -356,6 +369,7 @@ export async function renderImage(vp, opts = {}) {
       url = out.toDataURL('image/png');
     }
     env.dispose();
+    for (const s of spots) s.dispose();
     (place || scene).background?.dispose?.();
     group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); o.customDepthMaterial?.dispose(); } });
     return { url, width, height };

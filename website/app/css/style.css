@@ -929,3 +929,7 @@ label.has-dim-id::before { content: attr(data-dim-id); display: inline-block; fo
 .s3-dim.lost { border-color: #dc2626; color: #dc2626; }
 .modify .mid { font-size: 11px; padding: 0 5px; border-radius: 3px; background: #e0e7ff; color: #3730a3; cursor: pointer; margin-left: 6px; }
 .dim.lost { color: #dc2626 !important; border-color: #dc2626 !important; }
+
+/* Spotlights panel: a light's place and aim as X, Y, Z side by side */
+.lt-xyz { display: flex; gap: 4px; }
+.lt-xyz input { width: 0; flex: 1 1 0; min-width: 0; }

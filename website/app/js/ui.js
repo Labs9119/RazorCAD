@@ -1,6 +1,8 @@
 // User interface: menus, Command ribbon, Feature tree, Property panel,
 // context menus, heads-up view toolbar and dialogs.
 import { icon } from './icons.js';
+import * as LT from './lights.js';
+import { SCENES } from './render.js';
 import { editCustomProps } from './custprops.js';
 import { compareWith } from './compare.js';
 import { setThemePref, themePref, isDark } from './theme.js';
@@ -2285,6 +2287,8 @@ export class UI {
         { icon: 'camera', label: 'Quick Render', action: () => a.quickRender() },
         { icon: 'realistic', label: 'Realistic View', action: () => a.toggleRealistic(), active: !!a.realisticView },
         { icon: 'lighting', label: 'Lighting', action: () => a.renderLighting() },
+        { icon: 'spotlight', label: 'Spotlights', action: () => (a.pm?.kind === 'lights' ? a.okPM() : a.startLights()), active: a.pm?.kind === 'lights' },
+        { icon: 'spotlightAdd', label: 'Add Spotlight', action: () => (a.pm?.kind === 'lights' ? a.addSpotLight() : a.startLights({ add: true })) },
         'sep',
         { icon: 'paintBucket', label: 'Add Appearance', action: () => a.startAppearance(), active: a.pm?.kind === 'appearance' },
         { icon: 'appearance', label: 'Appearances', action: () => this.showLeft('appear'), active: this.leftTab === 'appear' },
@@ -2782,7 +2786,9 @@ export class UI {
     addB.onclick = () => a.startAppearance();
     const renderB = el('button', { class: 'pm-btn', title: 'Render the view with its appearances' }, 'Render…');
     renderB.onclick = () => a.renderView();
-    bar.append(addB, renderB);
+    const lightB = el('button', { class: 'pm-btn', title: 'Spotlights for renders and the realistic view: place and aim them in the view' }, '+ Spotlight');
+    lightB.onclick = () => (a.pm?.kind === 'lights' ? a.addSpotLight() : a.startLights({ add: true }));
+    bar.append(addB, lightB, renderB);
     root.appendChild(bar);
     const list = doc.appearances || [];
     const bodyName = (id) => a.bodyById(id)?.name || id;
@@ -2829,6 +2835,7 @@ export class UI {
       };
       root.appendChild(n);
     });
+    this.appendLightsList(root);
     root.appendChild(el('div', { class: 'pm-hint', style: 'padding:8px 12px' }, list.length
       ? 'Each appearance goes over those above it: one lower in the list wins where they meet (drag to change the order). Double-click one to edit it; right-click to suppress, copy or delete it.'
       : 'Put colours and finishes on faces, bodies or the whole part: metals (anodised aluminium too), paints, plastics, glass, timber, stone, rubber, and meshes and gratings that look see-through without being modelled. Select faces or bodies (or nothing, for the whole part), then <b>+ Add Appearance</b>.'));
@@ -2921,6 +2928,126 @@ export class UI {
     ni.oninput = () => { ap.name = ni.value; };
     const w5 = el('div', { class: 'pm-input' }); w5.appendChild(ni);
     g5.appendChild(this.row('Name', w5));
+  }
+
+  // ------------------------------------------------------------ Spotlights panel
+  // The part's spotlights: the list (click one to edit it), the one picked (colour, brightness, cone, softness,
+  // shadows, on), its place and aim, and the scene's own light. Every change shows at once in the realistic view.
+  renderLightsPM(root) {
+    const a = this.app, pm = a.pm, r = a.doc.render, list = r.lights || [], l = a.selectedLight();
+    this.pmHeader(root, 'spotlight', 'Spotlights');
+    root.appendChild(el('div', { class: 'pm-hint' }, 'Drag a lamp in the view to move it (Shift+drag: nearer or farther along its beam); drag its ring onto the part to aim it. They light renders and the realistic view only.'));
+    // the lights
+    const g1 = this.pmGroup(root, 'Lights', 'lt:list');
+    list.forEach((x, i) => {
+      const n = el('div', { class: 'tn ap-item' + (x.id === pm.sel ? ' selected' : '') + (x.suppressed ? ' suppressed' : ''), 'data-light': x.id, title: x.suppressed ? 'Off (suppressed)' : '' });
+      n.innerHTML = `<span class="ti">${icon('spotlight')}</span><span class="ap-sw" style="background:${esc(x.color || '#ffffff')}"></span><span class="tl">${esc(LT.lightName(x, i))}</span><span class="tsub">${+(x.power ?? 1).toFixed(2)} · ${Math.round(x.angle ?? 40)}°</span>`;
+      n.onclick = () => { pm.sel = x.id; this.renderPM(); a.lightsChanged(); };
+      g1.appendChild(n);
+    });
+    const bar = el('div', { class: 'cfg-bar' });
+    const add = el('button', { class: 'pm-btn', 'data-light-add': '' }, '+ Add Spotlight');
+    add.onclick = () => a.addSpotLight();
+    bar.appendChild(add);
+    if (l) { const del = el('button', { class: 'pm-btn', 'data-light-del': '' }, 'Delete'); del.onclick = () => a.deleteSpotLight(l.id); bar.appendChild(del); }
+    g1.appendChild(bar);
+    const live = () => a.lightsChanged(l);
+    const slider = (g, label, key, min, max, step, val, fmt, set, after = live) => {
+      const rg = el('input', { type: 'range', min: String(min), max: String(max), step: String(step), value: String(val), 'data-light-field': key });
+      const out = el('span', { class: 'unit' }, fmt(val));
+      rg.oninput = () => { const v = Number(rg.value); set(v); out.textContent = fmt(v); after(); };
+      rg.onchange = () => this.renderPM();
+      const w = el('div', { class: 'pm-input' }); w.append(rg, out);
+      g.appendChild(this.row(label, w));
+    };
+    if (l) {
+      // the light picked
+      const i = list.indexOf(l);
+      const g2 = this.pmGroup(root, LT.lightName(l, i), 'lt:light');
+      const ni = el('input', { type: 'text', value: l.name || '', placeholder: LT.lightName({}, i) });
+      ni.oninput = () => { l.name = ni.value; };
+      ni.onchange = () => this.renderPM();
+      const wn = el('div', { class: 'pm-input' }); wn.appendChild(ni);
+      g2.appendChild(this.row('Name', wn));
+      const on = el('input', { type: 'checkbox', 'data-light-field': 'on', ...(l.suppressed ? {} : { checked: '' }) });
+      on.onchange = () => a.suppressSpotLight(l.id, !on.checked);
+      const wo = el('div', { class: 'pm-input' }); wo.appendChild(on);
+      g2.appendChild(this.row('On', wo));
+      const ci = el('input', { type: 'color', value: l.color || '#ffffff', 'data-light-field': 'color' });
+      ci.oninput = () => { l.color = ci.value; live(); };
+      ci.onchange = () => this.renderPM();
+      const wc = el('div', { class: 'pm-input' }); wc.appendChild(ci);
+      g2.appendChild(this.row('Colour', wc));
+      const temps = el('div', { class: 'ap-colors' });
+      for (const [c, t] of [['#ffb46b', 'Warm (tungsten, about 2700 K)'], ['#ffd6aa', 'Warm white (about 3500 K)'], ['#ffffff', 'Neutral white'], ['#dce8ff', 'Daylight (about 6500 K)'], ['#b8ccff', 'Cool blue'], ['#ff4040', 'Red'], ['#40c060', 'Green'], ['#4070ff', 'Blue']]) {
+        const b = el('button', { title: t, style: `background:${c}` });
+        b.onclick = () => { l.color = c; live(); this.renderPM(); };
+        temps.appendChild(b);
+      }
+      g2.appendChild(temps);
+      slider(g2, 'Brightness', 'power', 0, 6, 0.05, l.power ?? 1, (v) => v.toFixed(2), (v) => { l.power = v; });
+      slider(g2, 'Cone angle', 'angle', 5, 160, 1, l.angle ?? 40, (v) => `${Math.round(v)}°`, (v) => { l.angle = v; });
+      slider(g2, 'Soft edge', 'soft', 0, 1, 0.05, l.soft ?? 0.5, (v) => `${Math.round(v * 100)} %`, (v) => { l.soft = v; });
+      const sh = el('input', { type: 'checkbox', 'data-light-field': 'shadows', ...(l.shadows !== false ? { checked: '' } : {}) });
+      sh.onchange = () => { l.shadows = sh.checked; a.lightsChanged(); };
+      const ws = el('div', { class: 'pm-input' }); ws.appendChild(sh);
+      g2.appendChild(this.row('Casts shadows', ws));
+      // where it is and where it points
+      const g3 = this.pmGroup(root, 'Place and aim', 'lt:place');
+      for (const [key, label] of [['pos', 'Light at'], ['aim', 'Aimed at']]) {
+        const w = el('div', { class: 'pm-input lt-xyz' });
+        ['X', 'Y', 'Z'].forEach((ax, k) => {
+          const inp = el('input', { type: 'number', step: 'any', value: String(l[key][k]), title: ax, 'data-light-xyz': key + k });
+          inp.onchange = () => { const v = Number(inp.value); if (Number.isFinite(v)) { l[key][k] = v; a.lightsChanged(); } };
+          w.appendChild(inp);
+        });
+        g3.appendChild(this.row(label, w));
+      }
+      const bar2 = el('div', { class: 'cfg-bar' });
+      const aim = el('button', { class: 'pm-btn', title: 'Point the light at the middle of the part' }, 'Aim at the Part');
+      aim.onclick = () => a.aimLightAtPart(l);
+      const fv = el('button', { class: 'pm-btn', title: 'Put the light where the view looks from, pointing where it looks (as far away as it is now)' }, 'Light from the View');
+      fv.onclick = () => a.lightFromView(l);
+      bar2.append(aim, fv);
+      g3.appendChild(bar2);
+    }
+    // the scene's own light
+    const g4 = this.pmGroup(root, 'Scene lighting', 'lt:scene');
+    slider(g4, 'Scene light', 'envStrength', 0, 1, 0.05, r.envStrength ?? 1, (v) => `${Math.round(v * 100)} %`, (v) => { r.envStrength = v; }, () => a.applyRenderLights());
+    const kl = el('input', { type: 'checkbox', 'data-light-field': 'keyLight', ...(r.keyLight !== false ? { checked: '' } : {}) });
+    kl.onchange = () => { if (kl.checked) delete r.keyLight; else r.keyLight = false; };
+    const wk = el('div', { class: 'pm-input' }); wk.appendChild(kl);
+    g4.appendChild(this.row('Scene key light (renders)', wk));
+    g4.appendChild(el('div', { class: 'pm-hint' }, `The scene (${esc((SCENES[r.env] || SCENES.studio).name)}: Lighting… changes it) lights the part as well; turn it down, and the key light off, for the spotlights alone, as in a dark studio.`));
+  }
+  // (a light's place and aim in the panel as it is dragged)
+  updateLightFields(l) {
+    for (const key of ['pos', 'aim']) for (let k = 0; k < 3; k++) { const inp = document.querySelector(`[data-light-xyz="${key}${k}"]`); if (inp && document.activeElement !== inp) inp.value = String(l[key][k]); }
+  }
+
+  // The part's spotlights in the Appearances tab, under the appearances: double-click one to edit the lights;
+  // right-click for more
+  appendLightsList(root) {
+    const a = this.app, list = a.doc.render?.lights || [];
+    const head = el('div', { class: 'tn ap-item ap-base', title: 'Spotlights: they light renders and the realistic view (Render ▸ Spotlights)' });
+    head.innerHTML = `<span class="tw"></span><span class="ti">${icon('spotlight')}</span><span class="tl">Spotlights</span><span class="tsub">${list.length ? list.length : 'none'}</span>`;
+    head.ondblclick = () => a.startLights();
+    root.appendChild(head);
+    list.forEach((l, i) => {
+      const n = el('div', { class: 'tn ap-item' + (l.suppressed ? ' suppressed' : ''), 'data-ap-light': l.id, title: `${LT.lightName(l, i)}: brightness ${l.power ?? 1}, cone ${l.angle ?? 40}°${l.suppressed ? ' (off)' : ''}. Double-click to edit.` });
+      n.innerHTML = `<span class="tw"></span><span class="ap-sw" style="background:${esc(l.color || '#ffffff')}"></span><span class="tl">${esc(LT.lightName(l, i))}</span><span class="tsub">${+(l.power ?? 1).toFixed(2)} · ${Math.round(l.angle ?? 40)}°</span>`;
+      n.ondblclick = () => a.startLights({ id: l.id });
+      n.oncontextmenu = (e) => {
+        e.preventDefault();
+        this.showContext(e.clientX, e.clientY, [
+          { label: 'Edit Spotlights', icon: 'spotlight', action: () => a.startLights({ id: l.id }) },
+          { label: l.suppressed ? 'Turn On' : 'Turn Off', icon: l.suppressed ? 'show' : 'suppress', action: () => a.suppressSpotLight(l.id, !l.suppressed) },
+          'sep',
+          { label: 'Delete', icon: 'trash', action: () => a.deleteSpotLight(l.id) },
+        ]);
+      };
+      root.appendChild(n);
+    });
   }
 
   // ------------------------------------------------------------ Configurations tab
@@ -4024,6 +4151,7 @@ export class UI {
     if (pm.kind === 'feature') return this.renderFeaturePM(root);
     if (pm.kind === 'explode') return a.explodeTool?.renderPM();
     if (pm.kind === 'appearance') return this.renderAppearancePM(root);
+    if (pm.kind === 'lights') return this.renderLightsPM(root);
   }
 
   updatePMStatus() {

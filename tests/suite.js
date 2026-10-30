@@ -2617,6 +2617,82 @@ const UI = {
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `end edges ${o0.toFixed(1)} / ${o1.toFixed(1)} px orthographic; in perspective the near one longer; picking, dragging and renders in perspective` };
   },
 
+  // Spotlights: the tool opens with a light (the realistic view on, the light shining there, its handles shown); its
+  // lamp dragged in the view moves it (the light in the view with it, the panel's numbers too), its ring dragged onto
+  // the part aims it at the part's surface; brightness changes the light at once; ✗ takes them away (the realistic
+  // view off again); ✔ keeps them, Undo takes them back; a render is brighter with a spotlight; the Appearances tab
+  // lists them and the Render tab has the tools
+  async 'spotlights'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), THREE = await import('three'), bad = [];
+    const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const q = [[0, 0], [60, 0], [60, 40], [0, 40]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+    d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 15 }));
+    d.render = { env: 'dark', floor: true, exposure: 1, envStrength: 0.2, keyLight: false };
+    await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(150);
+    const vp = a.viewport;
+    if (a.realisticView) a.toggleRealistic(false);
+    vp.setStandardView('iso', false); vp.zoomToFit(null, false); await wait(50);
+    const mean = async () => { const img = await a.renderView({ size: '120x80', env: 'dark', floor: true, exposure: 1, quality: 1, quiet: true }); const x = await new Promise((res) => { const q2 = new Image(); q2.onload = () => res(q2); q2.src = img.url; }); const c = document.createElement('canvas'); c.width = 120; c.height = 80; const g = c.getContext('2d'); g.drawImage(x, 0, 0); const px = g.getImageData(0, 0, 120, 80).data; let s = 0; for (let i = 0; i < px.length; i += 4) s += px[i] + px[i + 1] + px[i + 2]; return s / (120 * 80 * 3); };
+    const dark = await mean();
+    // (opened: one light, the realistic view on, the light in the view, its handles)
+    a.startLights();
+    await wait(50);
+    vp.zoomToFit(null, false); vp.anim = null;
+    a.showLightsInView(); vp.anim = null; await wait(50);
+    const l = a.doc.render.lights?.[0];
+    if (a.pm?.kind !== 'lights' || !l) return { ok: false, detail: 'The Spotlights tool did not open with a light' };
+    if (!a.realisticView) bad.push('the realistic view is not on');
+    const spot = () => vp._spots?.children.find((o) => o.isSpotLight && o.userData.light === l.id);
+    if (!spot()) bad.push('no spotlight in the view');
+    if (!vp._lightHandles?.children.length) bad.push('no handles');
+    // (the lamp dragged across the screen)
+    const R = vp.canvas.getBoundingClientRect(), ev = (x, y, extra = {}) => ({ clientX: R.left + x, clientY: R.top + y, button: 0, pointerId: 1, shiftKey: false, ...extra });
+    let sp = vp.project(new THREE.Vector3(...l.pos));
+    const p0 = [...l.pos];
+    if (!a.lightDown(ev(sp.x, sp.y))) bad.push('the lamp was not picked');
+    a.lightMove(ev(sp.x + 40, sp.y + 10)); a.lightMove(ev(sp.x + 80, sp.y + 20));
+    const sp1 = vp.project(new THREE.Vector3(...l.pos));
+    if (Math.hypot(sp1.x - sp.x - 80, sp1.y - sp.y - 20) > 2) bad.push(`the lamp is at ${sp1.x.toFixed(0)}, ${sp1.y.toFixed(0)} on the screen, not under the pointer`);
+    if (spot() && spot().position.distanceTo(new THREE.Vector3(...l.pos)) > 1e-6) bad.push('the light in the view did not move with the lamp');
+    if (Number(document.querySelector('[data-light-xyz="pos0"]')?.value) !== l.pos[0]) bad.push('the panel’s X did not follow');
+    a.lightUp(ev(sp.x + 80, sp.y + 20));
+    if (JSON.stringify(p0) === JSON.stringify(l.pos)) bad.push('the lamp did not move');
+    // (Shift+drag: nearer or farther along the beam)
+    const dist0 = new THREE.Vector3(...l.pos).distanceTo(new THREE.Vector3(...l.aim));
+    sp = vp.project(new THREE.Vector3(...l.pos));
+    a.lightDown(ev(sp.x, sp.y)); a.lightMove(ev(sp.x, sp.y - 60, { shiftKey: true })); a.lightUp(ev(sp.x, sp.y - 60));
+    const dist1 = new THREE.Vector3(...l.pos).distanceTo(new THREE.Vector3(...l.aim));
+    if (Math.abs(dist1 - dist0) < 1) bad.push(`Shift+drag did not move it along the beam (${dist0.toFixed(1)} → ${dist1.toFixed(1)})`);
+    // (the ring dragged onto the top face, near a corner: the aim lands on the face)
+    const want = new THREE.Vector3(10, 15, -8), tw = vp.project(want);
+    sp = vp.project(new THREE.Vector3(...l.aim));
+    if (!a.lightDown(ev(sp.x, sp.y))) bad.push('the aim ring was not picked');
+    a.lightMove(ev(tw.x, tw.y)); a.lightUp(ev(tw.x, tw.y));
+    if (new THREE.Vector3(...l.aim).distanceTo(want) > 1) bad.push(`aimed at ${l.aim}, not the top face at ${want.toArray()}`);
+    // (brightness: the light in the view at once)
+    const rg = document.querySelector('[data-light-field="power"]');
+    if (!rg) bad.push('no brightness slider'); else { rg.value = '3'; rg.dispatchEvent(new Event('input')); if (Math.abs((spot()?.intensity ?? 0) - 3) > 1e-6) bad.push(`brightness 3 gave ${spot()?.intensity}`); }
+    // (✗: no lights, the realistic view off)
+    a.cancelPM();
+    if (a.doc.render.lights?.length) bad.push('Cancel kept the lights');
+    if (a.realisticView) bad.push('the realistic view stayed on after Cancel');
+    if (vp._lightHandles) bad.push('handles left after Cancel');
+    // (✔ keeps a light; Undo takes it back)
+    a.startLights(); a.okPM(); await wait(50);
+    if (a.doc.render.lights?.length !== 1) bad.push(`${a.doc.render.lights?.length || 0} lights after OK`);
+    const lit = await mean();
+    if (!(lit > dark + 1)) bad.push(`the render is no brighter with a spotlight (${dark.toFixed(1)} → ${lit.toFixed(1)})`);
+    // (the Appearances tab lists it; the Render tab has the tools)
+    a.ui.showLeft('appear'); await wait(30);
+    if (!document.querySelector('[data-ap-light]')) bad.push('the Appearances tab does not list the light');
+    a.ui.showLeft('tree');
+    const labels = (a.ui.commandDefs().render || []).map((x) => x.label);
+    for (const t of ['Spotlights', 'Add Spotlight']) if (!labels.includes(t)) bad.push(`the Render tab has no ${t}`);
+    a.undo(); await wait(100);
+    if (a.doc.render?.lights?.length) bad.push('Undo did not take the light back');
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `a spotlight placed, dragged (screen, along its beam), aimed onto the face and brightened, live in the realistic view; Cancel, OK and Undo; render ${dark.toFixed(1)} → ${lit.toFixed(1)} brighter` };
+  },
+
   // Render scenes: a block rendered in every scene; each picture's corners show the scene's background (its colour, or
   // the top and bottom of its gradient; a place (outdoors, forest, office…) shows behind the part), the part lit (not black) in each, and no two scenes alike; the Lighting
   // dialog offers them all
