@@ -6,6 +6,20 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 10:02 — Appearances tab and Render tab
+
+- An **Appearances** tab above the feature tree: appearances on faces, bodies or the whole part, in order (each over
+  those above it: drag to change the order), each with a look from a library of metals, anodised aluminium, paints
+  and coatings, plastics, glass, timber, stone and concrete, rubber, meshes and gratings, and fabrics and composites,
+  its own colour, and its texture's scale and angle. Rename, suppress, copy, move and delete from the right-click menu.
+- Textures are drawn by RazorCAD (nothing downloaded) at their real size and box-mapped onto the faces. Meshes and
+  gratings are see-through (holes and shadows) without being modelled; their faces can still be picked.
+- A **Render** tab: Render, Quick Render, Realistic View (the part physically based in the view, lit by the studio),
+  Lighting (kept with the part), Add Appearance, Appearances, Edit Material, Decal, Decals, Export glTF.
+- Renders use each face's appearance (texture, finish, holes in the shadows); the studio's overhead light is softer.
+- Assemblies show their parts' appearance colours. Right-click a face for Face / Part Appearance, a body for Body Appearance.
+- Tests: appearances.
+
 ## 2026-10-30 06:53 — Version 0.21.0-beta
 
 - Installer, user manual (118 pages) and website for 0.21.0-beta.

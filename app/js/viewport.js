@@ -6,6 +6,7 @@ import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-
 import * as G from './geometry.js';
 import { hatchStyle } from './drawingformats.js';
 import { wireColor } from './theme.js';
+import { boxMapped, tileTexture } from './appearances.js';
 import * as W from './wcs.js';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -113,6 +114,8 @@ export class Viewport {
       color: 0xc3cad4, specular: 0x2a2f36, shininess: 38, transparent: true, opacity: 0.3, depthWrite: false,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide,
     });
+    // (faces drawn by an appearance's own mesh: left out of the body's drawing, still picked)
+    this.hideMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: THREE.DoubleSide });
     this.edgeMat = new THREE.LineBasicMaterial({ color: 0x14181f });
     this.displayStyle = 'shadedEdges';
     this.body = null;
@@ -204,28 +207,14 @@ export class Viewport {
     // the drawn (and picked) geometry leaves hidden bodies out; bodyGeo keeps everything
     this.hiddenBodies = new Set(hidden || []);
     this.transparentBodies = new Set([...(transparent || [])].filter((bi) => !this.hiddenBodies.has(bi)));
-    let drawGeo = geo;
-    if ((this.hiddenBodies.size || this.transparentBodies.size) && this.bodies.length) {
-      // opaque bodies first, then the transparent ones (a second material group)
-      drawGeo = new THREE.BufferGeometry();
-      for (const k of ['position', 'normal', 'color']) drawGeo.setAttribute(k, geo.getAttribute(k));
-      const opaque = [], glass = [];
-      this.bodies.forEach((b, bi) => {
-        if (!this.hiddenBodies.has(bi)) (this.transparentBodies.has(bi) ? glass : opaque).push(tris.subarray(b.triStart, b.triStart + b.triCount));
-      });
-      const nOpaque = opaque.reduce((n, a) => n + a.length, 0), nGlass = glass.reduce((n, a) => n + a.length, 0);
-      const idx = new Uint32Array(nOpaque + nGlass);
-      let o = 0;
-      for (const a of [...opaque, ...glass]) { idx.set(a, o); o += a.length; }
-      drawGeo.setIndex(new THREE.BufferAttribute(idx, 1));
-      if (nGlass) { drawGeo.addGroup(0, nOpaque, 0); drawGeo.addGroup(nOpaque, nGlass, 1); }
-      drawGeo.computeBoundingSphere();
-    }
+    this.lookFaces = new Set();
+    this.setLooks(null);
+    const drawGeo = this._drawGeometry();
     // (the picking index built once the model has been drawn, not before it: a big model shows sooner after an edit;
     // until then picks take the plain raycast, with the same hits)
     clearTimeout(this._bvhTimer);
     this._bvhTimer = setTimeout(() => this.ensurePickIndex(), 60);
-    this.body = new THREE.Mesh(drawGeo, drawGeo.groups.length ? [this.bodyMat, this.glassMat] : this.bodyMat);
+    this.body = new THREE.Mesh(drawGeo, drawGeo.groups.length ? [this.bodyMat, this.glassMat, this.bodyMat] : this.bodyMat);
     const linePts = mesh.dense ? denseFeatureEdges(mesh.vertices, drawGeo.index.array) : [];
     mesh.edges.forEach((e, ei) => {
       const pts = [];
@@ -242,13 +231,123 @@ export class Viewport {
     this._updateSectionCaps();
   }
 
+  // The geometry the body is drawn (and picked) with: hidden bodies left out; opaque triangles first, then those of the
+  // transparent bodies (group 1), then the faces an appearance draws with a mesh of its own (group 2: still picked,
+  // drawn by that mesh)
+  _drawGeometry() {
+    const geo = this.bodyGeo, mesh = this.mesh, tris = mesh.triangles, gs = this.faceGroupScale || 1;
+    const looks = this.lookFaces || new Set();
+    if (!((this.hiddenBodies.size || this.transparentBodies.size) && this.bodies.length) && !looks.size) return geo;
+    const drawGeo = new THREE.BufferGeometry();
+    for (const k of ['position', 'normal', 'color']) drawGeo.setAttribute(k, geo.getAttribute(k));
+    const opaque = [], glass = [], own = [];
+    const bodies = this.bodies.length ? this.bodies : [{ triStart: 0, triCount: tris.length, faceStart: 0, faceCount: mesh.faceGroups.length }];
+    bodies.forEach((b, bi) => {
+      if (this.hiddenBodies.has(bi)) return;
+      const to = this.transparentBodies.has(bi) ? glass : opaque;
+      let has = false;
+      for (let f = b.faceStart; f < b.faceStart + b.faceCount && !has; f++) has = looks.has(f);
+      if (!has) { to.push(tris.subarray(b.triStart, b.triStart + b.triCount)); return; }
+      for (let f = b.faceStart; f < b.faceStart + b.faceCount; f++) {
+        const g = mesh.faceGroups[f];
+        (looks.has(f) ? own : to).push(tris.subarray(g.start * gs, (g.start + g.count) * gs));
+      }
+    });
+    const n = (l) => l.reduce((k, a) => k + a.length, 0), nOpaque = n(opaque), nGlass = n(glass), nOwn = n(own);
+    const idx = new Uint32Array(nOpaque + nGlass + nOwn);
+    let o = 0;
+    for (const a of [...opaque, ...glass, ...own]) { idx.set(a, o); o += a.length; }
+    drawGeo.setIndex(new THREE.BufferAttribute(idx, 1));
+    if (nGlass || nOwn) { drawGeo.addGroup(0, nOpaque, 0); drawGeo.addGroup(nOpaque, nGlass, 1); drawGeo.addGroup(nOpaque + nGlass, nOwn, 2); }
+    drawGeo.computeBoundingSphere();
+    return drawGeo;
+  }
+
+  // The body's materials: the opaque, the transparent, and for the faces an appearance draws, nothing while its meshes
+  // are shown (they are not in analyses, hidden lines or wireframe)
+  _looksOn() { return !!this._looks?.children.length && (this.displayStyle === 'shaded' || this.displayStyle === 'shadedEdges') && !this.analysis; }
+  _plainMats() { return this.body?.geometry.groups.length ? [this.bodyMat, this.glassMat, this._looksOn() ? this.hideMat : this.bodyMat] : this.bodyMat; }
+
+  // Appearances with textures (and, in the realistic view, every face) drawn by meshes of their own over the body's
+  // faces: groups [{ faces: [face index], spec }] (appearances.js lookSpec); null: none.
+  setLooks(groups) {
+    if (this._looks) {
+      this.bodyGroup.remove(this._looks);
+      this._looks.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+      this._looks = null;
+    }
+    const mesh = this.mesh, geo = this.bodyGeo;
+    const faces = new Set();
+    if (groups?.length && geo && mesh) {
+      const tris = mesh.triangles, gs = this.faceGroupScale || 1, grp = new THREE.Group();
+      for (const { faces: list, spec } of groups) {
+        const runs = [];
+        for (const f of list) {
+          const g = mesh.faceGroups[f], bi = this.faceBody?.[f] ?? 0;
+          if (!g || this.hiddenBodies?.has(bi) || this.transparentBodies?.has(bi)) continue;
+          runs.push(tris.subarray(g.start * gs, (g.start + g.count) * gs));
+          faces.add(f);
+        }
+        if (!runs.length) continue;
+        const idx = new Uint32Array(runs.reduce((k, a) => k + a.length, 0));
+        let o = 0;
+        for (const a of runs) { idx.set(a, o); o += a.length; }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', geo.getAttribute('position'));
+        g.setAttribute('normal', geo.getAttribute('normal'));
+        g.setIndex(new THREE.BufferAttribute(idx, 1));
+        g.computeBoundingSphere();
+        const m = new THREE.Mesh(g, this.lookMaterial(spec));
+        m.userData.look = spec.key;
+        grp.add(m);
+      }
+      this._looks = grp;
+      this.bodyGroup.add(grp);
+    }
+    // (the faces those meshes draw left out of the body's drawing: the drawn geometry made again when they change)
+    const same = faces.size === (this.lookFaces?.size || 0) && [...faces].every((f) => this.lookFaces.has(f));
+    this.lookFaces = faces;
+    if (!same && this.body) {
+      const old = this.body.geometry;
+      old.disposeBoundsTree?.();
+      if (old !== this.bodyGeo) old.dispose();
+      this.body.geometry = this._drawGeometry();
+      clearTimeout(this._bvhTimer);
+      this._bvhTimer = setTimeout(() => this.ensurePickIndex(), 60);
+    }
+    if (this.body && !this.analysis) this.body.material = this._plainMats();
+    if (this._looks) this._looks.visible = this._looksOn();
+  }
+
+  // An appearance's material in the view: shaded like the bodies (or physically based, lit by the studio, in the
+  // realistic view), its texture laid on by box mapping
+  lookMaterial(spec) {
+    const tex = spec.tex ? tileTexture(spec) : null, p = spec.pbr || {};
+    const common = { color: tex ? 0xffffff : spec.color, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, clippingPlanes: this.bodyMat.clippingPlanes, clipIntersection: this.bodyMat.clipIntersection };
+    const see = spec.see ? { transparent: true, opacity: Math.max(0.15, spec.see), depthWrite: false } : {};
+    let m;
+    if (this.realistic) m = new THREE.MeshPhysicalMaterial({ ...common, ...see, metalness: p.metalness ?? 0, roughness: p.roughness ?? 0.5, clearcoat: p.clearcoat || 0, clearcoatRoughness: p.clearcoatRoughness ?? 0.1, envMapIntensity: 0.55 });
+    else {
+      const metal = p.metalness ?? 0, rough = p.roughness ?? 0.5;
+      m = new THREE.MeshPhongMaterial({ ...common, ...see, shininess: 4 + 90 * (1 - rough) * (1 - rough), specular: new THREE.Color(metal > 0.5 ? 0x5a6068 : 0x2a2f36).multiplyScalar(0.4 + (1 - rough) * 0.8) });
+    }
+    if (tex) boxMapped(m, tex, spec);
+    return m;
+  }
+
+  // The realistic view: appearances physically based, lit by a studio environment (env: a PMREM texture)
+  setRealistic(on, env = null) {
+    this.realistic = !!on;
+    this.scene.environment = on ? env : null;
+  }
+
   // ---- surface analysis shown on the bodies: { kind: 'zebra' | 'curvature' | 'draft', … } or null
   setAnalysis(a) { this.analysis = a || null; this.applyAnalysis(); }
   applyAnalysis() {
     if (!this.body) return;
     const geo = this.body.geometry, col = geo.getAttribute('color');
     if (this._savedColors && col) { col.array.set(this._savedColors); col.needsUpdate = true; this._savedColors = null; }
-    const plain = geo.groups.length ? [this.bodyMat, this.glassMat] : this.bodyMat;
+    const plain = this._plainMats();
     const a = this.analysis;
     if (!a) { this.body.material = plain; this.applyDisplayStyle(); return; }
     if (a.kind === 'zebra') {
@@ -715,6 +814,8 @@ export class Viewport {
     this.glassMat.colorWrite = this.bodyMat.colorWrite;
     this.glassMat.needsUpdate = true;
     if (this.body) this.body.visible = true;
+    if (this.body && !this.analysis) this.body.material = this._plainMats();
+    if (this._looks) this._looks.visible = this._looksOn();
     if (this.edges) this.edges.visible = s !== 'shaded';
     this.edgeMat.depthTest = s !== 'wireframe';
     this.edgeMat.color.set(s === 'wireframe' ? wireColor() : 0x14181f);
@@ -727,7 +828,7 @@ export class Viewport {
     this.section = sec;
     const planes = this.sectionPlanes(), many = planes.length > 1;
     this.asmView?.setClipping(planes, many);
-    for (const m of [this.bodyMat, this.glassMat, this.edgeMat]) { m.clippingPlanes = planes; m.clipIntersection = many; m.needsUpdate = true; }
+    for (const m of [this.bodyMat, this.glassMat, this.edgeMat, ...(this._looks?.children.map((o) => o.material) || [])]) { m.clippingPlanes = planes; m.clipIntersection = many; m.needsUpdate = true; }
     this._updateSectionCaps();
   }
 

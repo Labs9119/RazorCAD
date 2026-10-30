@@ -2579,6 +2579,80 @@ const UI = {
     return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); 16 passes ${t16} tones against ${t1}; the decal kept out of the kernel` };
   },
 
+  // Appearances: two blocks; anodised red on one top face, then oak on its body (the later one wins), moved above it
+  // (red again), the red suppressed (oak); a grating on the whole part (see-through: its faces drawn by its own mesh,
+  // left out of the body's drawing but still picked); the Appearances tab lists them in order; the panel picks a face
+  // and Cancel puts it back; the realistic view and a render with them; every library look draws its tile; an
+  // assembly's copy of the part carries the colours; the Render tab has its tools
+  async 'appearances'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),AP=await import('/js/appearances.js'),bad=[];
+    const d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}});
+    for(const [x0,x1] of [[0,40],[60,100]]){const q=[[x0,0],[x1,0],[x1,20],[x0,20]].map(v=>S.addPoint(sk,...v));q.forEach((id,i)=>S.addLine(sk,id,q[(i+1)%4]));}
+    const ex=M.createFeature(d,'extrude',{sketch:sk.id,depth:10});d.features.push(sk,ex);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();await wait(150);
+    const vp=a.viewport,nf=vp.mesh.faceGroups.length;
+    // (a top face: flat, facing up, highest)
+    let top=-1,best=-Infinity;for(let fi=0;fi<nf;fi++){const f=vp.faceInfo(fi);if(f.planar&&f.normal.y>0.99&&f.center.y>best){best=f.center.y;top=fi;}}
+    const info=vp.faceInfo(top),bodyId=a.result.bodies[vp.faceBody[top]].id;
+    if(a.result.bodies.length<2)bad.push(`${a.result.bodies.length} bodies`);
+    const lookAt=(fi)=>a.apLooks?.[fi]?.preset||null;
+    const colAt=(fi)=>{const g=vp.mesh.faceGroups[fi],v=vp.mesh.triangles[g.start*(vp.faceGroupScale||1)]*3,c=vp.bodyGeo.getAttribute('color').array;return [c[v],c[v+1],c[v+2]];};
+    // anodised red on the top face
+    const red=a.startAppearance({faces:[{p:info.center.toArray(),n:info.normal.toArray(),b:bodyId}],preset:'anodRed'});await a.okPM();
+    const c1=colAt(top);
+    if(lookAt(top)!=='anodRed'||!(c1[0]>c1[1]*2))bad.push(`red: ${lookAt(top)} ${c1.map(x=>x.toFixed(2))}`);
+    if(!vp._looks?.children.length||!vp.lookFaces.has(top))bad.push('no textured mesh for the anodised face');
+    const other=[...Array(nf).keys()].find(fi=>vp.faceBody[fi]!==vp.faceBody[top]);
+    if(lookAt(other))bad.push('the other body has an appearance');
+    // oak on the body, after it: oak wins; moved above the red: red again; the red suppressed: oak
+    const oak=a.startAppearance({bodies:[bodyId],preset:'oak'});await a.okPM();
+    if(lookAt(top)!=='oak')bad.push(`after oak: ${lookAt(top)}`);
+    a.moveAppearance(oak.id,0);
+    if(lookAt(top)!=='anodRed'||a.doc.appearances[0]!==oak)bad.push(`oak moved up: ${lookAt(top)}`);
+    a.suppressAppearance(red.id,true);
+    if(lookAt(top)!=='oak')bad.push(`red suppressed: ${lookAt(top)}`);
+    // the Appearances tab: both, in order
+    a.ui.showLeft('appear');
+    const rows=[...document.querySelectorAll('#appearances [data-ap]')].map(n=>n.dataset.ap);
+    if(rows.join()!==[oak.id,red.id].join())bad.push(`tab rows ${rows}`);
+    if(!document.querySelector(`#appearances [data-ap="${red.id}"]`)?.classList.contains('suppressed'))bad.push('suppressed not shown');
+    // a grating on the whole part: see-through, its faces drawn by its own mesh but still picked
+    const gr=a.startAppearance({target:'part',preset:'barGrating'});await a.okPM();
+    if(!vp.mesh.faceGroups.every((_,fi)=>lookAt(fi)==='barGrating'))bad.push('grating not on every face');
+    const groups=vp.body.geometry.groups;
+    if(groups.length!==3||groups[2].count!==vp.mesh.triangles.length||vp.body.material[2]!==vp.hideMat)bad.push(`body groups ${JSON.stringify(groups)}`);
+    vp.setStandardView('iso',false);await wait(80);
+    const r=vp.canvas.getBoundingClientRect(),sp=vp.project(info.center),hit=vp.pickBody({clientX:r.left+sp.x,clientY:r.top+sp.y});
+    if(!hit||hit.face<0)bad.push('the grating faces are not picked');
+    // the panel: a face clicked onto the oak, then Cancel puts it back
+    a.startAppearance({id:oak.id});
+    if(!document.querySelector('#pm [data-ap-preset="oak"].on'))bad.push('panel without the library');
+    const keep=a.faceAt;a.faceAt=()=>({hit:{point:{toArray:()=>info.center.toArray()},face:other}});
+    try{ oak.target='faces';oak.faces=[];a.appearanceClick({}); }finally{a.faceAt=keep;}
+    if(oak.faces.length!==1)bad.push('the click did not pick the face');
+    a.cancelPM();
+    if(oak.target!=='bodies'||oak.bodies[0]!==bodyId||oak.faces.length)bad.push(`cancel: ${JSON.stringify(oak)}`);
+    // the realistic view, and a render with the appearances (the grating's holes and all)
+    a.toggleRealistic(true);
+    if(!vp._looks?.children.every(m=>m.material.isMeshPhysicalMaterial))bad.push('realistic view not physically based');
+    a.toggleRealistic(false);
+    const st=a.renderSetup();
+    if(!st.groups?.some(g=>g.spec.cut))bad.push('the render has no see-through look');
+    const img=await a.renderView({size:'160x100',env:'studio',floor:true,exposure:1,quality:1,quiet:true});
+    if(!img?.url?.startsWith('data:image/png'))bad.push('no render');
+    // every look of the library draws its tile (meshes with holes, the rest solid)
+    for(const p of AP.LIBRARY.filter(x=>x.tex)){const cv=AP.tileCanvas(AP.lookSpec({preset:p.id}),32),px=cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;let holes=0,odd=0;for(let i=0;i<px.length;i+=4){if(px[i+3]<128)holes++;if(Number.isNaN(px[i]))odd++;}if(!!p.cut!==holes>0||odd)bad.push(`${p.id}: ${holes} holes`);}
+    // an assembly's copy of the part: the faces' colours
+    a.deleteAppearance(gr.id);
+    const am=AP.meshWithAppearances(a.result.body,a.doc.appearances);
+    if(!am.faceGroups[top]?.look?.c||am.faceGroups[top].look.c!==AP.lookSpec(oak.look).color)bad.push(`assembly look ${JSON.stringify(am.faceGroups[top]?.look)}`);
+    // the Render tab
+    const tabs=a.ui.toolbarTabs().map(t=>t.id),defs=a.ui.commandDefs().render||[];
+    if(!tabs.includes('render')||!['Render','Realistic View','Lighting','Add Appearance','Decal'].every(l=>defs.some(d=>d.label===l)))bad.push('Render tab');
+    a.ui.showLeft('tree');closeModals();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${nf} faces: red on a face, oak on its body over it, moved up and suppressed; a grating on the whole part (drawn by its own mesh, picked); the tab, the panel and Cancel; the realistic view; a render; ${AP.LIBRARY.filter(x=>x.tex).length} textures drawn; the assembly's colours; the Render tab`};
+  },
+
   async 'kernel-defeaturing-and-pmi'() {
     const {run}=await import('/tests/k14-cases.js'),native=await run({threads:threadsPerKernel()});
     if(!native.ok)return {ok:false,detail:native};

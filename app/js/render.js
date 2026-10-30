@@ -2,6 +2,7 @@
 // rubber, paint, glass…) of its colour, lit by a studio (or sky) environment and a key light casting soft shadows on a
 // floor, tone mapped; decals (pictures on flat faces) on it. One frame, at the size asked, as a PNG data URL.
 import * as THREE from 'three';
+import { boxMapped, boxMappedDepth, tileTexture } from './appearances.js';
 
 export const LOOKS = {
   auto: { name: 'From the material' },
@@ -20,7 +21,7 @@ const BY_MATERIAL = { steel: 'cast', stainless: 'brushed', al6061: 'brushed', br
 export const lookFor = (look, materialId) => (look && look !== 'auto' && LOOKS[look] ? look : BY_MATERIAL[materialId] || 'powder');
 
 // A studio: a soft grey room with a big light overhead and panels at the sides (a reflection environment), or a sky.
-function environment(renderer, kind) {
+export function environment(renderer, kind) {
   const scene = new THREE.Scene(), pm = new THREE.PMREMGenerator(renderer);
   if (kind === 'sky') {
     const g = new THREE.SphereGeometry(100, 32, 16), cols = [], c = new THREE.Color();
@@ -34,7 +35,7 @@ function environment(renderer, kind) {
     const room = new THREE.Mesh(new THREE.BoxGeometry(60, 30, 60), new THREE.MeshBasicMaterial({ color: 0x5a5d62, side: THREE.BackSide }));
     room.position.y = 10; scene.add(room);
     const panel = (w, h, at, look, k) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(k, k, k), side: THREE.DoubleSide })); m.position.set(...at); m.lookAt(...look); scene.add(m); };
-    panel(30, 18, [0, 24.5, 0], [0, 0, 0], 14);
+    panel(30, 18, [0, 24.5, 0], [0, 0, 0], 6);
     panel(10, 16, [-29, 12, 8], [0, 8, 0], 6);
     panel(10, 16, [29, 12, -8], [0, 8, 0], 4);
     panel(20, 8, [0, 10, -29], [0, 8, 0], 2.5);
@@ -70,6 +71,8 @@ export function showDecals(vp, list) {
 // Render the viewport's bodies: opts { width, height, looks: [look per body], colors: [colour per body], hidden: Set
 // of body indices, env: 'studio' | 'sky' | 'white', floor, exposure, background (CSS colour or null: the
 // environment), decals: [{ src, p, n, w, h, angle }] }. Resolves with { url, width, height }.
+// opts.groups: [{ index: Uint32Array (triangles' vertex indices), spec }] (appearances.js) in place of the looks and
+// colours by body: each its own material, with its texture and holes (and the holes in the shadows).
 export async function renderImage(vp, opts = {}) {
   const width = Math.max(16, Math.round(opts.width || vp.width)), height = Math.max(16, Math.round(opts.height || vp.height));
   const canvas = document.createElement('canvas');
@@ -90,7 +93,21 @@ export async function renderImage(vp, opts = {}) {
     const geo = vp.bodyGeo, mesh = vp.mesh, tris = mesh?.triangles;
     if (!geo || !tris) throw new Error('There is no model to render');
     const box = new THREE.Box3(), group = new THREE.Group();
-    (vp.bodies?.length ? vp.bodies : [{ triStart: 0, triCount: tris.length }]).forEach((b, bi) => {
+    for (const { index, spec } of opts.groups || []) {
+      if (!index.length) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', geo.getAttribute('position'));
+      g.setAttribute('normal', geo.getAttribute('normal'));
+      g.setIndex(new THREE.BufferAttribute(index, 1));
+      const tex = spec.tex ? tileTexture(spec) : null, pb = spec.pbr || {};
+      const m = new THREE.MeshPhysicalMaterial({ color: tex ? 0xffffff : spec.color, envMapIntensity: 1, side: THREE.DoubleSide, metalness: pb.metalness ?? 0, roughness: pb.roughness ?? 0.5, clearcoat: pb.clearcoat || 0, clearcoatRoughness: pb.clearcoatRoughness ?? 0.1, transmission: pb.transmission || 0, ior: pb.ior ?? 1.5, thickness: pb.thickness || 0 });
+      const o = new THREE.Mesh(g, tex ? boxMapped(m, tex, spec) : m);
+      if (tex && spec.cut) o.customDepthMaterial = boxMappedDepth(tex, spec);
+      o.castShadow = !pb.transmission; o.receiveShadow = true;
+      group.add(o);
+      g.computeBoundingBox(); box.union(g.boundingBox);
+    }
+    if (!opts.groups) (vp.bodies?.length ? vp.bodies : [{ triStart: 0, triCount: tris.length }]).forEach((b, bi) => {
       if (opts.hidden?.has(bi)) return;
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', geo.getAttribute('position'));
@@ -127,7 +144,7 @@ export async function renderImage(vp, opts = {}) {
     cam.updateProjectionMatrix();
     let key = null, keyAt = null;
     if (opts.floor !== false) {
-      key = new THREE.DirectionalLight(0xffffff, 1.6);
+      key = new THREE.DirectionalLight(0xffffff, 1.15);
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
       key.position.copy(centre).add(new THREE.Vector3(0, R * 3, 0)).addScaledVector(right, R * 1.2);
       key.target.position.copy(centre);
@@ -171,7 +188,7 @@ export async function renderImage(vp, opts = {}) {
       url = out.toDataURL('image/png');
     }
     env.dispose();
-    group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+    group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); o.customDepthMaterial?.dispose(); } });
     return { url, width, height };
   } finally { r.dispose(); r.forceContextLoss?.(); }
 }

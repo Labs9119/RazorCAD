@@ -404,7 +404,7 @@ Hold [[Shift]] and **right-click** to step through the bodies and surfaces under
 
 | Right-click on | Offers |
 |---|---|
-| A face | Sketch, Normal To, Export Face as DXF, Fillet, Chamfer, Appearance… |
+| A face | Sketch, Normal To, Export Face as DXF, Fillet, Chamfer, Face Appearance…, Part Appearance… |
 | An edge | Fillet, Chamfer (started with that edge), Reference Axis |
 | A vertex | Reference Point |
 | A face, edge or body | Body Properties, Body Appearance…, Export Body as STEP, Hide, Isolate, Make Transparent, folder commands |
@@ -1073,15 +1073,37 @@ Right-click a body (tree or view) ▸ **Body Properties…**. It holds the body'
 
 The **Material** item in the tree sets the part material (**Tools ▸ Edit Material…**). A body set to **Use part material** follows it. A body given its own material keeps it when the part material changes and is drawn in that material's colour. Mass Properties adds up every body with its own density. The material list is in Appendix B. {idx:materials}
 
-## Appearance
+## Appearances
 
-Right-click a face ▸ **Appearance…** or a body ▸ **Body Appearance…** to give it a colour, or **Default colour** to set it back. Face colours stay with their face when the model changes. A body's own appearance wins over its material colour and over colours imported from a STEP file. {idx:appearance}
+The **Appearances** tab {idx:appearances}{idx:Appearances tab} (above the feature tree, next to Configurations) holds the colours and finishes put on the part: on single **faces**, on whole **bodies**, or on the **whole part**. Use them to tell parts and bodies apart at a glance, or to set a part up for a photorealistic render.
 
-## Render and decals
+**Adding one.** Select faces or a body (or nothing, for the whole part) and click **+ Add Appearance** in the tab (or **Add Appearance** on the Render tab, or right-click a face ▸ **Face Appearance…** / **Part Appearance…**, or a body ▸ **Body Appearance…**). The panel shows:
 
-**Evaluate ▸ Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the **Quality** (Draft: one pass; Good: 16 passes, Best: 64, each with the view and the light moved a little and the passes averaged, for smooth edges and soft shadows), the lighting (**Studio**, **Outdoor sky**, or studio on white), a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them. **Save PNG…** writes the picture.
+- **Apply to**: Faces, Bodies or Whole part. With Faces or Bodies, click them in the view to add them; click one again to take it off.
+- **Appearance**: the library, by category. **Metals** (machined, mill-scale, brushed and polished stainless, chrome, galvanised, cast iron, brushed, bead-blasted and cast aluminium, checker plate, brass, copper, bronze, titanium, gold, weathering steel); **Anodised aluminium** (clear, black, red, blue, gold, green, purple, orange, titanium grey); **Paints and coatings** (gloss, satin and matte paint, metallic paint, smooth and textured powder coat, hammertone, safety yellow, red oxide primer, a plain colour); **Plastics** (gloss, matte, textured, nylon, clear acrylic, frosted); **Glass** (clear, tinted, frosted); **Timber** (oak, pine, walnut, maple, cherry, birch plywood, MDF); **Stone and concrete** (concrete, polished granite, marble, slate, sandstone, brick); **Rubber** (black, grey, red, ribbed matting, translucent silicone); **Meshes and gratings** (bar grating, expanded metal, perforated sheet with round holes or slots, woven wire mesh, welded wire fence mesh, chain-link fence); **Fabrics and composites** (carbon fibre twill, canvas, leather, felt).
+- **Colour**: any colour over the look (a red anodised, a green powder coat); **Reset** goes back to the library's colour.
+- **Texture** (looks with a pattern): its **Scale** and **Angle**. Patterns are drawn at their real size (a bar grating's bars 30 mm apart, a brick 215 mm long) and laid on each face from the side it faces most, so nothing needs unwrapping.
+- **Name**: shown in the tab (empty: the look's name).
 
-**Evaluate ▸ Decal** {idx:decal} puts a picture (a logo, a label) on a flat face: open the picture, give its width and angle, then click the face where its middle goes. Decals show in the view and in renders, are saved with the part, and are not geometry. **Tools ▸ Decals…** lists them, to delete them.
+✔ keeps it; ✗ cancels (an edit goes back to what it was).
+
+**Meshes and gratings are see-through** {idx:grating}{idx:mesh appearance}: a plate given bar grating, expanded metal, perforated sheet or a fence mesh shows its holes (and casts the matching shadow in renders) without them being modelled. The part stays light and quick to rebuild, and the face can still be picked, measured and sketched on.
+
+**Order matters** {idx:appearances, order}. The tab lists the appearances top to bottom in the order they apply; each goes over those above it. A face coloured red and, lower down, its body given oak shows oak; drag the oak above the red (or right-click ▸ **Move Up**) and the face is red again. The first row, **Materials and body colours**, is what is under them all: the bodies' materials and colours.
+
+**In the tab** click an appearance to see what it is on, double-click it to edit it, drag it to change the order, and right-click it to **Rename**, **Suppress** (it stops applying but is kept), **Copy**, **Move Up / Down** or **Delete** it. Undo and Redo take them back like any change. Faces are found again by where they are when the model changes; if a face can no longer be found the appearance shows **!** (hover for how many), and editing it lets you pick again.
+
+Appearances are saved with the part and go with it into assemblies (as colours: textures show in the part itself). Render looks from **Render** (below) still apply to faces without an appearance. The older per-face colours of earlier versions still show, under the appearances.
+
+## The Render tab
+
+The **Render** tab {idx:Render tab} has the rendering tools: **Render**, **Quick Render**, **Realistic View**, **Lighting**, **Add Appearance**, **Appearances** (the tab), **Edit Material**, **Decal**, **Decals** and **Export glTF** (for other viewers and renderers).
+
+**Realistic View** {idx:realistic view} shows the part in the view as it renders: every face physically based (metals reflect, glass is clear, textures and gratings as they are), lit by the studio. Click it again to go back to the normal shaded view. **Lighting** sets the environment (studio, outdoor sky, or studio on white), the exposure and the floor's shadow, for renders and the realistic view; it is kept with the part. **Quick Render** renders the view at its size in one pass.
+
+**Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the **Quality** (Draft: one pass; Good: 16 passes, Best: 64, each with the view and the light moved a little and the passes averaged, for smooth edges and soft shadows), the lighting (**Studio**, **Outdoor sky**, or studio on white), a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them; faces and bodies with an appearance render with it (its texture, finish and holes). **Save PNG…** writes the picture. The settings are kept with the part.
+
+**Render ▸ Decal** {idx:decal} puts a picture (a logo, a label) on a flat face: open the picture, give its width and angle, then click the face where its middle goes. Decals show in the view and in renders, are saved with the part, and are not geometry. **Tools ▸ Decals…** lists them, to delete them.
 
 ## Exploded views of a part
 

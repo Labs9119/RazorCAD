@@ -36,6 +36,7 @@ import { t as tr } from './i18n.js';
 import { volWithUnit, lenWithUnit, unitOf } from './units.js';
 import * as G from './geometry.js';
 import * as W from './wcs.js';
+import { meshWithAppearances } from './appearances.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -118,10 +119,12 @@ const r6 = (x) => Math.round(x * 1e6) / 1e6;
 
 // (a part's mesh in the model cache: packMesh / unpackMesh / MESH_CACHE in partmeshes.js, shared with drawings)
 
-// A part's mesh with the appearances set in the part (a body's colour, made transparent) over those it was
-// imported with (the mesh bodies' color / transparency), as the assembly shows them.
+// A part's mesh with the appearances set in the part (a body's colour, made transparent; the colours of its
+// Appearances tab on faces and bodies) over those it was imported with (the mesh bodies' color / transparency), as
+// the assembly shows them.
 function withPartLooks(mesh, doc) {
   const own = doc.bodies || {};
+  mesh = meshWithAppearances(mesh, doc.appearances);
   if (!mesh.bodies?.some((b) => own[b.id]?.color || own[b.id]?.transparent !== undefined)) return mesh;
   return { ...mesh, bodies: mesh.bodies.map((b) => {
     const o = own[b.id];
