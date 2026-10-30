@@ -43,6 +43,7 @@ import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from 
 import * as P3 from './print3d.js';
 import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
 import * as LT from './lights.js';
+import * as PP from './pathpick.js';
 import { activeLights } from './lights.js';
 import * as AP from './appearances.js';
 import { glb, viewportBodies } from './gltf.js';
@@ -62,6 +63,8 @@ const WHEEL_TOOLS = [
 const $ = (s) => document.querySelector(s);
 
 // features whose sketch slot takes a 3D sketch too (its points, lines or circle)
+// (the kinds of things shown, all hidden: the Visibility button turned off)
+const VIS_OFF = Object.freeze({ planes: false, sketches: false, axes: false, points: false, surfaces: false, construction: false });
 const SKETCH_OR_3D = new Set(['smTransition', 'hole', 'boss', 'snapHook', 'nutPocket', 'insertHole', 'plasticScrewHole', 'moldRunner', 'helix', 'spattern']);
 
 class App {
@@ -76,10 +79,13 @@ class App {
     this.selection = null;
     // edges and sketch curves picked for the quick dimension readout (Ctrl+click adds more)
     this.measureSel = [];
-    // what is shown in the view (View ▸ Visibility / the eye drop-down); kept between sessions
-    this.vis = { planes: true, sketches: true, axes: true, points: true, surfaces: true };
+    // what is shown in the view (View ▸ Visibility / the eye drop-down: the kinds ticked, visSel; the eye button shows
+    // or hides all of them at once, visOn); kept between sessions. construction: every sketch's construction lines,
+    // even of hidden sketches
+    this.visOn = true;
+    this.vis = { planes: true, sketches: true, axes: true, points: true, surfaces: true, construction: false };
     this.showPlanes = false; // the standard Front / Top / Right planes
-    try { const v = JSON.parse(localStorage.getItem('razorcad.vis') || 'null'); if (v) { Object.assign(this.vis, v.vis || {}); this.showPlanes = !!v.showPlanes; } } catch { /* defaults */ }
+    try { const v = JSON.parse(localStorage.getItem('razorcad.vis') || 'null'); if (v) { Object.assign(this.visSel, v.vis || {}); this.showPlanes = !!v.showPlanes; this.visOn = v.visOn !== false; } } catch { /* defaults */ }
     this.isolated = null;        // Set of body ids shown while isolating (session only)
     this.showHiddenMode = false; // showing only the hidden bodies, to bring them back
     this.tabs = [{}];            // open parts; the active one's state lives on the app itself
@@ -1970,19 +1976,22 @@ class App {
     const asm = this.mode === 'drawing' && this.drawing?.updatePlanes ? this.drawing : null;
     if (asm && (key === 'stdPlanes' || key === 'all')) {
       this.showPlanes = on;
+      if (key === 'all') for (const k of Object.keys(this.visSel)) this.visSel[k] = on;
+      this.visOn = true;
       if (asm.doc.planeVis) { delete asm.doc.planeVis; asm.dirty = true; this.updateTitle(); }
-      try { localStorage.setItem('razorcad.vis', JSON.stringify({ vis: this.vis, showPlanes: this.showPlanes })); } catch { /* not kept */ }
+      this.saveVis();
       asm.updatePlanes(); asm.renderTree(); this.ui.renderHUD();
       return;
     }
     if (key === 'stdPlanes') { this.showPlanes = on; if (this.doc.planeVis) { delete this.doc.planeVis; this.commit(); } }
-    else if (key === 'all') { for (const k of Object.keys(this.vis)) this.vis[k] = on; this.showPlanes = on; }
-    else this.vis[key] = on;
-    try { localStorage.setItem('razorcad.vis', JSON.stringify({ vis: this.vis, showPlanes: this.showPlanes })); } catch { /* not kept */ }
+    else if (key === 'all') { for (const k of Object.keys(this.visSel)) this.visSel[k] = on; this.showPlanes = on; }
+    else this.visSel[key] = on;
+    this.visOn = true; // (a tick changed: what is ticked shows)
+    this.saveVis();
     this.updatePlanes();
     this.updateRefGeometry();
     this.updateSketchDisplay();
-    if (key === 'surfaces' || key === 'all') this.refreshBodyVisibility();
+    this.refreshBodyVisibility();
     this.ui.renderHUD();
   }
 
@@ -2138,6 +2147,68 @@ class App {
     return c ? S.curvePoints(s2.sketch, c).map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) : null;
   }
 
+  // ------------------------------------------------------------ part of a sketch for a route's path
+  // The segments of a sketch (not construction) or 3D sketch as polylines in the model: [{ id, pts }]
+  pathItems(sketchId, construction = false) {
+    const f3 = M.findFeature(this.doc, sketchId), s2 = this.result.sketches?.get(sketchId), out = [];
+    if (f3?.type === 'sketch3d') {
+      const g3 = this.sketch3dGeometry(f3);
+      for (const g of Array.isArray(f3.segs) ? f3.segs : []) { if (g.construction) continue; const q = g3?.curve(g); if (q?.length > 1) out.push({ id: g.id, pts: q.map((v) => v.toArray()) }); }
+    } else if (s2) {
+      for (const c of s2.sketch.curves) { if ((c.construction && !construction) || c.ctrlOf) continue; const q = S.curvePoints(s2.sketch, c); if (q.length > 1) out.push({ id: c.id, pts: q.map(([x, y]) => G.toWorld(s2.frame, x, y).toArray()) }); }
+    }
+    return out;
+  }
+  // The segment or point of an earlier sketch or 3D sketch under the cursor: { sketch, seg } or { sketch, p } (a point
+  // where segments end; nearer than 7 pixels wins over a segment)
+  pathHitAt(e) {
+    const vp = this.viewport, m = vp.screenPos(e), end = this.doc.features.indexOf(this.pm?.feature);
+    let point = null, pd = 7, seg = null, sd = 6;
+    for (const f of this.doc.features.slice(0, end < 0 ? undefined : end)) {
+      if (!['sketch', 'sketch3d'].includes(f.type) || f.suppressed || this.result.errors.has(f.id)) continue;
+      for (const it of this.pathItems(f.id)) {
+        for (const p of [it.pts[0], it.pts[it.pts.length - 1]]) { const s = vp.project(new THREE.Vector3(...p)), d = Math.hypot(s.x - m.x, s.y - m.y); if (d < pd) { pd = d; point = { sketch: f.id, p }; } }
+        const P = it.pts.map((p) => vp.project(new THREE.Vector3(...p)));
+        for (let i = 1; i < P.length; i++) { const d = S.segDist(m.x, m.y, P[i - 1].x, P[i - 1].y, P[i].x, P[i].y); if (d < sd) { sd = d; seg = { sketch: f.id, seg: it.id }; } }
+      }
+    }
+    return point || seg;
+  }
+  // A click while picking a route's path: a segment (or point) starts a run, the next one ends it (the segments
+  // between added); a picked segment clicked again (no run started) comes off. Another sketch starts again.
+  pathSegsClick(e) {
+    const f = this.pm.feature, pm = this.pm, hit = this.pathHitAt(e);
+    if (!hit) { this.toast('Click a segment or a point of a sketch or 3D sketch for the route'); return; }
+    if (f.path !== hit.sketch) { f.path = hit.sketch; f.pathSegs = []; pm.pathFrom = null; }
+    f.pathSegs ||= [];
+    const g = PP.pathGraph(this.pathItems(hit.sketch)), here = hit.seg != null ? { seg: hit.seg } : { node: PP.nodeAt(g, hit.p) };
+    if (pm.pathFrom) {
+      const run = PP.runBetween(g, pm.pathFrom, here);
+      if (!run) { this.toast('Those are not connected along the sketch: click a segment or point on the same path', true); return; }
+      for (const id of run) if (!f.pathSegs.includes(id)) f.pathSegs.push(id);
+      pm.pathFrom = null;
+      this.status(`${run.length} segment${run.length === 1 ? '' : 's'} added to the route (${f.pathSegs.length} in all). Click another segment to start the next run.`);
+    } else if (hit.seg != null && f.pathSegs.includes(hit.seg)) {
+      f.pathSegs = f.pathSegs.filter((x) => x !== hit.seg);
+      this.status('Segment taken off the route.');
+    } else {
+      if (hit.seg != null) f.pathSegs.push(hit.seg);
+      pm.pathFrom = here;
+      this.status('Now click the last segment (or point) of the run: the segments between are added.');
+    }
+    this.showPathFrom();
+    this.updateRefGeometry();
+    this.ui.renderPM();
+    this.preview(true);
+  }
+  // (the start of a run being picked, marked in the view)
+  showPathFrom() {
+    const pm = this.pm, f = pm?.feature, from = pm?.kind === 'feature' ? pm.pathFrom : null;
+    let p = null;
+    if (from?.node != null && f?.path) p = PP.pathGraph(this.pathItems(f.path)).nodes[from.node];
+    this.viewport.setPointMarks('pathFrom', p ? [{ p, cls: 'pick', text: 'From' }] : null);
+  }
+
   // Transition: the line of an earlier sketch or 3D sketch under the cursor, { sketch, line }
   axisLineAt(e) {
     const s3 = this.sketch3dItemAt(e, 'curve'), f3 = s3 && M.findFeature(this.doc, s3.sketch), g = f3?.segs?.find((x) => x.id === s3.curve);
@@ -2151,10 +2222,12 @@ class App {
     let best = null, bd = 6;
     for (const [id, s] of this.result.sketches) {
       const f = s.sketch;
-      const datum=['ref','axisLine','memberSegs'].includes(this.pickMode());
+      const datum=['ref','axisLine','memberSegs','pathSegs'].includes(this.pickMode());
       if(datum&&(f.suppressed||this.result.errors.has(id)||this.doc.features.indexOf(f)>=this.doc.features.indexOf(this.pm.feature)))continue;
-      if (!datum&&!(this.vis.sketches && this.sketchShown(f)) && this.hoverSketchId !== id) continue;
+      const consOnly = !datum && !(this.vis.sketches && this.sketchShown(f)) && this.hoverSketchId !== id;
+      if (consOnly && !(this.mode !== 'sketch' && this.constructionShown(f))) continue;
       for (const c of f.curves) {
+        if (consOnly && !c.construction) continue;
         const pts = S.curvePoints(f, c, 64).map(([x, y]) => G.toWorld(s.frame, x, y));
         for (let k = 0; k < pts.length - 1; k++) {
           const a = vp.project(pts[k]), b = vp.project(pts[k + 1]);
@@ -3056,8 +3129,17 @@ class App {
       let draft = this.pm.loftDraft;
       if (draft && draft.sketch !== ref.sketch) throw new Error('Finish the current contour before selecting another sketch');
       draft ||= { ...ref, curves: [] };
-      const id = ref.curves[0], i = draft.curves.indexOf(id);
-      if (i < 0) draft.curves.push(id); else draft.curves.splice(i, 1);
+      const id = ref.curves[0], i = draft.curves.indexOf(id), pm = this.pm;
+      if (this.sweepPicking() && pm.sweepRun && pm.sweepRunFrom && pm.sweepRunFrom !== id && pm.sweepRunFrom.sketch === ref.sketch) {
+        // (from one segment to another: the run between the first clicked and this one added)
+        const run = PP.runBetween(PP.pathGraph(this.pathItems(ref.sketch, (pm.sweepSlot || 'profile') !== 'profile')), { seg: pm.sweepRunFrom.curve }, { seg: id });
+        if (!run) throw new Error('Those segments are not connected along the sketch');
+        for (const c of run) if (!draft.curves.includes(c)) draft.curves.push(c);
+        pm.sweepRunFrom = null;
+      } else {
+        if (i < 0) draft.curves.push(id); else draft.curves.splice(i, 1);
+        pm.sweepRunFrom = this.sweepPicking() && pm.sweepRun && i < 0 ? { sketch: ref.sketch, curve: id } : null;
+      }
       this.pm.loftDraft = draft; this.pm.loftHover = null;
       this.ui.renderPM(); this.updateSketchDisplay();
     } catch (e) { this.toast(e.message, true); }
@@ -3113,6 +3195,7 @@ class App {
     if (f.type === 'plane'||f.referenceDefinition&&['axis','point'].includes(f.type)&&!(f.type==='point'&&f.pointType==='coords')) return 'ref';
     if (f.type === 'smTransition') return 'axisLine';
     if (f.type === 'structMember' && this.pm.memberGroup != null) return 'memberSegs';
+    if (f.type === 'pipeRoute' || f.type === 'cable') return 'pathSegs';
     if (['nutPocket', 'insertHole', 'plasticScrewHole', 'printableHole', 'bridgingLayer', 'fitClearance'].includes(f.type)) return 'faces';
     if (f.type === 'printHinge') return 'edge';
     if (f.type === 'printSplit' && !f.tool && !f.toolFace) return 'face';
@@ -3424,7 +3507,7 @@ class App {
     const sel = this.selection?.kind === 'feature' ? this.selection.id : null;
     const sweep = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     const datumRefs=new Set(this.pm?.feature?.referenceDefinition?(this.pm.feature.refs||[]).filter(r=>r.id).map(r=>r.id):[]);
-    const datumPicking = (f) => ['ref', 'axisLine', 'memberSegs'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
+    const datumPicking = (f) => ['ref', 'axisLine', 'memberSegs', 'pathSegs'].includes(this.pickMode()) && this.doc.features.indexOf(f) < this.doc.features.indexOf(this.pm.feature);
     const state = (id) => (id === editing || id === sweep?.guide ? 'preview' : id === sel || id === this._hoverFeature || id === sweep?.path || datumRefs.has(id) ? 'selected' : 'normal');
     const axes = [], points = [];
     for (const f of this.doc.features) {
@@ -3457,6 +3540,11 @@ class App {
           if (pts) curves.push({ id: `${this.pm.feature.id}/g${gi}/${k.s}/${k.c}`, name: '', pts, state: gi === this.pm.memberGroup ? 'picked' : 'selected' });
         }
       });
+    }
+    // a route's segments picked: orange (none picked: the whole sketch is the route)
+    if (this.pm?.kind === 'feature' && ['pipeRoute', 'cable'].includes(this.pm.feature.type) && this.pm.feature.path) {
+      const rf = this.pm.feature;
+      for (const k of rf.pathSegs?.length ? rf.pathSegs : []) { const pts = this.sketchItemPolyline(rf.path, k); if (pts) curves.push({ id: `${rf.id}/path/${k}`, name: '', pts, state: 'picked' }); }
     }
     // a Transition's axis line picked: orange
     if (this.pm?.kind === 'feature' && this.pm.feature.type === 'smTransition' && this.pm.feature.sketch && this.pm.feature.line) {
@@ -3525,13 +3613,19 @@ class App {
       if(referencePicking&&(this.sketcher.projectionSource==='model'||this.sketcher.projectionSource?.startsWith('sketch:')&&id!==this.sketcher.projectionSource.slice(7)))continue;
       const pmSketch = this.pm?.kind === 'feature' && (this.pm.feature.sketch === id || (['revolve','surfRevolve'].includes(this.pm.feature.type)&&this.pm.profilePick===false&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature)));
       const selected = (this.selection?.kind === 'feature' && this.selection.id === id) || this.hoverSketchId === id;
-      const datumPicking=['ref','axisLine','memberSegs'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
+      const datumPicking=['ref','axisLine','memberSegs','pathSegs'].includes(this.pickMode())&&this.doc.features.findIndex(f=>f.id===id)<this.doc.features.indexOf(this.pm.feature);
       if ((this.vis.sketches && this.sketchShown(s.sketch)) || pmSketch || selected || loft || datumPicking || (referencePicking && this.doc.features.findIndex((f) => f.id === id) < this.doc.features.findIndex((f) => f.id === editing))) {
-        const polylines = s.sketch.curves.filter((c) => !loft || !c.ctrlOf).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: c.construction }));
+        // (construction lines too, unless the sketch's are set hidden and it is not being used)
+        const keepC = s.sketch.showConstruction !== false || pmSketch || selected || loft || datumPicking || referencePicking;
+        const polylines = s.sketch.curves.filter((c) => (!loft || !c.ctrlOf) && (keepC || !c.construction)).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: c.construction }));
         for (const polys of Object.values(s.textPolys || {})) for (const pts of polys) polylines.push({ pts, construction: false });
         if (s.sketch.gearTrains?.length) for (const pts of S.gearPolylines(s.sketch)) polylines.push({ pts, construction: false });
         if (s.sketch.airfoils?.length) for (const pts of S.airfoilPolylines(s.sketch)) polylines.push({ pts, construction: false });
         list.push({ frame: s.frame, polylines, highlight: pmSketch || selected,...(referencePicking?{color:0x94a3b8,reference:true}:{}) });
+      } else if (this.mode !== 'sketch' && this.constructionShown(s.sketch)) {
+        // (a hidden sketch: just its construction lines, as set for it or in the Visibility list)
+        const polylines = s.sketch.curves.filter((c) => c.construction && !c.ctrlOf).map((c) => ({ pts: S.curvePoints(s.sketch, c), construction: true }));
+        if (polylines.length) list.push({ frame: s.frame, polylines, highlight: false });
       }
     }
     // sketch entities picked for the dimension readout, and a reference plane's sketch references
@@ -3930,6 +4024,9 @@ class App {
     } else if (['sweep','surfSweep'].includes(f.type) && target && ['sketch','sketch3d','helix','compCurve','projCurve'].includes(target.type)) {
       if(kind==='sketch'){this.hoverSketchId=id;this.updateSketchDisplay();this.status('Activate a sweep slot and select its contour in the canvas.');return true;}
       return this.setSweepReference(id,this.pm.sweepSlot||(f.profileType==='circle'?'path':'profile'));
+    } else if (['pipeRoute', 'cable'].includes(f.type) && target && ['sketch', 'sketch3d'].includes(target.type)) {
+      // (a sketch clicked in the tree: all of it is the route)
+      f.pathSegs = []; this.pm.pathFrom = null; this.showPathFrom(); key = 'path';
     } else if (SKETCH_OR_3D.has(f.type) && target && ['sketch', 'sketch3d'].includes(target.type)) {
       // (features whose sketch may be a 3D sketch: a click on either in the tree picks it)
       key = 'sketch';
@@ -4085,6 +4182,7 @@ class App {
       this.preview(true);
       return;
     }
+    if (mode === 'pathSegs') { this.pathSegsClick(e); return; }
     if (mode === 'axisLine') {
       // Transition: a line of an earlier sketch or 3D sketch clicked is its axis
       const hit = this.axisLineAt(e);
@@ -5050,6 +5148,7 @@ class App {
   }
 
   async okPM() {
+    this.viewport.setPointMarks('pathFrom', null);
     if (this.pm?.loftDraft?.curves.length) { this.toast('Add or clear the current contour selection before accepting the feature', true); return; }
     if (this.mode === 'sketch' && this.sketcher.patternDraft) { this.sketcher.finishPattern(true); return; }
     const pm = this.pm;
@@ -5137,6 +5236,7 @@ class App {
     }
     if (pm.kind === 'section') this.clearSection();
     if (pm.kind === 'measure') { this.viewport.setMeasure(null); this.viewport.setPointMarks('measure-picks', null); this.viewport.setPointMarks('measure-hover', null); }
+    this.viewport.setPointMarks('pathFrom', null);
     if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.showBanner(null); }
     if (pm.kind === 'annotate' || pm.kind === 'decal') this.showBanner(null);
     this.hoverEdge = null;
@@ -5156,8 +5256,8 @@ class App {
     if (this.pm) this.cancelPM();
     const doc = this.doc, f = M.findFeature(doc, id);
     if (!f) return;
+    // (only the feature: the sketches and features it was made from stay, shown on their own in the tree again)
     const toDelete = new Set([f.id]);
-    if (f.sketch && M.consumersOf(doc, f.sketch).length === 1) toDelete.add(f.sketch);
     const deps = doc.features.filter((x) => !toDelete.has(x.id) && [...toDelete].some((d) => M.dependentsOf(doc, d).includes(x)));
     if (deps.length && !confirm(`Delete ${f.name}?\n\nThese features depend on it and will show errors:\n• ${deps.map((d) => d.name).join('\n• ')}`)) return;
     if (doc.rollbackAt && toDelete.has(doc.rollbackAt)) {
@@ -5168,7 +5268,7 @@ class App {
     this.selection = null;
     this.commit();
     this.refresh();
-    this.status(`Deleted ${f.name}` + (toDelete.size > 1 ? ' and its sketch' : '') + '. Ctrl+Z to undo.');
+    this.status(`Deleted ${f.name}; what it was made from stays. Ctrl+Z to undo.`);
   }
 
   // ------------------------------------------------------------ tree editing
@@ -5629,6 +5729,36 @@ class App {
     else if (s?.kind === 'feature') frame = this.result.planes.get(s.id) || this.result.sketches.get(s.id)?.frame;
     if (frame) this.viewport.normalTo(frame);
     else this.toast('Select a plane, flat face or sketch first');
+  }
+
+  // What shows: the kinds ticked in the Visibility list, all hidden while the eye button is off (the ticks kept)
+  get vis() { return this.visOn === false ? VIS_OFF : this.visSel; }
+  set vis(v) { this.visSel = v; }
+  get showPlanes() { return this.visOn !== false && !!this._showPlanes; }
+  set showPlanes(v) { this._showPlanes = !!v; }
+  saveVis() { try { localStorage.setItem('razorcad.vis', JSON.stringify({ vis: this.visSel, showPlanes: this._showPlanes, visOn: this.visOn })); } catch { /* not kept */ } }
+  // The eye button: everything ticked in the Visibility list hidden, or shown again
+  toggleVisibility(on = this.visOn === false) {
+    this.visOn = !!on;
+    this.saveVis();
+    const asm = this.mode === 'drawing' && this.drawing?.updatePlanes ? this.drawing : null;
+    if (asm) { asm.updatePlanes(); asm.renderTree(); this.ui.renderHUD(); return; }
+    this.updatePlanes();
+    this.updateRefGeometry();
+    this.updateSketchDisplay();
+    this.refreshBodyVisibility();
+    this.ui.renderHUD();
+    this.status(on ? 'Showing what is ticked in the Visibility list (right-click the eye to change it)' : 'Planes, sketches, axes, points and surfaces hidden: click the eye again to show them');
+  }
+  // A sketch's construction lines shown outside the sketch: its own setting, else the Visibility list's
+  constructionShown(sk) { return this.visOn !== false && (sk.showConstruction ?? !!this.visSel.construction); }
+  setSketchConstruction(id, on) {
+    const f = M.findFeature(this.doc, id);
+    if (!f) return;
+    f.showConstruction = !!on;
+    this.commit();
+    this.updateSketchDisplay();
+    this.status(`${f.name}: construction lines ${on ? 'shown' : 'hidden'} outside the sketch`);
   }
 
   // The perspective view on or off (kept in the settings: every part and assembly shows it)

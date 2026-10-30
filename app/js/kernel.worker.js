@@ -4056,6 +4056,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // The segments of a weldment path: lines { type: 'line', a, b } and arcs { type: 'arc', a, b, t0, t1, wire,
   // length } (3D), from a sketch's curves (construction left out) or a 3D sketch's edges.
   // (each with key: the id of the sketch curve or 3D sketch segment it lies on, for Structural Member's groups)
+  // A route's path: its sketch's segments, or only those picked (f.pathSegs: curve or 3D sketch segment ids)
+  const routeSegs = (f) => {
+    const all = memberPath(f.path);
+    if (!f.pathSegs?.length) return all;
+    const out = all.filter((g) => f.pathSegs.includes(g.key));
+    if (!out.length) throw new Error('The segments picked for the route are no longer in its sketch: pick them again (or use the whole sketch)');
+    return out;
+  };
+  // (segments in one wire, end to end: each line or curve turned to follow on from the one before)
+  const routeWire = (segs) => {
+    const tol = 1e-6 * Math.max(1, ...segs.map((g) => len(sub(g.b, g.a))));
+    const left = [...segs], order = [left.shift()];
+    let head = order[0].a, tail = order[0].b;
+    while (left.length) {
+      const k = left.findIndex((g) => len(sub(g.a, tail)) < tol || len(sub(g.b, tail)) < tol || len(sub(g.a, head)) < tol || len(sub(g.b, head)) < tol);
+      if (k < 0) throw new Error('The segments picked for the route are not one connected path');
+      const g = left.splice(k, 1)[0];
+      if (len(sub(g.a, tail)) < tol) { order.push(g); tail = g.b; } else if (len(sub(g.b, tail)) < tol) { order.push(g); tail = g.a; } else if (len(sub(g.b, head)) < tol) { order.unshift(g); head = g.a; } else { order.unshift(g); head = g.b; }
+    }
+    return R.assembleWire(order.map((g) => (g.type === 'line' ? R.makeLine(g.a, g.b) : g.wire.edges[0].clone())));
+  };
   const memberPath = (id) => {
     const out = [];
     const addEdge = (e) => {
@@ -6467,7 +6488,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // corners long radius elbows (fittings, each a body of its own) or bends (bent tube); a tee where a line branches
           // square off a straight run; a concentric reducer at an open end if asked; flanges at the other open ends if
           // asked. The straight pipes are weldment members, so they are on the cut list with their lengths
-          const segs = memberPath(f.path);
+          const segs = routeSegs(f);
           if (!segs.length) throw new Error('Select the sketch or 3D sketch of the route (straight lines)');
           if (segs.some((g) => g.type !== 'line')) throw new Error('Draw the route with straight lines: its corners get the elbows or bends');
           const pipe = pipeOf(f, ev), ro = pipe.D / 2, ri = ro - pipe.t, tol = Math.max(1e-6, pipe.D * 1e-7), short = pipe.label.replace(/^Pipe |^Tube /, '');
@@ -6651,7 +6672,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // diameter given, or from its wires (count, wire diameter); its length with slack added in the note
           let w = null;
           const c3 = curves.get(f.path), s2 = sketches.get(f.path);
-          if (c3?.wire) w = c3.wire;
+          if (f.pathSegs?.length) w = routeWire(routeSegs(f));
+          else if (c3?.wire) w = c3.wire;
           else if (s2) w = sketchWires(s2.sk, s2.frame).find((x) => !x.isClosed) || sketchWires(s2.sk, s2.frame)[0];
           if (!w) throw new Error('Select the sketch or 3D sketch of the cable’s route');
           const D = f.sizeBy === 'wires' ? bundleDiameter(Math.round(ev(f.wires)), ev(f.wireD)) : ev(f.diameter);
@@ -8870,23 +8892,43 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const raw = [SM.transitionEnd(spec('b')), SM.transitionEnd(spec('t'))];
           // the sizes are of the inside (material outward), the outside (material inward) or the middle of
           // the thickness (the outside surface half a thickness out, across the slope of the wall)
+          // along the axis line, at each end: the flange (its outer face at the line's end, its thickness inside the
+          // line's length) and the straight spigot from the flange's inner face (or the line's end) on; the taper
+          // between. So the whole part, flanges and spigots too, is as long as the line.
+          const fl = { b: !!f.flangeBot, t: !!f.flangeTop }, T = fl.b || fl.t ? ev(f.flT ?? 6) : 0, socket = f.flMount === 'socket';
+          const spig = { b: ev(f.spigotBot ?? 0), t: ev(f.spigotTop ?? 0) };
+          for (const k of ['b', 't']) if (!(spig[k] >= 0)) throw new Error(`The ${k === 'b' ? 'bottom' : 'top'} spigot length can't be negative`);
+          if ((fl.b || fl.t) && !(T > 0)) throw new Error('The flange thickness must be greater than zero');
+          const endLen = (k) => (fl[k] ? T : 0) + spig[k], eb = endLen('b'), et = endLen('t'), hT = h - eb - et;
+          if (!(hT > 1e-6)) throw new Error(`The flanges and spigots (${+(eb + et).toFixed(3)} mm) are as long as the axis line (${+h.toFixed(3)} mm) or longer: shorten them, or lengthen the line`);
+          const flOff = socket ? ev(f.flOffset ?? 0) : 0;
+          if (socket && (fl.b || fl.t)) for (const k of ['b', 't']) if (fl[k] && !(flOff >= 0 && flOff < endLen(k) - 1e-6)) throw new Error(`The part's end can sit from flush with the flange's face (0) up to ${+endLen(k).toFixed(3)} mm in from it (the flange and the spigot), not ${+flOff.toFixed(3)} mm`);
           const dims = f.dims || 'inside';
           const rEq = (e) => (e.kind === 'round' ? e.r : e.corners.reduce((a, c) => a + Math.hypot(c[0], c[1]), 0) / e.M);
-          const slope = Math.hypot(h, rEq(raw[0]) - rEq(raw[1])) / h;
+          const slope = Math.hypot(hT, rEq(raw[0]) - rEq(raw[1])) / hT;
           const grow = dims === 'mean' ? (t / 2) * slope : 0;
           const [bot, top] = grow ? [SM.transitionEnd(spec('b'), grow), SM.transitionEnd(spec('t'), grow)] : raw;
+          const off = [ev(f.offX ?? 0), ev(f.offY ?? 0)];
           const bent = f.method === 'bent', rr = bot.kind === 'round' && top.kind === 'round';
           // bent: one fold per division; formed: the surface finer (a whole number of facets a line) and the
           // division count the forming lines in the flat pattern
           const nLines = Math.round(ev(rr ? f.divsRound ?? 24 : f.divs ?? 6));
           if (!(nLines >= 1 && nLines <= 200)) throw new Error(bent ? 'The number of bends must be 1 to 200' : 'The number of forming lines must be 1 to 200');
           const perLine = bent ? 1 : Math.max(1, Math.ceil((rr ? 96 : 16) / nLines)), div = nLines * perLine;
-          const pieces = SM.transitionParts({
-            o, d, X, Y, h, bot, top, off: [ev(f.offX ?? 0), ev(f.offY ?? 0)], parts: ev(f.parts), seamAt: f.seamAt || 'mid',
-            seamShift: !!f.seamShift, seamAngle: (ev(f.seamAngle ?? 0) * Math.PI) / 180, div, gap: ev(f.seamGap ?? 0),
-          });
-          let nb = 0;
-          for (const pc of pieces) {
+          const partOpts = { X, Y, parts: ev(f.parts), seamAt: f.seamAt || 'mid', seamShift: !!f.seamShift, seamAngle: (ev(f.seamAngle ?? 0) * Math.PI) / 180, div, gap: ev(f.seamGap ?? 0) };
+          const pieces = SM.transitionParts({ ...partOpts, o: add(o, mul(d, eb)), d, h: hT, bot, top, off });
+          // (the straight spigots: each end's shape, its wall straight (mean sizes: half a thickness out), from where
+          // the part's end is (the line's end, or inside the flange) to the taper, split into the same parts)
+          const tEnd = add(o, add(mul(X, off[0]), mul(Y, off[1]))), straight = [];
+          const gStraight = dims === 'mean' ? t / 2 : 0;
+          for (const k of ['b', 't']) {
+            const s0 = fl[k] ? (socket ? flOff : T) : 0, L = endLen(k) - s0;
+            if (!(L > 1e-6)) continue;
+            const e = SM.transitionEnd(spec(k), gStraight), base = k === 'b' ? add(o, mul(d, s0)) : add(tEnd, mul(d, h - endLen(k)));
+            for (const pc of SM.transitionParts({ ...partOpts, o: base, d, h: L, bot: e, top: e })) straight.push({ ...pc, k });
+          }
+          let nb = 0, nSp = 0;
+          for (const pc of [...pieces, ...straight]) {
             const sheet = SM.loftedSheet(pc.A, pc.B, { t, K, R: R0, method: bent ? 'bent' : 'formed', side: dims === 'inside' ? 1 : -1, breaks: pc.breaks });
             if (!bent) sheet.lofted.bendLines = SM.formLines(sheet.lofted, { breaks: pc.breaks });
             nb += sheet.lofted.bendLines.length;
@@ -8895,25 +8937,30 @@ async function rebuild(doc, previewId = null, opts = {}) {
             rec.sheet = sheet;
             solids.push(rec);
             applied.push({ op: 'add', tool: shape });
+            if (pc.k) nSp++;
           }
-          // flanges: at an end, a flat ring (a body of its own) out past the end by its thickness, its opening the inside
-          // of the part there (the sizes as given for inside sizes, else less the thickness across the wall's slope) and
-          // as wide as set, with bolt holes on a circle (a round end: evenly, straddling X; the circle in the middle of
-          // the flange unless set) or round the sides (a flat-sided end: at the corners of a line in the middle of the
-          // flange and evenly between them, at most the pitch apart)
+          // flanges: at an end, a flat ring (a body of its own) inside the line's length, its outer face at the line's
+          // end. Butt mounted (on the end): its opening the inside of the part there (the sizes as given for inside
+          // sizes, else less the thickness, across the wall's slope where the taper meets it). Slipped on (socket):
+          // its opening the outside of the straight end and the clearance, the end through it to the offset from
+          // its face. As wide as set, with bolt holes on a circle (a round end: evenly, straddling X; the circle in
+          // the middle of the flange unless set) or round the sides (a flat-sided end: at the corners of a line in the
+          // middle of the flange and evenly between them, at most the pitch apart)
           let nFl = 0, nHoles = 0;
-          const ends = [['b', !!f.flangeBot, o, -1], ['t', !!f.flangeTop, add(tp, add(mul(X, ev(f.offX ?? 0)), mul(Y, ev(f.offY ?? 0)))), 1]];
+          const ends = [['b', fl.b, o, -1], ['t', fl.t, add(tp, add(mul(X, off[0]), mul(Y, off[1]))), 1]];
           if (ends.some((x) => x[1])) {
-            const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100);
+            const W = ev(f.flW ?? 40), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100);
             if (!(W > 0)) throw new Error('The flange width must be greater than zero');
-            if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
             if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
             if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
-            const g0 = dims === 'inside' ? 0 : grow - t * slope;
+            const clear = ev(f.flClear ?? 1);
+            if (socket && !(clear >= 0)) throw new Error("The flange's clearance round the part can't be negative");
+            const out = dims === 'inside' ? t : dims === 'mean' ? t / 2 : 0;
+            const gOpen = (k) => (socket ? out + clear : spig[k] > 0 ? out - t : dims === 'inside' ? 0 : grow - t * slope);
             const poly = (cs) => { let pen = R.draw(cs[0]); for (const q of cs.slice(1)) pen = pen.lineTo(q); return pen.close(); };
             for (const [k, on, c, sgn] of ends) {
               if (!on) continue;
-              const opening = SM.transitionEnd(spec(k), g0), holes = [];
+              const g0 = gOpen(k), opening = SM.transitionEnd(spec(k), g0), holes = [];
               let dr;
               if (opening.kind === 'round') {
                 if (!(opening.r > 0)) throw new Error('The flange opening has no size (the part is thicker than its end)');
@@ -8936,9 +8983,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
                 }
               }
               for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
-              // (a flat sheet metal plate: its flat pattern, holes and all, goes with the parts' for cutting; the bottom
-              // one's material on the far side of its plane, away from the part)
-              const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: { o: c, u: X, v: Y, n: d }, t: T, R: R0 > 0 ? R0 : T, K, reverse: sgn < 0 });
+              // (a flat sheet metal plate: its flat pattern, holes and all, goes with the parts' for cutting; its outer
+              // face at the line's end, its material toward the part)
+              const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: { o: c, u: X, v: Y, n: d }, t: T, R: R0 > 0 ? R0 : T, K, reverse: sgn > 0 });
               const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
               rec.sheet = sheet;
               solids.push(rec);
@@ -8948,7 +8995,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           }
           body = compoundOf(solids);
           const n = pieces.length;
-          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`)
+          res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (eb || et ? ` (taper ${+hT.toFixed(3)} mm)` : '') + (nSp ? ` · ${nSp} spigot part${nSp === 1 ? '' : 's'}` : '') + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`)
             + (nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '');
           break;
         }

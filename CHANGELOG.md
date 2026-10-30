@@ -6,6 +6,25 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 11:52 — Deleting keeps sketches; Transition spigots and slip-on flanges; partial route paths; construction lines
+
+- Deleting a feature deletes only that feature: its sketch or 3D sketch (and any feature it was made from) stays.
+- **Transition / Reducer:** straight **spigots** at either end (parts of their own with flat patterns); the
+  flanges' outer faces at the ends of the axis line, so flanges and spigots are inside its length and the whole part
+  is never longer than the line (refused if they would be). Flanges **Mounted** on the end (butt, as before) or
+  **slipped over the end**: the opening the part's outside size and a clearance (1 mm unless set), the part's end
+  flush with the flange's face or set in by an offset. Note: flanges on existing transitions now sit inside the line.
+- **Pipe Route** and **Cable:** click a segment or point in the view and then the last of the run to route along part
+  of a sketch or 3D sketch (more runs can be added; a picked segment clicked again comes off; Use the Whole Sketch).
+  A sketch selected in the tree before the command (or chosen in the panel) is used whole.
+- **Sweep:** with Chain selection off, **From one segment to another** adds the run between two clicked segments.
+- **Construction lines** in the eye's list: every sketch's construction lines shown, even of hidden (used) sketches,
+  and pickable (a revolve's axis); right-click a sketch ▸ Show / Hide Construction Lines for that sketch alone.
+- The **eye button**: a click hides everything ticked in its list (the ticks kept), again shows it; right-click for the
+  list.
+- Tests delete-keeps-parents, route-partial-path, construction-lines-and-visibility; transition-flanges with spigot,
+  slip-on, offset and too-long cases.
+
 ## 2026-10-31 11:18 — Spotlights for renders and the realistic view
 
 - **Render ▸ Spotlights** and **Add Spotlight** (also **+ Spotlight** in the Appearances tab): place and aim lights of

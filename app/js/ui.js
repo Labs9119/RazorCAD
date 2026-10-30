@@ -426,7 +426,7 @@ const PM_SCHEMAS = {
       { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
       { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
       { key: 'flPitch', type: 'expr', label: 'Holes at most this far apart', unit: 'mm', show: (f) => f.flangeA || f.flangeB },
-      { key: 'flHint', type: 'hint', text: 'Each flange is a flat ring of its own (a flat sheet metal plate: cut it from plate), out past the profile\'s plane, away from the other profile, by its thickness. It goes round the profile with its gap closed straight across, so it suits a part made in one piece; the profile must lie flat. Its opening is the inside of the part there. Holes go at each corner of a line round the middle of the flange and evenly between, at most the set distance apart.', show: (f) => f.flangeA || f.flangeB },
+      { key: 'flHint', type: 'hint', text: (f) => `Each flange is a flat ring of its own (a body: cut it from plate), its outer face at the end of the axis line. ${f.flMount === 'socket' ? 'Slipped over the end, its opening is the outside of the part there and the clearance (half each side); the part goes through it to the offset from its face.' : 'On the end, its opening is the inside of the part there.'} A round flange has its holes evenly on the bolt circle, straddling X; a flat-sided one has them round its sides, at the corners and evenly between, at most the pitch apart.` },
     ] },
     {
       title: 'Sheet Metal Parameters', fields: [
@@ -590,9 +590,17 @@ const PM_SCHEMAS = {
       { key: 'seamGap', type: 'expr', label: 'Gap at each seam', unit: 'mm', show: (f) => trRound(f) },
       { key: 'sHint', type: 'hint', text: (f) => (trRound(f) ? 'A cone can be rolled from one part, or from two or more equal parts welded together.' : 'With a flat-sided end the transition is made from two or more equal parts welded together; the number of parts must divide its number of sides (a square: 2 or 4).') },
     ] },
+    { title: 'Spigots', fields: [
+      { key: 'spigotBot', type: 'expr', label: 'Straight spigot at the bottom end', unit: 'mm' },
+      { key: 'spigotTop', type: 'expr', label: 'Straight spigot at the top end', unit: 'mm' },
+      { key: 'spHint', type: 'hint', text: 'A straight length of the end’s shape (0: none), from the flange’s inner face if there is a flange. Spigots and flanges are inside the axis line’s length: the taper is what is left, so the whole part is as long as the line.' },
+    ] },
     { title: 'Flanges', fields: [
       { key: 'flangeBot', type: 'check', label: 'Flange at the bottom end' },
       { key: 'flangeTop', type: 'check', label: 'Flange at the top end' },
+      { key: 'flMount', type: 'select', label: 'Mounted', options: [['butt', 'On the end (butt): opening the part’s inside size'], ['socket', 'Slipped over the end: opening the part’s outside size and a clearance']], show: (f) => trFlanged(f).length },
+      { key: 'flClear', type: 'expr', label: 'Clearance round the part (all round)', unit: 'mm', show: (f) => trFlanged(f).length && f.flMount === 'socket' },
+      { key: 'flOffset', type: 'expr', label: 'Part’s end in from the flange’s face (0: flush)', unit: 'mm', show: (f) => trFlanged(f).length && f.flMount === 'socket' },
       { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm', show: (f) => trFlanged(f).length },
       { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm', show: (f) => trFlanged(f).length },
       { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm', show: (f) => trFlanged(f).length },
@@ -1225,7 +1233,7 @@ const PM_SCHEMAS = {
     ] },
   ],
   pipeRoute: [
-    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch (straight lines)' }] },
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch (straight lines)' }, { key: 'pathSegs', type: 'pathSegs' }] },
     { title: 'Pipe', fields: [
       { key: 'size', type: 'select', label: 'Size (Schedule 40)', options: [...PIPE_SIZES.map((s) => [String(s.dn), pipeLabel(s)]), ['custom', 'Tube: outside diameter and wall']] },
       { key: 'od', type: 'expr', label: 'Outside diameter', unit: 'mm', show: (f) => f.size === 'custom' },
@@ -1269,7 +1277,7 @@ const PM_SCHEMAS = {
     ] },
   ],
   cable: [
-    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch' }] },
+    { title: 'Route', fields: [{ key: 'path', type: 'pathSel', label: 'Sketch or 3D sketch' }, { key: 'pathSegs', type: 'pathSegs' }] },
     { title: 'Cable', fields: [
       { key: 'sizeBy', type: 'select', label: 'Size', options: [['diameter', 'Diameter'], ['wires', 'From its wires']] },
       { key: 'diameter', type: 'expr', label: 'Diameter', unit: 'mm', show: (f) => f.sizeBy !== 'wires' },
@@ -4073,6 +4081,8 @@ export class UI {
       items.push({ label: 'Edit Sketch', icon: 'sketch', action: () => a.editSketch(f.id) });
       items.push({ label: 'Change Sketch Plane…', icon: 'plane', action: () => a.changeSketchPlane(f.id) });
       items.push(a.sketchShown(f) ? { label: 'Hide', icon: 'hide', action: () => a.setSketchVisible(f.id, false) } : { label: 'Show', icon: 'show', action: () => a.setSketchVisible(f.id, true) });
+      const cons = f.showConstruction ?? !!a.visSel.construction;
+      if (f.curves?.some((c) => c.construction)) items.push({ label: cons ? 'Hide Construction Lines' : 'Show Construction Lines', icon: cons ? 'hide' : 'show', action: () => a.setSketchConstruction(f.id, !cons) });
     }
     else {
       if (a.result?.errors.has(f.id)) items.push({ label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences(f.id) });
@@ -4488,6 +4498,18 @@ export class UI {
           sel.onchange = () => { if (sel.value) { L.push(sel.value); this.renderPM(); a.preview(true); } };
           const w = el('div', { class: 'pm-input' }); w.appendChild(sel);
           body.appendChild(this.row(fd.label, w));
+        } else if (fd.type === 'pathSegs') {
+          // part of the path's sketch: the segments picked in the view (none: the whole sketch)
+          if (!Array.isArray(f.pathSegs)) f.pathSegs = [];
+          const n = f.pathSegs.length;
+          body.appendChild(el('div', { class: 'pm-hint', 'data-path-segs': String(n) }, !f.path ? 'Click a segment (or point) of a sketch or 3D sketch in the view, then the last one of the run: the segments between are the route. Or choose a sketch above for all of it.'
+            : n ? `${n} segment${n === 1 ? '' : 's'} of the sketch picked${pm.pathFrom ? ': click the last one of this run' : ''}. Click another segment and then the last of its run to add more; click a picked one to take it off.`
+            : 'The whole sketch is the route. Click a segment (or point) in the view, then the last one of the run, to use part of it.'));
+          if (n) {
+            const all = el('button', { class: 'pm-btn', 'data-path-all': '' }, 'Use the Whole Sketch');
+            all.onclick = () => { f.pathSegs = []; pm.pathFrom = null; a.showPathFrom(); a.updateRefGeometry(); a.preview(true); };
+            body.appendChild(all);
+          }
         } else if (fd.type === 'curveList') {
           // an ordered list of curves (sketches, 3D sketches, composite / projected curves, helices)
           if (!Array.isArray(f[fd.key])) f[fd.key] = [];
@@ -4645,6 +4667,7 @@ export class UI {
             }
             if(f.type==='point'&&fd.key==='pointType'&&s.value==='references')useReferenceRelations(f);
             if (f.type === 'smTransition' && fd.key === 'sketch') { f.line = null; a.updateRefGeometry(); this.renderPM(); }
+            if (fd.key === 'path' && Array.isArray(f.pathSegs)) { f.pathSegs = []; pm.pathFrom = null; a.showPathFrom(); a.updateRefGeometry(); } // (a sketch chosen: all of it)
             if(['sweep','surfSweep'].includes(f.type)&&fd.key==='profileType'){pm.sweepSlot=f.profileType==='circle'?'path':'profile';pm.sweepCanvas=true;pm.loftDraft=null;pm.loftHover=null;}
             if (['revolve','surfRevolve'].includes(f.type)&&fd.key==='axis')s.onfocus=()=>{pm.profilePick=false;pm.scopePick=false;pm.revolveEndPick=false;a.updateSketchDisplay();};
           if (['revolve','surfRevolve','surfExtrude','extrude'].includes(f.type))s.dataset.featureField=fd.key;
@@ -5326,7 +5349,9 @@ export class UI {
     // (a cut on, its panel closed: the panel opened again; its ✗ removes the cut)
     btn('perspective', 'Perspective view (off: orthographic)', () => a.setPerspective(!a.viewport.perspective), { on: !!a.viewport.perspective });
     btn('section', 'Section View', () => (a.viewport.section && !a.pm ? a.reopenSection() : a.startSection()), { on: !!a.viewport.section });
-    const vb = btn('eye', 'Visibility: planes, sketches, axes, points, surfaces', (e, b) => { const r = b.getBoundingClientRect(); this.showVisMenu(r.left, r.bottom + 4); }, { drop: true, on: Object.values(a.vis).some((x) => !x) || a.showPlanes });
+    // (the eye: a click hides or shows everything ticked in its list; right-click (or its arrow) for the list)
+    const vb = btn(a.visOn === false ? 'hide' : 'eye', `Visibility: click to ${a.visOn === false ? 'show' : 'hide'} what is ticked (planes, sketches, construction lines, axes, points, surfaces); right-click to choose`, () => a.toggleVisibility(), { drop: true, on: a.visOn !== false && (Object.values(a.visSel).some((x) => x) || !!a._showPlanes) });
+    vb.oncontextmenu = (e) => { e.preventDefault(); const r = vb.getBoundingClientRect(); this.showVisMenu(r.left, r.bottom + 4); };
     vb.classList.add('vis-btn');
     sep();
     // selection filter (keys: X faces, E edges, V vertices; F5 clears)
@@ -5343,7 +5368,7 @@ export class UI {
   showVisMenu(x, y) {
     const a = this.app, cm = $('#ctxmenu');
     cm.innerHTML = '';
-    const rows = [['stdPlanes', 'Standard planes (Front, Top, Right)', a.showPlanes], ['planes', 'Reference planes', a.vis.planes], ['sketches', 'Sketches', a.vis.sketches], ['axes', 'Axes', a.vis.axes], ['points', 'Points', a.vis.points], ['surfaces', 'Surface bodies', a.vis.surfaces]];
+    const rows = [['stdPlanes', 'Standard planes (Front, Top, Right)', a._showPlanes], ['planes', 'Reference planes', a.visSel.planes], ['sketches', 'Sketches', a.visSel.sketches], ['construction', 'Construction lines (of every sketch, even hidden)', a.visSel.construction], ['axes', 'Axes', a.visSel.axes], ['points', 'Points', a.visSel.points], ['surfaces', 'Surface bodies', a.visSel.surfaces]];
     cm.appendChild(el('div', { class: 'vis-h' }, 'Show in the view'));
     for (const [key, label, on] of rows) {
       const row = el('label', { class: 'mi vis-row' });
@@ -6186,10 +6211,15 @@ export class UI {
       const label=el('label');label.append(checkbox,document.createTextNode(' Chain selection'));body.appendChild(this.row(null,label,'check'));
       body.appendChild(el('div',{class:'pm-hint'},slot==='profile'?'Choose a region or contour. Surface profiles may be open; solid open profiles use Thin Feature.':'Choose one connected path or guide; construction curves are allowed. Different contours from one sketch can fill different roles.'));
       if(!checkbox.checked){
+        // (from one segment to another: the first and the last clicked, the run between added)
+        const run=el('input',{type:'checkbox','data-sweep-run':slot});run.checked=!!pm.sweepRun;
+        run.onchange=()=>{pm.sweepRun=run.checked;pm.sweepRunFrom=null;this.renderPM();};
+        const rl=el('label');rl.append(run,document.createTextNode(' From one segment to another'));body.appendChild(this.row(null,rl,'check'));
+        if(pm.sweepRun)body.appendChild(el('div',{class:'pm-hint'},pm.sweepRunFrom?'Now click the last segment: the segments between are added.':'Click the first segment, then the last: the segments between are added.'));
         const count=pm.loftDraft?.curves.length||0;
         body.appendChild(el('div',{class:'pm-hint'},`${count} entities in the current contour`));
         body.appendChild(el('button',{class:'pm-btn','data-sweep-finish':slot,disabled:!count,onclick:()=>a.finishLoftSelection()},'Use selected contour'));
-        if(count)body.appendChild(el('button',{class:'pm-btn','data-sweep-draft-clear':slot,onclick:()=>{pm.loftDraft=null;this.renderPM();a.updateSketchDisplay();}},'Clear current selection'));
+        if(count)body.appendChild(el('button',{class:'pm-btn','data-sweep-draft-clear':slot,onclick:()=>{pm.loftDraft=null;pm.sweepRunFrom=null;this.renderPM();a.updateSketchDisplay();}},'Clear current selection'));
       }
     }
     const details=el('details'),summary=el('summary',{},'Other sources (whole sketch / curve)');details.appendChild(summary);

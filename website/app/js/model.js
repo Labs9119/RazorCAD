@@ -254,8 +254,9 @@ export function createFeature(doc, type, props = {}) {
     // Sketch driven: a copy at each point of `sketch` (the point nearest the feature is the feature)
     spattern: { feature: null, features: [], faces: [], bodies: [], pick: 'faces', sketch: null },
     // Curve driven: count copies along `path`, spacing 'equal' | 'distance'; align 'translate' | 'tangent'
-    pipeRoute: { path: null, size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18, reduceAt: 'none', reduceSize: '25' },
-    cable: { path: null, sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
+    // pathSegs: the segments of the path's sketch picked (none: all of it)
+    pipeRoute: { path: null, pathSegs: [], size: '50', od: 50, wall: 3, corner: 'elbow', radius: 'auto', flanges: false, flangeD: 165, flangeT: 18, reduceAt: 'none', reduceSize: '25' },
+    cable: { path: null, pathSegs: [], sizeBy: 'diameter', diameter: 6, wires: 7, wireD: 1.6, slack: 5 },
     pointCloud: { fileName: '', count: 0, data: '' },
     fitSurface: { cloud: null, kind: 'freeform', grid: 20 },
     ductFitting: { kind: 'elbow', D: 300, t: 1, seam: 10, angle: 90, R: 450, gores: 5, D2: 200, L: 300, W: 400, H: 300, offset: 150, branchD: 200, branchAngle: 45, branchL: 300 },
@@ -406,6 +407,10 @@ export function createFeature(doc, type, props = {}) {
       // diameter (0: none), holes on a round flange and their circle (0: the middle of the flange), the most a
       // flat-sided flange's holes are apart
       flangeBot: false, flangeTop: false, flW: 40, flT: 6, flHoleD: 10, flHoles: 8, flPCD: 0, flPitch: 100,
+      // straight spigots at the ends (length from the flange's inner face, or the end); flanges mounted 'butt' (on the
+      // end, the part's inside size) | 'socket' (slipped over the end: the part's outside size and flClear; the end
+      // flOffset in from the flange's face). Flanges and spigots are inside the axis line's length.
+      spigotBot: 0, spigotTop: 0, flMount: 'butt', flClear: 1, flOffset: 0,
     },
     // extruded from an open profile (or a circle, rolled): direction 'one' | 'reverse' | 'mid'; side 'one' |
     // 'other' | 'mid' (material left of the profile's direction, right, or half each side); radius: inside

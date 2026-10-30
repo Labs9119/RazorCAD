@@ -2617,6 +2617,119 @@ const UI = {
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `end edges ${o0.toFixed(1)} / ${o1.toFixed(1)} px orthographic; in perspective the near one longer; picking, dragging and renders in perspective` };
   },
 
+  // Deleting a feature keeps what it was made from: a Transition on a 3D sketch's line deleted, the 3D sketch stays;
+  // an extrude deleted, its sketch stays. Undo brings them back.
+  async 'delete-keeps-parents'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), d = M.newDoc(), bad = [];
+    const s3 = M.createFeature(d, 'sketch3d'); s3.pts = [{ id: 'p1', x: 0, y: 0, z: 0 }, { id: 'p2', x: 0, y: 300, z: 0 }]; s3.segs = [{ id: 's1', a: 'p1', b: 'p2' }]; s3.nextId = 3;
+    const tr = M.createFeature(d, 'smTransition', { sketch: s3.id, bShape: 'round', bD: 300, tShape: 'round', tD: 200, parts: 2 });
+    const sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const q = [[400, 0], [460, 0], [460, 40], [400, 40]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+    const ex = M.createFeature(d, 'extrude', { sketch: sk.id, depth: 10 });
+    d.features.push(s3, tr, sk, ex);
+    await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(100);
+    if (a.result.errors.size) return { ok: false, detail: 'did not build: ' + JSON.stringify([...a.result.errors]) };
+    const keep = window.confirm; window.confirm = () => true;
+    try { a.deleteFeature(tr.id); a.deleteFeature(ex.id); } finally { window.confirm = keep; }
+    await wait(100);
+    const ids = () => a.doc.features.map((f) => f.id);
+    if (ids().includes(tr.id) || ids().includes(ex.id)) bad.push('the features were not deleted');
+    if (!ids().includes(s3.id)) bad.push('deleting the Transition deleted its 3D sketch');
+    if (!ids().includes(sk.id)) bad.push('deleting the extrude deleted its sketch');
+    a.undo(); a.undo(); await wait(100);
+    if (!ids().includes(tr.id) || !ids().includes(ex.id)) bad.push('Undo did not bring them back');
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'the 3D sketch and the sketch stay when the Transition and the extrude are deleted; Undo brings the features back' };
+  },
+
+  // Part of a sketch for a route: in a Pipe Route's panel, a click on the 2nd line and one on the 4th takes the run
+  // between (2, 3, 4); Use the Whole Sketch clears it; a click on the corner point (200, 0) and one on (400, 150) takes
+  // lines 2 and 3; built, only those are piped (2 straight pipes, not 4). A cable on lines 1 and 2: 350 mm long.
+  // A sweep's path, from one segment to another: the 1st and the 3rd clicked, 1 to 3 in the contour.
+  async 'route-partial-path'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), G = await import('/js/geometry.js'), bad = [];
+    const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+    const P = [[0, 0], [200, 0], [200, 150], [400, 150], [400, 300]].map((v) => S.addPoint(sk, ...v));
+    const L = [0, 1, 2, 3].map((i) => S.addLine(sk, P[i], P[i + 1]));
+    const lid = (c) => (typeof c === 'string' ? c : c.id);
+    d.features.push(sk);
+    await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(100);
+    const vp = a.viewport; vp.setStandardView('front', false); vp.zoomToFit(null, false); vp.anim = null; await wait(50);
+    const fr = a.result.sketches.get(sk.id).frame, R = vp.canvas.getBoundingClientRect();
+    const ev = (x, y) => { const s = vp.project(G.toWorld(fr, x, y)); return { clientX: R.left + s.x, clientY: R.top + s.y, button: 0 }; };
+    a.startFeature('pipeRoute'); await wait(100);
+    const f = a.pm?.feature;
+    if (f?.type !== 'pipeRoute') return { ok: false, detail: 'Pipe Route did not open' };
+    a.pathSegsClick(ev(200, 75)); a.pathSegsClick(ev(400, 225));
+    const want = (ids) => JSON.stringify([...f.pathSegs].sort()) === JSON.stringify(ids.map(lid).sort());
+    if (f.path !== sk.id || !want([L[1], L[2], L[3]])) bad.push(`segment to segment: ${JSON.stringify(f.pathSegs)}`);
+    document.querySelector('[data-path-all]')?.click();
+    if (f.pathSegs.length) bad.push('Use the Whole Sketch did not clear the picks');
+    a.pathSegsClick(ev(200, 0)); a.pathSegsClick(ev(400, 150));
+    if (!want([L[1], L[2]])) bad.push(`point to point: ${JSON.stringify(f.pathSegs)}`);
+    await a.okPM(); await wait(200); await until(() => !a.kernel.pending);
+    if (a.result.errors.size) bad.push('the route did not build: ' + JSON.stringify([...a.result.errors]));
+    const list = await a.kernel.request('cutList', {});
+    if (list.length !== 2) bad.push(`${list.length} straight pipes, not 2`);
+    // (a cable on lines 1 and 2)
+    const c = M.createFeature(a.doc, 'cable', { path: sk.id, pathSegs: [lid(L[0]), lid(L[1])], diameter: 6, slack: 0 });
+    a.doc.features.push(c); await a.rebuild(); await wait(100);
+    const note = a.result.notes?.get(c.id) || '';
+    if (!/route 350 mm/.test(note)) bad.push(`cable: ${note || JSON.stringify([...a.result.errors])}`);
+    // (a sweep's path from one segment to another)
+    a.startFeature('sweep'); await wait(100);
+    if (a.pm?.feature?.type === 'sweep') {
+      a.activateSweepSlot('path'); a.pm.feature.selectionChains = { path: false }; a.pm.sweepRun = true;
+      a.loftClick(ev(100, 0)); a.loftClick(ev(300, 150));
+      const got = a.pm.loftDraft?.curves || [];
+      if (JSON.stringify([...got].sort()) !== JSON.stringify([L[0], L[1], L[2]].map(lid).sort())) bad.push(`sweep from–to: ${JSON.stringify(got)}`);
+      a.cancelPM();
+    } else bad.push('Sweep did not open');
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'route runs picked segment to segment and point to point; 2 pipes built from lines 2 and 3; a 350 mm cable on lines 1 and 2; a sweep path picked from one segment to another' };
+  },
+
+  // Construction lines: a sketch used by an extrude (so hidden) shows no lines; ticking Construction lines in the
+  // Visibility list shows its construction line (dotted), and it can be picked; the sketch set to hide its own keeps
+  // it hidden; its menu offers the setting. The eye button: a click hides everything ticked (the ticks kept), again
+  // shows it; right-click opens the list
+  async 'construction-lines-and-visibility'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), G = await import('/js/geometry.js'), bad = [];
+    const keepSel = JSON.parse(JSON.stringify(a.visSel)), keepOn = a.visOn;
+    try {
+      const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+      const q = [[0, 0], [60, 0], [60, 40], [0, 40]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+      const cl = S.addLine(sk, S.addPoint(sk, -20, 20), S.addPoint(sk, 80, 20)); (typeof cl === 'string' ? sk.curves.find((c) => c.id === cl) : cl).construction = true;
+      d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 10 }));
+      a.setVisibility('construction', false);
+      await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(100);
+      const vp = a.viewport, dotted = () => vp.sketchGroup.children.filter((o) => o.material?.isLineDashedMaterial).length, solid = () => vp.sketchGroup.children.filter((o) => o.material && !o.material.isLineDashedMaterial).length;
+      a.updateSketchDisplay();
+      if (dotted() || solid()) bad.push(`the used sketch shows ${dotted()} dotted, ${solid()} solid line sets`);
+      a.setVisibility('construction', true);
+      if (dotted() !== 1 || solid()) bad.push(`Construction lines on: ${dotted()} dotted, ${solid()} solid`);
+      vp.setStandardView('front', false); vp.zoomToFit(null, false); vp.anim = null; await wait(50);
+      const fr = a.result.sketches.get(sk.id).frame, s = vp.project(G.toWorld(fr, 70, 20)), R = vp.canvas.getBoundingClientRect();
+      const hit = a.sketchCurveAt({ clientX: R.left + s.x, clientY: R.top + s.y });
+      if (!hit || hit.sketch !== sk.id) bad.push('the construction line shown could not be picked');
+      const labels = a.ui.featureMenu(a.doc.features[0]).filter((x) => x && x.label).map((x) => x.label);
+      if (!labels.includes('Hide Construction Lines')) bad.push(`the sketch's menu: ${labels.join(', ')}`);
+      a.setSketchConstruction(sk.id, false);
+      if (dotted()) bad.push('hidden for the sketch, yet shown');
+      a.setSketchConstruction(sk.id, true);
+      // (the eye: everything ticked hidden, the ticks kept; again: shown)
+      a.setVisibility('planes', true);
+      a.toggleVisibility(false);
+      if (a.vis.planes || a.vis.sketches || !a.visSel.planes || dotted()) bad.push(`eye off: vis ${JSON.stringify(a.vis)}, ticks ${JSON.stringify(a.visSel)}, ${dotted()} dotted`);
+      const eye = document.querySelector('#hud .vis-btn');
+      eye?.click();
+      if (!a.visOn || !a.vis.planes || dotted() !== 1) bad.push('the eye clicked again did not show them');
+      eye?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 120 }));
+      const menu = document.querySelector('#ctxmenu');
+      if (!menu || menu.hidden || !/Construction lines/.test(menu.textContent)) bad.push('right-click on the eye did not open the list');
+      a.ui.closeContext?.();
+    } finally { Object.assign(a.visSel, keepSel); a.visOn = keepOn; a.saveVis(); a.updateSketchDisplay(); a.ui.renderHUD(); }
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'a used sketch’s construction line shown and picked with Construction lines ticked, hidden for that sketch; the eye hides and shows what is ticked; right-click opens the list' };
+  },
+
   // Spotlights: the tool opens with a light (the realistic view on, the light shining there, its handles shown); its
   // lamp dragged in the view moves it (the light in the view with it, the panel's numbers too), its ring dragged onto
   // the part aims it at the part's surface; brightness changes the light at once; ✗ takes them away (the realistic
