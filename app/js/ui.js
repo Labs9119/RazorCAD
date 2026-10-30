@@ -1719,7 +1719,7 @@ export class UI {
     this.prefs = {};
     this.renderCommandManager();
     // the user's own toolbar layout (and other preferences), once the desktop app answers
-    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.renderCommandManager(); }).catch(() => {});
+    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.app.setPerspective?.(!!this.prefs.perspective, true); this.renderCommandManager(); }).catch(() => {});
     // another language: everything drawn again in it
     window.addEventListener('razorcad-lang', () => {
       document.querySelectorAll('#menubar > button[data-menu]').forEach((b) => { b.textContent = tr(b.dataset.menu); });
@@ -1971,7 +1971,8 @@ export class UI {
   displayItems() {
     const a = this.app;
     return [['Shaded With Edges', 'shadedEdges'], ['Shaded', 'shaded'], ['Hidden Lines Removed', 'hlr'], ['Wireframe', 'wireframe']]
-      .map(([l, v]) => ({ label: (a.viewport.displayStyle === v ? '● ' : '　') + l, icon: 'display', action: () => { a.viewport.setDisplayStyle(v); } }));
+      .map(([l, v]) => ({ label: (a.viewport.displayStyle === v ? '● ' : '　') + l, icon: 'display', action: () => { a.viewport.setDisplayStyle(v); } }))
+      .concat(['sep', ...[['Perspective', true], ['Orthographic', false]].map(([l, on]) => ({ label: (!!a.viewport.perspective === on ? '● ' : '　') + l, icon: on ? 'perspective' : 'views', action: () => a.setPerspective(on) }))]);
   }
 
   buildMenus() {
@@ -5195,6 +5196,7 @@ export class UI {
       this.showContext(r.left, r.bottom + 4, this.displayItems());
     }, { drop: true });
     // (a cut on, its panel closed: the panel opened again; its ✗ removes the cut)
+    btn('perspective', 'Perspective view (off: orthographic)', () => a.setPerspective(!a.viewport.perspective), { on: !!a.viewport.perspective });
     btn('section', 'Section View', () => (a.viewport.section && !a.pm ? a.reopenSection() : a.startSection()), { on: !!a.viewport.section });
     const vb = btn('eye', 'Visibility: planes, sketches, axes, points, surfaces', (e, b) => { const r = b.getBoundingClientRect(); this.showVisMenu(r.left, r.bottom + 4); }, { drop: true, on: Object.values(a.vis).some((x) => !x) || a.showPlanes });
     vb.classList.add('vis-btn');

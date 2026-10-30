@@ -37,6 +37,7 @@ import { groupBodies } from './bodygroups.js';
 import * as W from './wcs.js';
 import {referenceRelations,defaultReferenceRelations,RELATION_LABELS} from './refconstraints.js';
 import * as LC from './loftcorrespondence.js';
+import * as AP from './appearances.js';
 
 // a 3D sketch's line, circle or arc as a reference's curve ({ type }), and its name in the references list
 function sketch3dCurve(f,id){const g=(f.segs||[]).find(x=>x.id===id);return g?{type:g.type||'line'}:null;}
@@ -1718,7 +1719,7 @@ export class UI {
     this.prefs = {};
     this.renderCommandManager();
     // the user's own toolbar layout (and other preferences), once the desktop app answers
-    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.renderCommandManager(); }).catch(() => {});
+    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.app.setPerspective?.(!!this.prefs.perspective, true); this.renderCommandManager(); }).catch(() => {});
     // another language: everything drawn again in it
     window.addEventListener('razorcad-lang', () => {
       document.querySelectorAll('#menubar > button[data-menu]').forEach((b) => { b.textContent = tr(b.dataset.menu); });
@@ -1970,7 +1971,8 @@ export class UI {
   displayItems() {
     const a = this.app;
     return [['Shaded With Edges', 'shadedEdges'], ['Shaded', 'shaded'], ['Hidden Lines Removed', 'hlr'], ['Wireframe', 'wireframe']]
-      .map(([l, v]) => ({ label: (a.viewport.displayStyle === v ? '● ' : '　') + l, icon: 'display', action: () => { a.viewport.setDisplayStyle(v); } }));
+      .map(([l, v]) => ({ label: (a.viewport.displayStyle === v ? '● ' : '　') + l, icon: 'display', action: () => { a.viewport.setDisplayStyle(v); } }))
+      .concat(['sep', ...[['Perspective', true], ['Orthographic', false]].map(([l, on]) => ({ label: (!!a.viewport.perspective === on ? '● ' : '　') + l, icon: on ? 'perspective' : 'views', action: () => a.setPerspective(on) }))]);
   }
 
   buildMenus() {
@@ -2278,6 +2280,21 @@ export class UI {
         { icon: 'open', label: 'Open in Slicer', action: () => a.openInSlicer() },
         { icon: 'cpattern', label: 'Calibrate Fits', action: () => a.calibrateFits() },
       ],
+      render: [
+        { icon: 'render', label: 'Render', action: () => a.renderView() },
+        { icon: 'camera', label: 'Quick Render', action: () => a.quickRender() },
+        { icon: 'realistic', label: 'Realistic View', action: () => a.toggleRealistic(), active: !!a.realisticView },
+        { icon: 'lighting', label: 'Lighting', action: () => a.renderLighting() },
+        'sep',
+        { icon: 'paintBucket', label: 'Add Appearance', action: () => a.startAppearance(), active: a.pm?.kind === 'appearance' },
+        { icon: 'appearance', label: 'Appearances', action: () => this.showLeft('appear'), active: this.leftTab === 'appear' },
+        { icon: 'material', label: 'Edit Material', action: () => this.showMaterial() },
+        'sep',
+        { icon: 'sketchPicture', label: 'Decal', action: () => a.addDecal() },
+        { icon: 'sketchPicture', label: 'Decals', action: () => a.manageDecals() },
+        'sep',
+        { icon: 'obj', label: 'Export glTF', action: () => a.exportFile('glb') },
+      ],
       evaluate: [
         { icon: 'measure', label: 'Measure', action: () => a.startMeasure(), active: a.pm?.kind === 'measure' },
         { icon: 'mass', label: 'Mass Properties', action: () => this.showMassProps() },
@@ -2289,9 +2306,7 @@ export class UI {
         'sep',
         { icon: 'interference', label: 'Interference Check', action: () => a.checkInterference() },
         { icon: 'zebra', label: 'Zebra Stripes', action: () => a.setAnalysis({ kind: 'zebra', density: 10 }), active: a.analysis?.kind === 'zebra' },
-        { icon: 'camera', label: 'Render', action: () => a.renderView() },
         { icon: 'measure', label: 'DFM Check', action: () => a.dfmCheck() },
-        { icon: 'sketchPicture', label: 'Decal', action: () => a.addDecal() },
         { icon: 'curvature', label: 'Curvature', action: () => a.setAnalysis({ kind: 'curvature' }), active: a.analysis?.kind === 'curvature' },
         { icon: 'draftAnalysis', label: 'Draft Analysis', action: () => (a.analysis?.kind === 'draft' ? a.setAnalysis(null) : this.showDraftAnalysis()), active: a.analysis?.kind === 'draft' },
         { icon: 'measure', label: 'Thickness Analysis', action: () => (a.analysis?.kind === 'thickness' ? a.setAnalysis(null) : this.showThicknessAnalysis()), active: a.analysis?.kind === 'thickness' },
@@ -2407,7 +2422,7 @@ export class UI {
 
   savePrefs() { platform.setPrefs(this.prefs || {}).catch?.(() => {}); }
   toolbarTabs() {
-    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['print', '3D Print'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
+    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['print', '3D Print'], ['render', 'Render'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
     for (const c of this.tbPrefs().custom) out.push({ id: 'custom:' + c.id, label: c.name, custom: true });
     out.push({ id: 'claude', label: 'Claude', html: `${icon('assistant')}Claude` });
     return out;
@@ -2715,28 +2730,197 @@ export class UI {
 
   // ------------------------------------------------------------ left panel
   buildLeftTabs() {
-    const [t, p, c] = document.querySelectorAll('#lp-tabs button');
+    const [t, p, c, ap] = document.querySelectorAll('#lp-tabs button');
     t.innerHTML = icon('tree');
     p.innerHTML = icon('pmIcon');
     c.innerHTML = icon('configs');
     t.onclick = () => { this._leaveConfig = true; this.showLeft('tree'); this._leaveConfig = false; };
     p.onclick = () => this.showLeft('pm');
     c.onclick = () => this.showLeft('config');
+    if (ap) { ap.innerHTML = icon('appearance'); ap.onclick = () => this.showLeft('appear'); }
   }
 
-  // which = 'tree' | 'pm' | 'config' (the Configurations tab stays up until another tab is picked)
+  // which = 'tree' | 'pm' | 'config' | 'appear' (the Configurations and Appearances tabs stay up until another tab is
+  // picked)
   showLeft(which) {
     const cfgOk = this.app.mode !== 'drawing' || !!this.app.drawing?.renderConfigs; // (parts and assemblies)
+    const apOk = this.app.mode !== 'drawing'; // (parts)
     if (which === 'tree' && this.leftTab === 'config' && cfgOk && !this._leaveConfig) which = 'config';
+    if (which === 'tree' && this.leftTab === 'appear' && apOk && !this._leaveConfig) which = 'appear';
     if (which === 'config' && !cfgOk) which = 'tree';
+    if (which === 'appear' && !apOk) which = 'tree';
+    const changed = this.leftTab !== which;
     this.leftTab = which;
     $('#tree').hidden = which !== 'tree';
     $('#pm').hidden = which !== 'pm';
     $('#configs').hidden = which !== 'config';
+    const apv = $('#appearances');
+    if (apv) apv.hidden = which !== 'appear';
     const cb = document.querySelector('#lp-tabs button[data-tab="config"]');
     if (cb) cb.hidden = !cfgOk;
+    const ab = document.querySelector('#lp-tabs button[data-tab="appear"]');
+    if (ab) ab.hidden = !apOk;
     document.querySelectorAll('#lp-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === which));
     if (which === 'config') this.renderConfigs();
+    if (which === 'appear') this.renderAppearances();
+    else if (changed) this.app.viewport?.setFaceSet?.([], 'appearSel');
+    if (changed) this.renderCommandManager?.();
+  }
+
+  // ------------------------------------------------------------ Appearances tab
+  // The part's appearances in order, each over those above it (the last to reach a face is the one it shows): a swatch,
+  // its name and what it is on. Click one to see what it is on; double-click to edit it; drag to change the order;
+  // right-click for more.
+  renderAppearances() {
+    const a = this.app, doc = a.doc, root = $('#appearances');
+    if (!root || root.hidden) return;
+    root.innerHTML = '';
+    if (a.mode === 'drawing' || !doc) return;
+    root.appendChild(el('div', { class: 'cfg-head' }, `${icon('appearance')}<span><b>${esc(doc.name)}</b> Appearances</span>`));
+    const bar = el('div', { class: 'cfg-bar' });
+    const addB = el('button', { class: 'pm-btn', title: 'A new appearance on the selected faces or bodies (nothing selected: the whole part)', 'data-ap-add': '' }, '+ Add Appearance');
+    addB.onclick = () => a.startAppearance();
+    const renderB = el('button', { class: 'pm-btn', title: 'Render the view with its appearances' }, 'Render…');
+    renderB.onclick = () => a.renderView();
+    bar.append(addB, renderB);
+    root.appendChild(bar);
+    const list = doc.appearances || [];
+    const bodyName = (id) => a.bodyById(id)?.name || id;
+    // (the base: the bodies' materials and colours, under every appearance)
+    const base = el('div', { class: 'tn ap-item ap-base', title: 'The bodies’ materials and colours (Edit Material, Body Properties): every appearance below goes over them' });
+    base.innerHTML = `<span class="tw"></span><span class="ti">${icon('material')}</span><span class="tl">Materials and body colours</span>`;
+    root.appendChild(base);
+    let dragId = null;
+    list.forEach((ap, i) => {
+      const spec = AP.lookSpec(ap.look), lost = a.apLost?.get(ap.id) || 0, editing = a.pm?.kind === 'appearance' && a.pm.ap === ap;
+      const n = el('div', {
+        class: 'tn ap-item' + (ap.suppressed ? ' suppressed' : '') + (this._apSel === ap.id ? ' selected' : '') + (editing ? ' editing' : ''),
+        title: `${a.appearanceName(ap)} (${spec.name}) on ${AP.targetSummary(ap, bodyName).toLowerCase()}${lost ? `\n⚠ ${lost} ${ap.target === 'bodies' ? 'bod' + (lost === 1 ? 'y' : 'ies') : 'face' + (lost === 1 ? '' : 's')} not found (the model changed): edit it to pick again` : ''}\nDouble-click to edit; drag to change the order (lower ones go over higher ones)`,
+        draggable: 'true', 'data-ap': ap.id,
+      });
+      n.innerHTML = `<span class="tw"></span><span class="ap-sw" style="${this.swatchStyle(spec)}"></span><span class="tl">${esc(a.appearanceName(ap))}</span><span class="tsub">${esc(AP.targetSummary(ap, bodyName))}</span>${lost ? `<span class="terr" title="${lost} not found">!</span>` : ''}`;
+      n.onclick = () => { this._apSel = ap.id; this.renderAppearances(); a.showAppearanceTarget(ap, 'appearSel'); };
+      n.ondblclick = () => a.startAppearance({ id: ap.id });
+      n.oncontextmenu = (e) => {
+        e.preventDefault();
+        this._apSel = ap.id;
+        this.renderAppearances();
+        a.showAppearanceTarget(ap, 'appearSel');
+        this.showContext(e.clientX, e.clientY, [
+          { label: 'Edit Appearance', icon: 'edit', action: () => a.startAppearance({ id: ap.id }) },
+          { label: 'Rename', icon: 'rename', action: () => this.promptText('Rename Appearance', 'appearance', 'Name', a.appearanceName(ap)).then((v) => { if (v != null) { ap.name = v.trim(); a.appearancesChanged(); } }) },
+          { label: ap.suppressed ? 'Unsuppress' : 'Suppress', icon: ap.suppressed ? 'show' : 'suppress', action: () => a.suppressAppearance(ap.id, !ap.suppressed) },
+          { label: 'Copy Appearance', icon: 'appearance', action: () => a.copyAppearance(ap.id) },
+          'sep',
+          { label: 'Move Up', icon: 'moveUp', action: () => a.moveAppearance(ap.id, i - 1), disabled: i === 0 },
+          { label: 'Move Down', icon: 'moveDown', action: () => a.moveAppearance(ap.id, i + 2), disabled: i === list.length - 1 },
+          'sep',
+          { label: 'Delete', icon: 'trash', action: () => a.deleteAppearance(ap.id) },
+        ]);
+      };
+      n.ondragstart = (e) => { dragId = ap.id; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', ap.id); } catch { /* (some browsers) */ } };
+      n.ondragover = (e) => { if (dragId && dragId !== ap.id) { e.preventDefault(); const r = n.getBoundingClientRect(), below = e.clientY > r.top + r.height / 2; n.classList.toggle('drop-above', !below); n.classList.toggle('drop-below', below); } };
+      n.ondragleave = () => n.classList.remove('drop-above', 'drop-below');
+      n.ondrop = (e) => {
+        e.preventDefault();
+        const r = n.getBoundingClientRect(), below = e.clientY > r.top + r.height / 2;
+        if (dragId && dragId !== ap.id) a.moveAppearance(dragId, i + (below ? 1 : 0));
+        dragId = null;
+      };
+      root.appendChild(n);
+    });
+    root.appendChild(el('div', { class: 'pm-hint', style: 'padding:8px 12px' }, list.length
+      ? 'Each appearance goes over those above it: one lower in the list wins where they meet (drag to change the order). Double-click one to edit it; right-click to suppress, copy or delete it.'
+      : 'Put colours and finishes on faces, bodies or the whole part: metals (anodised aluminium too), paints, plastics, glass, timber, stone, rubber, and meshes and gratings that look see-through without being modelled. Select faces or bodies (or nothing, for the whole part), then <b>+ Add Appearance</b>.'));
+  }
+  // A swatch of a look: its texture tile (or its colour)
+  swatchStyle(spec) {
+    if (!spec.tex) return `background:${spec.color}`;
+    this._swatches ||= new Map();
+    let url = this._swatches.get(spec.key);
+    if (!url) {
+      try { url = AP.tileCanvas(spec, 64)?.toDataURL?.() || ''; } catch { url = ''; }
+      this._swatches.set(spec.key, url);
+    }
+    // (a mesh's holes over a light checker, so they show as holes)
+    return url ? `background:url(${url}) center/cover${spec.cut ? ', repeating-conic-gradient(#c9ced6 0 25%, #fff 0 50%) 0 0/8px 8px' : ''}` : `background:${spec.color}`;
+  }
+
+  // The panel of an appearance being added or edited: what it is on (faces, bodies or the whole part: faces and
+  // bodies are clicked in the view), its look from the library, its colour, and its texture's size and angle
+  renderAppearancePM(root) {
+    const a = this.app, pm = a.pm, ap = pm.ap, look = ap.look, spec = AP.lookSpec(look);
+    const changed = (again = false) => { a.previewAppearance(); if (again) this.renderPM(); };
+    this.pmHeader(root, 'appearance', pm.isNew ? 'Appearance' : `Edit ${a.appearanceName(ap)}`);
+    // what it is on
+    const g1 = this.pmGroup(root, 'Apply to', 'ap:target');
+    const tsel = el('select', { 'data-ap-target': '' });
+    for (const [k, l] of [['faces', 'Faces'], ['bodies', 'Bodies'], ['part', 'Whole part']]) { const o = el('option', { value: k }, l); if (ap.target === k) o.selected = true; tsel.appendChild(o); }
+    tsel.onchange = () => {
+      const was = ap.target;
+      ap.target = tsel.value;
+      // (faces picked turned into their bodies, and bodies into all their faces' bodies)
+      if (was === 'faces' && ap.target === 'bodies' && !ap.bodies.length) ap.bodies = [...new Set(ap.faces.map((f) => f.b).filter(Boolean))];
+      changed(true);
+    };
+    const w1 = el('div', { class: 'pm-input' }); w1.appendChild(tsel);
+    g1.appendChild(this.row('On', w1));
+    const n = ap.target === 'bodies' ? ap.bodies.length : ap.faces.length;
+    g1.appendChild(el('div', { class: 'pm-hint', 'data-ap-count': String(ap.target === 'part' ? -1 : n) }, ap.target === 'part'
+      ? 'Every face of every body. (Click a face in the view to apply it to faces instead.)'
+      : `${n ? `${n} ${ap.target === 'bodies' ? (n === 1 ? 'body' : 'bodies') : n === 1 ? 'face' : 'faces'} picked. ` : ''}Click ${ap.target === 'bodies' ? 'bodies' : 'faces'} in the view to add them; click one again to take it off.`));
+    if (ap.target !== 'part' && n) {
+      const clr = el('button', { class: 'pm-btn' }, 'Clear');
+      clr.onclick = () => { if (ap.target === 'bodies') ap.bodies = []; else ap.faces = []; changed(true); };
+      g1.appendChild(clr);
+    }
+    // the look: the library by category
+    const g2 = this.pmGroup(root, 'Appearance', 'ap:look');
+    const cat = this._apCat && AP.CATEGORIES.includes(this._apCat) ? this._apCat : spec.cat || AP.CATEGORIES[0];
+    const csel = el('select', { 'data-ap-cat': '' });
+    for (const c of AP.CATEGORIES) { const o = el('option', { value: c }, c); if (c === cat) o.selected = true; csel.appendChild(o); }
+    csel.onchange = () => { this._apCat = csel.value; this.renderPM(); };
+    const w2 = el('div', { class: 'pm-input' }); w2.appendChild(csel);
+    g2.appendChild(this.row('Category', w2));
+    const grid = el('div', { class: 'ap-grid' });
+    for (const p of AP.LIBRARY.filter((x) => x.cat === cat)) {
+      const ps = AP.lookSpec({ preset: p.id });
+      const b = el('button', { class: 'ap-pick' + (look.preset === p.id ? ' on' : ''), title: p.name, 'data-ap-preset': p.id }, `<span class="ap-sw" style="${this.swatchStyle(ps)}"></span><span>${esc(p.name)}</span>`);
+      b.onclick = () => { ap.look = { preset: p.id, ...(look.scale ? { scale: look.scale } : {}), ...(look.angle ? { angle: look.angle } : {}) }; this._apCat = cat; changed(true); };
+      grid.appendChild(b);
+    }
+    g2.appendChild(grid);
+    // its colour
+    const g3 = this.pmGroup(root, 'Colour', 'ap:colour');
+    const ci = el('input', { type: 'color', value: spec.color, 'data-ap-color': '' });
+    ci.oninput = () => { ap.look = { ...ap.look, color: ci.value }; changed(); };
+    ci.onchange = () => this.renderPM();
+    const w3 = el('div', { class: 'pm-input' }); w3.appendChild(ci);
+    if (look.color) { const rs = el('button', { class: 'pm-btn', title: 'Back to the library colour' }, 'Reset'); rs.onclick = () => { const { color: _c, ...rest } = ap.look; ap.look = rest; changed(true); }; w3.appendChild(rs); }
+    g3.appendChild(this.row('Colour', w3));
+    const sw = ['#c62828', '#e65100', '#f2c200', '#2e7d32', '#1565c0', '#283593', '#6a1b9a', '#4e342e', '#212121', '#757575', '#cfd8dc', '#ffffff'];
+    const row = el('div', { class: 'ap-colors' });
+    for (const c of sw) { const b = el('button', { title: c, style: `background:${c}` }); b.onclick = () => { ap.look = { ...ap.look, color: c }; changed(true); }; row.appendChild(b); }
+    g3.appendChild(row);
+    // the texture's size and angle
+    if (spec.tex) {
+      const g4 = this.pmGroup(root, 'Texture', 'ap:tex');
+      const num = (key, label, val, step, unit) => {
+        const inp = el('input', { type: 'number', value: String(val), step: String(step), 'data-ap-num': key });
+        inp.onchange = () => { const v = Number(inp.value); if (Number.isFinite(v) && (key !== 'scale' || v > 0)) { ap.look = { ...ap.look, [key]: v }; if ((key === 'scale' && v === 1) || (key === 'angle' && v === 0)) delete ap.look[key]; changed(true); } };
+        const w = el('div', { class: 'pm-input' }); w.appendChild(inp); if (unit) w.appendChild(el('span', { class: 'unit' }, unit));
+        g4.appendChild(this.row(label, w));
+      };
+      num('scale', 'Scale', look.scale || 1, 0.1, '×');
+      num('angle', 'Angle', look.angle || 0, 15, '°');
+      g4.appendChild(el('div', { class: 'pm-hint' }, `The pattern repeats every ${+spec.size[0].toFixed(1)} × ${+spec.size[1].toFixed(1)} mm, laid on each face from the side it faces most.${spec.cut ? ' Its holes are see-through (in the view and in renders, shadows too): the face looks like the mesh without it being modelled.' : ''}`));
+    }
+    // its name
+    const g5 = this.pmGroup(root, 'Name', 'ap:name');
+    const ni = el('input', { type: 'text', value: ap.name || '', placeholder: AP.presetName(ap.look) });
+    ni.oninput = () => { ap.name = ni.value; };
+    const w5 = el('div', { class: 'pm-input' }); w5.appendChild(ni);
+    g5.appendChild(this.row('Name', w5));
   }
 
   // ------------------------------------------------------------ Configurations tab
@@ -2809,6 +2993,7 @@ export class UI {
 
   // ------------------------------------------------------------ feature tree
   renderTree() {
+    if (this.leftTab === 'appear') this.renderAppearances();
     if (this.app.mode === 'drawing' && this.app.drawing) { this.app.drawing.renderTree(); return; }
     const a = this.app, doc = a.doc, res = a.result;
     const root = $('#tree');
@@ -3838,6 +4023,7 @@ export class UI {
     if (pm.kind === 'measure') return this.renderMeasurePM(root);
     if (pm.kind === 'feature') return this.renderFeaturePM(root);
     if (pm.kind === 'explode') return a.explodeTool?.renderPM();
+    if (pm.kind === 'appearance') return this.renderAppearancePM(root);
   }
 
   updatePMStatus() {
@@ -5010,6 +5196,7 @@ export class UI {
       this.showContext(r.left, r.bottom + 4, this.displayItems());
     }, { drop: true });
     // (a cut on, its panel closed: the panel opened again; its ✗ removes the cut)
+    btn('perspective', 'Perspective view (off: orthographic)', () => a.setPerspective(!a.viewport.perspective), { on: !!a.viewport.perspective });
     btn('section', 'Section View', () => (a.viewport.section && !a.pm ? a.reopenSection() : a.startSection()), { on: !!a.viewport.section });
     const vb = btn('eye', 'Visibility: planes, sketches, axes, points, surfaces', (e, b) => { const r = b.getBoundingClientRect(); this.showVisMenu(r.left, r.bottom + 4); }, { drop: true, on: Object.values(a.vis).some((x) => !x) || a.showPlanes });
     vb.classList.add('vis-btn');

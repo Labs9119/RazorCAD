@@ -6,6 +6,24 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 11:07 — Perspective view
+
+- **Perspective** in the heads-up toolbar (and View ▸ Perspective / Orthographic, and the Display Style list): the
+  view drawn in perspective, nearer things bigger. Rotating, panning, zooming (it moves the view in and out),
+  picking, dragging and labels work in it, and renders are taken in perspective. Kept in the settings.
+- Test perspective-view.
+
+## 2026-10-31 10:56 — More scenes and places for rendering
+
+- Eleven new scenes for renders and the realistic view, alongside Studio, Studio on white and Outdoor sky: **Soft
+  gradient (infinity cove)**, **Dark studio**, **Showroom**, **Overcast**, **Sunset** and **Night (blue)**, each with
+  its own lighting and reflections, a background (a colour or a top-to-bottom gradient) and a key light of its own
+  colour and strength; and five **places**, **Outdoors (park)**, **Forest**, **Office**, **Workshop** and **Store**,
+  shown behind the part (a little out of focus, nearly level whichever way the view looks) as well as lighting it and
+  showing in its reflections. All are built in, drawn from shapes: no picture files.
+- Render and Lighting list the scenes under **Scene**; parts saved with the old three keep them.
+- Test render-scenes: every scene renders with its own background, the part lit, no two alike, all in Lighting.
+
 ## 2026-10-31 10:02 — Appearances tab and Render tab
 
 - An **Appearances** tab above the feature tree: appearances on faces, bodies or the whole part, in order (each over

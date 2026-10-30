@@ -41,7 +41,7 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import * as P3 from './print3d.js';
-import { LOOKS, lookFor, renderImage, showDecals, environment } from './render.js';
+import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
 import * as AP from './appearances.js';
 import { glb, viewportBodies } from './gltf.js';
 import * as DIM from './dimids.js';
@@ -900,15 +900,15 @@ class App {
     });
   }
 
-  // The realistic view: every face physically based (metal, plastic, glass…), lit by a studio, in the view
+  // The realistic view: every face physically based (metal, plastic, glass…), lit by the render scene, in the view
   toggleRealistic(on = !this.realisticView) {
     if (this.mode !== 'part' && on) { this.toast('The realistic view is for parts', true); return; }
     this.realisticView = !!on;
-    if (on) this._viewEnv ||= environment(this.viewport.renderer, (this.doc.render?.env || 'studio') === 'sky' ? 'sky' : 'studio');
+    if (on) this._viewEnv ||= environment(this.viewport.renderer, this.doc.render?.env || 'studio');
     this.viewport.setRealistic(on, this._viewEnv?.texture);
     this.pushBody(true);
     this.ui.renderCommandManager();
-    this.status(on ? 'Realistic view: appearances as they render (metals, glass, textures), lit by the studio. Click Realistic View again to go back.' : 'Ready');
+    this.status(on ? 'Realistic view: appearances as they render (metals, glass, textures), lit by the render scene (Lighting…). Click Realistic View again to go back.' : 'Ready');
   }
 
   // Add (or edit) an appearance: opts { id } to edit one, else a new one on the faces, bodies or whole part given (by
@@ -5110,7 +5110,7 @@ class App {
       const prev = this.doc.render || this._renderOpts || { size: '1920x1080', env: 'studio', floor: true, exposure: 1 };
       const v = await this.ui.promptFields('Render', 'camera', [
         { key: 'size', label: 'Size', type: 'select', options: [['view', 'As the view'], ['1280x720', '1280 × 720'], ['1920x1080', '1920 × 1080'], ['2560x1440', '2560 × 1440'], ['3840x2160', '3840 × 2160']], value: prev.size },
-        { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
+        { key: 'env', label: 'Scene', type: 'select', options: Object.entries(SCENES).map(([k, sc]) => [k, sc.name]), value: prev.env },
         { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
         { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
         { key: 'quality', label: 'Quality', type: 'select', options: [['1', 'Draft (one pass)'], ['16', 'Good (16 passes: smooth edges, soft shadows)'], ['64', 'Best (64 passes)']], value: String(prev.quality ?? 16) },
@@ -5142,7 +5142,7 @@ class App {
   async renderLighting() {
     const prev = this.doc.render || { size: '1920x1080', env: 'studio', floor: true, exposure: 1, quality: 16 };
     const v = await this.ui.promptFields('Lighting', 'lighting', [
-      { key: 'env', label: 'Environment', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env || 'studio' },
+      { key: 'env', label: 'Scene', type: 'select', options: Object.entries(SCENES).map(([k, sc]) => [k, sc.name]), value: prev.env || 'studio' },
       { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure ?? 1 },
       { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor !== false },
     ], 'For renders and the realistic view. Kept with the part.');
@@ -5151,7 +5151,7 @@ class App {
     this.commit();
     if (this._viewEnv) { this._viewEnv.dispose(); this._viewEnv = null; }
     if (this.realisticView) { this.realisticView = false; this.toggleRealistic(true); }
-    this.status(`Lighting: ${v.env === 'sky' ? 'outdoor sky' : v.env === 'white' ? 'studio on white' : 'studio'}`);
+    this.status(`Lighting: ${(SCENES[v.env] || SCENES.studio).name}`);
   }
 
   // Decal: a picture put on a flat face of the part (for the view and renders): opened, then the face clicked.
@@ -5453,6 +5453,14 @@ class App {
     else if (s?.kind === 'feature') frame = this.result.planes.get(s.id) || this.result.sketches.get(s.id)?.frame;
     if (frame) this.viewport.normalTo(frame);
     else this.toast('Select a plane, flat face or sketch first');
+  }
+
+  // The perspective view on or off (kept in the settings: every part and assembly shows it)
+  setPerspective(on, quiet = false) {
+    this.viewport.setPerspective(on);
+    if (!quiet && this.ui.prefs) { if (on) this.ui.prefs.perspective = true; else delete this.ui.prefs.perspective; this.ui.savePrefs(); }
+    this.ui.renderHUD?.();
+    if (!quiet) this.status(on ? 'Perspective view: near things look bigger. Renders use it too.' : 'Orthographic view');
   }
 
   togglePlanes() {

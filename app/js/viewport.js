@@ -15,6 +15,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const HALF_H = 100; // ortho half-height at zoom 1 (mm)
 const CAM_DIST = 2000;
+const PERSP_FOV = 35; // (degrees, top to bottom: the perspective view's lens)
 
 // Standard views: [view direction (toward the viewer), screen-up direction]
 export const VIEWS = {
@@ -81,6 +82,9 @@ export class Viewport {
     this.camera.position.set(0, 0, CAM_DIST).applyQuaternion(this.camera.quaternion);
     this.camera.zoom = 0.9;
     this.scene.add(this.camera);
+    // (the perspective view: a camera following the orthographic one, which the controls move (setPerspective))
+    this.perspective = false;
+    this.pcam = new THREE.PerspectiveCamera(PERSP_FOV, 1, 1, 1e5);
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a96a8, 1.6));
     const key = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -144,6 +148,26 @@ export class Viewport {
   // Left-drag rotates in part mode; while sketching the left button draws.
   setLeftRotate(on) {
     this.controls.leftRotate = on;
+  }
+
+  // The perspective view on or off: the view drawn, picked and projected through a perspective camera that follows the
+  // orthographic one (same direction; as far back from the target's depth as makes the target's plane as tall as the
+  // orthographic view shows it, so zooming moves it in and out)
+  setPerspective(on) { this.perspective = !!on; }
+  get viewCam() {
+    if (!this.perspective) return this.camera;
+    const o = this.camera, p = this.pcam, fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(o.quaternion);
+    const h = (o.top - o.bottom) / o.zoom, d = h / 2 / Math.tan((PERSP_FOV * Math.PI) / 360);
+    const focus = o.position.clone().addScaledVector(fwd, this.controls.target.clone().sub(o.position).dot(fwd));
+    p.position.copy(focus).addScaledVector(fwd, -d);
+    p.quaternion.copy(o.quaternion);
+    p.aspect = (this.width || 1) / (this.height || 1);
+    const s = this._depthBox, dist = s ? p.position.distanceTo(s.center) : d, R = s ? s.radius * 1.1 : d;
+    p.far = dist + R + d;
+    p.near = Math.max(p.far / 2e4, d / 200, dist - R);
+    p.updateProjectionMatrix();
+    p.updateMatrixWorld();
+    return p;
   }
 
   resize() {
@@ -761,7 +785,8 @@ export class Viewport {
     r.setScissorTest(false);
     r.setViewport(0, 0, this.width, this.height);
     r.clear();
-    r.render(this.scene, this.camera); // (no triad; drawn from at once, before the buffer is cleared)
+    const cam = this.viewCam;
+    r.render(this.scene, cam); // (no triad; drawn from at once, before the buffer is cleared)
     // the part of the view the model is in (its box as seen), with a margin, about square
     let x0 = 0, y0 = 0, x1 = this.width, y1 = this.height;
     const b = this.body?.visible !== false || this.asmView ? this.contentBox() : null;
@@ -769,7 +794,7 @@ export class Viewport {
       const v = new THREE.Vector3();
       let a0 = Infinity, b0 = Infinity, a1 = -Infinity, b1 = -Infinity;
       for (let i = 0; i < 8; i++) {
-        v.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).project(this.camera);
+        v.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).project(cam);
         const sx = ((v.x + 1) / 2) * this.width, sy = ((1 - v.y) / 2) * this.height;
         a0 = Math.min(a0, sx); a1 = Math.max(a1, sx); b0 = Math.min(b0, sy); b1 = Math.max(b1, sy);
       }
@@ -1207,7 +1232,7 @@ export class Viewport {
     r.setScissorTest(false);
     r.clear();
     r.setViewport(0, 0, this.width, this.height);
-    r.render(this.scene, this.camera);
+    r.render(this.scene, this.viewCam);
     // triad in the lower-left corner
     const s = 90;
     this.triadCam.position.set(0, 0, 5).applyQuaternion(this.camera.quaternion);
@@ -1323,7 +1348,7 @@ export class Viewport {
   }
 
   project(world) {
-    const v = world.clone().project(this.camera);
+    const v = world.clone().project(this.viewCam);
     return { x: ((v.x + 1) / 2) * this.width, y: ((1 - v.y) / 2) * this.height };
   }
 
@@ -1342,8 +1367,9 @@ export class Viewport {
   // nearest — easily metres of a big assembly — and pick what is behind it.)
   aimRay(ev) {
     this.camera.updateMatrixWorld(); // (as the view is now, even before the next frame is drawn)
-    this.raycaster.setFromCamera(this.ndc(ev), this.camera);
-    this.raycaster.ray.origin.addScaledVector(this.raycaster.ray.direction, this.camera.near);
+    const cam = this.viewCam;
+    this.raycaster.setFromCamera(this.ndc(ev), cam);
+    this.raycaster.ray.origin.addScaledVector(this.raycaster.ray.direction, cam.near);
     return this.raycaster;
   }
 
@@ -1351,8 +1377,8 @@ export class Viewport {
   // (client coordinates): the movement along dir as the screen shows it; or, when dir points (nearly) at the viewer
   // (seen shorter than a quarter of its length), the movement up the screen, toward the viewer
   dragAlong(dir, at, from, ev) {
-    const cam = this.camera;
-    cam.updateMatrixWorld();
+    this.camera.updateMatrixWorld();
+    const cam = this.viewCam;
     const R = this.canvas.getBoundingClientRect(), wpp = this.worldPerPixel();
     const p0 = at.clone().project(cam), p1 = at.clone().addScaledVector(dir, wpp).project(cam);
     // (pixels on the screen for one pixel's length along dir)

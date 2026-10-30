@@ -2579,6 +2579,87 @@ const UI = {
     return { ok: true, detail: `a 320 × 200 render (brushed aluminium from the material, studio light, a floor shadow) with the decal in it (${red} red pixels); 16 passes ${t16} tones against ${t1}; the decal kept out of the kernel` };
   },
 
+  // Perspective view: a long bar seen end on at an angle; in perspective its near end is drawn taller than its far end
+  // (orthographic: the same), a click on a face still picks it, a dragged distance still follows the pointer, renders
+  // use it, and it is kept in the settings; back to orthographic after
+  async 'perspective-view'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), THREE = await import('three'), bad = [];
+    const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const q = [[0, 0], [300, 0], [300, 40], [0, 40]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+    d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 40 }));
+    await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(150);
+    const vp = a.viewport;
+    vp.setStandardView('iso', false); vp.zoomToFit(null, false); await wait(100);
+    // (the bar's two end edges as drawn: their lengths on the screen)
+    const endLen = () => { const l = (p, r) => { const A = vp.project(new THREE.Vector3(...p)), B = vp.project(new THREE.Vector3(...r)); return Math.hypot(A.x - B.x, A.y - B.y); }; return [l([0, 40, 0], [0, 40, -40]), l([300, 40, 0], [300, 40, -40])]; };
+    const [o0, o1] = endLen();
+    const render = async () => (await a.renderView({ size: '160x100', env: 'studio', floor: true, exposure: 1, quality: 1, quiet: true }))?.url;
+    const orthoImg = await render();
+    try {
+      a.setPerspective(true); await wait(100);
+      if (!a.ui.prefs.perspective) bad.push('not kept in the settings');
+      if (!document.querySelector('#hud button.on [data-icon="perspective"], #hud button.on')) bad.push('the toolbar button is not on');
+      const [p0, p1] = endLen();
+      if (Math.abs(o0 - o1) > 1) bad.push(`orthographic ends differ: ${o0.toFixed(1)} and ${o1.toFixed(1)}`);
+      if (Math.abs(p0 - p1) < 3) bad.push(`perspective ends alike: ${p0.toFixed(1)} and ${p1.toFixed(1)}`);
+      // (a click at a point of the top face, as drawn, picks that point)
+      const want = new THREE.Vector3(150, 40, -20), sp = vp.project(want), R = vp.canvas.getBoundingClientRect();
+      const hit = vp.aimRay({ clientX: R.left + sp.x, clientY: R.top + sp.y }).intersectObject(vp.body, false)[0];
+      if (!hit || hit.point.distanceTo(want) > 1) bad.push(`the click picked ${hit ? hit.point.toArray().map((v) => v.toFixed(1)) : 'nothing'}`);
+      // (dragging 50 px along X's direction on the screen moves about as far as 50 px there is)
+      const dir = new THREE.Vector3(1, 0, 0), s0 = vp.project(want), s1 = vp.project(want.clone().add(dir)), px = Math.hypot(s1.x - s0.x, s1.y - s0.y), ux = (s1.x - s0.x) / px, uy = (s1.y - s0.y) / px;
+      const moved = vp.dragAlong(dir, want, { clientX: 0, clientY: 0 }, { clientX: ux * 50, clientY: uy * 50 });
+      if (!(moved > 0)) bad.push(`a drag along X moved ${moved}`);
+      const perspImg = await render();
+      if (!perspImg || perspImg === orthoImg) bad.push('the render is not in perspective');
+    } finally { a.setPerspective(false); }
+    if (vp.perspective || a.ui.prefs.perspective) bad.push('still in perspective');
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `end edges ${o0.toFixed(1)} / ${o1.toFixed(1)} px orthographic; in perspective the near one longer; picking, dragging and renders in perspective` };
+  },
+
+  // Render scenes: a block rendered in every scene; each picture's corners show the scene's background (its colour, or
+  // the top and bottom of its gradient; a place (outdoors, forest, office…) shows behind the part), the part lit (not black) in each, and no two scenes alike; the Lighting
+  // dialog offers them all
+  async 'render-scenes'() {
+    const a = window.app, R = await import('/js/render.js'), S = await import('/js/sketchmodel.js');
+    const d = M.newDoc(), sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const q = [[0, 0], [40, 0], [40, 30], [0, 30]].map((v) => S.addPoint(sk, ...v)); q.forEach((id, i) => S.addLine(sk, id, q[(i + 1) % 4]));
+    d.features.push(sk, M.createFeature(d, 'extrude', { sketch: sk.id, depth: 20 }));
+    await a.newDocument?.(); closeModals(); await a.setDoc(d); await a.rebuild(); await wait(150);
+    a.viewport.setStandardView('iso', false);
+    const W = 120, H = 80, bad = [], means = {};
+    const rgb = (c) => [(c >> 16) & 255, (c >> 8) & 255, c & 255], near = (p, c, tol = 40) => p.every((v, i) => Math.abs(v - c[i]) <= tol);
+    for (const [id, sc] of Object.entries(R.SCENES)) {
+      const img = await a.renderView({ size: `${W}x${H}`, env: id, floor: true, exposure: 1, quality: 1, quiet: true });
+      if (!img?.url) { bad.push(`${id}: no render`); continue; }
+      const im = await new Promise((res) => { const x = new Image(); x.onload = () => res(x); x.src = img.url; });
+      const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d'); g.drawImage(im, 0, 0);
+      const px = g.getImageData(0, 0, W, H).data, at = (x, y) => { const i = (y * W + x) * 4; return [px[i], px[i + 1], px[i + 2]]; };
+      if (sc.bg === 'place') {
+        // (a place: its surroundings behind the part, not one flat colour)
+        const tones = new Set(); for (let x = 0; x < W; x += 3) for (let y = 0; y < H; y += 3) if (Math.abs(x - W / 2) > W / 4 || Math.abs(y - H / 2) > H / 4) tones.add(at(x, y).map((v) => v >> 4).join());
+        if (tones.size < 6) bad.push(`${id}: the place does not show behind the part (${tones.size} tones)`);
+      } else {
+        const [top, bottom] = Array.isArray(sc.bg) ? sc.bg.map(rgb) : [rgb(sc.bg), rgb(sc.bg)];
+        if (!near(at(1, 1), top)) bad.push(`${id}: top corner ${at(1, 1)}, not ${top}`);
+        if (!near(at(1, H - 2), bottom)) bad.push(`${id}: bottom corner ${at(1, H - 2)}, not ${bottom}`);
+      }
+      // (the part, in the middle: lit)
+      const mid = at(W / 2, H / 2);
+      if (Math.max(...mid) < 25) bad.push(`${id}: the part is black (${mid})`);
+      let s = [0, 0, 0]; for (let i = 0; i < px.length; i += 4) for (let k = 0; k < 3; k++) s[k] += px[i + k];
+      means[id] = s.map((v) => v / (W * H));
+    }
+    const ids = Object.keys(means);
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) if (means[ids[i]].every((v, k) => Math.abs(v - means[ids[j]][k]) < 2)) bad.push(`${ids[i]} and ${ids[j]} look the same`);
+    // (the Lighting dialog lists every scene)
+    const p = a.renderLighting(); await wait(100);
+    const opts = [...document.querySelectorAll('.modal select option')].map((o) => o.value);
+    closeModals(); await p.catch(() => {});
+    for (const id of ids) if (!opts.includes(id)) bad.push(`Lighting does not offer ${id}`);
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `${ids.length} scenes rendered, each with its own background and the part lit` };
+  },
+
   // Appearances: two blocks; anodised red on one top face, then oak on its body (the later one wins), moved above it
   // (red again), the red suppressed (oak); a grating on the whole part (see-through: its faces drawn by its own mesh,
   // left out of the body's drawing but still picked); the Appearances tab lists them in order; the panel picks a face

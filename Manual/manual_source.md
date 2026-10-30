@@ -350,6 +350,8 @@ An **assembly** keeps its own up axis in the same way (View ▸ Up Axis, the sta
 
 **View** menu or the heads-up toolbar: **Shaded With Edges**, **Shaded**, **Hidden Lines Removed** and **Wireframe**. {idx:display styles}
 
+**Perspective** {idx:perspective view}{idx:orthographic view} (the heads-up toolbar's box button, or View ▸ **Perspective** / **Orthographic**, also in the Display Style list) draws the view in perspective: nearer things look bigger, as a camera sees them. Rotating, panning, zooming (in perspective it moves the view in and out), picking and dragging work as before, and **renders** are taken in perspective too. **Orthographic** (the default) draws without perspective, so parallel edges stay parallel. The choice is kept in your settings for every part and assembly.
+
 ## Visibility
 
 - **View ▸ Show / Hide Planes** toggles the standard planes.
@@ -1099,9 +1101,30 @@ Appearances are saved with the part and go with it into assemblies (as colours: 
 
 The **Render** tab {idx:Render tab} has the rendering tools: **Render**, **Quick Render**, **Realistic View**, **Lighting**, **Add Appearance**, **Appearances** (the tab), **Edit Material**, **Decal**, **Decals** and **Export glTF** (for other viewers and renderers).
 
-**Realistic View** {idx:realistic view} shows the part in the view as it renders: every face physically based (metals reflect, glass is clear, textures and gratings as they are), lit by the studio. Click it again to go back to the normal shaded view. **Lighting** sets the environment (studio, outdoor sky, or studio on white), the exposure and the floor's shadow, for renders and the realistic view; it is kept with the part. **Quick Render** renders the view at its size in one pass.
+**Realistic View** {idx:realistic view} shows the part in the view as it renders: every face physically based (metals reflect, glass is clear, textures and gratings as they are), lit by the render scene. Click it again to go back to the normal shaded view. **Lighting** sets the **scene** {idx:render scenes} (below), the exposure and the floor's shadow, for renders and the realistic view; it is kept with the part. **Quick Render** renders the view at its size in one pass.
 
-**Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the **Quality** (Draft: one pass; Good: 16 passes, Best: 64, each with the view and the light moved a little and the passes averaged, for smooth edges and soft shadows), the lighting (**Studio**, **Outdoor sky**, or studio on white), a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them; faces and bodies with an appearance render with it (its texture, finish and holes). **Save PNG…** writes the picture. The settings are kept with the part.
+**Render** makes a photorealistic picture of the view as it is now {idx:render}{idx:photorealistic}: choose the size (as the view, or up to 3840 × 2160), the **Quality** (Draft: one pass; Good: 16 passes, Best: 64, each with the view and the light moved a little and the passes averaged, for smooth edges and soft shadows), the **Scene**, a soft **shadow on the floor** and the exposure, and a **look** for each body: polished, brushed or cast metal, gloss paint, powder coat, glossy or matte plastic, rubber or glass, or **From the material** (aluminium and stainless brushed, steel cast, brass and copper polished, ABS glossy, PLA and nylon matte). Bodies keep their colours, and their looks are kept with them; faces and bodies with an appearance render with it (its texture, finish and holes). **Save PNG…** writes the picture. The settings are kept with the part.
+
+The **scenes** light the part, show in its reflections and sit behind it:
+
+| Scene | What it looks like |
+|---|---|
+| Studio | A soft grey room with a large light overhead and panels at the sides, on light grey |
+| Studio on white | The studio, on white (for catalogues and web pages) |
+| Soft gradient (infinity cove) | A brighter, softer studio on a white-to-grey gradient |
+| Dark studio | A black room with a light overhead and tall strip lights at the sides (rim highlights), on a dark gradient |
+| Showroom | A warm room with rows of ceiling spotlights, on a warm cream gradient |
+| Outdoor sky | A blue sky with the sun, on pale blue |
+| Overcast | An even, bright grey sky: soft light, faint shadows |
+| Sunset | A low warm sun and an orange horizon under a blue sky, on a blue-to-orange gradient |
+| Night (blue) | A dark blue room with a cool light on one side and a warm one on the other, on a dark blue gradient |
+| Outdoors (park) | A park: grass, trees, hills and clouds under the sun, seen behind the part |
+| Forest | Among tall conifers on the forest floor, light from above, seen behind the part |
+| Office | Desks, monitors, ceiling lights and a window wall, seen behind the part |
+| Workshop | A concrete floor, workbench, machines and racks under strip lights, seen behind the part |
+| Store | Shelves of brightly coloured goods, fridges and strip lights, seen behind the part |
+
+The last five are **places**: the place itself shows behind the part, a little out of focus and nearly level whichever way the view looks, and it lights the part and shows in its reflections.
 
 **Render ▸ Decal** {idx:decal} puts a picture (a logo, a label) on a flat face: open the picture, give its width and angle, then click the face where its middle goes. Decals show in the view and in renders, are saved with the part, and are not geometry. **Tools ▸ Decals…** lists them, to delete them.
 

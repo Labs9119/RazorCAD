@@ -251,8 +251,9 @@ export class AssemblyView {
 
   // screen projection through a component's placement: a function (x, y, z) → [sx, sy, ndc z]
   projector(matrix) {
-    const vp = this.vp, cam = vp.camera;
-    cam.updateMatrixWorld();
+    const vp = this.vp;
+    vp.camera.updateMatrixWorld();
+    const cam = vp.viewCam;
     const e = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse).multiply(matrix).elements;
     const W = vp.width, H = vp.height;
     return (x, y, z) => {
@@ -282,7 +283,7 @@ export class AssemblyView {
   // the ndc depth a point may have and still be in front of what the cursor hits
   depthLimit(hit) {
     if (!hit) return Infinity;
-    const cam = this.vp.camera, p = hit.point.clone().project(cam);
+    const cam = this.vp.viewCam, p = hit.point.clone().project(cam);
     const r = this.box().getBoundingSphere(new THREE.Sphere()).radius || 50;
     return p.z + ((r * 0.02 + 0.5) * 2) / (cam.far - cam.near);
   }

@@ -41,7 +41,8 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import * as P3 from './print3d.js';
-import { LOOKS, lookFor, renderImage, showDecals } from './render.js';
+import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
+import * as AP from './appearances.js';
 import { glb, viewportBodies } from './gltf.js';
 import * as DIM from './dimids.js';
 
@@ -827,7 +828,7 @@ class App {
   // and hidden bodies (re-uploading it and rebuilding its picking structure takes time).
   pushBody(force = false) {
     const colors = this.bodyColors(), hidden = this.hiddenBodyIndices(), glass = this.transparentBodyIndices();
-    const faces = JSON.stringify(this.doc.appearance?.faces || []);
+    const faces = JSON.stringify(this.doc.appearance?.faces || []) + JSON.stringify(this.doc.appearances || []) + (this.realisticView ? '|real' : '');
     // an exploded view shown: the bodies moved apart (the display only)
     const offs = this.bodyOffsets();
     const exKey = offs.size ? JSON.stringify([...offs]) : '';
@@ -843,7 +844,178 @@ class App {
     (this.result.body?.faceGroups || []).forEach((g, gi) => { if (g.look?.c != null) pairs.push([gi, g.look.c]); });
     for (const a of this.doc.appearance?.faces || []) { const fi = this.viewport.faceIndexNear(a.p); if (fi >= 0) pairs.push([fi, a.color]); }
     this.viewport.setFaceColors(pairs);
+    this.applyAppearances();
   }
+
+  // ------------------------------------------------------------ appearances (appearances.js; the Appearances tab)
+  // Each face's look from the appearances, in order (the last to reach a face wins): its colour on the face, and the
+  // faces with a texture (in the realistic view, every face) drawn by meshes of their own
+  applyAppearances() {
+    const vp = this.viewport;
+    if (!vp.mesh || !vp.bodyGeo) { this.apLooks = []; return; }
+    const { looks, lost } = this.resolveAppearances();
+    this.apLooks = looks;
+    this.apLost = lost;
+    const pairs = [];
+    looks.forEach((sp, fi) => { if (sp) pairs.push([fi, sp.color]); });
+    vp.setFaceColors(pairs);
+    const specs = this.realisticView ? this.faceSpecs(looks) : looks, by = new Map();
+    specs.forEach((sp, fi) => { if (sp && (sp.tex || this.realisticView)) { if (!by.has(sp)) by.set(sp, []); by.get(sp).push(fi); } });
+    vp.setLooks([...by].map(([spec, list]) => ({ spec, faces: list })));
+  }
+  resolveAppearances() {
+    const ids = (this.result?.bodies || []).map((b) => b.id);
+    return AP.resolve(this.doc.appearances, this.viewport.mesh, ids, (f) => this.storedFaceIndex(f));
+  }
+  // A face an appearance holds ({ p: a point on it, n: its normal if flat, b: its body }), found again where it is now:
+  // the face nearest the point, on the same body and (flat) facing the same way; -1: not found, -2: its body is hidden
+  storedFaceIndex(f) {
+    const vp = this.viewport, bodies = this.result?.bodies || [];
+    if (f.b != null) {
+      const bi = bodies.findIndex((b) => b.id === f.b);
+      if (bi >= 0 && vp.hiddenBodies?.has(bi)) return -2;
+    }
+    const fi = vp.faceIndexNear(f.p);
+    if (fi < 0) return -1;
+    if (f.b != null && bodies[vp.faceBody[fi]]?.id !== f.b) return -1;
+    if (f.n) {
+      const m = vp.mesh, g = m.faceGroups[fi], v = m.triangles[g.start * (vp.faceGroupScale || 1)] * 3, N = m.normals;
+      if (N[v] * f.n[0] + N[v + 1] * f.n[1] + N[v + 2] * f.n[2] < 0.9) return -1;
+    }
+    return fi;
+  }
+  // Each face's look for a render (and the realistic view): its appearance, else its body's (its colour as the view
+  // shows it, and the metal or plastic of the body's render look)
+  faceSpecs(looks = this.apLooks || []) {
+    const vp = this.viewport, mesh = vp.mesh, bodies = this.result?.bodies || [];
+    if (!mesh) return [];
+    const col = vp.bodyGeo?.getAttribute('color'), arr = vp._savedColors || col?.array, gs = vp.faceGroupScale || 1;
+    const lookOf = bodies.map((b) => { const { name: _n, ...pbr } = LOOKS[lookFor(this.doc.bodies?.[b.id]?.look, M.bodyMaterialId(this.doc, b.id))] || LOOKS.powder; return pbr; });
+    const c = new THREE.Color();
+    return mesh.faceGroups.map((g, fi) => {
+      if (looks[fi]) return looks[fi];
+      const v = mesh.triangles[g.start * gs] * 3;
+      if (arr) c.setRGB(arr[v], arr[v + 1], arr[v + 2]); else c.set(0xc3cad4);
+      return AP.plainSpec(c.getHex(), lookOf[vp.faceBody?.[fi] ?? 0] || {});
+    });
+  }
+
+  // The realistic view: every face physically based (metal, plastic, glass…), lit by the render scene, in the view
+  toggleRealistic(on = !this.realisticView) {
+    if (this.mode !== 'part' && on) { this.toast('The realistic view is for parts', true); return; }
+    this.realisticView = !!on;
+    if (on) this._viewEnv ||= environment(this.viewport.renderer, this.doc.render?.env || 'studio');
+    this.viewport.setRealistic(on, this._viewEnv?.texture);
+    this.pushBody(true);
+    this.ui.renderCommandManager();
+    this.status(on ? 'Realistic view: appearances as they render (metals, glass, textures), lit by the render scene (Lighting…). Click Realistic View again to go back.' : 'Ready');
+  }
+
+  // Add (or edit) an appearance: opts { id } to edit one, else a new one on the faces, bodies or whole part given (by
+  // default what is selected; nothing selected: the whole part), with opts.preset / opts.color
+  startAppearance(opts = {}) {
+    if (this.mode !== 'part') { this.toast('Appearances are set in a part (close the sketch first)', true); return null; }
+    if (!this.result?.bodies?.length) { this.toast('There is no body to put an appearance on yet', true); return null; }
+    if (this.pm) this.cancelPM();
+    const doc = this.doc;
+    doc.appearances ||= [];
+    let ap = opts.id ? doc.appearances.find((x) => x.id === opts.id) : null;
+    const isNew = !ap;
+    if (isNew) {
+      const sel = this.selection, vp = this.viewport;
+      let target = opts.target, faces = opts.faces || [], bodies = opts.bodies || [];
+      if (!target) {
+        if (faces.length) target = 'faces';
+        else if (bodies.length) target = 'bodies';
+        else if (sel?.kind === 'face' && sel.point) {
+          target = 'faces';
+          faces = [{ p: sel.point, ...(sel.face?.planar ? { n: sel.face.normal.toArray() } : {}), b: this.result.bodies[sel.body ?? vp.faceBody[sel.face?.index]]?.id }];
+        } else if (sel?.kind === 'body' && sel.id) { target = 'bodies'; bodies = [sel.id]; } else target = 'part';
+      }
+      const last = doc.appearances.at(-1)?.look;
+      ap = { id: AP.nextId(doc), name: '', target, bodies, faces, look: { preset: opts.preset || last?.preset || 'color', ...(opts.color ? { color: opts.color } : last?.color ? { color: last.color } : {}) } };
+      doc.appearances.push(ap);
+    }
+    this.pm = { kind: 'appearance', title: 'Appearances', ap, isNew, snapshot: JSON.stringify(ap) };
+    this.ui.renderPM();
+    this.previewAppearance();
+    this.status('Appearance: click faces (or bodies) in the view to add or remove them; pick the look in the panel. ✔ keeps it.');
+    return ap;
+  }
+  previewAppearance() {
+    this.pushBody(true);
+    this.showAppearanceTarget(this.pm?.kind === 'appearance' ? this.pm.ap : null);
+  }
+  // The faces (or bodies) an appearance is on, highlighted in the view
+  showAppearanceTarget(ap, key = 'pm') {
+    const vp = this.viewport;
+    if (!ap || ap.target === 'part') { vp.setFaceSet([], key); return; }
+    if (ap.target === 'bodies') vp.setFaceSet((ap.bodies || []).map((id) => vp.bodyInfo(vp.bodyIndexOf(id))).filter(Boolean), key);
+    else vp.setFaceSet((ap.faces || []).map((f) => this.storedFaceIndex(f)).filter((fi) => fi >= 0).map((fi) => vp.faceInfo(fi)), key);
+  }
+  // A click in the view while an appearance is open: the face (or its body) added, or taken off if it is on already
+  appearanceClick(e) {
+    const ap = this.pm.ap, fh = this.faceAt(e), vp = this.viewport;
+    if (!fh) return;
+    const fi = fh.hit.face, b = this.result.bodies[vp.faceBody[fi]];
+    if (!b) return;
+    if (ap.target === 'part') { ap.target = 'faces'; ap.faces = []; }
+    if (ap.target === 'bodies') {
+      ap.bodies = ap.bodies.includes(b.id) ? ap.bodies.filter((x) => x !== b.id) : [...ap.bodies, b.id];
+    } else {
+      const at = ap.faces.findIndex((f) => this.storedFaceIndex(f) === fi);
+      if (at >= 0) ap.faces.splice(at, 1);
+      else { const info = vp.faceInfo(fi); ap.faces.push({ p: fh.hit.point.toArray(), ...(info?.planar ? { n: info.normal.toArray() } : {}), b: b.id }); }
+    }
+    this.ui.renderPM();
+    this.previewAppearance();
+  }
+  finishAppearance(ok) {
+    const pm = this.pm, ap = pm.ap, doc = this.doc;
+    if (ok && ap.target !== 'part' && !(ap.target === 'bodies' ? ap.bodies : ap.faces).length) {
+      this.toast(`Click the ${ap.target === 'bodies' ? 'bodies' : 'faces'} for the appearance in the view (or apply it to the whole part)`, true);
+      return;
+    }
+    this.pm = null;
+    this.viewport.setFaceSet([]);
+    if (!ok) {
+      if (pm.isNew) doc.appearances = doc.appearances.filter((x) => x !== ap);
+      else { const orig = JSON.parse(pm.snapshot); for (const k of Object.keys(ap)) delete ap[k]; Object.assign(ap, orig); }
+      if (!doc.appearances.length) delete doc.appearances;
+    } else {
+      if (ap.target !== 'faces') ap.faces = [];
+      if (ap.target !== 'bodies') ap.bodies = [];
+      this.commit();
+    }
+    this.ui.renderPM();
+    this.ui.showLeft('appear');
+    this.pushBody(true);
+    this.status(ok ? `${this.appearanceName(ap)}: ${AP.targetSummary(ap, (id) => this.bodyById(id)?.name || id)}` : 'Ready');
+  }
+  appearanceName(ap) { return ap.name || AP.presetName(ap.look); }
+  // the list's own changes: moved (to index `to`), suppressed, copied, renamed, deleted
+  moveAppearance(id, to) {
+    const list = this.doc.appearances || [], i = list.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const [ap] = list.splice(i, 1);
+    list.splice(Math.max(0, Math.min(list.length, to > i ? to - 1 : to)), 0, ap);
+    this.appearancesChanged();
+  }
+  suppressAppearance(id, on) { const ap = this.doc.appearances?.find((x) => x.id === id); if (ap) { if (on) ap.suppressed = true; else delete ap.suppressed; this.appearancesChanged(); } }
+  copyAppearance(id) {
+    const list = this.doc.appearances || [], i = list.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const c = { ...JSON.parse(JSON.stringify(list[i])), id: AP.nextId(this.doc) };
+    if (c.name) c.name += ' (copy)';
+    list.splice(i + 1, 0, c);
+    this.appearancesChanged();
+  }
+  deleteAppearance(id) {
+    this.doc.appearances = (this.doc.appearances || []).filter((x) => x.id !== id);
+    if (!this.doc.appearances.length) delete this.doc.appearances;
+    this.appearancesChanged();
+  }
+  appearancesChanged() { this.commit(); this.pushBody(true); this.ui.renderAppearances(); }
 
   // ------------------------------------------------------------ exploded views of multi-body parts
   // (the centre of a body where it is modelled, not where an exploded view shows it)
@@ -3719,6 +3891,7 @@ class App {
     if (this.pickMode() === 'measure') { this.measureClick(e); return; }
     if (this.pm?.kind === 'annotate') { this.annotateClick(e); return; }
     if (this.pm?.kind === 'decal') { this.decalClick(e); return; }
+    if (this.pm?.kind === 'appearance') { this.appearanceClick(e); return; }
     // cycling through overlapping bodies: Shift+left-click steps back, a plain click on the spot selects
     if (this.cycleAllowed()) {
       const c = this._cycle;
@@ -4149,7 +4322,7 @@ class App {
           { label: b.kind === 'surface' ? 'Hide Surface' : 'Hide Body', icon: 'hide', action: () => this.setBodyHidden(b.id, true) },
           this.transparencyItem([b.id]),
           { label: 'Isolate', icon: 'isolate', action: () => this.isolateBodies([b.id]) },
-          { label: 'Body Appearance…', icon: 'appearance', action: () => this.ui.showAppearance({ kind: 'body', id: b.id }) },
+          { label: 'Body Appearance…', icon: 'appearance', action: () => this.startAppearance({ bodies: [b.id] }) },
           ...(b.kind === 'surface' ? [{ label: 'Convert to Solid…', icon: 'surfSolid', action: () => this.startFeatureOnBody('surfSolid', b.id) }, { label: 'Repair Mesh…', icon: 'meshRepair', action: () => this.startFeatureOnBody('meshRepair', b.id) }] : []),
           ...(b.sheet ? [
             { label: 'View Flat Pattern', icon: 'smFlatten', action: () => this.toggleFlatten(b.id) },
@@ -4163,7 +4336,8 @@ class App {
         const bi = vp.faceBody[p.hit.face];
         this.select({ kind: 'face', face, point: p.hit.point.toArray(), body: bi });
         const fp = p.hit.point.toArray(), bid = this.result.bodies?.[bi]?.id;
-        items.push({ label: 'Appearance…', icon: 'appearance', action: () => this.ui.showAppearance({ kind: 'face', p: fp, body: bid }) });
+        items.push({ label: 'Face Appearance…', icon: 'appearance', action: () => this.startAppearance({ faces: [{ p: fp, ...(face.planar ? { n: face.normal.toArray() } : {}), b: bid }] }) });
+        items.push({ label: 'Part Appearance…', icon: 'appearance', action: () => this.startAppearance({ target: 'part' }) });
         if (face.planar) {
           items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn(this.faceSketchPlane(face, fp)) });
           items.push({ label: 'Normal To', icon: 'normalTo', action: () => this.viewport.normalTo(this.faceFrame(face)) });
@@ -4715,6 +4889,7 @@ class App {
     if (pm.kind === 'sketch') return this.exitSketch(true);
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(true);
+    if (pm.kind === 'appearance') return this.finishAppearance(true);
     if (pm.kind === 'selectPlane' || pm.kind === 'measure' || pm.kind === 'annotate' || pm.kind === 'decal') return this.cancelPM();
     if (pm.kind === 'section') {
       // (a view of the model only: the cut stays, its arrow goes; nothing is built again)
@@ -4777,6 +4952,7 @@ class App {
     if (pm.kind === 'sketch') return this.exitSketch(false);
     if (pm.kind === 'sketch3d') return this.exitSketch3D(true);
     if (pm.kind === 'explode') return this.explodeTool?.close(false);
+    if (pm.kind === 'appearance') return this.finishAppearance(false);
     if (pm.kind === 'section') { this.clearSection(); this.status('Ready'); return; } // (the cut taken away; nothing built again)
     clearTimeout(this._previewTimer);
     this.pm = null;
@@ -4907,10 +5083,23 @@ class App {
   // The looks of the bodies (doc.bodies[id].look; 'auto': from the body's material), their colours and which are hidden.
   renderSetup() {
     const bodies = this.result?.bodies || [], vp = this.viewport;
+    // (each face's look, the faces of each look together; hidden bodies left out)
+    const groups = [], mesh = vp.mesh;
+    if (mesh?.faceGroups?.length) {
+      const specs = this.faceSpecs(), by = new Map(), gs = vp.faceGroupScale || 1, T = mesh.triangles;
+      specs.forEach((sp, fi) => { if (sp && !vp.hiddenBodies?.has(vp.faceBody?.[fi] ?? 0)) { if (!by.has(sp)) by.set(sp, []); by.get(sp).push(fi); } });
+      for (const [spec, list] of by) {
+        const index = new Uint32Array(list.reduce((n, fi) => n + mesh.faceGroups[fi].count * gs, 0));
+        let o = 0;
+        for (const fi of list) { const g = mesh.faceGroups[fi], a = T.subarray(g.start * gs, (g.start + g.count) * gs); index.set(a, o); o += a.length; }
+        groups.push({ index, spec });
+      }
+    }
     return {
       looks: bodies.map((b) => lookFor(this.doc.bodies?.[b.id]?.look, M.bodyMaterialId(this.doc, b.id))),
       colors: bodies.map((_, i) => (Array.isArray(vp.bodyColors) ? vp.bodyColors[i] : vp.bodyColors) ?? 0xc3cad4),
       hidden: new Set(vp.hiddenBodies || []),
+      ...(groups.length ? { groups } : {}),
     };
   }
   async renderView(opts = null) {
@@ -4918,21 +5107,22 @@ class App {
     if (!this.viewport.bodyGeo) { this.toast('There is no model to render', true); return null; }
     let o = opts;
     if (!o) {
-      const prev = this._renderOpts || { size: '1920x1080', env: 'studio', floor: true, exposure: 1 };
+      const prev = this.doc.render || this._renderOpts || { size: '1920x1080', env: 'studio', floor: true, exposure: 1 };
       const v = await this.ui.promptFields('Render', 'camera', [
         { key: 'size', label: 'Size', type: 'select', options: [['view', 'As the view'], ['1280x720', '1280 × 720'], ['1920x1080', '1920 × 1080'], ['2560x1440', '2560 × 1440'], ['3840x2160', '3840 × 2160']], value: prev.size },
-        { key: 'env', label: 'Lighting', type: 'select', options: [['studio', 'Studio'], ['sky', 'Outdoor sky'], ['white', 'Studio on white']], value: prev.env },
+        { key: 'env', label: 'Scene', type: 'select', options: Object.entries(SCENES).map(([k, sc]) => [k, sc.name]), value: prev.env },
         { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor },
         { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure },
         { key: 'quality', label: 'Quality', type: 'select', options: [['1', 'Draft (one pass)'], ['16', 'Good (16 passes: smooth edges, soft shadows)'], ['64', 'Best (64 passes)']], value: String(prev.quality ?? 16) },
         ...bodies.slice(0, 24).map((b, i) => ({ key: 'look' + i, label: `${b.name}`, type: 'select', options: Object.entries(LOOKS).map(([k, l]) => [k, l.name]), value: this.doc.bodies?.[b.id]?.look || 'auto' })),
-      ], 'One frame of the view as it is now. Each body’s look is kept with it.');
+      ], 'One frame of the view as it is now. Each body’s look is kept with it (faces and bodies with an appearance, from the Appearances tab, render with it).');
       if (!v) return null;
       let changed = false;
       bodies.slice(0, 24).forEach((b, i) => { const look = v['look' + i]; if ((this.doc.bodies?.[b.id]?.look || 'auto') !== look) { const st = M.ensureBodySettings(this.doc, b.id); if (look === 'auto') delete st.look; else st.look = look; changed = true; } });
-      if (changed) this.commit();
       o = { size: v.size, env: v.env, floor: !!v.floor, exposure: +this.result.ev(String(v.exposure)) || 1, quality: +v.quality || 1 };
       this._renderOpts = o;
+      if (JSON.stringify(this.doc.render || null) !== JSON.stringify(o)) { this.doc.render = { ...o }; changed = true; }
+      if (changed) this.commit();
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
@@ -4946,6 +5136,24 @@ class App {
     ]);
     return img;
   }
+  // Quick Render: the view as it is, one pass, at its size
+  quickRender() { return this.renderView({ ...(this.doc.render || { env: 'studio', floor: true, exposure: 1 }), size: 'view', quality: 1 }); }
+  // Lighting for renders and the realistic view: the environment, the exposure and the floor's shadow (kept with the part)
+  async renderLighting() {
+    const prev = this.doc.render || { size: '1920x1080', env: 'studio', floor: true, exposure: 1, quality: 16 };
+    const v = await this.ui.promptFields('Lighting', 'lighting', [
+      { key: 'env', label: 'Scene', type: 'select', options: Object.entries(SCENES).map(([k, sc]) => [k, sc.name]), value: prev.env || 'studio' },
+      { key: 'exposure', label: 'Exposure', type: 'expr', value: prev.exposure ?? 1 },
+      { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor !== false },
+    ], 'For renders and the realistic view. Kept with the part.');
+    if (!v) return;
+    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor };
+    this.commit();
+    if (this._viewEnv) { this._viewEnv.dispose(); this._viewEnv = null; }
+    if (this.realisticView) { this.realisticView = false; this.toggleRealistic(true); }
+    this.status(`Lighting: ${(SCENES[v.env] || SCENES.studio).name}`);
+  }
+
   // Decal: a picture put on a flat face of the part (for the view and renders): opened, then the face clicked.
   async addDecal() {
     let file;
@@ -5245,6 +5453,14 @@ class App {
     else if (s?.kind === 'feature') frame = this.result.planes.get(s.id) || this.result.sketches.get(s.id)?.frame;
     if (frame) this.viewport.normalTo(frame);
     else this.toast('Select a plane, flat face or sketch first');
+  }
+
+  // The perspective view on or off (kept in the settings: every part and assembly shows it)
+  setPerspective(on, quiet = false) {
+    this.viewport.setPerspective(on);
+    if (!quiet && this.ui.prefs) { if (on) this.ui.prefs.perspective = true; else delete this.ui.prefs.perspective; this.ui.savePrefs(); }
+    this.ui.renderHUD?.();
+    if (!quiet) this.status(on ? 'Perspective view: near things look bigger. Renders use it too.' : 'Orthographic view');
   }
 
   togglePlanes() {
