@@ -6,6 +6,18 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 14:30 — End Flange
+
+- **Sheet Metal ▸ End Flange:** a flat bolting ring on the end of any part (a duct, a pipe, a sheet metal part, round
+  or flat-sided), as a Transition's flanges are: click the end face of the part's wall (each piece's, for a part made
+  in pieces; gaps between them, such as a rolled part's seam gap, closed up to a set width). Butt (on the end, the
+  opening its inside) or slipped over the end (its outside and a clearance, the end flush or set in); small rounded
+  corners squared off; width, thickness, bolt holes on a bolt circle or round the sides at most the pitch apart. A flat
+  sheet metal plate of its own with its flat pattern.
+- The bolt line of the Lofted Bend's flanges is shared with it (no change to them).
+- Test end-flange: a round pipe butt and slipped on, a square duct, a spigot in two pieces with bent corners, a rolled
+  pipe with a seam gap, against their volumes by hand; refusals; the panel.
+
 ## 2026-10-31 13:26 — Spigots: round ones rolled, flat-sided ones bent; their own parts and bend radius
 
 - **Transition / Reducer:** a spigot at a round end is now a rolled cylinder (each part an arc, its flat pattern a

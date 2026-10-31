@@ -37,8 +37,8 @@ import { docVariables, lostFailures } from './dimids.js';
 
 // sheet metal features (they keep a body's flat pattern up to date)
 // sheet metal features that make new bodies (from sketches)
-const SHEET_NEW = new Set(['smBase', 'smExtrude', 'smLoft', 'smTransition']);
-const SHEET_TYPES = new Set(['smBase', 'smFlange', 'smCornerRelief', 'smClosedCorner', 'smUnfold', 'smFold', 'smConvert', 'smLoft', 'smTransition', 'smHem', 'smExtrude', 'smSketchBend', 'smJog', 'smCrossBreak', 'smTabSlot', 'smForm', 'smGusset', 'smProfileFlange']);
+const SHEET_NEW = new Set(['smBase', 'smExtrude', 'smLoft', 'smTransition', 'smEndFlange']);
+const SHEET_TYPES = new Set(['smEndFlange', 'smBase', 'smFlange', 'smCornerRelief', 'smClosedCorner', 'smUnfold', 'smFold', 'smConvert', 'smLoft', 'smTransition', 'smHem', 'smExtrude', 'smSketchBend', 'smJog', 'smCrossBreak', 'smTabSlot', 'smForm', 'smGusset', 'smProfileFlange']);
 
 // Crash reports: keep enough of the call stack to see where a deep kernel recursion started.
 Error.stackTraceLimit = 80;
@@ -291,6 +291,105 @@ function loopDrawing(loop) {
     else if (s.type === 'bezier') pen.cubicBezierCurveTo(s.b, s.c1, s.c2);
   });
   return pen.close();
+}
+
+// Bolt holes round a flat-sided (or any) flange: the bolt line (the opening grown by half the width, sharp at its
+// corners) as points along it, each edge in turn the way the loop runs; a hole at each sharp corner and evenly
+// between, at most the pitch apart (no sharp corner: evenly all round from where the line starts)
+function boltLine(opening, W, pitch) {
+  const wire = opening.offset(W / 2, { lineJoinType: 'miter' }).sketchOnPlane('XY').wire, Q = [], corner = [];
+  for (const e of wire.edges) {
+    const nS = e.geomType === 'LINE' ? 1 : 64;
+    let q = Array.from({ length: nS + 1 }, (_, i) => vec(e.pointAt(i / nS)).slice(0, 2));
+    if (Q.length && Math.hypot(q[nS][0] - Q.at(-1)[0], q[nS][1] - Q.at(-1)[1]) < Math.hypot(q[0][0] - Q.at(-1)[0], q[0][1] - Q.at(-1)[1])) q.reverse();
+    if (Q.length) q = q.slice(1);
+    corner.push(Q.length ? Q.length - 1 : 0);
+    Q.push(...q);
+  }
+  if (Math.hypot(Q[0][0] - Q.at(-1)[0], Q[0][1] - Q.at(-1)[1]) < 1e-7) Q.pop();
+  const M = Q.length, dir = (i, j) => { const d0 = [Q[j % M][0] - Q[i % M][0], Q[j % M][1] - Q[i % M][1]], l = Math.hypot(...d0) || 1; return [d0[0] / l, d0[1] / l]; };
+  const sharp = [...new Set(corner)].filter((i) => { const d0 = dir((i + M - 1) % M, i), d1 = dir(i, i + 1); return d0[0] * d1[0] + d0[1] * d1[1] < Math.cos(Math.PI / 180); }).sort((x, y) => x - y);
+  const starts = sharp.length ? sharp : [0], pts = [];
+  starts.forEach((s0, k) => {
+    const s1 = k + 1 < starts.length ? starts[k + 1] : starts[0] + M, run = [Q[s0 % M]], acc = [0];
+    for (let i = s0 + 1; i <= s1; i++) { run.push(Q[i % M]); acc.push(acc.at(-1) + Math.hypot(Q[i % M][0] - Q[(i - 1) % M][0], Q[i % M][1] - Q[(i - 1) % M][1])); }
+    const Ltot = acc.at(-1), m = Math.max(1, Math.ceil(Ltot / pitch - 1e-9));
+    for (let j = 0; j < m; j++) {
+      const target = (Ltot * j) / m;
+      let i = 1;
+      while (i < acc.length - 1 && acc[i] < target) i++;
+      const w = (target - acc[i - 1]) / ((acc[i] - acc[i - 1]) || 1);
+      pts.push([run[i - 1][0] + (run[i][0] - run[i - 1][0]) * w, run[i - 1][1] + (run[i][1] - run[i - 1][1]) * w]);
+    }
+  });
+  return pts;
+}
+
+// A wire of a flat face as a loop of 2D segments in frame fr: lines, arcs and whole circles (any other curve as short
+// lines), its edges chained end to end
+function wireSegs2D(wire, fr) {
+  const P = (e, t) => S.toFrame2D(fr, vec(e.pointAt(t)));
+  const items = wire.edges.map((e) => {
+    const a = P(e, 0), b = P(e, 1);
+    if (e.geomType === 'LINE') return [{ type: 'line', a, b }];
+    if (e.geomType === 'CIRCLE') {
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) { const q = P(e, 0.5), c = [(a[0] + q[0]) / 2, (a[1] + q[1]) / 2]; return [{ type: 'circle', c, r: Math.hypot(a[0] - c[0], a[1] - c[1]) }]; }
+      return [{ type: 'arc', a, m: P(e, 0.5), b }];
+    }
+    const n = 48;
+    return Array.from({ length: n }, (_, i) => ({ type: 'line', a: P(e, i / n), b: P(e, (i + 1) / n) }));
+  });
+  if (items.length === 1 && items[0][0].type === 'circle') return items[0];
+  const rev = (segs) => segs.slice().reverse().map((g) => ({ ...g, a: g.b, b: g.a }));
+  const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  const out = items.shift();
+  while (items.length) {
+    const end = out.at(-1).b;
+    let bi = 0, bd = Infinity, flip = false;
+    items.forEach((it, i) => { const da = d(it[0].a, end), db = d(it.at(-1).b, end); if (da < bd) { bd = da; bi = i; flip = false; } if (db < bd) { bd = db; bi = i; flip = true; } });
+    const it = items.splice(bi, 1)[0];
+    out.push(...(flip ? rev(it) : it));
+  }
+  return out.filter((g) => g.type !== 'line' || d(g.a, g.b) > 1e-9);
+}
+// A loop's small rounded corners (an arc between two lines, of a radius under rMax: a bend) squared off, the lines
+// run on to meet
+function squareCorners(segs, rMax) {
+  const L = segs.slice();
+  const unit2 = (p, q) => { const l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1; return [(q[0] - p[0]) / l, (q[1] - p[1]) / l]; };
+  for (let i = 0; i < L.length && L.length > 3; i++) {
+    const g = L[i], ia = (i + L.length - 1) % L.length, ib = (i + 1) % L.length, A = L[ia], B = L[ib];
+    if (g.type !== 'arc' || A.type !== 'line' || B.type !== 'line') continue;
+    const C = arcCenter(g);
+    if (!C || C.r >= rMax) continue;
+    const da = unit2(A.a, A.b), db = unit2(B.a, B.b), cr = da[0] * db[1] - da[1] * db[0];
+    if (Math.abs(cr) < 1e-9) continue;
+    // (where the lines meet)
+    const w = [B.a[0] - A.b[0], B.a[1] - A.b[1]], tA = (w[0] * db[1] - w[1] * db[0]) / cr, X = [A.b[0] + da[0] * tA, A.b[1] + da[1] * tA];
+    L[ia] = { ...A, b: X };
+    L[ib] = { ...B, a: X };
+    L.splice(i, 1);
+    i--;
+  }
+  return L;
+}
+// A loop that is a circle (one whole circle, or arcs all of one circle): { c, r }, else null
+function loopCircle(segs) {
+  if (segs.length === 1 && segs[0].type === 'circle') return { c: segs[0].c, r: segs[0].r };
+  // (short lines, a curve sampled, all on one circle: that circle)
+  if (segs.length >= 24 && segs.every((g) => g.type === 'line')) {
+    const c = arcCenter({ a: segs[0].a, m: segs[Math.floor(segs.length / 3)].a, b: segs[Math.floor((2 * segs.length) / 3)].a });
+    if (c && segs.every((g) => Math.abs(Math.hypot(g.a[0] - c.c[0], g.a[1] - c.c[1]) - c.r) < 1e-6 * (1 + c.r))) return c;
+  }
+  // (arcs all of one circle, with short chords of it between them: gaps bridged)
+  const arcs = segs.filter((g) => g.type === 'arc');
+  if (!arcs.length || !segs.every((g) => g.type === 'arc' || g.type === 'line')) return null;
+  const c0 = arcCenter(arcs[0]), tol = c0 ? 1e-6 * (1 + c0.r) : 0, on = (p) => Math.abs(Math.hypot(p[0] - c0.c[0], p[1] - c0.c[1]) - c0.r) < tol;
+  return c0 && segs.every((g) => {
+    if (g.type === 'line') return on(g.a) && on(g.b) && Math.hypot(g.b[0] - g.a[0], g.b[1] - g.a[1]) < c0.r / 4;
+    const k = arcCenter(g);
+    return k && Math.hypot(k.c[0] - c0.c[0], k.c[1] - c0.c[1]) < tol && Math.abs(k.r - c0.r) < tol;
+  }) ? c0 : null;
 }
 
 // center and radius of an arc segment { a, m, b } (start, middle, end)
@@ -7758,32 +7857,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               let dr = opening.offset(W, miter).cut(opening);
               let holes = 0;
               if (hd > 0) {
-                // the bolt line as points along it (each edge in turn, the way the loop runs), its corners marked
-                const wire = opening.offset(W / 2, miter).sketchOnPlane('XY').wire, Q = [], corner = [];
-                for (const e of wire.edges) {
-                  const nS = e.geomType === 'LINE' ? 1 : 64;
-                  let q = Array.from({ length: nS + 1 }, (_, i) => vec(e.pointAt(i / nS)).slice(0, 2));
-                  if (Q.length && Math.hypot(q[nS][0] - Q.at(-1)[0], q[nS][1] - Q.at(-1)[1]) < Math.hypot(q[0][0] - Q.at(-1)[0], q[0][1] - Q.at(-1)[1])) q.reverse();
-                  if (Q.length) q = q.slice(1);
-                  corner.push(Q.length ? Q.length - 1 : 0);
-                  Q.push(...q);
-                }
-                if (Math.hypot(Q[0][0] - Q.at(-1)[0], Q[0][1] - Q.at(-1)[1]) < 1e-7) Q.pop();
-                const M = Q.length, dir = (i, j) => { const d0 = [Q[j % M][0] - Q[i % M][0], Q[j % M][1] - Q[i % M][1]], l = Math.hypot(...d0) || 1; return [d0[0] / l, d0[1] / l]; };
-                const sharp = [...new Set(corner)].filter((i) => { const d0 = dir((i + M - 1) % M, i), d1 = dir(i, i + 1); return d0[0] * d1[0] + d0[1] * d1[1] < Math.cos(Math.PI / 180); }).sort((x, y) => x - y);
-                const starts = sharp.length ? sharp : [0], pts = [];
-                starts.forEach((s0, k) => {
-                  const s1 = k + 1 < starts.length ? starts[k + 1] : starts[0] + M, run = [Q[s0 % M]], acc = [0];
-                  for (let i = s0 + 1; i <= s1; i++) { run.push(Q[i % M]); acc.push(acc.at(-1) + Math.hypot(Q[i % M][0] - Q[(i - 1) % M][0], Q[i % M][1] - Q[(i - 1) % M][1])); }
-                  const Ltot = acc.at(-1), m = Math.max(1, Math.ceil(Ltot / pitch - 1e-9));
-                  for (let j = 0; j < m; j++) {
-                    const target = (Ltot * j) / m;
-                    let i = 1;
-                    while (i < acc.length - 1 && acc[i] < target) i++;
-                    const w = (target - acc[i - 1]) / ((acc[i] - acc[i - 1]) || 1);
-                    pts.push([run[i - 1][0] + (run[i][0] - run[i - 1][0]) * w, run[i - 1][1] + (run[i][1] - run[i - 1][1]) * w]);
-                  }
-                });
+                const pts = boltLine(opening, W, pitch);
                 for (const [x, y] of pts) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
                 holes = pts.length;
               }
@@ -9041,6 +9115,116 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const n = pieces.length;
           res.notes[f.id] = `${n} part${n === 1 ? '' : 's'}, height ${+h.toFixed(3)} mm` + (eb || et ? ` (taper ${+hT.toFixed(3)} mm)` : '') + (nSp ? ` · ${nSp} spigot part${nSp === 1 ? '' : 's'}` : '') + (bent ? ` · ${nb / n} bend${nb / n === 1 ? '' : 's'} a part` : ` · formed (rolled)${nb ? `, ${nb / n} sharp fold${nb / n === 1 ? '' : 's'} a part` : ''}`)
             + (nFl ? ` · ${nFl} flange${nFl === 1 ? '' : 's'}${nHoles ? `, ${nHoles} bolt hole${nHoles === 1 ? '' : 's'}` : ''}` : '');
+          break;
+        }
+        case 'smEndFlange': {
+          // a flange on the end of a part (a duct, a pipe, a sheet metal part; round or flat-sided): a flat ring, a
+          // sheet metal plate of its own, made as a Transition's are. The end: the flat end faces of the part's wall
+          // picked (one ring, or the pieces of a part made in parts: gaps between them closed), in one plane. Butt
+          // mounted: on the end, out past it by its thickness, its opening the inside of the end. Slipped on (socket):
+          // its opening the outside of the end and the clearance, the end through it to the offset from its face.
+          // Small rounded corners (bends, tighter than the flange is wide) squared off; bolt holes as a Transition's.
+          if (!f.faces?.length) throw new Error('Click the flat end face of the part (the end of its wall), and each piece of it for a part made in parts');
+          const hits = f.faces.map((r, i) => {
+            const hit = findFaceAny(solids, r);
+            if (!hit) throw new Error(`End face ${i + 1} is no longer there`);
+            if (hit.face.geomType !== 'PLANE') throw new Error(`End face ${i + 1} is not flat: click the flat end of the part's wall`);
+            return hit;
+          });
+          const o = f.faces[0].p;
+          let n = unit(vec(hits[0].face.normalAt()));
+          // (out of the part: the part behind the end)
+          if (dot(sub(bbox(hits[0].body.shape).center, o), n) > 0) n = mul(n, -1);
+          const size = Math.max(1, ...hits.map((h) => bbox(h.body.shape).diag));
+          hits.forEach((h, i) => {
+            const m = unit(vec(h.face.normalAt()));
+            if (Math.abs(Math.abs(dot(m, n)) - 1) > 1e-6 || Math.abs(dot(sub(f.faces[i].p, o), n)) > 1e-6 * size) throw new Error(`End face ${i + 1} is not in the plane of the first one: the end's faces must lie in one plane`);
+          });
+          const u = levelX(n), fr = { o, u, v: cross(n, u), n };
+          // the end as one region in its plane: each face (its outline less its holes) together, gaps closed
+          const loopDr = (segs) => loopDrawing({ segs });
+          let region = null;
+          for (const h of hits) {
+            let dr = loopDr(wireSegs2D(h.face.clone().outerWire(), fr));
+            for (const w of h.face.clone().innerWires()) dr = dr.cut(loopDr(wireSegs2D(w, fr)));
+            region = region ? region.fuse(dr) : dr;
+          }
+          const miter = { lineJoinType: 'miter' }, XY = { o: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] };
+          const ringOf = (dr) => { const fs = drawingRegion(dr).faces; return fs.length === 1 ? { outer: fs[0].clone().outerWire(), inner: fs[0].clone().innerWires() } : null; };
+          let ring = ringOf(region);
+          const gapMax = ev(f.flGap ?? 10);
+          if ((!ring || ring.inner.length !== 1) && gapMax > 0) {
+            // (gaps between the pieces bridged: two straight ends facing each other across a gap (nearly parallel,
+            // about as long, at most gapMax apart, the space between them empty) joined by the strip between them)
+            const loops = drawingRegion(region).faces.flatMap((fc) => [fc.clone().outerWire(), ...fc.clone().innerWires()].map((w) => wireSegs2D(w, XY)));
+            const polys = loops.map((segs) => segs.flatMap((g0) => {
+              if (g0.type === 'line') return [g0.a];
+              if (g0.type === 'circle') return Array.from({ length: 64 }, (_, k) => [g0.c[0] + g0.r * Math.cos((k * Math.PI) / 32), g0.c[1] + g0.r * Math.sin((k * Math.PI) / 32)]);
+              return [g0.a, g0.m];
+            }));
+            const inside = (p) => polys.reduce((x, P) => { let c = false; for (let k = 0, m = P.length - 1; k < P.length; m = k++) if ((P[k][1] > p[1]) !== (P[m][1] > p[1]) && p[0] < ((P[m][0] - P[k][0]) * (p[1] - P[k][1])) / (P[m][1] - P[k][1]) + P[k][0]) c = !c; return c !== x; }, false);
+            const ends = loops.flat().filter((g0) => g0.type === 'line' && Math.hypot(g0.b[0] - g0.a[0], g0.b[1] - g0.a[1]) > 1e-6);
+            const d2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]), lenOf = (g0) => d2(g0.a, g0.b);
+            const toSeg = (p, g0) => { const dx = g0.b[0] - g0.a[0], dy = g0.b[1] - g0.a[1], t0 = Math.max(0, Math.min(1, ((p[0] - g0.a[0]) * dx + (p[1] - g0.a[1]) * dy) / (dx * dx + dy * dy))); return d2(p, [g0.a[0] + dx * t0, g0.a[1] + dy * t0]); };
+            let bridged = region, nb = 0;
+            ends.forEach((e1, k1) => ends.slice(k1 + 1).forEach((e2) => {
+              const L1 = lenOf(e1), L2 = lenOf(e2), cs = Math.abs(((e1.b[0] - e1.a[0]) * (e2.b[0] - e2.a[0]) + (e1.b[1] - e1.a[1]) * (e2.b[1] - e2.a[1])) / (L1 * L2));
+              if (cs < Math.cos((10 * Math.PI) / 180) || Math.max(L1, L2) > 2 * Math.min(L1, L2)) return;
+              const gap = Math.min(toSeg(e1.a, e2), toSeg(e1.b, e2), toSeg(e2.a, e1), toSeg(e2.b, e1));
+              if (!(gap > 1e-7 && gap <= gapMax)) return;
+              const mid = [(e1.a[0] + e1.b[0] + e2.a[0] + e2.b[0]) / 4, (e1.a[1] + e1.b[1] + e2.a[1] + e2.b[1]) / 4];
+              if (inside(mid)) return;
+              const q = d2(e1.b, e2.a) < d2(e1.b, e2.b) ? [e1.a, e1.b, e2.a, e2.b] : [e1.a, e1.b, e2.b, e2.a];
+              bridged = bridged.fuse(loopDr(q.map((p0, k) => ({ type: 'line', a: p0, b: q[(k + 1) % 4] }))));
+              nb++;
+            }));
+            if (nb) ring = ringOf(bridged) || ring;
+          }
+          if (!ring) throw new Error(`The end's faces do not make one piece: pick all of them (gaps between them up to ${+gapMax.toFixed(3)} mm are closed; set more under Gaps closed)`);
+          const socket = f.flMount === 'socket';
+          if (!socket && ring.inner.length !== 1) throw new Error(ring.inner.length ? 'The end has more than one opening: a butt flange goes round one' : 'The end has no opening (or a gap too wide to close): slip the flange over it instead, or set more under Gaps closed');
+          const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100), clear = ev(f.flClear ?? 1), off = socket ? ev(f.flOffset ?? 0) : 0;
+          if (!(W > 0)) throw new Error('The flange width must be greater than zero');
+          if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
+          if (!(hd >= 0)) throw new Error('The bolt hole diameter must be zero (no holes) or more');
+          if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
+          if (socket && !(clear >= 0)) throw new Error("The flange's clearance round the part can't be negative");
+          if (socket && !(off >= 0 && off < T - 1e-6)) throw new Error(`The part's end can sit from flush with the flange's face (0) to less than the flange's thickness (${+T.toFixed(3)} mm) in from it, not ${+off.toFixed(3)} mm`);
+          const edge = squareCorners(wireSegs2D(socket ? ring.outer : ring.inner[0], XY), W), circ = loopCircle(edge);
+          let dr, holes = [], opening;
+          if (circ) {
+            const r = circ.r + (socket ? clear : 0);
+            dr = R.drawCircle(r + W).cut(R.drawCircle(r));
+            if (hd > 0) {
+              if (!(N >= 1 && N <= 360)) throw new Error('The number of bolt holes must be 1 to 360');
+              const rb = pcd > 0 ? pcd / 2 : r + W / 2;
+              if (rb - hd / 2 <= r + 1e-6 || rb + hd / 2 >= r + W - 1e-6) throw new Error(`The bolt circle (Ø${+(2 * rb).toFixed(3)}) puts the holes off the flange (Ø${+(2 * r).toFixed(3)} to Ø${+(2 * (r + W)).toFixed(3)})`);
+              for (let i = 0; i < N; i++) { const a = Math.PI / N + (2 * Math.PI * i) / N; holes.push([circ.c[0] + rb * Math.cos(a), circ.c[1] + rb * Math.sin(a)]); }
+            }
+            dr = dr.translate(circ.c[0], circ.c[1]);
+            opening = `Ø${+(2 * r).toFixed(3)}`;
+          } else {
+            let op = loopDr(edge);
+            if (socket && clear > 0) op = op.offset(clear, miter);
+            dr = op.offset(W, miter).cut(op);
+            if (hd > 0) {
+              if (!(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+              holes = boltLine(op, W, pitch);
+            }
+            const bb = op.boundingBox;
+            opening = `${+bb.width.toFixed(3)} × ${+bb.height.toFixed(3)}`;
+          }
+          for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+          // (butt: its inner face on the end, out past it; slipped on: its outer face the offset past the end, its
+          // material toward the part)
+          const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: socket ? { ...fr, o: add(o, mul(n, off)) } : fr, t: T, R: T, K: sheetKFactor(f, T, T), reverse: socket });
+          const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+          rec.sheet = sheet;
+          solids.push(rec);
+          applied.push({ op: 'add', tool: shape });
+          body = compoundOf(solids);
+          res.features[f.id] = { faces: f.faces };
+          res.notes[f.id] = `${socket ? 'Slipped on' : 'Butt'} · opening ${opening}${holes.length ? ` · ${holes.length} bolt hole${holes.length === 1 ? '' : 's'}` : ''}`;
           break;
         }
         case 'smHem': {

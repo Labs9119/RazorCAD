@@ -3210,7 +3210,7 @@ class App {
     if (f.type === 'hole' && this.pm.holeEndPick && ['upToSurface', 'offsetSurface'].includes(f.end)) return 'face';
     if (f.type === 'boss' || f.type === 'snapHook') return 'faces';
     if (f.type === 'lipGroove') return 'flatface';
-    if (f.type === 'shell' || f.type === 'surfOffset' || f.type === 'surfCopy' || f.type === 'hole' || f.type === 'smClosedCorner' || f.type === 'smCrossBreak' || f.type === 'smGusset' || (f.type === 'smForm' && f.formType !== 'louver')) return 'faces';
+    if (f.type === 'shell' || f.type === 'surfOffset' || f.type === 'surfCopy' || f.type === 'hole' || f.type === 'smClosedCorner' || f.type === 'smCrossBreak' || f.type === 'smEndFlange' || f.type === 'smGusset' || (f.type === 'smForm' && f.formType !== 'louver')) return 'faces';
     const scoped = (f.type === 'extrude' || f.type === 'revolve') && (f.op === 'cut' || f.op === 'intersect') && f.scopeAll === false;
     if (f.type === 'deleteBody' || f.type === 'deleteSurface') return 'body';
     if (f.type === 'axis' && f.axisType === 'cylinder') return 'cylface';
@@ -5079,6 +5079,10 @@ class App {
       if (!this.result.body) { this.toast('There is no solid body', true); return; }
       const fr = sel?.kind === 'face' && sel.face.planar ? { p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() } : null;
       if (type === 'draft') props.face = fr; else props.faces = fr ? [fr] : [];
+    }
+    if (type === 'smEndFlange') {
+      if (!this.result.bodies?.some((b) => b.kind !== 'surface')) { this.toast('There is no part to put a flange on', true); return; }
+      props.faces = sel?.kind === 'face' && sel.face.planar ? [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }] : [];
     }
     if (type === 'smCrossBreak') props.faces = sel?.kind === 'face' && sel.face.planar ? [{ p: sel.point || sel.face.center.toArray(), n: sel.face.normal.toArray() }] : [];
     if (type === 'shell' || type === 'surfOffset' || type === 'surfCopy') {

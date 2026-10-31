@@ -174,6 +174,7 @@ export const TYPE_INFO = {
   smBase: { base: 'Base-Flange', icon: 'smBase' },
   smLoft: { base: 'Lofted-Bend', icon: 'smLoft' },
   smTransition: { base: 'Transition', icon: 'smTransition' },
+  smEndFlange: { base: 'End-Flange', icon: 'smEndFlange' },
   smExtrude: { base: 'SM-Extrude', icon: 'smExtrude' },
   smSketchBend: { base: 'Sketched-Bend', icon: 'smSketchBend' },
   smEtch: { base: 'Etch', icon: 'smEtch' },
@@ -191,7 +192,7 @@ export const TYPE_INFO = {
   smFold: { base: 'Bend', icon: 'smFold' },
   smConvert: { base: 'Convert-to-Sheet-Metal', icon: 'smConvert' },
 };
-export const SHEET_TYPES = new Set(['smBase', 'smFlange', 'smCornerRelief', 'smClosedCorner', 'smUnfold', 'smFold', 'smConvert', 'smLoft', 'smTransition', 'smHem', 'smExtrude', 'smSketchBend', 'smJog', 'smCrossBreak', 'smTabSlot', 'smForm', 'smGusset', 'smProfileFlange', 'smEtch']);
+export const SHEET_TYPES = new Set(['smEndFlange', 'smBase', 'smFlange', 'smCornerRelief', 'smClosedCorner', 'smUnfold', 'smFold', 'smConvert', 'smLoft', 'smTransition', 'smHem', 'smExtrude', 'smSketchBend', 'smJog', 'smCrossBreak', 'smTabSlot', 'smForm', 'smGusset', 'smProfileFlange', 'smEtch']);
 
 // Features that need a sketch (the first unused one is offered by default).
 // features a pattern or mirror can copy (anything that changes the bodies at a place)
@@ -413,6 +414,11 @@ export function createFeature(doc, type, props = {}) {
       // (spigot parts and bend radius unset: 1 for a round end, 2 for a flat-sided one; the thickness)
       spigotBot: 0, spigotTop: 0, spPartsBot: null, spPartsTop: null, spigotR: null, flMount: 'butt', flClear: 1, flOffset: 0,
     },
+    // a flange on the end of a part (a flat ring, a plate of its own, as a Transition's): faces, the flat end faces of
+    // the part's wall ({ p, n }; the pieces of a part made in parts, gaps up to flGap between them closed); flMount
+    // 'butt' (on the end, out past it: the opening the end's inside) | 'socket' (slipped over: the end's outside and
+    // flClear, the end flOffset in from the flange's face); width, thickness, bolt holes as a Transition's
+    smEndFlange: { faces: [], flMount: 'butt', flClear: 1, flOffset: 0, flW: 40, flT: 6, flHoleD: 10, flHoles: 8, flPCD: 0, flPitch: 100, flGap: 10, kFactor: 0.44 },
     // extruded from an open profile (or a circle, rolled): direction 'one' | 'reverse' | 'mid'; side 'one' |
     // 'other' | 'mid' (material left of the profile's direction, right, or half each side); radius: inside
     // bend radius at sharp corners

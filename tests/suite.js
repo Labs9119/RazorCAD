@@ -894,6 +894,26 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the panel shows the hole settings for the ends flanged`};
   },
 
+  // End Flange (tests/end-flange-cases.js): a flat ring on the end of a part (round pipe butt and slipped on, square
+  // duct, a spigot in pieces), each against its volume by hand; the panel shows the clearance only when slipped on
+  async 'end-flange'() {
+    const {run}=await import('/tests/end-flange-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:JSON.stringify(native.results.filter(x=>!x.ok))};
+    const a=window.app,d=M.newDoc(),S=await import('/js/sketchmodel.js'),s=M.createFeature(d,'sketch',{plane:{ref:'front'}});
+    S.addCircle(s,S.addPoint(s,0,0),152);S.addCircle(s,S.addPoint(s,0,0),150);
+    const f=M.createFeature(d,'smEndFlange',{faces:[{p:[151,0,200],n:[0,0,1]}]});d.features.push(s,M.createFeature(d,'extrude',{sketch:s.id,depth:200}),f);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);
+    const bad=[];if(a.result.errors.size)bad.push('errors: '+[...a.result.errors.values()].join('; '));
+    if((a.result.bodies||[]).length!==2)bad.push(`${(a.result.bodies||[]).length} bodies, not the pipe and the flange`);
+    a.editFeature(f.id);await wait(80);
+    const text=()=>document.querySelector('#pm')?.textContent||'';
+    if(text().includes('Clearance round the part'))bad.push('clearance shown for a butt flange');
+    f.flMount='socket';a.ui.renderPM();await wait(30);
+    if(!text().includes('Clearance round the part'))bad.push('no clearance for a slipped-on flange');
+    a.cancelPM?.();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the pipe and its flange; the panel`};
+  },
+
   // 3D sketch Dimension: a line clicked shows its length at once, with extension and dimension lines, following the
   // mouse (as in a 2D sketch); a click off it places it there, kept with the dimension (its offset) and drawn there
   async 'sketch3d-dimension-preview'() {

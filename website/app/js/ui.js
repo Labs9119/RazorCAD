@@ -628,6 +628,24 @@ const PM_SCHEMAS = {
       ...SM_BEND_CALC,
     ] },
   ],
+  smEndFlange: [
+    { title: 'End', fields: [
+      { key: 'faces', type: 'faceList', itemLabel: 'End face', empty: 'No end face picked', hint: 'Click the flat end face of the part (the end of its wall: a duct, a pipe, a sheet metal part, round or flat-sided). A part made in pieces: click each piece’s end face.' },
+      { key: 'flGap', type: 'expr', label: 'Gaps between the pieces closed up to', unit: 'mm' },
+    ] },
+    { title: 'Flange', fields: [
+      { key: 'flMount', type: 'select', label: 'Mounted', options: [['butt', 'On the end (butt): opening the part’s inside size'], ['socket', 'Slipped over the end: opening the part’s outside size and a clearance']] },
+      { key: 'flClear', type: 'expr', label: 'Clearance round the part (all round)', unit: 'mm', show: (f) => f.flMount === 'socket' },
+      { key: 'flOffset', type: 'expr', label: 'Part’s end in from the flange’s face (0: flush)', unit: 'mm', show: (f) => f.flMount === 'socket' },
+      { key: 'flW', type: 'expr', label: 'Width (out from the opening)', unit: 'mm' },
+      { key: 'flT', type: 'expr', label: 'Thickness', unit: 'mm' },
+      { key: 'flHoleD', type: 'expr', label: 'Bolt hole diameter (0: no holes)', unit: 'mm' },
+      { key: 'flHoles', type: 'expr', label: 'Bolt holes on a round flange', unit: '' },
+      { key: 'flPCD', type: 'expr', label: 'Bolt circle diameter on a round flange (0: the middle of the flange)', unit: 'mm' },
+      { key: 'flPitch', type: 'expr', label: 'Flat-sided flange: holes at most this far apart', unit: 'mm' },
+      { key: 'efHint', type: 'hint', text: (f) => (f.flMount === 'socket' ? 'The flange slips over the end: its opening is the outside of the end and the clearance all round, and the end goes through it to sit flush with its outer face (or in from it by the offset).' : 'The flange goes on the end, out past it by its thickness; its opening is the inside of the end.') + ' Small rounded corners (bends) are squared off. It is a flat sheet metal plate of its own, with its flat pattern. A round flange has its holes evenly on the bolt circle; a flat-sided one at each corner of a line round the middle of the flange and evenly along each side, at most the pitch apart.' },
+    ] },
+  ],
   smHem: [
     { title: 'Hem Edges', fields: [{ key: 'edges', type: 'edges' }, { key: 'hHint', type: 'hint', text: 'Click straight edges on the top or bottom face of the sheet. The hem folds back over the face the edge belongs to (Flip direction for the other face).' }] },
     { title: 'Hem', fields: [
@@ -2332,6 +2350,7 @@ export class UI {
         { icon: 'smExtrude', label: 'Sheet Metal Extrude', action: () => a.startFeature('smExtrude') },
         { icon: 'smLoft', label: 'Lofted Bend', action: () => a.startFeature('smLoft') },
         { icon: 'smTransition', label: 'Transition / Reducer', action: () => a.startFeature('smTransition') },
+        { icon: 'smEndFlange', label: 'End Flange', action: () => a.startFeature('smEndFlange') },
         { icon: 'smFlange', label: 'Edge Flange', action: () => a.startFeature('smFlange') },
         { icon: 'smProfileFlange', label: 'Miter Flange', action: () => a.startFeature('smProfileFlange') },
         { icon: 'smHem', label: 'Hem', action: () => a.startFeature('smHem') },
