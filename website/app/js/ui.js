@@ -40,6 +40,7 @@ import * as W from './wcs.js';
 import {referenceRelations,defaultReferenceRelations,RELATION_LABELS} from './refconstraints.js';
 import * as LC from './loftcorrespondence.js';
 import * as AP from './appearances.js';
+import { EXPORT_DEFAULTS, STEP_SCHEMAS, STEP_UNITS, STL_QUALITY, exportOptions } from './exportopts.js';
 
 // a 3D sketch's line, circle or arc as a reference's curve ({ type }), and its name in the references list
 function sketch3dCurve(f,id){const g=(f.segs||[]).find(x=>x.id===id);return g?{type:g.type||'line'}:null;}
@@ -384,6 +385,7 @@ const trLines = (f, a) => {
 };
 // (the ends with a flange: any of them round, any of them flat-sided)
 const trFlanged = (f) => [f.flangeBot && f.bShape, f.flangeTop && f.tShape].filter(Boolean);
+const trSpigot = (f, k) => { const v = f[k === 'b' ? 'spigotBot' : 'spigotTop']; return v != null && v !== '' && String(v).trim() !== '0'; };
 const TR_SHAPES = [['round', 'Round'], ['square', 'Square'], ['rect', 'Rectangle'], ['tri', 'Triangle'], ['pent', 'Pentagon'], ['hex', 'Hexagon']];
 const TR_BASIS = { side: 'Side length', flats: 'Across flats (inscribed Ø)', corners: 'Across corners (circumscribed Ø)' };
 const trEnd = (k, title) => ({ title, fields: [
@@ -591,9 +593,12 @@ const PM_SCHEMAS = {
       { key: 'sHint', type: 'hint', text: (f) => (trRound(f) ? 'A cone can be rolled from one part, or from two or more equal parts welded together.' : 'With a flat-sided end the transition is made from two or more equal parts welded together; the number of parts must divide its number of sides (a square: 2 or 4).') },
     ] },
     { title: 'Spigots', fields: [
-      { key: 'spigotBot', type: 'expr', label: 'Straight spigot at the bottom end', unit: 'mm' },
-      { key: 'spigotTop', type: 'expr', label: 'Straight spigot at the top end', unit: 'mm' },
-      { key: 'spHint', type: 'hint', text: 'A straight length of the end’s shape (0: none), from the flange’s inner face if there is a flange. Spigots and flanges are inside the axis line’s length: the taper is what is left, so the whole part is as long as the line.' },
+      { key: 'spigotBot', type: 'expr', label: 'Straight spigot at the bottom end', unit: 'mm', rerender: true },
+      { key: 'spigotTop', type: 'expr', label: 'Straight spigot at the top end', unit: 'mm', rerender: true },
+      { key: 'spPartsBot', type: 'expr', label: (f) => `Bottom spigot parts (empty: ${f.bShape === 'round' ? 1 : 2})`, unit: '', optional: true, show: (f) => trSpigot(f, 'b') },
+      { key: 'spPartsTop', type: 'expr', label: (f) => `Top spigot parts (empty: ${f.tShape === 'round' ? 1 : 2})`, unit: '', optional: true, show: (f) => trSpigot(f, 't') },
+      { key: 'spigotR', type: 'expr', label: 'Spigot bend radius at the corners (empty: the thickness)', unit: 'mm', optional: true, show: (f) => (trSpigot(f, 'b') && f.bShape !== 'round') || (trSpigot(f, 't') && f.tShape !== 'round') },
+      { key: 'spHint', type: 'hint', text: 'A straight length of the end’s shape (0: none), from the flange’s inner face if there is a flange. Spigots and flanges are inside the axis line’s length: the taper is what is left, so the whole part is as long as the line. A round spigot is rolled; a flat-sided one is bent at its corners. Its seams start where the taper’s do.' },
     ] },
     { title: 'Flanges', fields: [
       { key: 'flangeBot', type: 'check', label: 'Flange at the bottom end' },
@@ -1794,30 +1799,124 @@ export class UI {
     this.app.status(`Theme: ${{ light: 'light', dark: 'dark', system: 'as Windows is set' }[v]}.`);
   }
 
-  // Settings: everything you can set, in one place (each change applies at once, as from its own menu): the
-  // look, units and up axis, your gauges, and the editors for drawings' DXF, shortcuts, toolbars and Claude.
-  showSettings() {
+  // Settings: everything you can set, in one window of pages (each change applies at once, as from its own menu):
+  // General (units, up axis, new parts, auto-save, updates), Display, Export (STEP, STL, DXF), your sheet metal
+  // gauges, and Customize. The editors opened from it (DXF, shortcuts, toolbars, Claude) have a Back button to it.
+  showSettings(pageId = this.settingsPage || 'general') {
     const a = this.app, box = el('div', { class: 'settings' });
-    let dlg = null;
-    const section = (title) => { const s = el('div', { class: 'settings-sec' }); s.appendChild(el('h4', {}, esc(tr(title)))); box.appendChild(s); return s; };
+    const nav = el('div', { class: 'settings-nav' }), pages = el('div', { class: 'settings-pages' });
+    box.append(nav, pages);
+    let dlg = null, page = null, cur = pageId;
+    const pageEls = {};
+    const show = (id) => {
+      cur = pageEls[id] ? id : 'general';
+      this.settingsPage = cur;
+      for (const [k, p] of Object.entries(pageEls)) p.hidden = k !== cur;
+      nav.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.page === cur));
+    };
+    const newPage = (id, title) => {
+      page = el('div', { class: 'settings-page', 'data-page': id });
+      pages.appendChild(page);
+      pageEls[id] = page;
+      const b = el('button', { 'data-page': id }, esc(tr(title)));
+      b.onclick = () => show(id);
+      nav.appendChild(b);
+    };
+    const section = (title) => { const s = el('div', { class: 'settings-sec' }); s.appendChild(el('h4', {}, esc(tr(title)))); page.appendChild(s); return s; };
+    const hint = (s, text) => s.appendChild(el('div', { class: 'pm-hint' }, esc(tr(text))));
     const select = (opts, cur, onchange) => {
       const s = el('select', { style: 'min-width:12em' });
-      for (const [v, l] of opts) { const o = el('option', { value: v }, esc(l)); if (v === cur) o.selected = true; s.appendChild(o); }
+      for (const [v, l] of opts) { const o = el('option', { value: v }, esc(tr(l))); if (String(v) === String(cur)) o.selected = true; s.appendChild(o); }
       s.onchange = () => onchange(s.value);
       return s;
     };
-    const open = (label, fn) => el('button', { class: 'pm-btn', onclick: () => { dlg?.close(); fn(); } }, esc(tr(label)));
-    const look = section('Appearance');
+    const check = (label, on, onchange) => {
+      const l = el('label', { class: 'settings-check' }), c = el('input', { type: 'checkbox' });
+      c.checked = !!on;
+      c.onchange = () => onchange(c.checked);
+      l.append(c, document.createTextNode(' ' + tr(label)));
+      return l;
+    };
+    const text = (value, onchange, placeholder = '') => {
+      const t = el('input', { type: 'text', style: 'min-width:12em', placeholder: tr(placeholder) });
+      t.value = value || '';
+      t.onchange = () => onchange(t.value.trim());
+      return t;
+    };
+    const setPref = (k, v, dflt) => { this.prefs ||= {}; if (v === dflt) delete this.prefs[k]; else this.prefs[k] = v; this.savePrefs(); };
+    const setExport = (k, v) => {
+      this.prefs ||= {};
+      const e = (this.prefs.export ||= {});
+      if (v === EXPORT_DEFAULTS[k]) delete e[k]; else e[k] = v;
+      if (!Object.keys(e).length) delete this.prefs.export;
+      this.savePrefs();
+    };
+    // (an editor opened from here: its Back button, and its own buttons, come back to this page)
+    const open = (label, fn) => el('button', { class: 'pm-btn', onclick: () => {
+      dlg?.close();
+      const page0 = cur;
+      this.backTo = () => this.showSettings(page0);
+      Promise.resolve(fn()).finally(() => { this.backTo = null; });
+    } }, esc(tr(label)));
+
+    // ---- General
+    newPage('general', 'General');
+    const ua = section('Units and Axes');
+    const what = a.mode === 'drawing' ? (a.drawing?.doc?.kind === 'assembly' ? 'this assembly' : 'this drawing') : 'this part';
+    ua.appendChild(this.row('Units', select([['mm', 'Millimetres (mm)'], ['in', 'Inches (in)']], a.units, (v) => a.setUnits(v))));
+    hint(ua, `For ${what}.`);
+    ua.appendChild(this.row('Units for new parts', select([['mm', 'Millimetres (mm)'], ['in', 'Inches (in)']], this.prefs?.newUnits === 'in' ? 'in' : 'mm', (v) => setPref('newUnits', v, 'mm'))));
+    hint(ua, 'New parts and assemblies start in these units.');
+    ua.appendChild(this.row('Up axis', select([['y', 'Y up (Top plane XZ, Front XY)'], ['z', 'Z up (Top plane XY, Front XZ)']], W.getUp(), (v) => a.setUpAxis(v))));
+    hint(ua, a.mode === 'drawing' && a.drawing?.doc?.kind !== 'assembly' ? 'For new parts.' : `For ${what}, and for new parts.`);
+    const sv = section('Saving');
+    sv.appendChild(this.row('Auto-save', select([[0, 'Off'], [20, 'Every 20 seconds'], [60, 'Every minute'], [300, 'Every 5 minutes']], this.prefs?.autosaveSec ?? 20, (v) => {
+      setPref('autosaveSec', +v, 20);
+      clearTimeout(a._autosaveTimer);
+      a._autosaveTimer = null;
+      a.autosave();
+    })));
+    hint(sv, platform.desktop ? 'Unsaved changes of a part that has been saved are kept beside its file (Name.autosave.rcad), to recover after a crash.' : 'In the desktop app (RazorCAD.exe).');
+    if (platform.desktop) {
+      const up = section('Updates');
+      const box2 = check('Check for updates when RazorCAD starts (once a day; only GitHub is asked)', true, (on) => platform.updateSettings({ auto: on }));
+      up.appendChild(box2);
+      Promise.resolve(platform.updateSettings()).then((st) => { box2.querySelector('input').checked = st?.auto !== false; }).catch(() => {});
+      up.appendChild(el('div', { class: 'settings-btns' })).appendChild(open('Check for Updates Now…', () => this.checkForUpdates(true)));
+    }
+
+    // ---- Display
+    newPage('display', 'Display');
+    const look = section('Window');
     look.appendChild(this.row('Theme', select([['light', 'Light'], ['dark', 'Dark'], ['system', 'Follow Windows']], this.prefs?.theme || 'system', (v) => this.setTheme(v))));
     look.appendChild(this.row('Language', select(LANGUAGES, language(), (v) => this.setLang(v))));
     look.appendChild(this.row('Toolbar icons', select([['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']], this.prefs?.iconSize || 'medium', (v) => this.setIconSize(v))));
     look.appendChild(this.row('Sketch toolbar', select([['expanded', 'Expanded (all tools)'], ['grouped', 'Grouped (flyout menus)']], this.tbPrefs().sketchLayout || 'expanded', (v) => { this.tbPrefs().sketchLayout = v; this.savePrefs(); this.renderCommandManager(); })));
-    const ua = section('Units and Axes');
-    const what = a.mode === 'drawing' ? (a.drawing?.doc?.kind === 'assembly' ? 'this assembly' : 'this drawing') : 'this part';
-    ua.appendChild(this.row('Units', select([['mm', 'Millimetres (mm)'], ['in', 'Inches (in)']], a.units, (v) => a.setUnits(v))));
-    ua.appendChild(el('div', { class: 'pm-hint' }, esc(`For ${what}.`)));
-    ua.appendChild(this.row('Up axis', select([['y', 'Y up (Top plane XZ, Front XY)'], ['z', 'Z up (Top plane XY, Front XZ)']], W.getUp(), (v) => a.setUpAxis(v))));
-    ua.appendChild(el('div', { class: 'pm-hint' }, esc(a.mode === 'drawing' && a.drawing?.doc?.kind !== 'assembly' ? 'For new parts.' : `For ${what}, and for new parts.`)));
+    const vw = section('3D View');
+    vw.appendChild(this.row('Projection', select([['ortho', 'Orthographic'], ['persp', 'Perspective']], a.viewport?.perspective ? 'persp' : 'ortho', (v) => a.setPerspective(v === 'persp'))));
+    hint(vw, 'For every part and assembly (View ▸ Perspective). Renders use it too.');
+
+    // ---- Export
+    newPage('export', 'Export');
+    const eo = exportOptions(this.prefs);
+    const st = section('STEP');
+    st.appendChild(this.row('Format', select(STEP_SCHEMAS, eo.stepSchema, (v) => setExport('stepSchema', v))));
+    hint(st, 'AP242 is the newest, and what most programs read. AP214 and AP203 are for older programs. Semantic PMI (datums, tolerances) is written in AP242 files in millimetres.');
+    st.appendChild(this.row('Units in the file', select(STEP_UNITS, eo.stepUnit, (v) => setExport('stepUnit', v))));
+    st.appendChild(check('Write the bodies\' colours', eo.stepColors, (on) => setExport('stepColors', on)));
+    st.appendChild(this.row('Author', text(eo.stepAuthor, (v) => setExport('stepAuthor', v), 'your name')));
+    st.appendChild(this.row('Organisation', text(eo.stepOrg, (v) => setExport('stepOrg', v), 'company')));
+    hint(st, 'Written in the file\'s header. For parts, bodies and assemblies.');
+    const sl = section('STL');
+    sl.appendChild(this.row('Format', select([['binary', 'Binary (smaller)'], ['ascii', 'ASCII (text)']], eo.stlFormat, (v) => setExport('stlFormat', v))));
+    sl.appendChild(this.row('Quality', select(STL_QUALITY, eo.stlQuality, (v) => setExport('stlQuality', v))));
+    hint(sl, 'How finely curved faces are cut into triangles. 3D printing uses its print profile.');
+    const dx = section('DXF');
+    hint(dx, 'Layers, colours, line types and options for flat patterns and faces written to DXF.');
+    dx.appendChild(el('div', { class: 'settings-btns' })).appendChild(open('DXF Settings…', () => this.showDxfSettings()));
+
+    // ---- Sheet metal gauges
+    newPage('sheetmetal', 'Sheet Metal');
     const sm = section('Sheet Metal Gauges');
     const gl = el('div', { class: 'pm-list' });
     const gauges = () => {
@@ -1832,10 +1931,14 @@ export class UI {
     };
     gauges();
     sm.appendChild(gl);
-    const more = section('More Settings');
+
+    // ---- Customize
+    newPage('customize', 'Customize');
+    const more = section('Customize');
     const btns = el('div', { class: 'settings-btns' });
-    btns.append(open('DXF Settings…', () => this.showDxfSettings()), open('Customize Shortcuts…', () => this.showShortcutEditor()), open('Customize Toolbars…', () => this.showToolbarCustomize()), open('Claude Settings…', () => this.showClaudeSettings()), open('Getting Started Tour', () => this.startTour()));
+    btns.append(open('Customize Shortcuts…', () => this.showShortcutEditor()), open('Customize Toolbars…', () => this.showToolbarCustomize()), open('Claude Settings…', () => this.showClaudeSettings()), open('Getting Started Tour', () => this.startTour()));
     more.appendChild(btns);
+    show(pageId);
     dlg = this.modal('Settings', 'gear', box, [{ label: 'Close', primary: true }]);
   }
   baseMenuDefs() {
@@ -2002,7 +2105,7 @@ export class UI {
     }
     // quick buttons next to the menus
     const quick = el('div', { class: 'mb-quick' });
-    for (const [ic, title, fn] of [['save', 'Save (Ctrl+S)', () => this.app.saveFile()], ['saveAs', 'Save As… (Ctrl+Shift+S)', () => this.app.saveFile(true)], ['rebuild', 'Rebuild (Ctrl+B)', () => this.app.refresh()], ['search', 'Search commands (Ctrl+K or /)', () => this.commandSearch()]]) {
+    for (const [ic, title, fn] of [['save', 'Save (Ctrl+S)', () => this.app.saveFile()], ['saveAs', 'Save As… (Ctrl+Shift+S)', () => this.app.saveFile(true)], ['rebuild', 'Rebuild (Ctrl+B)', () => this.app.refresh()], ['gear', 'Settings', () => this.showSettings()], ['search', 'Search commands (Ctrl+K or /)', () => this.commandSearch()]]) {
       const q = el('button', { title }, icon(ic));
       q.onclick = fn;
       quick.appendChild(q);
@@ -3798,12 +3901,20 @@ export class UI {
 
   // The default DXF layer colours, line types and options.
   showDxfSettings() {
-    const st = loadDxfSettings();
+    let st = loadDxfSettings();
     const box = el('div');
     box.appendChild(el('div', { class: 'pm-hint' }, 'How flat patterns are written to DXF. Each export shows a preview where these can be changed for that file too.'));
-    box.appendChild(this.dxfControls(st, () => {}));
+    let ctl = box.appendChild(this.dxfControls(st, () => {}));
     this.modal('DXF Settings', 'gear', box, [
-      { label: 'Reset to Defaults', action: () => { saveDxfSettings({ mapping: {}, options: {} }); try { localStorage.removeItem('razorcad.dxfMapping.v1'); } catch { /* ignore */ } setTimeout(() => this.showDxfSettings(), 0); } },
+      { label: 'Reset to Defaults', action: () => {
+        saveDxfSettings({ mapping: {}, options: {} });
+        try { localStorage.removeItem('razorcad.dxfMapping.v1'); } catch { /* ignore */ }
+        st = loadDxfSettings();
+        const fresh = this.dxfControls(st, () => {});
+        ctl.replaceWith(fresh);
+        ctl = fresh;
+        return false;
+      } },
       { label: 'Save', primary: true, action: () => { saveDxfSettings(st); this.app.status('DXF settings saved.'); } },
       { label: 'Cancel' },
     ]);
@@ -4599,6 +4710,8 @@ export class UI {
           if (!fd.world && f[fd.key] !== undefined && f[fd.key] !== null && f[fd.key] !== '' && !f.dimIds?.[fd.key]) a.assignDimIds();
           const did = !fd.world && f.dimIds?.[fd.key];
           if (did) this.dimTagOn(r.querySelector('label'), did);
+          // (fields shown or hidden by this one: the panel again once it is left)
+          if (fd.rerender) r.querySelector('input')?.addEventListener('change', () => this.renderPM());
           if (DIM.usesLost(a.doc, f[fd.key])) { r.classList.add('dim-lost'); r.title = DIM.lostFailures(a.doc, { name: f.name, dimIds: { [fd.key]: did }, [fd.key]: f[fd.key] }).join('\n'); }
           body.appendChild(r);
         } else if (fd.type === 'check') {
@@ -5605,13 +5718,21 @@ export class UI {
     if (typeof body === 'string') b.innerHTML = body; else b.appendChild(body);
     const f = el('div', { class: 'modal-f' });
     const close = () => { back.remove(); document.removeEventListener('keydown', onKey, true); };
+    // (an editor opened from Settings (this.backTo): a Back button to it, and its own buttons go back to it too)
+    const backTo = this.backTo;
+    this.backTo = null;
+    if (backTo) {
+      const bk = el('button', { class: 'modal-backbtn', title: tr('Back to Settings') }, `‹ ${esc(tr('Settings'))}`);
+      bk.onclick = () => { close(); backTo(); };
+      h.prepend(bk);
+    }
     const onKey = (e) => {
       if (e.key === 'Escape' && !e.target.closest?.('[data-own-escape]')) { e.stopPropagation(); close(); }
     };
     document.addEventListener('keydown', onKey, true);
     for (const btn of buttons) {
       const bb = el('button', { class: btn.primary ? 'primary' : '' }, esc(tr(btn.label)));
-      bb.onclick = () => { if (btn.action?.() !== false) close(); };
+      bb.onclick = () => { if (btn.action?.() !== false) { close(); backTo?.(); } };
       f.appendChild(bb);
     }
     x.onclick = close;

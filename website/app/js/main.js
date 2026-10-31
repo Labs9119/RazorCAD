@@ -41,13 +41,14 @@ import { relabelAxes3D } from './sketch3dmodel.js';
 import * as LF from './libfeatures.js';
 import { Annotations3D, GDT_SYMBOLS, annotationText, stepWithAnnotations } from './annotations3d.js';
 import * as P3 from './print3d.js';
-import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment } from './render.js';
+import { LOOKS, SCENES, lookFor, renderImage, showDecals, environment, loadScene, photoReady } from './render.js';
 import * as LT from './lights.js';
 import * as PP from './pathpick.js';
 import { activeLights } from './lights.js';
 import * as AP from './appearances.js';
 import { glb, viewportBodies } from './gltf.js';
 import * as DIM from './dimids.js';
+import { exportOptions, kernelExportOpts, stepHeader } from './exportopts.js';
 
 // Saved parts are auto-saved next to their file at most this often while they have unsaved changes.
 const AUTOSAVE_MS = 20000;
@@ -323,9 +324,11 @@ class App {
   }
 
   // Auto-save: only once the part has been saved (it has a file), written next to that file
-  // (Name.autosave.rcad) at most every AUTOSAVE_MS while there are unsaved changes.
+  // (Name.autosave.rcad) at most every AUTOSAVE_MS (Settings ▸ General: prefs.autosaveSec, 0: off) while there are
+  // unsaved changes.
   autosave() {
-    if (!this.filePath || !this.dirty || !platform.desktop || this._autosaveTimer) return;
+    const ms = (this.ui.prefs?.autosaveSec ?? AUTOSAVE_MS / 1000) * 1000;
+    if (!ms || !this.filePath || !this.dirty || !platform.desktop || this._autosaveTimer) return;
     this._autosaveTimer = setTimeout(async () => {
       this._autosaveTimer = null;
       if (!this.filePath || !this.dirty) return;
@@ -336,7 +339,7 @@ class App {
       } catch (err) {
         this.status('Auto-save failed: ' + (err?.message || err));
       }
-    }, AUTOSAVE_MS);
+    }, ms);
   }
 
   flushAutosave() {
@@ -1077,7 +1080,10 @@ class App {
   toggleRealistic(on = !this.realisticView) {
     if (this.mode !== 'part' && on) { this.toast('The realistic view is for parts', true); return; }
     this.realisticView = !!on;
-    if (on) this._viewEnv ||= environment(this.viewport.renderer, this.doc.render?.env || 'studio');
+    const sc = this.doc.render?.env || 'studio';
+    // (a photographed place: the studio's light until its own has loaded, then its own)
+    if (on && !photoReady(sc)) loadScene(sc).then(() => { if (this.realisticView && (this.doc.render?.env || 'studio') === sc) { this._viewEnv?.dispose(); this._viewEnv = null; this.toggleRealistic(true); } }, (e) => this.toast(e.message, true));
+    if (on) this._viewEnv ||= environment(this.viewport.renderer, sc);
     this.viewport.setRealistic(on, this._viewEnv?.texture);
     this.pushBody(true);
     this.ui.renderCommandManager();
@@ -2544,6 +2550,7 @@ class App {
     while (names.has('Assembly' + n)) n++;
     const doc = newAssembly('Assembly' + n);
     if (this.ui.prefs?.upAxis === 'z') doc.upAxis = 'z';
+    if (this.ui.prefs?.newUnits === 'in') doc.units = 'in';
     const ed = this.openAssemblyTab(doc, null);
     this.status('New assembly: Insert Components (the parts open in tabs, or part files), then Mate them.');
     setTimeout(() => ed.insertComponents(), 50);
@@ -5397,7 +5404,7 @@ class App {
     }
     const [W, H] = o.size === 'view' || !o.size ? [this.viewport.width, this.viewport.height] : o.size.split('x').map(Number);
     let img;
-    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], lights: activeLights(this.doc.render), envStrength: this.doc.render?.envStrength ?? 1, keyLight: this.doc.render?.keyLight !== false, onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
+    try { img = await this.withProgress('Rendering…', () => renderImage(this.viewport, { ...this.renderSetup(), width: W, height: H, env: o.env, floor: o.floor, exposure: o.exposure, samples: o.quality ?? 1, decals: this.doc.decals || [], lights: activeLights(this.doc.render), envStrength: this.doc.render?.envStrength ?? 1, keyLight: this.doc.render?.keyLight !== false, placeTurn: this.doc.render?.placeTurn || 0, onPass: (k, n) => this.status(`Rendering: pass ${k} of ${n}…`) })); } catch (e) { this.toast('Render failed: ' + e.message, true); return null; }
     if (o.quiet) return img;
     const box = document.createElement('div');
     box.innerHTML = `<img src="${img.url}" style="max-width:min(80vw,1100px);max-height:65vh;display:block;border:1px solid #ccc">`;
@@ -5418,11 +5425,14 @@ class App {
       { key: 'floor', label: 'Shadow on the floor', type: 'check', value: prev.floor !== false },
       { key: 'envStrength', label: 'Scene light (0 to 1)', type: 'expr', value: prev.envStrength ?? 1 },
       { key: 'keyLight', label: 'Scene key light (renders)', type: 'check', value: prev.keyLight !== false },
-    ], 'For renders and the realistic view. Kept with the part. Spotlights (Render ▸ Spotlights) add to the scene’s light.');
+      { key: 'placeTurn', label: 'Turn the place (degrees, photographed places)', type: 'expr', value: prev.placeTurn ?? 0 },
+    ], 'For renders and the realistic view. Kept with the part. Spotlights (Render ▸ Spotlights) add to the scene’s light. The photographed places (outdoors, forest, workshop, warehouse, office, store…) are real 360° photographs: the part stands on their ground, lit by them, with the sun (or the brightest light) at the view’s right. Turn the place to choose what is behind the part (the sun and the shadow turn with it).');
     if (!v) return;
     const es = Math.max(0, Math.min(1, +this.result.ev(String(v.envStrength))));
-    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor, envStrength: Number.isFinite(es) ? es : 1, keyLight: !!v.keyLight };
+    const turn = (((+this.result.ev(String(v.placeTurn)) || 0) % 360) + 360) % 360;
+    this.doc.render = { ...prev, env: v.env, exposure: +this.result.ev(String(v.exposure)) || 1, floor: !!v.floor, envStrength: Number.isFinite(es) ? es : 1, keyLight: !!v.keyLight, placeTurn: +turn.toFixed(1) };
     if (this.doc.render.envStrength === 1) delete this.doc.render.envStrength;
+    if (!this.doc.render.placeTurn) delete this.doc.render.placeTurn;
     if (this.doc.render.keyLight) delete this.doc.render.keyLight;
     this.commit();
     if (this._viewEnv) { this._viewEnv.dispose(); this._viewEnv = null; }
@@ -5584,21 +5594,23 @@ class App {
     return glb(viewportBodies(this.viewport, { names: (this.result?.bodies || []).map((b) => b.name), colors: st.colors, looks: st.looks }), this.doc.name || 'Part');
   }
 
-  // (a STEP file (AP242, as the kernel writes it), the 3D annotations added as properties of the part)
+  // (a STEP file as Settings ▸ Export sets it (AP242 unless chosen otherwise), the 3D annotations added as properties
+  // of the part, the header with the author and organisation)
   async stepBytes(bodyId = null) {
-    const ann = this.doc.annotations || [];
-    // (Kernel Lab k14: datums, geometric tolerances and dimensions written as semantic PMI, on the faces they point at)
-    if (ann.length && !bodyId && (await this.kernelHas('LabPMI'))) {
+    const ann = this.doc.annotations || [], o = exportOptions(this.ui.prefs), b = bodyId && this.bodyById(bodyId);
+    const out = (text) => new TextEncoder().encode(stepHeader(ann.length ? stepWithAnnotations(text, ann) : text, o, `${b?.name || this.doc.name || 'Part'}.step`));
+    // (Kernel Lab k14: datums, geometric tolerances and dimensions written as semantic PMI, on the faces they point at;
+    // AP242 in millimetres only)
+    if (ann.length && !bodyId && o.stepSchema === 'ap242' && o.stepUnit === 'mm' && (await this.kernelHas('LabPMI'))) {
       const P = (q) => q.map((x) => +(+x).toFixed(6)).join(' ');
       const spec = ann.map((a) => (a.kind === 'datum' ? `D|${a.letter}|${P(a.p)}` : a.kind === 'gdt' ? `T|${a.symbol}|${+a.tol}|${a.dia ? 1 : 0}|${P(a.p)}|${String(a.datums || '').split(/[\s,|]+/).filter(Boolean).join(',')}` : a.kind === 'dim' && a.q ? `L|${+a.value}|${+a.plus || 0}|${+a.minus || 0}|${P(a.p)}|${P(a.q)}|${P(a.at || a.p)}` : null)).filter(Boolean).join('\n');
       try {
         const r = await this.kernel.request('stepPMI', { spec, name: this.doc.name || 'Part' });
-        return new TextEncoder().encode(stepWithAnnotations(r.text, ann));
+        return out(r.text);
       } catch (e) { this.toast('STEP with PMI failed (written without it): ' + e.message, true); }
     }
-    const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo());
-    if (!ann.length) return bytes;
-    return new TextEncoder().encode(stepWithAnnotations(new TextDecoder().decode(bytes), ann));
+    const bytes = await this.kernel.exportBody('step', bodyId, this.exportInfo(), kernelExportOpts(o));
+    return out(new TextDecoder().decode(bytes));
   }
 
   // ------------------------------------------------------------ library features (libfeatures.js), kept in the settings
@@ -6085,6 +6097,7 @@ class App {
     this.cancelAutosave();
     const doc = M.newDoc();
     if (this.ui.prefs?.upAxis === 'z') doc.upAxis = 'z';
+    if (this.ui.prefs?.newUnits === 'in') doc.units = 'in';
     // a new part in another tab gets the next free name
     const names = new Set(this.tabs.map((t, i) => (i === this.tabIndex ? null : t.doc?.name)).filter(Boolean));
     for (let n = 1; names.has(doc.name); n++) doc.name = 'Part' + n;
@@ -6296,7 +6309,7 @@ class App {
     if (!this.result?.body) { this.toast('There is no solid body to export', true); return; }
     try {
       this.status(`Exporting ${format.toUpperCase()}…`);
-      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : format === 'glb' ? this.glbBytes() : this.kernel.exportBody(format, null, this.exportInfo())));
+      const bytes = await this.withProgress(`Exporting ${format.toUpperCase()}…`, () => (format === 'step' ? this.stepBytes() : format === 'glb' ? this.glbBytes() : this.kernel.exportBody(format, null, this.exportInfo(), kernelExportOpts(exportOptions(this.ui.prefs)))));
       const ext = format === 'step' ? 'step' : format;
       const path = await platform.saveBinary(`${this.safeName()}.${ext}`, bytes, format);
       this.status(path ? 'Exported ' + String(path).split(/[\\/]/).pop() : 'Ready');

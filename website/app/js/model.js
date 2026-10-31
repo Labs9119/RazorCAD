@@ -410,7 +410,8 @@ export function createFeature(doc, type, props = {}) {
       // straight spigots at the ends (length from the flange's inner face, or the end); flanges mounted 'butt' (on the
       // end, the part's inside size) | 'socket' (slipped over the end: the part's outside size and flClear; the end
       // flOffset in from the flange's face). Flanges and spigots are inside the axis line's length.
-      spigotBot: 0, spigotTop: 0, flMount: 'butt', flClear: 1, flOffset: 0,
+      // (spigot parts and bend radius unset: 1 for a round end, 2 for a flat-sided one; the thickness)
+      spigotBot: 0, spigotTop: 0, spPartsBot: null, spPartsTop: null, spigotR: null, flMount: 'butt', flClear: 1, flOffset: 0,
     },
     // extruded from an open profile (or a circle, rolled): direction 'one' | 'reverse' | 'mid'; side 'one' |
     // 'other' | 'mid' (material left of the profile's direction, right, or half each side); radius: inside

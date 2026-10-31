@@ -6,6 +6,17 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 13:26 — Spigots: round ones rolled, flat-sided ones bent; their own parts and bend radius
+
+- **Transition / Reducer:** a spigot at a round end is now a rolled cylinder (each part an arc, its flat pattern a
+  rectangle), not a faceted loft; a flat-sided spigot is straight sides with real bends at its corners, of a new
+  **Spigot bend radius** (empty: the sheet thickness), not lofted folds.
+- **Bottom / Top spigot parts:** each spigot in its own number of parts (empty: 1 round, 2 flat-sided; a flat-sided
+  one must divide its sides), its first seam where the taper's is; one part gets a small gap at its seam.
+- The Spigots fields show once a spigot length is entered (the panel refreshes when the length is left).
+- Tests: transition-flanges, a round spigot's volume that of the ring exactly; square spigots bent at radius 2 and
+  10, in 2, 4 and 1 parts; 3 parts refused.
+
 ## 2026-10-31 12:55 — Photographed render scenes
 
 - The render places (outdoors, forest, office, workshop, store) are now real 360° HDR photographs in place of shapes;

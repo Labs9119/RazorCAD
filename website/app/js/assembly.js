@@ -37,6 +37,7 @@ import { volWithUnit, lenWithUnit, unitOf } from './units.js';
 import * as G from './geometry.js';
 import * as W from './wcs.js';
 import { meshWithAppearances } from './appearances.js';
+import { exportOptions, kernelExportOpts, stepHeader } from './exportopts.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -2727,8 +2728,10 @@ export class AssemblyEditor {
   async exportSTEP() {
     if (!this.doc.components.length) return;
     try {
-      const r = await this.app.withProgress('Exporting STEP…', () => (this.app.kernelPool || this.app.kernel).request('exportAssemblySTEP', { doc: JSON.stringify(this.exportDoc()) }, 'asm-parts'));
-      const path = await platform.saveBinary(`${this.safeName()}.step`, r.bytes, 'step');
+      const o = exportOptions(this.app.ui.prefs);
+      const r = await this.app.withProgress('Exporting STEP…', () => (this.app.kernelPool || this.app.kernel).request('exportAssemblySTEP', { doc: JSON.stringify(this.exportDoc()), opts: kernelExportOpts(o).step }, 'asm-parts'));
+      const bytes = new TextEncoder().encode(stepHeader(new TextDecoder().decode(r.bytes), o, `${this.safeName()}.step`));
+      const path = await platform.saveBinary(`${this.safeName()}.step`, bytes, 'step');
       if (path !== null) this.app.status(`STEP saved: ${r.parts} part${r.parts === 1 ? '' : 's'}, ${r.components} component${r.components === 1 ? '' : 's'}${r.assemblies > 1 ? `, ${r.assemblies - 1} sub-assembl${r.assemblies === 2 ? 'y' : 'ies'}` : ''}.`);
     } catch (e) { this.app.toast('STEP export failed: ' + e.message, true); }
   }

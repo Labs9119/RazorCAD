@@ -8918,17 +8918,61 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const partOpts = { X, Y, parts: ev(f.parts), seamAt: f.seamAt || 'mid', seamShift: !!f.seamShift, seamAngle: (ev(f.seamAngle ?? 0) * Math.PI) / 180, div, gap: ev(f.seamGap ?? 0) };
           const pieces = SM.transitionParts({ ...partOpts, o: add(o, mul(d, eb)), d, h: hT, bot, top, off });
           // (the straight spigots: each end's shape, its wall straight (mean sizes: half a thickness out), from where
-          // the part's end is (the line's end, or inside the flange) to the taper, split into the same parts)
+          // the part's end is (the line's end, or inside the flange) to the taper, in their own number of parts (unset:
+          // a round one 1, a flat-sided one 2), the first seam where the taper's is; made as extruded sheets, so a
+          // round one is rolled true round and a flat-sided one bent at its corners)
           const tEnd = add(o, add(mul(X, off[0]), mul(Y, off[1]))), straight = [];
           const gStraight = dims === 'mean' ? t / 2 : 0;
           for (const k of ['b', 't']) {
             const s0 = fl[k] ? (socket ? flOff : T) : 0, L = endLen(k) - s0;
             if (!(L > 1e-6)) continue;
             const e = SM.transitionEnd(spec(k), gStraight), base = k === 'b' ? add(o, mul(d, s0)) : add(tEnd, mul(d, h - endLen(k)));
-            for (const pc of SM.transitionParts({ ...partOpts, o: base, d, h: L, bot: e, top: e })) straight.push({ ...pc, k });
+            const fr3 = { o: base, u: X, v: Y, n: d }, nRaw = f[k === 'b' ? 'spPartsBot' : 'spPartsTop'];
+            const N = nRaw == null || nRaw === '' ? (e.kind === 'round' ? 1 : 2) : Math.round(ev(nRaw)), where = k === 'b' ? 'bottom' : 'top';
+            if (!(N >= 1 && N <= 64)) throw new Error(`The ${where} spigot is made of 1 to 64 parts`);
+            // (one part: a small gap at its seam, as a one-part cone has, so it is not closed on itself)
+            const gap = Math.max(ev(f.seamGap ?? 0) || 0, N === 1 ? 0.02 : 0);
+            if (e.kind === 'round') {
+              // (a round end: rolled true round, each part an arc of the circle, the gap at each seam)
+              const cen = k === 'b' ? o : tEnd, ring = k === 'b' ? pieces[0].A : pieces[0].B;
+              const sa = rr ? partOpts.seamAngle : Math.atan2(dot(sub(ring[0], cen), Y), dot(sub(ring[0], cen), X));
+              const D = (2 * Math.PI) / N, g = gap / 2 / e.r, P = (a) => [e.r * Math.cos(a), e.r * Math.sin(a)];
+              if (!(D - 2 * g > 1e-6)) throw new Error(`The seam gaps take up the whole of the ${where} spigot`);
+              for (let j = 0; j < N; j++) {
+                const a0 = sa + j * D + g, a1 = sa + (j + 1) * D - g;
+                straight.push({ k, roll: { segs: [{ type: 'arc', a: P(a0), m: P((a0 + a1) / 2), b: P(a1) }], frame: fr3, L } });
+              }
+              continue;
+            }
+            // (a flat-sided end: its straight sides with bends of the spigot radius at the corners, each part the
+            // sides between two seams placed as the taper's are; a seam at a corner leaves that corner sharp, welded)
+            const M = e.M, first = f.seamShift ? 1 : 0, atCorner = f.seamAt === 'corner';
+            if (M % N) throw new Error(`The ${where} end has ${M} sides: its spigot splits into ${Array.from({ length: M }, (_, i) => i + 1).filter((x) => !(M % x)).join(' or ')} equal parts`);
+            const midOf = (i) => { const c0 = e.corners[i % M], c1 = e.corners[(i + 1) % M]; return [(c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2]; };
+            const toward = (p, q, x) => { const l = Math.hypot(q[0] - p[0], q[1] - p[1]); return [p[0] + ((q[0] - p[0]) * x) / l, p[1] + ((q[1] - p[1]) * x) / l]; };
+            for (let j = 0; j < N; j++) {
+              const i0 = first + (j * M) / N, i1 = i0 + M / N, pts = [atCorner ? e.corners[i0 % M] : midOf(i0)];
+              for (let i = i0 + 1; i <= i1 - (atCorner ? 1 : 0); i++) pts.push(e.corners[i % M]);
+              pts.push(atCorner ? e.corners[i1 % M] : midOf(i1));
+              if (N === 1) { pts[0] = toward(pts[0], pts[1], gap / 2); pts[pts.length - 1] = toward(pts[pts.length - 1], pts[pts.length - 2], gap / 2); }
+              const segs = pts.slice(1).map((b, i) => ({ type: 'line', a: pts[i], b }));
+              straight.push({ k, roll: { segs, frame: fr3, L } });
+            }
           }
+          const spR = f.spigotR == null || f.spigotR === '' ? t : ev(f.spigotR);
+          if (straight.some((pc) => pc.roll?.segs.length > 1) && !(spR >= 0)) throw new Error("The spigots' bend radius can't be negative");
           let nb = 0, nSp = 0;
           for (const pc of [...pieces, ...straight]) {
+            if (pc.roll) {
+              // (inside sizes: the material outward of the circle; outside or mean: inward)
+              const { sheet } = SM.extrudedSheet(pc.roll.segs, { frame: pc.roll.frame, z0: 0, z1: pc.roll.L, t, K, R: spR, side: dims === 'inside' ? 'other' : 'one' });
+              const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+              rec.sheet = sheet;
+              solids.push(rec);
+              applied.push({ op: 'add', tool: shape });
+              nSp++;
+              continue;
+            }
             const sheet = SM.loftedSheet(pc.A, pc.B, { t, K, R: R0, method: bent ? 'bent' : 'formed', side: dims === 'inside' ? 1 : -1, breaks: pc.breaks });
             if (!bent) sheet.lofted.bendLines = SM.formLines(sheet.lofted, { breaks: pc.breaks });
             nb += sheet.lofted.bendLines.length;

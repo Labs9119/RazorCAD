@@ -57,18 +57,36 @@ export async function run({threads=1}={}){
     }
     {
       // spigots: 50 at the bottom, 30 at the top, both ends flanged (butt): flanges 0–6 and 294–300, the bottom
-      // spigot's parts 6–56, the top's 264–294, the taper between; nothing past the line
+      // spigot 6–56, the top's 264–294 (round: one part each unless set), the taper between; nothing past the line
       const sp=await build({flangeBot:true,flangeTop:true,spigotBot:50,spigotTop:30,flHoleD:0});
       const S=spans(sp.r),has=(lo,hi,pred=()=>true)=>S.filter(x=>pred(x)&&close(x.lo,lo,1e-4)&&close(x.hi,hi,1e-4)).length;
       const lo=Math.min(...S.map(x=>x.lo)),hi=Math.max(...S.map(x=>x.hi));
-      results.push({name:'Spigots 50 and 30 between the flanges and the taper; the whole part as long as the line',ok:!sp.errors.length&&has(0,6)===1&&has(294,300)===1&&has(6,56,x=>x.t===2)===2&&has(264,294,x=>x.t===2)===2&&close(lo,0,1e-5)&&close(hi,300,1e-5)&&/taper 208 mm/.test(sp.note)&&/4 spigot parts/.test(sp.note),spans:S,note:sp.note,errors:sp.errors});
+      results.push({name:'Spigots 50 and 30 between the flanges and the taper; the whole part as long as the line',ok:!sp.errors.length&&has(0,6)===1&&has(294,300)===1&&has(6,56,x=>x.t===2)===1&&has(264,294,x=>x.t===2)===1&&close(lo,0,1e-5)&&close(hi,300,1e-5)&&/taper 208 mm/.test(sp.note)&&/2 spigot parts/.test(sp.note),spans:S,note:sp.note,errors:sp.errors});
       // slipped over the end, clearance 1: the opening Ø(300 + 2·2 + 2·1) = Ø306; the part's straight end through it
       // from the flange's face (0–6), the taper from 6
       const so=await build({flangeBot:true,flMount:'socket',flHoleD:0}),sv=await flVol(so.r),want=6*P*((153+40)**2-153**2),S2=spans(so.r);
-      results.push({name:'Slipped-on flange: opening the outside of the part and 1 mm all round; the end through it, flush',ok:!so.errors.length&&close(sv,want)&&S2.filter(x=>x.t===2&&close(x.lo,0,1e-4)&&close(x.hi,6,1e-4)).length===2,flange:sv,expected:want,spans:S2,errors:so.errors});
+      results.push({name:'Slipped-on flange: opening the outside of the part and 1 mm all round; the end through it, flush',ok:!so.errors.length&&close(sv,want)&&S2.filter(x=>x.t===2&&close(x.lo,0,1e-4)&&close(x.hi,6,1e-4)).length===1,flange:sv,expected:want,spans:S2,errors:so.errors});
       // (the end 2 in from the flange's face, a clearance of 0.5)
       const so2=await build({flangeBot:true,flMount:'socket',flOffset:2,flClear:0.5,flHoleD:0}),sv2=await flVol(so2.r),want2=6*P*((152.5+40)**2-152.5**2),S3=spans(so2.r);
-      results.push({name:'Slipped-on flange, the end 2 in from its face, clearance 0.5',ok:!so2.errors.length&&close(sv2,want2)&&S3.filter(x=>x.t===2&&close(x.lo,2,1e-4)&&close(x.hi,6,1e-4)).length===2,flange:sv2,expected:want2,spans:S3,errors:so2.errors});
+      results.push({name:'Slipped-on flange, the end 2 in from its face, clearance 0.5',ok:!so2.errors.length&&close(sv2,want2)&&S3.filter(x=>x.t===2&&close(x.lo,2,1e-4)&&close(x.hi,6,1e-4)).length===1,flange:sv2,expected:want2,spans:S3,errors:so2.errors});
+      // a round spigot rolled true round (not facets): square 400 → round 200, the top spigot 40 long in 4 parts, its
+      // volume π (102² − 100²) · 40 exactly, each part a quarter
+      const rs=await build({bShape:'square',bSize:400,tShape:'round',tD:200,parts:4,spigotTop:40,spPartsTop:4});
+      const S4=spans(rs.r),top=(rs.r.body?.bodies||[]).filter((b,i)=>close(S4[i].lo,260,1e-4)&&close(S4[i].hi,300,1e-4));
+      let rv=0;for(const b of top)rv+=(await k.request('measure',{refs:[{kind:'body',id:b.id}]})).items[0].volume;
+      const wantR=P*(102**2-100**2)*40;
+      results.push({name:'A round spigot rolled true round: 4 parts, the volume of the ring exactly',ok:!rs.errors.length&&top.length===4&&close(rv,wantR,1e-6),volume:rv,expected:wantR,parts:top.length,errors:rs.errors});
+      // a square spigot bent at its corners, inside radius the thickness (2) unless set: 2 parts unless set; its
+      // section the outer square (404, corners R4) less the inner (400, corners R2); 1 part (a small gap at the seam);
+      // 3 parts for a square: refused
+      const bodyVols=async(r,pred)=>{const S=spans(r);let v=0,n=0;for(const [i,b] of (r.body?.bodies||[]).entries())if(pred(S[i])){v+=(await k.request('measure',{refs:[{kind:'body',id:b.id}]})).items[0].volume;n++;}return {v,n};};
+      const sqo={bShape:'square',bSize:400,tShape:'round',tD:200,parts:4,spigotBot:50};
+      const ss=await build(sqo),sv3=await bodyVols(ss.r,x=>close(x.lo,0,1e-4)&&close(x.hi,50,1e-4)),wantS=(404**2-400**2-(4-P)*(16-4))*50;
+      results.push({name:'A square spigot bent at its corners (radius the thickness), in 2 parts',ok:!ss.errors.length&&sv3.n===2&&close(sv3.v,wantS,1e-6),volume:sv3.v,expected:wantS,parts:sv3.n,errors:ss.errors});
+      const sr=await build({...sqo,spigotR:10,spPartsBot:4}),sv4=await bodyVols(sr.r,x=>close(x.lo,0,1e-4)&&close(x.hi,50,1e-4)),wantS4=(404**2-400**2-(4-P)*(12**2-10**2))*50;
+      results.push({name:'A square spigot, bend radius 10, in 4 parts',ok:!sr.errors.length&&sv4.n===4&&close(sv4.v,wantS4,1e-6),volume:sv4.v,expected:wantS4,parts:sv4.n,errors:sr.errors});
+      const s1=await build({...sqo,spPartsBot:1}),sv5=await bodyVols(s1.r,x=>close(x.lo,0,1e-4)&&close(x.hi,50,1e-4)),s3=await build({...sqo,spPartsBot:3});
+      results.push({name:'A square spigot in one part; in 3: refused',ok:!s1.errors.length&&sv5.n===1&&close(sv5.v,wantS-0.02*2*50,1e-4)&&s3.errors.some(e=>/splits into 1 or 2 or 4 equal parts/.test(e)),volume:sv5.v,errors:[...s1.errors,...s3.errors]});
       const long=await build({flangeBot:true,spigotBot:200,spigotTop:100});
       results.push({name:'Flanges and spigots as long as the line: refused',ok:long.errors.some(e=>/as long as the axis line/.test(e)),errors:long.errors});
       const deep=await build({flangeBot:true,flMount:'socket',flOffset:6});

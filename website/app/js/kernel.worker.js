@@ -8918,17 +8918,61 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const partOpts = { X, Y, parts: ev(f.parts), seamAt: f.seamAt || 'mid', seamShift: !!f.seamShift, seamAngle: (ev(f.seamAngle ?? 0) * Math.PI) / 180, div, gap: ev(f.seamGap ?? 0) };
           const pieces = SM.transitionParts({ ...partOpts, o: add(o, mul(d, eb)), d, h: hT, bot, top, off });
           // (the straight spigots: each end's shape, its wall straight (mean sizes: half a thickness out), from where
-          // the part's end is (the line's end, or inside the flange) to the taper, split into the same parts)
+          // the part's end is (the line's end, or inside the flange) to the taper, in their own number of parts (unset:
+          // a round one 1, a flat-sided one 2), the first seam where the taper's is; made as extruded sheets, so a
+          // round one is rolled true round and a flat-sided one bent at its corners)
           const tEnd = add(o, add(mul(X, off[0]), mul(Y, off[1]))), straight = [];
           const gStraight = dims === 'mean' ? t / 2 : 0;
           for (const k of ['b', 't']) {
             const s0 = fl[k] ? (socket ? flOff : T) : 0, L = endLen(k) - s0;
             if (!(L > 1e-6)) continue;
             const e = SM.transitionEnd(spec(k), gStraight), base = k === 'b' ? add(o, mul(d, s0)) : add(tEnd, mul(d, h - endLen(k)));
-            for (const pc of SM.transitionParts({ ...partOpts, o: base, d, h: L, bot: e, top: e })) straight.push({ ...pc, k });
+            const fr3 = { o: base, u: X, v: Y, n: d }, nRaw = f[k === 'b' ? 'spPartsBot' : 'spPartsTop'];
+            const N = nRaw == null || nRaw === '' ? (e.kind === 'round' ? 1 : 2) : Math.round(ev(nRaw)), where = k === 'b' ? 'bottom' : 'top';
+            if (!(N >= 1 && N <= 64)) throw new Error(`The ${where} spigot is made of 1 to 64 parts`);
+            // (one part: a small gap at its seam, as a one-part cone has, so it is not closed on itself)
+            const gap = Math.max(ev(f.seamGap ?? 0) || 0, N === 1 ? 0.02 : 0);
+            if (e.kind === 'round') {
+              // (a round end: rolled true round, each part an arc of the circle, the gap at each seam)
+              const cen = k === 'b' ? o : tEnd, ring = k === 'b' ? pieces[0].A : pieces[0].B;
+              const sa = rr ? partOpts.seamAngle : Math.atan2(dot(sub(ring[0], cen), Y), dot(sub(ring[0], cen), X));
+              const D = (2 * Math.PI) / N, g = gap / 2 / e.r, P = (a) => [e.r * Math.cos(a), e.r * Math.sin(a)];
+              if (!(D - 2 * g > 1e-6)) throw new Error(`The seam gaps take up the whole of the ${where} spigot`);
+              for (let j = 0; j < N; j++) {
+                const a0 = sa + j * D + g, a1 = sa + (j + 1) * D - g;
+                straight.push({ k, roll: { segs: [{ type: 'arc', a: P(a0), m: P((a0 + a1) / 2), b: P(a1) }], frame: fr3, L } });
+              }
+              continue;
+            }
+            // (a flat-sided end: its straight sides with bends of the spigot radius at the corners, each part the
+            // sides between two seams placed as the taper's are; a seam at a corner leaves that corner sharp, welded)
+            const M = e.M, first = f.seamShift ? 1 : 0, atCorner = f.seamAt === 'corner';
+            if (M % N) throw new Error(`The ${where} end has ${M} sides: its spigot splits into ${Array.from({ length: M }, (_, i) => i + 1).filter((x) => !(M % x)).join(' or ')} equal parts`);
+            const midOf = (i) => { const c0 = e.corners[i % M], c1 = e.corners[(i + 1) % M]; return [(c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2]; };
+            const toward = (p, q, x) => { const l = Math.hypot(q[0] - p[0], q[1] - p[1]); return [p[0] + ((q[0] - p[0]) * x) / l, p[1] + ((q[1] - p[1]) * x) / l]; };
+            for (let j = 0; j < N; j++) {
+              const i0 = first + (j * M) / N, i1 = i0 + M / N, pts = [atCorner ? e.corners[i0 % M] : midOf(i0)];
+              for (let i = i0 + 1; i <= i1 - (atCorner ? 1 : 0); i++) pts.push(e.corners[i % M]);
+              pts.push(atCorner ? e.corners[i1 % M] : midOf(i1));
+              if (N === 1) { pts[0] = toward(pts[0], pts[1], gap / 2); pts[pts.length - 1] = toward(pts[pts.length - 1], pts[pts.length - 2], gap / 2); }
+              const segs = pts.slice(1).map((b, i) => ({ type: 'line', a: pts[i], b }));
+              straight.push({ k, roll: { segs, frame: fr3, L } });
+            }
           }
+          const spR = f.spigotR == null || f.spigotR === '' ? t : ev(f.spigotR);
+          if (straight.some((pc) => pc.roll?.segs.length > 1) && !(spR >= 0)) throw new Error("The spigots' bend radius can't be negative");
           let nb = 0, nSp = 0;
           for (const pc of [...pieces, ...straight]) {
+            if (pc.roll) {
+              // (inside sizes: the material outward of the circle; outside or mean: inward)
+              const { sheet } = SM.extrudedSheet(pc.roll.segs, { frame: pc.roll.frame, z0: 0, z1: pc.roll.L, t, K, R: spR, side: dims === 'inside' ? 'other' : 'one' });
+              const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+              rec.sheet = sheet;
+              solids.push(rec);
+              applied.push({ op: 'add', tool: shape });
+              nSp++;
+              continue;
+            }
             const sheet = SM.loftedSheet(pc.A, pc.B, { t, K, R: R0, method: bent ? 'bent' : 'formed', side: dims === 'inside' ? 1 : -1, breaks: pc.breaks });
             if (!bent) sheet.lofted.bendLines = SM.formLines(sheet.lofted, { breaks: pc.breaks });
             nb += sheet.lofted.bendLines.length;
@@ -9442,10 +9486,53 @@ function updateProjections(f, frame, body, sketches, surfaceShapes = []) {
   return lost;
 }
 
+// STEP as Settings ▸ Export sets it (o: { schema: 'ap242' | 'ap214' | 'ap203', unit: 'mm' | 'in' | 'm', colors }).
+// OpenCascade's STEP parameters are global: they go back to AP242 in millimetres after each file (the PMI writer and
+// the other exports expect them so).
+const STEP_SCHEMA = { ap242: 5, ap214: 4, ap203: 3 }, STEP_UNIT = { mm: 'MM', in: 'INCH', m: 'M' };
+function setStepParams(oc, o = {}) {
+  // (a writer made once first: the first one made sets OpenCascade's STEP parameters up)
+  if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+  oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM');
+  oc.Interface_Static.SetCVal('write.step.unit', STEP_UNIT[o.unit] || 'MM');
+  oc.Interface_Static.SetIVal('write.step.schema', STEP_SCHEMA[o.schema] || 5);
+  oc.Interface_Static.SetIVal('write.surfacecurve.mode', 1);
+  oc.Interface_Static.SetIVal('write.precision.mode', 0);
+}
+// An XCAF document (doc: its TDocStd_Document) written as STEP: the file's bytes. assembly: OpenCascade's
+// write.step.assembly (1: always as an assembly, 2: only when it has components).
+function writeStepDoc(doc, o = {}, assembly = 2) {
+  const oc = R.getOC();
+  setStepParams(oc, o);
+  const session = new oc.XSControl_WorkSession();
+  const writer = new oc.STEPCAFControl_Writer(session, false);
+  const pr = new oc.Message_ProgressRange();
+  try {
+    writer.SetColorMode(o.colors !== false);
+    writer.SetLayerMode(true);
+    writer.SetNameMode(true);
+    setStepParams(oc, o);
+    oc.Interface_Static.SetIVal('write.step.assembly', assembly);
+    if (!writer.Perform(doc, 'export.step', pr)) throw new Error('The STEP file could not be written');
+    const file = oc.FS.readFile('/export.step');
+    oc.FS.unlink('/export.step');
+    return file;
+  } finally {
+    pr.delete(); writer.delete(); session.delete();
+    setStepParams(oc, {});
+  }
+}
+// shapes [{ shape, name, color }] as STEP, each a named (coloured) product.
+function exportSTEPFile(shapes, o = {}) {
+  const doc = R.createAssembly(shapes);
+  try { return writeStepDoc(doc.wrapped, o); } finally { doc.delete(); }
+}
+
 // Export all bodies, or just one (bodyId). `info` maps body ids to { name, color } so the
 // STEP file carries each body's name and material colour. opts.print { R (nine numbers: model to print axes), bed
 // [x, y] }: for printing (3MF, OBJ, STL), the mesh turned into the build orientation, its lowest point on the bed
-// (z = 0) and its middle over the bed's middle.
+// (z = 0) and its middle over the bed's middle. opts.step: the STEP options (exportSTEPFile); opts.stl { ascii,
+// quality: 'coarse' | 'normal' | 'fine' }.
 async function exportBody(format, bodyId = null, info = {}, opts = {}) {
   if (!lastBody && !lastSurfaces.length) throw new Error('There is no body to export');
   let list = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
@@ -9476,13 +9563,13 @@ async function exportBody(format, bodyId = null, info = {}, opts = {}) {
   const shape = compoundOf(list);
   let blob;
   if (format === 'step') {
-    blob = R.exportSTEP(list.map((s) => ({ shape: s.shape, name: info[s.id]?.name || lastName, ...(info[s.id]?.color ? { color: linearHex(info[s.id].color) } : {}) })), { unit: 'mm' });
+    return exportSTEPFile(list.map((s) => ({ shape: s.shape, name: info[s.id]?.name || lastName, ...(info[s.id]?.color ? { color: linearHex(info[s.id].color) } : {}) })), opts.step || {});
   } else if (format === 'obj' || format === '3mf') {
     const parts = list.map((r) => ({ name: info[r.id]?.name || lastName, ...meshArrays(r.shape) }));
     return format === 'obj' ? new TextEncoder().encode(objText(parts)) : threeMF(parts);
   } else {
-    const b = bbox(shape);
-    blob = shape.blobSTL({ binary: true, tolerance: Math.max(0.002, b.diag * 0.0002), angularTolerance: 0.1 });
+    const b = bbox(shape), [tol, ang] = { coarse: [0.001, 0.3], fine: [0.00005, 0.05] }[opts.stl?.quality] || [0.0002, 0.1];
+    blob = shape.blobSTL({ binary: !opts.stl?.ascii, tolerance: Math.max(0.002, b.diag * tol), angularTolerance: ang });
   }
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -9738,7 +9825,7 @@ const linearHex = (hex) => '#' + linearRGB(hex).map((c) => Math.round(c * 255).t
 // STEP export of an assembly with its structure: each part once, as a shape of its own in the configuration used
 // (with its colour, p.exportColor, and its bodies' own colours); each (sub-)assembly an assembly of its
 // components, placed as they are and named after them. Suppressed components are left out.
-async function exportAssemblySTEP(docJson) {
+async function exportAssemblySTEP(docJson, opts = {}) {
   const asm = JSON.parse(docJson);
   const oc = R.getOC();
   const keep = [];
@@ -9820,26 +9907,10 @@ async function exportAssemblySTEP(docJson) {
   if (!top) throw new Error('The assembly has no parts to export');
   tool.UpdateAssemblies();
   progress(null, 'Writing the STEP file…');
-  oc.Interface_Static.SetCVal('xstep.cascade.unit', 'MM');
-  oc.Interface_Static.SetCVal('write.step.unit', 'MM');
-  const session = new oc.XSControl_WorkSession();
-  const writer = new oc.STEPCAFControl_Writer(session, false);
   try {
-    writer.SetColorMode(true);
-    writer.SetLayerMode(true);
-    writer.SetNameMode(true);
-    oc.Interface_Static.SetIVal('write.surfacecurve.mode', 1);
-    oc.Interface_Static.SetIVal('write.precision.mode', 0);
-    oc.Interface_Static.SetIVal('write.step.assembly', 1);
-    oc.Interface_Static.SetIVal('write.step.schema', 5);
-    const pr = new oc.Message_ProgressRange();
-    keep.push(pr);
-    if (!writer.Perform(doc, 'asm-export.step', pr)) throw new Error('The STEP file could not be written');
-    const file = oc.FS.readFile('/asm-export.step');
-    oc.FS.unlink('/asm-export.step');
-    return { bytes: file, ...stats };
+    return { bytes: writeStepDoc(doc, opts, 1), ...stats };
   } finally {
-    writer.delete(); session.delete(); doc.delete();
+    doc.delete();
     for (const x of keep) { try { x.delete(); } catch { /* gone */ } }
   }
 }
@@ -12688,8 +12759,7 @@ async function handleMessage(e) {
       const list = lastSolids.filter((s) => !lastContext.has(s.id));
       if (!list.length) throw new Error('There is no solid to export');
       const shape = list.length === 1 ? list[0].shape : compoundOf(list);
-      // (a writer made once first: the first one made sets OpenCascade's STEP parameters up, the schema too)
-      if (!self.stepWriterReady) { const ss = new oc.XSControl_WorkSession(), w = new oc.STEPCAFControl_Writer(ss, false); w.delete(); ss.delete(); self.stepWriterReady = true; }
+      setStepParams(oc, {});
       const text = oc.LabPMI.WriteStep(shape.wrapped, data.name || lastName, data.spec || '');
       if (!text) throw new Error('The STEP file could not be written');
       result = { text };
@@ -12705,7 +12775,7 @@ async function handleMessage(e) {
       const blob = R.exportSTEP(placed, { unit: 'mm' });
       result = { text: await blob.text() };
     } else if (type === 'exportAssemblySTEP') {
-      result = await exportAssemblySTEP(data.doc);
+      result = await exportAssemblySTEP(data.doc, data.opts || {});
       transfer = [result.bytes.buffer];
     } else if (type === 'asmInterference') {
       result = await asmInterference(data.doc);

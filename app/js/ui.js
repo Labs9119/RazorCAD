@@ -385,6 +385,7 @@ const trLines = (f, a) => {
 };
 // (the ends with a flange: any of them round, any of them flat-sided)
 const trFlanged = (f) => [f.flangeBot && f.bShape, f.flangeTop && f.tShape].filter(Boolean);
+const trSpigot = (f, k) => { const v = f[k === 'b' ? 'spigotBot' : 'spigotTop']; return v != null && v !== '' && String(v).trim() !== '0'; };
 const TR_SHAPES = [['round', 'Round'], ['square', 'Square'], ['rect', 'Rectangle'], ['tri', 'Triangle'], ['pent', 'Pentagon'], ['hex', 'Hexagon']];
 const TR_BASIS = { side: 'Side length', flats: 'Across flats (inscribed Ø)', corners: 'Across corners (circumscribed Ø)' };
 const trEnd = (k, title) => ({ title, fields: [
@@ -592,9 +593,12 @@ const PM_SCHEMAS = {
       { key: 'sHint', type: 'hint', text: (f) => (trRound(f) ? 'A cone can be rolled from one part, or from two or more equal parts welded together.' : 'With a flat-sided end the transition is made from two or more equal parts welded together; the number of parts must divide its number of sides (a square: 2 or 4).') },
     ] },
     { title: 'Spigots', fields: [
-      { key: 'spigotBot', type: 'expr', label: 'Straight spigot at the bottom end', unit: 'mm' },
-      { key: 'spigotTop', type: 'expr', label: 'Straight spigot at the top end', unit: 'mm' },
-      { key: 'spHint', type: 'hint', text: 'A straight length of the end’s shape (0: none), from the flange’s inner face if there is a flange. Spigots and flanges are inside the axis line’s length: the taper is what is left, so the whole part is as long as the line.' },
+      { key: 'spigotBot', type: 'expr', label: 'Straight spigot at the bottom end', unit: 'mm', rerender: true },
+      { key: 'spigotTop', type: 'expr', label: 'Straight spigot at the top end', unit: 'mm', rerender: true },
+      { key: 'spPartsBot', type: 'expr', label: (f) => `Bottom spigot parts (empty: ${f.bShape === 'round' ? 1 : 2})`, unit: '', optional: true, show: (f) => trSpigot(f, 'b') },
+      { key: 'spPartsTop', type: 'expr', label: (f) => `Top spigot parts (empty: ${f.tShape === 'round' ? 1 : 2})`, unit: '', optional: true, show: (f) => trSpigot(f, 't') },
+      { key: 'spigotR', type: 'expr', label: 'Spigot bend radius at the corners (empty: the thickness)', unit: 'mm', optional: true, show: (f) => (trSpigot(f, 'b') && f.bShape !== 'round') || (trSpigot(f, 't') && f.tShape !== 'round') },
+      { key: 'spHint', type: 'hint', text: 'A straight length of the end’s shape (0: none), from the flange’s inner face if there is a flange. Spigots and flanges are inside the axis line’s length: the taper is what is left, so the whole part is as long as the line. A round spigot is rolled; a flat-sided one is bent at its corners. Its seams start where the taper’s do.' },
     ] },
     { title: 'Flanges', fields: [
       { key: 'flangeBot', type: 'check', label: 'Flange at the bottom end' },
@@ -4706,6 +4710,8 @@ export class UI {
           if (!fd.world && f[fd.key] !== undefined && f[fd.key] !== null && f[fd.key] !== '' && !f.dimIds?.[fd.key]) a.assignDimIds();
           const did = !fd.world && f.dimIds?.[fd.key];
           if (did) this.dimTagOn(r.querySelector('label'), did);
+          // (fields shown or hidden by this one: the panel again once it is left)
+          if (fd.rerender) r.querySelector('input')?.addEventListener('change', () => this.renderPM());
           if (DIM.usesLost(a.doc, f[fd.key])) { r.classList.add('dim-lost'); r.title = DIM.lostFailures(a.doc, { name: f.name, dimIds: { [fd.key]: did }, [fd.key]: f[fd.key] }).join('\n'); }
           body.appendChild(r);
         } else if (fd.type === 'check') {
