@@ -747,14 +747,14 @@ function mapIntoBox(p, from, to) {
 // tried nearest box first and the search stops once no box can beat the second best.
 function nearestTwo(cands, p, shapeOf) {
   const list = cands.map((c) => [boxDist(c.box, p), c]).sort((a, b) => a[0] - b[0]);
-  let q = null, best = null, bd = Infinity, second = Infinity;
+  let q = null, best = null, bd = Infinity, second = Infinity, sc = null;
   for (const [lb, c] of list) {
     if (lb > second) break;
     q ||= new R.DistanceQuery(R.makeVertex(p));
     const dd = q.distanceTo(shapeOf(c));
-    if (dd < bd) { second = bd; bd = dd; best = c; } else if (dd < second) second = dd;
+    if (dd < bd) { second = bd; sc = best; bd = dd; best = c; } else if (dd < second) { second = dd; sc = c; }
   }
-  return { best, bd, second };
+  return { best, bd, second, sc };
 }
 
 const findEdge = (body, ref) => findEdgeInfo(body, ref)?.e ?? null;
@@ -762,8 +762,18 @@ const findEdge = (body, ref) => findEdgeInfo(body, ref)?.e ?? null;
 // What the reference searches found and missed while one feature is rebuilt (set by rebuild): references
 // not found are reported (res.missing) so they can be fixed; when one was found again only by a looser
 // search (it moved), the feature's references are written back so they follow the model from then on.
+// (guess: found as the nearest of look-alikes, faces or edges of the same kind and size, so it may be the wrong one: marked
+// on the reference (ref.guess) and the feature shown for checking until its references are accepted)
 let refLog = null;
-const refFound = (ref, hit, moved) => { if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; } return hit; };
+const refFound = (ref, hit, moved, guess = false) => {
+  if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; if (guess && ref.guess !== 1) { ref.guess = 1; refLog.moved = true; } }
+  return hit;
+};
+// Two edges (edge infos) of the same kind and length, or two faces of the same kind and area: a reference could not
+// tell one from the other but by where it is.
+const sameSize = (x, y) => Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x));
+const edgeLookAlike = (a, b) => !!b && a.t === b.t && sameSize(edgeLength(a.e), edgeLength(b.e)) && (!a.circ || !b.circ || sameSize(a.circ.r, b.circ.r));
+const faceLookAlike = (f, g) => !!g && f.geomType === g.geomType && sameSize(faceArea(f), faceArea(g));
 const refLost = (ref) => { if (refLog) refLog.lost.push(ref); return null; };
 
 // ------------------------------------------------------------ edges named by the extrusion that made them
@@ -897,7 +907,7 @@ function findEdgeInfo(body, ref) {
     const near = candidates.map((c) => [boxDist(c.box, p), c]).sort((x, y) => x[0] - y[0]).slice(0, 80).map((x) => x[1]).filter(fits);
     if (near.length === 1 && candidates.length <= 80) return refFound(ref, near[0], true);
     const r = nearestTwo(near, p, (c) => c.e);
-    if (r.best && r.second > r.bd * 1.6 + b.diag * 1e-6) return refFound(ref, r.best, true);
+    if (r.best && r.second > r.bd * 1.6 + b.diag * 1e-6) return refFound(ref, r.best, true, edgeLookAlike(r.best, r.sc));
   }
   return refLost(ref);
 }
@@ -1032,7 +1042,7 @@ function findFace(body, ref, facing = false) {
   const search = (p) => nearestTwo(cands, p, (c) => c.face);
   const tol = Math.max(0.05, b.diag * 0.15);
   const ok = (r) => r.best && r.bd < tol && (r.bd < 1e-3 || r.second > r.bd * 1.6);
-  let hit = null, moved = false;
+  let hit = null, moved = false, guess = false;
   const raw = search(ref.p);
   if (raw.best && raw.bd < 1e-3) hit = raw.best;
   else {
@@ -1042,17 +1052,32 @@ function findFace(body, ref, facing = false) {
     if (choices.length) hit = choices[0].best;
     // further away: the only face facing that way, or the one clearly nearest the old place
     else if (cands.length === 1) hit = cands[0];
-    else if (mapped?.best && mapped.bd < b.diag * 0.5 && mapped.second > mapped.bd * 2.5) hit = mapped.best;
+    else if (mapped?.best && mapped.bd < b.diag * 0.5 && mapped.second > mapped.bd * 2.5) { hit = mapped.best; guess = faceLookAlike(hit.face, mapped.sc?.face); }
   }
   if (!hit) return refLost(ref);
-  refFound(ref, hit, moved);
+  refFound(ref, hit, moved, guess);
   // a point on the found face's plane: project the reference point onto it
   const c = vec(hit.face.center);
   const p = add(ref.p, mul(hit.n, dot(sub(c, ref.p), hit.n)));
   ref.p = p;
   ref.n = hit.n;
   ref.box = { min: b.min, max: b.max };
-  return { p, n: hit.n };
+  return { p, n: hit.n, face: hit.face };
+}
+
+// A flat face's outline across and along two directions u, v of its plane: [min u, max u, min v, max v]
+function faceSpan(face, u, v) {
+  const out = [Infinity, -Infinity, Infinity, -Infinity], edges = face.edges;
+  try {
+    for (const e of edges) {
+      const n = e.geomType === 'LINE' ? 1 : 16;
+      for (let k = 0; k <= n; k++) {
+        const q = vec(e.pointAt(k / n)), x = dot(q, u), y = dot(q, v);
+        out[0] = Math.min(out[0], x); out[1] = Math.max(out[1], x); out[2] = Math.min(out[2], y); out[3] = Math.max(out[3], y);
+      }
+    }
+  } finally { edges.forEach((e) => e.delete?.()); }
+  return out;
 }
 
 // ------------------------------------------------------------ meshes of bodies (cached per body)
@@ -1136,6 +1161,31 @@ function surfOf(face) {
     if (t === 'SPHERE') { const c = ad.Sphere(), L = c.Location(); return { t, p: [L.X(), L.Y(), L.Z()], r: c.Radius() }; }
     return { t: 'OTHER' };
   } catch { return { t: 'OTHER' }; } finally { ad?.delete(); }
+}
+
+// What a curved face is, kept with a reference to it: its kind, radii and axis direction (as surfOf; a cone's half
+// angle too), its area and its centre. (Not its axis's place: that is what changes when the face moves.)
+function surfSig(face) {
+  const g = surfOf(face);
+  if (g.t === 'PLANE') return null;
+  const s = { t: face.geomType, a: faceArea(face), c: vec(face.center) };
+  if (!Number.isFinite(s.a) || !s.c.every(Number.isFinite)) return null;
+  if (g.r !== undefined) s.r = g.r;
+  if (g.r2 !== undefined) s.r2 = g.r2;
+  if (g.d) s.d = g.d;
+  if (s.t === 'CONE') {
+    const oc = R.getOC(), ad = new oc.BRepAdaptor_Surface(face.wrapped, true);
+    try { s.k = ad.Cone().SemiAngle(); } catch (e) { if (isFatal(e)) throw e; } finally { ad.delete(); }
+  }
+  return s;
+}
+// The same kind of face with the same sizes (axes the same way); a freeform face (no radius): the same area.
+function sameSig(s, q) {
+  if (s.t !== q.t) return false;
+  const near = (x, y) => (x === undefined && y === undefined) || (x !== undefined && y !== undefined && Math.abs(x - y) <= Math.max(1e-6, Math.abs(x) * 1e-6));
+  if (s.r === undefined && q.r === undefined) return sameSize(s.a, q.a);
+  if (!near(s.r, q.r) || !near(s.r2, q.r2) || (s.k !== undefined && q.k !== undefined && Math.abs(s.k - q.k) > 1e-9)) return false;
+  return !s.d || !q.d || Math.abs(Math.abs(dot(s.d, q.d)) - 1) < 1e-6;
 }
 
 // ------------------------------------------------------------ meshing only what changed
@@ -2677,6 +2727,11 @@ function noteRefs(f, res) {
     walk(f, []);
     if (paths.length) (res.missing ||= {})[f.id] = paths;
   }
+  if (!log.moved && log.sigs.length) {
+    const learnt = new Set(log.sigs);
+    const holds = (x, depth) => !!x && typeof x === 'object' && depth < 6 && (learnt.has(x) || Object.values(x).some((v) => holds(v, depth + 1)));
+    if (holds(f, 0)) log.moved = true;
+  }
   if (log.moved) {
     const u = {};
     for (const [k, v] of Object.entries(f)) if (v && typeof v === 'object') u[k] = v;
@@ -3449,6 +3504,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
       return { p, n: unit(vec(hit.face.normalAt(p))) };
     });
   };
+  // A point clicked on a flat face (a hole's, a boss's…), kept on the face as the model changes: on the face's plane
+  // where it is now (a thicker plate: on its new top), and as far from the face's edges as it was placed, from the
+  // nearer edge across and the nearer along (fc.at: [side, distance] each way, the side -1 for the low edge, 1 the
+  // high, and the point it gave). A point moved since (at.p not it: typed, or clicked again) is measured afresh.
+  const onFace = (fc) => {
+    if (!body) return fc.p;
+    const was = fc.p, hit = findFace(body, fc, true);
+    if (!hit) throw new Error('The face a point was placed on could not be found in the model');
+    const n = unit(hit.n), u = unit(cross(Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], n)), v = cross(n, u);
+    const [u0, u1, v0, v1] = faceSpan(hit.face, u, v), at = fc.at, h = dot(hit.p, n);
+    let x = dot(hit.p, u), y = dot(hit.p, v), side = null;
+    if (at?.p && len(sub(at.p, was)) < 1e-6) {
+      x = at.u[0] < 0 ? u0 + at.u[1] : u1 - at.u[1];
+      y = at.v[0] < 0 ? v0 + at.v[1] : v1 - at.v[1];
+      side = [at.u[0], at.v[0]];
+    } else side = [x - u0 <= u1 - x ? -1 : 1, y - v0 <= v1 - y ? -1 : 1];
+    const p = add(add(mul(u, x), mul(v, y)), mul(n, h)).map((c) => +c.toFixed(9));
+    const next = { u: [side[0], side[0] < 0 ? x - u0 : u1 - x], v: [side[1], side[1] < 0 ? y - v0 : v1 - y], p };
+    if (JSON.stringify(next) !== JSON.stringify(at) || len(sub(p, was)) > 1e-9) { fc.at = next; fc.p = p; if (refLog) refLog.moved = true; }
+    return p;
+  };
   // Where a 3D-printing fastener goes, as Hole places its holes: the points and circle centres of a sketch (or a 3D
   // sketch), and points clicked on a face (a curved one: moved onto it, square to it there): [{ p, dir (into the
   // material) }]
@@ -3456,7 +3532,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const locs = [];
     if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
     for (const fc of f.faces || []) {
-      if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+      if (fc.n) { const p = onFace(fc); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
       const hit = body && findFaceAny(solids, fc);
       if (!hit) throw new Error('A position’s face could not be found in the model');
       const q = vec(hit.face.pointOnSurface(...hit.face.uvCoordinates(fc.p).map((x, i) => { const b = hit.face.UVBounds; return i ? (x - b.vMin) / (b.vMax - b.vMin) : (x - b.uMin) / (b.uMax - b.uMin); })));
@@ -4040,16 +4116,47 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const all = [...solids, ...surfaces];
     if (ref.kind === 'vertex') return { geo: { kind: 'point', p: ref.p }, body: bodyAt(all, ref.p) };
     if (ref.kind === 'edge') {
-      const q = new R.DistanceQuery(R.makeVertex(ref.p));
-      let best = null, bd = Infinity;
-      for (const b of all) { if (b.dense) continue; for (const e of b.shape.edges) { const d = q.distanceTo(e); if (d < bd) { bd = d; best = { b, e }; } } }
-      if (!best || bd > Math.max(1e-3, bbox(best.b.shape).diag * 2e-3)) throw new Error('A mate edge could not be found in the model');
+      // (found as other features find their edges: again after it moved, e.g. a hole whose position changed; what
+      // it learns of the edge kept with the mate)
+      const recs = all.filter((b) => !b.dense), comp = compoundOf(recs);
+      const hit = comp && findEdgeInfo(comp, ref);
+      const owner = hit && (recs.length === 1 ? recs[0] : recs.find((b) => b.shape === hit.part));
+      if (!hit || !owner) throw new Error('A mate edge could not be found in the model');
+      const knew = ref.t;
+      updateEdgeRef(ref, hit.e, comp);
+      if (!knew && refLog) refLog.moved = true;
+      const best = { b: owner, e: hit.e };
       const g = edgeGeom(best.e, bbox(best.b.shape).diag);
       if (g?.type === 'line') return { geo: { kind: 'line', p: g.a, d: unit(sub(g.b, g.a)) }, body: best.b };
       if (g?.type === 'circle' || g?.type === 'arc') return { geo: { kind: 'line', p: g.c, d: unit(g.normal) }, body: best.b };
       throw new Error('Use straight or circular edges for mates');
     }
-    const hit = findFaceAny(all, ref);
+    let hit = findFaceAny(all, ref);
+    // (a round face that moved, e.g. a hole's wall: the one of the same radius with its axis the same way, clearly
+    // nearest the old point; the mate's point moved onto it)
+    if (!hit && ref.cyl) {
+      const oc = R.getOC(), near = [];
+      for (const b of all) {
+        if (b.dense) continue;
+        for (const face of b.shape.faces) {
+          if (face.geomType !== 'CYLINDRE') continue;
+          const ad = new oc.BRepAdaptor_Surface(face.wrapped, false);
+          try {
+            const cy = ad.Cylinder(), ax = cy.Axis(), L = ax.Location(), D = ax.Direction(), d = unit([D.X(), D.Y(), D.Z()]);
+            if (Math.abs(cy.Radius() - ref.cyl.r) > Math.max(1e-6, ref.cyl.r * 1e-6) || Math.abs(Math.abs(dot(d, ref.cyl.d)) - 1) > 1e-6) continue;
+            const o = [L.X(), L.Y(), L.Z()], c0 = add(o, mul(d, dot(sub(vec(face.center), o), d)));
+            near.push({ b, face, c0, d, dist: len(sub(sub(ref.p, c0), mul(d, dot(sub(ref.p, c0), d)))) });
+          } finally { ad.delete(); }
+        }
+      }
+      near.sort((x, y) => x.dist - y.dist);
+      if (near.length && (near.length === 1 || near[1].dist > near[0].dist * 1.6 + 1e-6)) {
+        const m = near[0], w = sub(sub(ref.p, m.c0), mul(m.d, dot(sub(ref.p, m.c0), m.d)));
+        const u = len(w) > 1e-9 ? mul(w, 1 / len(w)) : unit(cross(m.d, Math.abs(m.d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+        ref.p = add(m.c0, mul(u, ref.cyl.r));
+        hit = refFound(ref, { body: m.b, face: m.face }, true, near.length > 1 && faceLookAlike(m.face, near[1].face));
+      }
+    }
     if (!hit) throw new Error('A mate face could not be found in the model');
     const t = hit.face.geomType;
     if (t === 'PLANE') {
@@ -4061,6 +4168,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
     try {
       if (t === 'CYLINDRE' || t === 'CONE' || t === 'TORUS') {
         const ax = (t === 'CYLINDRE' ? ad.Cylinder() : t === 'CONE' ? ad.Cone() : ad.Torus()).Axis(), L = ax.Location(), D = ax.Direction();
+        // (a cylinder's radius and axis kept with the mate, to find it again if it moves)
+        if (t === 'CYLINDRE') {
+          const cyl = { r: ad.Cylinder().Radius(), d: unit([D.X(), D.Y(), D.Z()]) };
+          if (!ref.cyl || Math.abs(ref.cyl.r - cyl.r) > 1e-9 || Math.abs(Math.abs(dot(ref.cyl.d, cyl.d)) - 1) > 1e-9) { ref.cyl = cyl; if (refLog) refLog.moved = true; }
+        }
         return { geo: { kind: 'line', p: [L.X(), L.Y(), L.Z()], d: unit([D.X(), D.Y(), D.Z()]) }, body: hit.body };
       }
       if (t === 'SPHERE') { const L = ad.Sphere().Location(); return { geo: { kind: 'point', p: [L.X(), L.Y(), L.Z()] }, body: hit.body }; }
@@ -4398,7 +4510,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     applied = [];
     blendStep = null;
     blendPair = null;
-    refLog = { lost: [], found: new Set(), moved: false };
+    refLog = { lost: [], found: new Set(), moved: false, sigs: [] };
     try {
       // (a function, so that patterns can run a copy of another feature)
       const runFeature = async (f) => {
@@ -6380,7 +6492,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             for (const b of beads.slice(1)) { try { shape = shape.fuse(b); } catch (e) { if (isFatal(e)) throw e; shape = asShape([shape, b]); } }
             const rec = bodyRec(newId(f.id), shape, f.id);
             const L = beads.length ? edges.reduce((acc, e) => acc + R.measureLength(e), 0) : 0;
-            rec.member = { label: `Weld ${+sz.toFixed(1)}`, type: 'weld', length: +L.toFixed(1), angles: [null, null], feature: f.id, between: [A.member?.label || A.id, B.member?.label || B.id] };
+            rec.member = { label: `Weld ${+sz.toFixed(1)}`, type: 'weld', length: L, angles: [null, null], feature: f.id, between: [A.member?.label || A.id, B.member?.label || B.id] };
             solids.push(rec);
             applied.push({ op: 'add', tool: shape });
             n0++;
@@ -8276,7 +8388,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // normal from the face's X direction
           const locs = [];
           if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, n: mul(n, f.reverse ? -1 : 1) });
-          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, n: mul(unit(fc.n), f.reverse ? -1 : 1) });
+          for (const fc of f.faces || []) if (fc.n) locs.push({ p: onFace(fc), n: mul(unit(fc.n), f.reverse ? -1 : 1) });
           if (!locs.length) throw new Error('Click points on a flat face for them, or select a sketch with points on the face');
           if (!body) throw new Error('There is no body to put them on');
           const poly = (fr, pts) => R.makePolygon(pts.map(([x, y]) => add(add(fr.o, mul(fr.x, x)), mul(fr.z, y))));
@@ -8776,7 +8888,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const locs = [];
           if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
           for (const fc of f.faces || []) {
-            if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+            if (fc.n) { const p = onFace(fc); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
             // (a point on a curved face: moved onto it, the hole square to it there)
             if (!body) break;
             const hit = findFaceAny(solids, fc);
@@ -9425,7 +9537,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(R0 > 0)) throw new Error('The bend radius must be greater than zero');
           let out = SM.addFlanges(sheet, edges, {
             length: ev(f.length), lengthRef: f.lengthRef, angle: ev(f.angle), position: f.position, offset: ev(f.offset || 0),
-            R: R0, flip: !!f.flip, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
+            R: R0, flip: !!f.flip, sameSide: !!f.sameSide, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
             extent: { type: f.widthType || 'full', a: ev(f.startOffset ?? 0), b: ev(f.endOffset ?? 0), width: ev(f.flangeWidth ?? 0), swap: !!f.swapEnds },
           });
           // corners between these flanges: closed with the gap (older parts: open)
@@ -10150,15 +10262,17 @@ async function assemblySolids(asm) {
       try { let s; try { s = shape.wrapped.Moved(loc, false); } catch { s = shape.wrapped.Moved(loc); } return R.cast(s); } finally { loc.delete(); }
     } finally { t.delete(); }
   };
-  const walk = async (d, M, prefix, depth) => {
+  // (over: where the components of a flexible sub-assembly are in the assembly using it, c.flex)
+  const walk = async (d, M, prefix, depth, over = null) => {
     if (depth > 16) return;
     for (const c of d.components || []) {
       const e = effIn(d, c);
       if (e.suppressed || e.hidden) continue;
       const p = (d.parts || []).find((x) => x.id === c.part);
       if (!p?.doc) continue;
-      const Mc = mul(M, poseM(c)), cfg = e.config && (p.doc.configs || []).some((x) => x.id === e.config) ? e.config : null;
-      if (p.doc.kind === 'assembly') { await walk({ ...p.doc, activeConfig: cfg }, Mc, `${prefix}${c.id}/`, depth + 1); continue; }
+      const o = over?.[c.id];
+      const Mc = mul(M, poseM(o ? { pos: o.pos, rot: o.rot } : c)), cfg = e.config && (p.doc.configs || []).some((x) => x.id === e.config) ? e.config : null;
+      if (p.doc.kind === 'assembly') { await walk({ ...p.doc, activeConfig: cfg }, Mc, `${prefix}${c.id}/`, depth + 1, c.flexible ? c.flex : null); continue; }
       // (a top component cut by the assembly's holes and cuts: its part with them)
       const extra = depth === 0 && cuts.get(c.id);
       const pd = { ...p.doc, activeConfig: cfg, rollbackAt: null, ...(extra ? { features: [...p.doc.features, ...extra] } : {}) };
@@ -10225,7 +10339,9 @@ async function exportAssemblySTEP(docJson, opts = {}) {
       const shape = list.length === 1 ? list[0].shape : compoundOf(list);
       label = tool.AddShape(shape.wrapped, false, false);
       oc.TDataStd_Name.Set(label, str(p.name || p.doc.name || 'Part'));
-      if (p.exportColor) ctool.SetColor(label, rgb(p.exportColor), SURF);
+      // (the part's colour: its only body's own, given one, else its material's)
+      const own = list.length === 1 ? p.doc.bodies?.[list[0].id]?.color : null;
+      if (own || p.exportColor) ctool.SetColor(label, rgb(own || p.exportColor), SURF);
       // (bodies with a colour of their own)
       if (list.length > 1) for (const s of list) {
         const c = p.doc.bodies?.[s.id]?.color;
@@ -12110,7 +12226,11 @@ function findFaceAny(bodies, ref) {
       if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && ref.body && e.b.id === ref.body)) { bd = d; best = { body: e.b, face: e.x.face }; }
     }
   } finally { q?.delete(); }
-  if (best && bd < Math.max(1e-3, bbox(best.body.shape).diag * 2e-3)) return refFound(ref, best, false);
+  if (best && bd < Math.max(1e-3, bbox(best.body.shape).diag * 2e-3)) {
+    // (a curved face's kind, sizes and centre learnt, to find it again if it moves: written back with the feature)
+    if (refLog && !ref.n && !ref.sf && best.face.geomType !== 'PLANE') { const q = surfSig(best.face); if (q) { ref.sf = q; refLog.sigs.push(ref); } }
+    return refFound(ref, best, false);
+  }
   // a planar face that moved (a dimension before it changed): the face facing the same way clearly
   // nearest the old point; the reference is moved onto it, so it follows the face from now on
   if (Array.isArray(ref.n) && ref.n.length === 3) {
@@ -12126,7 +12246,31 @@ function findFaceAny(bodies, ref) {
       ref.p = add(ref.p, mul(r.best.n, dot(sub(c, ref.p), r.best.n)));
       // (and onto the face itself, when the old point is now beside it)
       try { const q = new R.DistanceQuery(R.makeVertex(ref.p)); if (q.distanceTo(r.best.face) > 1e-6) ref.p = vec(r.best.face.center); } catch (e) { if (isFatal(e)) throw e; }
-      return refFound(ref, { body: r.best.body, face: r.best.face }, true);
+      return refFound(ref, { body: r.best.body, face: r.best.face }, true, faceLookAlike(r.best.face, r.sc?.face));
+    }
+  }
+  // a curved face that moved (a hole whose position changed, a fillet or boss elsewhere on the part): the face of the
+  // same kind and sizes (a cylinder's, cone's or torus's radii and axis, a sphere's radius, a freeform face's area)
+  // whose centre is clearly nearest its old centre; the reference is moved onto it, as far from its centre as before
+  if (ref.sf && !ref.n) {
+    const s = ref.sf, near = [];
+    for (const b of bodies) {
+      if (b.dense) continue;
+      for (const { face } of facesWithBox(b.shape)) {
+        if (face.geomType !== s.t) continue;
+        const q = surfSig(face);
+        if (q && sameSig(s, q)) near.push({ b, face, q, dist: len(sub(q.c, s.c)) });
+      }
+    }
+    near.sort((x, y) => x.dist - y.dist);
+    if (near.length && (near.length === 1 || near[1].dist > near[0].dist * 1.6 + 1e-6)) {
+      const m = near[0];
+      let p = add(m.q.c, sub(ref.p, s.c));
+      const v = R.makeVertex(p), dq = new R.DistanceQuery(v);
+      try { dq.distanceTo(m.face); const w = dq.wrapped.PointOnShape2(1); p = [w.X(), w.Y(), w.Z()]; w.delete(); } catch (e) { if (isFatal(e)) throw e; } finally { dq.delete(); v.delete(); }
+      ref.p = p;
+      ref.sf = m.q;
+      return refFound(ref, { body: m.b, face: m.face }, true, near.length > 1 && sameSize(near[1].q.a, m.q.a));
     }
   }
   return refLost(ref);

@@ -602,10 +602,12 @@ export class Viewport {
     const depth = (p) => p.clone().sub(this.camera.position).dot(viewDir);
     const slack = (this.bodyGeo?.boundingSphere?.radius || 50) * 0.02 + 0.5;
     const hitDepth = hit ? depth(hit.point) : Infinity;
-    let best = null, bd = tolPx;
+    // (each edge's nearest place to the cursor; of edges about as near on the screen, the one nearest the eye: on a
+    // thin sheet the top edge, not the bottom one just behind it)
+    const near = [];
     this.edgeList.forEach((e, i) => {
       if (e.hidden) return;
-      let prev = null, prevW = null;
+      let prev = null, prevW = null, mine = null;
       for (const w of e.pts) {
         const s = this.project(w);
         if (prev) {
@@ -613,15 +615,19 @@ export class Viewport {
           let t = L2 ? ((m.x - prev.x) * dx + (m.y - prev.y) * dy) / L2 : 0;
           t = Math.max(0, Math.min(1, t));
           const d = Math.hypot(m.x - (prev.x + t * dx), m.y - (prev.y + t * dy));
-          if (d < bd) {
-            const wp = prevW.clone().lerp(w, t);
-            if (depth(wp) <= hitDepth + slack) { bd = d; best = { index: i, point: wp, edge: e }; }
+          if (d < tolPx && (!mine || d < mine.d)) {
+            const wp = prevW.clone().lerp(w, t), z = depth(wp);
+            if (z <= hitDepth + slack) mine = { index: i, point: wp, edge: e, d, z };
           }
         }
         prev = s; prevW = w;
       }
+      if (mine) near.push(mine);
     });
-    return best;
+    if (!near.length) return null;
+    const dmin = Math.min(...near.map((x) => x.d));
+    const best = near.filter((x) => x.d <= dmin + 3).reduce((p, q) => (q.z < p.z - 1e-6 || (Math.abs(q.z - p.z) <= 1e-6 && q.d < p.d) ? q : p));
+    return { index: best.index, point: best.point, edge: best.edge };
   }
 
   // Closest visible edge end point (B-rep vertex).
@@ -1547,6 +1553,9 @@ export class Viewport {
 
   // Highlight a set of faces/bodies. key: 'pm' (picked into a Property panel), 'featureSel' /
   // 'featureHover' (the faces a feature made, for the feature selected / hovered in the tree).
+  // Every highlighted set of faces taken away (another tab shown: an assembly or drawing has none of the part's)
+  clearFaceSets() { for (const key of Object.keys(this._faceSets || {})) this.setFaceSet(null, key); }
+
   setFaceSet(infos, key = 'pm') {
     this._faceSets ||= {};
     const old = this._faceSets[key];

@@ -117,7 +117,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 | **Command ribbon** | Tabs of tool buttons: **Features**, **Sketch**, **Surfaces**, **Sheet Metal**, **Fast Structure**, **Evaluate** and **Claude**. Buttons with a shortcut show the key in their bottom-right corner. |
 | **Feature tree** | The part's history, with folders for Solid Bodies, Sheet Metal Bodies and Surface Bodies, the material, the planes and every feature. An eye column on the right shows or hides each item. |
 | **Configurations tab** | Next to the Feature tree and the Property panel at the top of the left panel (see the Configurations chapter) |
-| **Property panel** | Opens in place of the tree while you create or edit a feature. ✔ accepts ([[Enter]]), ✕ cancels ([[Esc]]). A feature that fails is not accepted {idx:feature, refused}: ✔ shows a dialog saying why, and the panel stays open to put it right; a new one is not added to the tree, and an edit that makes a feature fail is not kept (✕ leaves it as it was). |
+| **Property panel** | Opens in place of the tree while you create or edit a feature. ✔ accepts ([[Enter]]), ✕ cancels ([[Esc]]). On a new feature, **✔+** ([[Shift+Enter]]) accepts it and starts another of the same kind straight away (another Extrude, another Fillet…) {idx:OK and start another}. While a new feature still needs something picked, the panel says what (in black, not as an error), and the status bar doesn't count it as an error. Starting another feature (or editing another) while one is open asks first: **Apply** it, **Discard** it, or **Keep editing**; it is never thrown away unasked {idx:feature, left open}. A feature that fails is not accepted {idx:feature, refused}: ✔ shows a dialog saying why, and the panel stays open to put it right; a new one is not added to the tree, and an edit that makes a feature fail is not kept (✕ leaves it as it was). |
 | **Heads-up toolbar** | Above the 3D view: view orientation, display style, selection filters, visibility (eye button) and section view |
 | **Confirm corner** | The top-right corner of the view holds ✔ / ✕ for the active feature or sketch |
 | **Status line and progress bar** | Bottom left. Long operations (opening, rebuilding, importing, meshing, exporting) show progress here. The rebuild time is shown at the right; when features have errors it shows their number in red: click it for Fix References. |
@@ -127,7 +127,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 
 ## Customising the ribbon
 
-The ribbon shows its buttons in two rows. {idx:toolbars, customising}
+The ribbon shows its buttons in two rows. When the window is too narrow for all of them, the ones that don't fit go under **More** at the end of the ribbon (its menu runs them as the buttons do); widen the window and they come back. {idx:toolbars, customising}{idx:ribbon, More}
 
 - **Icon size**: Small, Medium or Large, from **View ▸ Toolbar Icons** or by right-clicking the ribbon.
 - **Rearrange**: drag a button to a new place; the others slide aside.
@@ -305,7 +305,7 @@ Volumes of bodies with B-spline faces (imported NURBS, IGES) are measured exactl
 
 | Command | Result |
 |---|---|
-| **File ▸ Export ▸ STEP…** | An exact B-rep. Each body is written as its own named, coloured solid. AP242 unless **Settings ▸ Export** says otherwise (AP214, AP203, the file's units, colours, author) |
+| **File ▸ Export ▸ STEP…** | An exact B-rep. Each body is written as its own named, coloured solid (in its own colour, else its material's). AP242 unless **Settings ▸ Export** says otherwise (AP214, AP203, the file's units, colours, author) |
 | **File ▸ Export ▸ STL…** | A mesh: binary, or ASCII, and as fine as **Settings ▸ Export ▸ STL** sets |
 | **File ▸ Export ▸ glTF (.glb)…** | The bodies as the view shows them, for web viewers and AR {idx:glTF}: each a mesh with its colour and its render look's metalness and roughness, in metres, Y up |
 | Evaluate ▸ **Export OBJ** / **Export 3MF** | A mesh; 3MF is written in millimetres |
@@ -440,6 +440,22 @@ A sketch on a flat face of the model follows the face: when the model changes so
 - [[Enter]] does **not** leave the sketch.
 - The ✔ in the confirm corner, or **Exit Sketch**, closes the sketch.
 - [[Ctrl+Z]] / [[Ctrl+Y]] undo and redo inside the sketch.
+
+**Typing sizes while you draw.** With a shape started (its first point placed), type a number: a small box opens by the cursor with its sizes. The shape follows what you type; [[Tab]] goes to the next size, [[Enter]] makes it at those sizes and adds a dimension for each length you typed (the others follow the mouse, in the direction it went), and [[Esc]] closes the box. A line typed at 0°, 90°, 180° or 270° is made horizontal or vertical; other angles, an arc's sweep and a polygon's sides shape it without a dimension. Sizes can be expressions, as in any dimension. The shape and its dimensions are one undo step.
+
+| Tool | Sizes |
+|---|---|
+| Rectangle (corner or centre) | Width, Height |
+| Circle | Ø |
+| Polygon | Ø (of the circle through its corners), Sides (3 to 40) |
+| Line, Centerline | Length, Angle |
+| Centerpoint Arc | Radius and Sweep (after its centre); Sweep (after its start) |
+| 3 Point Arc | Radius (after both ends; the shorter arc, on the side of the mouse) |
+| Tangent Arc | Radius, Sweep (turning the way the mouse went) |
+| Ellipse | Major R and Minor R (after its centre); Minor R (after its major axis) |
+| Straight, Center Point and Overall Slot | Length and Width (after the first point); Width (after the length) | {idx:sketch, typing sizes}{idx:sizes, typed while drawing}
+
+**The grid.** Points snap to the sketch grid, drawn round the middle of the view; it gets finer as you zoom in. The status bar shows its step (**Grid 5 mm**) while a sketch is open. {idx:grid}
 
 ## The sketch tool wheel
 
@@ -924,7 +940,7 @@ The kernel constructs clamped tensor B-splines (cubic, or degree five along the 
 
 - **End**: **Blind** (with a **Drill point** of **Drill point angle**, 118° unless set), **Through All**, **Up To Next** (each hole until its axis first comes out of the material: through the wall it starts in), **Up To Vertex**, **Up To Surface** and **Offset From Surface** (a plane or flat face, picked in the canvas or chosen in the list; each hole's own depth along its axis); reversible. {idx:Hole, end conditions}
 - **Far-side countersink** (Through All, Up To Next): a countersink of its own diameter and angle where the hole comes out (the far side of the first wall for Up To Next, of the last for Through All). {idx:Hole, far-side countersink}
-- Place holes at clicked points on a face, or exactly at the points and circle centres of a sketch on the face. On a curved face (a shaft, a pipe) a hole is drilled square to the face where it was clicked: a radial hole. {idx:Hole, on a curved face}
+- Place holes at clicked points on a face, or exactly at the points and circle centres of a sketch on the face. On a flat face each clicked hole shows its place as **From left** and **From bottom**: its distances from the face's left and bottom edges, looking at the face (its up the part's up). Type them to put the hole exactly there. {idx:Hole, position} Each click adds a hole, more than one on the same face too; a click on a hole already placed takes it away. A hole on a flat face keeps to the face as the part changes: when the face moves (a thicker plate) the hole starts on it where it is now, and when the face changes size (a dimension, a configuration) the hole stays as far from the face's nearer edges, across and along, as it was placed. Bosses, snap hooks, the 3D-printing holes and pockets keep to their faces the same way. {idx:Hole, follows the face} On a curved face (a shaft, a pipe) a hole is drilled square to the face where it was clicked: a radial hole. {idx:Hole, on a curved face}
 - Holes work on sheet metal too, and a drawing's **Hole Callout** reads their size from the feature.
 
 ## Helix
@@ -1177,7 +1193,8 @@ Both the Features and Surfaces toolbars provide **Split Body** and **Split Face*
 Moves or copies solid and surface bodies. {idx:Move/Copy Bodies}{idx:mates}
 
 - **By coordinates**: ΔX/ΔY/ΔZ plus a rotation about X/Y/Z or a reference axis, through the axis or the bodies' centre. Copies repeat the step.
-- **With mates**: Coincident, Distance, Parallel, Perpendicular, Angle and Concentric between an entity of the moving bodies (face, edge, vertex) and fixed geometry (another body, a plane, axis or point). **Flip alignment** turns a mate around.
+- **With mates**: Coincident, Distance, Parallel, Perpendicular, Angle and Concentric between an entity of the moving bodies (face, edge, vertex) and fixed geometry (another body, a plane, axis or point). Two flat faces made Coincident or Distance start facing the way they sit (a pin's top face on a plate's top face keeps the pin the right way up); **Flip alignment** turns a mate around. The mates follow what they are mated to: move the hole a pin is mated into and the pin moves with it (a mate on the hole's edge or on its wall).
+- Right-click a body (or a face of it) ▸ **Move/Copy Body…** starts it with that body picked.
 
 ## Delete Body
 
@@ -1191,7 +1208,7 @@ The **Surfaces** tab builds surface bodies (zero-thickness faces), listed under 
 
 | Feature | What it does |
 |---|---|
-| **Extruded Surface** | Extrudes selected regions, open/closed contours or individual entities; one side, symmetric total depth or independent depths on both sides; reverse supported |
+| **Extruded Surface** | Extrudes selected regions, open/closed contours or individual entities (the sketch just drawn for it, or selected, open curves and all, unless it has one closed region); one side, symmetric total depth or independent depths on both sides; reverse supported |
 | **Revolved Surface** | Revolves selected regions or open/closed contours with separate axis selection, optional axis projection and the same Full/Angle, one-side/two-side/symmetric controls as solid Revolve |
 | **Planar Surface** | Creates flat surfaces from selected sketch regions, closed entity contours or coplanar model boundary edges; sketch regions preserve their holes |
 | **Lofted Surface** | A surface through two or more profiles (sketches or 3D sketches), open or closed, optionally ruled (straight between profiles). Open profiles drawn in opposite directions are lined up automatically. **Guide Curves** (rails, optional): sketches or curves the surface follows between the profiles, e.g. along its edges; each runs from the first profile to the last, through every profile. One guide pulls the surface along it; two or more shape it across, each where it touches the profiles. |
@@ -1371,14 +1388,18 @@ Right-click a vertex and choose **Reference Point** to preselect it. Coordinate 
 ## Editing features
 
 - Double-click a feature, or right-click ▸ **Edit Feature**, to open its Property panel. {idx:edit feature}
+- **Double-click a face of the model** to change sizes there and then: a small box by the cursor lists the sizes of the feature that made the face (its depth, radius and so on, and the dimensions of the sketch it was made from), each with its ID. Type a new size and press [[Enter]]; the model rebuilds and the box stays for more. [[Ctrl+Z]] in the box undoes the change; **Edit Feature** opens the feature's panel; [[Esc]] closes the box. {idx:double-click, sizes}{idx:sizes, changing in the view}
 - Select a feature and press [[Del]] (or **Edit ▸ Delete**) to delete it. Only that feature goes: the sketches, 3D sketches and features it was made from stay, shown on their own in the tree again.
 - **Edit ▸ Undo / Redo** ([[Ctrl+Z]] / [[Ctrl+Y]]) works on the whole part history.
+- **Undo history**: right-click the **Undo** button above the view (or click its small arrow, or **Edit ▸ Undo History…**) for the part's last steps, newest at the top, each said in words ("Added Extrude2", "Edited Hole1", "Renamed Sketch3 to Base"). Click one to go straight back to just after it; steps undone are shown greyed and can be clicked to redo them, until you do something new. In a sketch it lists the sketch's own steps since you opened it ("Added 4 Lines with 2 dimensions", "Dimension 40 → 50", "Deleted Arc", "Moved"). {idx:undo history}
 - **Rebuild** ([[Ctrl+B]], or the quick button) rebuilds the part.
 - A feature that fails shows an error in the tree so you can fix or re-pick its references (see Fix References).
 
 ## References that follow edits
 
-Features that use picked edges and faces (fillets, chamfers, shells, drafts, axes…) find them again after the model changes. An edge made by an extrusion (a boss, cut or pocket from a sketch, without draft or thin walls) is also named by what made it: the sketch curve it runs along and which end of the extrusion it is at (its top or bottom rim, a pocket's floor), or the sketch point it runs from. After a change it is looked for by that name first, so when you move a circle in a sketch of several, a fillet on its boss goes with it, even if another boss now stands where it was. Other edges, and named ones the name does not settle (an edge split in two by a later cut, say), are found by where they were. An edge remembers the faces on its two sides and whether it is an outside or inside corner. When a dimension moves it so far that other edges now lie nearer its old place, the right edge is still found, and an edge of another kind is not taken for it. A face that moved is found as the face facing the same way that is clearly nearest. A reference found again this way is updated, so it keeps following the model. {idx:references}
+Features that use picked edges and faces (fillets, chamfers, shells, drafts, axes…) find them again after the model changes. An edge made by an extrusion (a boss, cut or pocket from a sketch, without draft or thin walls) is also named by what made it: the sketch curve it runs along and which end of the extrusion it is at (its top or bottom rim, a pocket's floor), or the sketch point it runs from. After a change it is looked for by that name first, so when you move a circle in a sketch of several, a fillet on its boss goes with it, even if another boss now stands where it was. Other edges, and named ones the name does not settle (an edge split in two by a later cut, say), are found by where they were. An edge remembers the faces on its two sides and whether it is an outside or inside corner. When a dimension moves it so far that other edges now lie nearer its old place, the right edge is still found, and an edge of another kind is not taken for it. A face that moved is found as the face facing the same way that is clearly nearest. A curved face (a hole's wall, a countersink's cone, a fillet's round, a sphere or torus, a freeform face) remembers what it is: its kind, radii and axis direction (a freeform face its area). When it moves (a hole moved in its sketch), it is found again as the face of the same kind and size whose middle is clearly nearest where it was. A reference found again this way is updated, so it keeps following the model. {idx:references}
+
+**Found references to check.** When a reference was found again as the nearest of faces or edges that look the same (two holes of the same size, say), it may be the wrong one. The feature then shows an orange **?** in the tree; hover it for why. Check the feature, then right-click it ▸ **Accept Found References**, or edit it (its panel says so too) and click ✔; pick again if it took the wrong one. When the look-alikes are too close to call, the reference is not taken at all: the feature fails, and Fix References lists it. {idx:references, to check}{idx:Accept Found References}
 
 ## Fix References
 
@@ -1468,7 +1489,7 @@ Cones, concentric and eccentric reducers, square-, rectangle-, triangle-, pentag
 
 ## Edge Flange
 
-Click straight edges on the top or bottom face. {idx:Edge Flange}
+Click straight edges on the top or bottom face. Where the top and bottom edges of a thin sheet lie almost on top of each other on the screen, a click takes the one nearer you. With several edges, every flange folds the same way as the first edge's (**Every flange the same way as the first edge's**), even when an edge was picked on the other face of the thin sheet; untick it for each to fold away from its own face. {idx:Edge Flange}
 
 | Setting | Options |
 |---|---|
@@ -1593,7 +1614,7 @@ Body Properties for a sheet metal body shows thickness, bend radius and K-factor
 ## Exporting flat patterns as DXF
 
 - Right-click a sheet metal body (tree or view) ▸ **Export Flat Pattern as DXF**, or **Export DXF** on the tab. {idx:DXF, flat pattern}
-- **Export All DXF**: choose a target folder; one file per body, named after the body. Identical bodies give one file with the quantity multiplied by the count.
+- **Export All DXF**: choose a target folder; one file per body, named after the body. A body you have not named goes by the part's name when it is the part's only sheet metal body (an unnamed body is otherwise called after the last feature that changed it); the same name is on the flat pattern's banner and its PART line. Identical bodies give one file with the quantity multiplied by the count.
 - **Nest Flat Patterns** {idx:nesting}{idx:Nest Flat Patterns}: lays every sheet metal body's flat pattern out on stock sheets (width × height, a margin round the sheet, a gap between parts, parts turned 90° where that fits better). Identical bodies are counted, times each body's quantity and the number of **Sets**. Parts are placed by **their true outlines** (the default: bottom left first, the biggest first, into each other's gaps and inside the holes of others) or by **the rectangles round them** (fast). They can be **turned** not at all, by 90° steps, or (by outlines) by 45° or 15° steps. The result shows each sheet and how much of it is used; **Export DXF…** writes one DXF with the sheets side by side, their outlines on layer SHEET and each part's outline and holes, named at its middle.
 - Each file is shown in a **preview window** with its layer colours and line types, which can be changed there. Buttons: **Export**, **Skip This One** and **Abort Export**.
 - In the preview, zoom with the wheel, pan by dragging and double-click or **Fit** to see it all. Click lines to select them ([[Ctrl]] or [[Shift]] adds, [[Shift]]+drag for a box, [[Ctrl+A]] for all), then **Delete** them, give them their own **Line type**, or move them to another **Layer** (for example make a line an etch line). **Undo** and **Restore All** put them back. These edits apply to that one export. {idx:DXF preview}
@@ -1609,7 +1630,7 @@ The **Fast Structure** tab builds welded frames (weldments) from standard steel 
 
 ## Structural Member
 
-Pick a profile and a sketch or 3D sketch: every line and arc of it becomes a member, each its own body named after its profile. Add more sketches to the **Path** list for a frame in 3D, for example the top of a table and its legs; the joints between them are treated too. Arcs, and the bends of a 3D sketch with a bend radius, become bent members. {idx:Structural Member}{idx:profiles, structural}
+Pick a profile and a sketch or 3D sketch: every line and arc of it becomes a member, each its own body named after its profile. With nothing drawn yet, **Structural Member** opens a sketch on the selected plane (or asks for one): draw the frame, a line for each member, and exit the sketch; the members follow on it. (The same goes for Extrude, Base Flange and Extruded Surface: a banner says the feature continues when you exit the sketch, and the ribbon comes back to the tab it was started from.) The Fast Structure tab has **Sketch** and **3D Sketch** for the frame. Add more sketches to the **Path** list for a frame in 3D, for example the top of a table and its legs; the joints between them are treated too. Arcs, and the bends of a 3D sketch with a bend radius, become bent members. {idx:Structural Member}{idx:profiles, structural}
 
 | Profile | Types |
 |---|---|
@@ -1829,7 +1850,7 @@ Each is an ordinary part with its threads as cosmetic threads, so it builds fast
 
 **Select a hole first** (its round face or edge) and the size is picked to fit it (a clearance or tapped hole for bolts, the bore for a bearing, the shaft for a key), the length to suit the hole, and the part goes into the hole at the end facing you, mated to it (Concentric, plus Coincident on the face round the hole). For a bolt or screw:
 
-- **Washer under the head**, and **washer and nut on the far side**: the whole set is mated, and the length is picked for it (a 10 mm plate: M8 × 25).
+- **Washer under the head**, and **washer and nut on the far side**: the whole set is mated, and the length is picked for it (a 10 mm plate: M8 × 25). When the hole lines up with holes in other components (plates bolted together), the far side is the far side of them all: the washer and nut go under the last plate, and the length is picked for the whole stack.
 - **All matching holes**: the same part or set goes into every hole of the same size parallel to the selected one, in one go.
 
 A hole that ends on a curved face (a cross hole in a round bar) gets a seat plane of its own, which follows the hole when the part changes.
@@ -1978,7 +1999,7 @@ The motion is worked out step by step and the mates carry the other components a
 
 Opening a STEP file that holds an assembly asks whether to open it **as an assembly** or **as one part** (see Importing in the Working with Files chapter). As an assembly, each part of the file becomes a part, each sub-assembly a sub-assembly, and each component is placed, fixed, where the file places it, with the names and colours from the file. {idx:STEP, assembly}
 
-**File ▸ Export ▸ STEP…** in an assembly saves the whole assembly as one STEP file with its structure: each part once, in the configuration used, every component placed where it is and named after it, sub-assemblies kept as assemblies, and the parts' colours. Suppressed components are left out. {idx:STEP, assembly export}
+**File ▸ Export ▸ STEP…** in an assembly saves the whole assembly as one STEP file with its structure: each part once, in the configuration used, every component placed where it is and named after it, sub-assemblies kept as assemblies, and the parts' colours (a body's own colour, from Appearances, over its material's). Suppressed components are left out. {idx:STEP, assembly export}
 
 ## Saving parts as separate files
 
@@ -2005,6 +2026,7 @@ RazorCAD makes 2D engineering drawings of parts and assemblies, saved as **.rdrw
 
 - **Start window ▸ New Drawing**, or **File ▸ New Drawing**, opens the set-up dialog (below) and then an empty sheet.
 - **File ▸ Make Drawing from Part** (in a part), or **Make Drawing from Assembly** (in an assembly): after the set-up dialog, places the standard three views at a scale that fits, clear of the title block.
+- A view you place (a model, projected, section or detail view) that lands on the title block, on another view or on another view's dimensions and notes is moved to the nearest clear spot inside the frame, its own dimensions with it: a projected or section view only along its line from the view it comes from, so it stays lined up. When there is no clear spot, you are offered the largest scale that gives it one (of the view, or of the sheet when the view uses the sheet's scale) or the smallest larger sheet that does, or to leave it where it is and drag it yourself. {idx:drawing views, placed clear}
 - A drawing can show assemblies as well as parts: every component is drawn where it sits, through its sub-assemblies, in the configurations shown; suppressed and hidden components are left out. Big assemblies (more than about 200 solids) are drawn fast from the parts' display meshes: lines, circles and arcs as exact as the 3D view's, and where an edge turns hidden to about two thousandths of the view's size. A site layout of thousands of solids then takes seconds a view instead of many minutes. In a view's properties, **Hidden lines** chooses Automatic, Exact or Fast; section and flat-pattern views are always exact. {idx:drawing, fast hidden lines} {idx:drawing, of an assembly}
 
 Drawings are opened, saved and listed in the recent files like parts.
@@ -2048,7 +2070,7 @@ Changing the projection (Change Template or Sheet Properties) lays the views out
 | **Section View** | Horizontal, vertical or **At an angle** (degrees from horizontal, counter-clockwise) cutting line, hatched cut faces, A-A labels and arrows, flip; an angled section looks square to its line and can be placed anywhere |
 | **Detail View** | A circle with a letter, 2:1 by default |
 | **Auxiliary View** | Looks square at an inclined edge, so it shows its true shape |
-| **Break** | Leaves out the middle of a long part; dimensions across the break keep the true length |
+| **Break Lines** | Leaves out the middle of a long part between two break lines; dimensions across the break keep the true length. Right-click the view ▸ Remove Break Lines puts it back |
 | **Crop View** | Shows only the area you draw round |
 | **Broken-out Section** | Click a view, then the corners of an outline round what to show inside; click the first corner again to close it and give the **depth** from the front of the model. The material inside the outline is taken away to that depth, the faces cut there hatched, the outline drawn thin. Right-click the view ▸ Remove Broken-out Section takes it away |
 | **Compare With** | This drawing's sheets against another drawing open in RazorCAD (an earlier version, say), sheet by sheet: lines only in this one in red, only in the other in green, in both in grey {idx:drawing compare} |
@@ -2068,10 +2090,14 @@ Click a view to open its panel: {idx:view properties}
 - Display style: hidden lines removed, hidden lines visible, or wireframe; tangent edges and cosmetic threads on or off.
 - **Exploded** (a view of an assembly that has exploded views): shows the view exploded as one of them. The components are where that exploded view moves them, the view keeps its place on the sheet, and its projected, section, auxiliary and detail views follow. Balloons on it pick the moved parts. {idx:exploded view, drawing}
 - **Alternate position** (a view of an assembly): draws the assembly again as a **position** kept in it, in thin phantom lines (long dash, two short), over the view: a lid open, a lever at its other end. Keep positions in the assembly with **Assembly ▸ Positions** (move the components, e.g. by changing a mate, keep the position, then put them back). {idx:alternate position}{idx:positions, assembly}
-- Sheet scale or a custom scale; labels.
+- **Scale**: the sheet scale or a scale of the view's own, whatever the sheet's; labels. A view and the views made from it (projected, section and auxiliary views) share one scale: change it on any of them and they all follow. The first view keeps its middle, and each view made from it keeps its gap to the view it was made from. A **detail view** has a scale of its own (2:1 of its parent's when placed), which a change of its parent's scale leaves alone. Changing the sheet's scale (Sheet Properties) keeps the gaps the same way for the views that use it. {idx:drawing views, scale}
+- **Break from Parent View** (right-click a projected, section or auxiliary view): the view stays as it is (the same direction, cut, scale and place) but no longer depends on the view it was made from. It can be dragged anywhere, given a scale of its own and moved to another sheet, and it stays when that view is deleted. A projected view becomes a model view of its own; a section or auxiliary view keeps its cutting line or arrow on the view it came from. Its own projected and section views go with it. [[Ctrl+Z]] puts it back. This is not **Break Lines**, which leaves out the middle of a long part. {idx:Break from Parent View}
+- **Move to Sheet…** (right-click a model, flat pattern, detail or independent view): moves it, with the views made from it and their dimensions and notes, to another sheet or a new one. It keeps its place on the sheet, or goes to the middle when it would fall outside the frame. {idx:Move to Sheet}
 - **Rotate View**: −90°, +90°, 180° and 0° buttons and an angle box (degrees, counter-clockwise). Section lines, detail circles and annotations turn with the view.
 
-Aligned views slide only along their alignment. Deleting a view deletes the views made from it.
+Aligned views slide only along their alignment. Deleting a view deletes the views made from it, except those broken from it.
+
+Drawings saved before views shared their scale open looking as they did: a projected, section or auxiliary view that had a scale of its own, different from its parent's, opens broken from its parent.
 
 ## Flat pattern views
 
@@ -2100,11 +2126,13 @@ A flat pattern view shows a sheet metal body unfolded with its outline and holes
 | **Cut List Table** | The cut list of the part in the selected view (see the Fast Structure chapter); it updates when the part changes |
 | **Hole Table** {idx:Hole Table} | The holes of the selected view (circles seen end on) tagged in it, a letter for each size, largest first, numbered from the bottom left (A1, A2… B1), with their X and Y from the view's lower-left corner and their size; it updates when the part changes |
 | **Balloon** | Click a part in a view, then where the balloon goes. The number is that part's item in the bill of materials, found from the part under the click (in a sub-assembly, the sub-assembly's item). Keep clicking for more; [[Esc]] ends. Where the part can't be told, it asks for the number. Right-click a balloon ▸ **Item Number…** to change it. |
-| **BOM Table** | The bill of materials of the drawing's assembly: ITEM, QTY, PART and MATERIAL, at the top right of the sheet. Drag it anywhere; right-click it to show the sub-assemblies' parts (indented). It follows the assembly. Right-click a column to change what it shows (any field, custom property, mass, cost or typed values), insert, move, rename or remove it; double-click a typed value to edit it. **Columns…** (right-click the table, or double-click it) has everything in one dialog. With mass or cost columns a TOTAL row is added. |
+| **BOM Table** | The bill of materials of the drawing's assembly: ITEM, QTY, PART and MATERIAL, at the top right of the sheet (or the nearest spot clear of the views, their dimensions and the title block; a hole table and a cut list are placed clear the same way). Drag it anywhere; right-click it to show the sub-assemblies' parts (indented). It follows the assembly. Right-click a column to change what it shows (any field, custom property, mass, cost or typed values), insert, move, rename or remove it; double-click a typed value to edit it. **Columns…** (right-click the table, or double-click it) has everything in one dialog. With mass or cost columns a TOTAL row is added. |
 
 Datum features, geometric tolerances, surface finish and weld symbols can each have a leader. Right-click one ▸ **Edit…** to change it. {idx:dimensions, drawing}{idx:note}{idx:center mark}{idx:baseline dimension}{idx:ordinate dimension}{idx:Hole Callout}{idx:GD&T}{idx:geometric tolerance}{idx:datum}{idx:surface finish}{idx:weld symbol}{idx:revision table}{idx:Cut List Table}{idx:balloon}{idx:BOM Table}
 
 ### Auto Dimension
+
+A drawing made from a part or assembly can be dimensioned as it is made: tick **Dimension the views (Auto Dimension)** in the New Drawing dialog (it remembers your choice); the views are dimensioned once they are drawn, with the options last used.
 
 **Annotation ▸ Auto Dimension** (also **Insert ▸ Annotations**) adds the dimensions the selected views need, or every view on the sheet's: the overall sizes, outermost; hole diameters, one per size ("4× Ø9"); arc radii; and hole positions. Each size is given once in the drawing, and nothing is added that a view's own dimensions already give. Only views looking along the part's axes are dimensioned. {idx:Auto Dimension}
 
@@ -2492,6 +2520,7 @@ A body or part with no material uses 1.00 g/cm³ for mass calculations.
 
 | Date | Software version | Changes |
 |---|---|---|
+| 2026-11-01 | 0.21.2-beta | Holes, bosses and snap hooks keep to their faces as the part changes; references found again as the nearest look-alike marked to check; curved faces followed when they move. Sizes typed while drawing arcs, ellipses, slots and polygons; the sketch's own undo history. Drawings: views and their projected views scaled together, detail views on their own scale, Break from Parent View, Move to Sheet, Break Lines (was Break View), views and tables placed clear of dimensions, a scale or sheet offered when a view doesn't fit. Bolts through stacked plates; flat patterns named after the part; body colours in STEP. Exact spline surfaces, Split Body and Split Face, lofted surfaces from model edges. |
 | 2026-10-31 | 0.21.1-beta | Appearances and Render tabs: more scenes and places, photographed scenes, spotlights, the perspective view. Transition / Reducer spigots (round ones rolled, flat-sided ones bent, in parts of their own) and slip-on flanges. End Flange: bolting flanges on the ends of any parts, several at once. Several bodies selected with Ctrl, Edit Material on the body right-click menu, and a right-click anywhere for the selection's menu. A Settings button with export settings; deleting a feature keeps its sketches; partial route paths; construction lines. |
 | 2026-10-30 | 0.21.0-beta | Dimension IDs: every dimension and feature value has an ID that other values can use, renameable, with a warning before deleting one that is used. Assemblies: Edit Part from the 3D view or the tree, parts and sub-assemblies expand to their features, references between parts, no circular references. Structural Member: segments picked in groups, each with its own profile and settings, and profiles that agree around a frame. Transition / Reducer and Lofted Bend with bolted flanges; a Transition on one line of a sketch or 3D sketch. Sketches on faces follow their face; references to edges follow by name. Features that fail are not added to the tree. 3D sketch dimensions shown while placed. More printers in the 3D Print list. |
 | 2026-10-29 | 0.20.0-beta | A 3D Print tab: print profiles with a list of popular printers, the build orientation (Place on Bed, Auto-Orient, Show Bed), Check Printability, Overhang and Thickness Maps, Export for Printing laid out on the bed and Open in Slicer; Nut Pocket, Insert Hole, Screw Hole for Plastic, Printable Hole, Bridging Layer, First-Layer Chamfer, Printable Overhangs, Fit Clearance, Print-in-Place Hinge, Split for Printing and Calibrate Fits. Intersection Curve through splines, reference points on curved edges and faces, outward shells, G2 fillets on circular edges, several loft connectors, Freeform on faces of any outline, and dished ends laid out flat in sheet metal. |

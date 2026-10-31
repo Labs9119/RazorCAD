@@ -747,14 +747,14 @@ function mapIntoBox(p, from, to) {
 // tried nearest box first and the search stops once no box can beat the second best.
 function nearestTwo(cands, p, shapeOf) {
   const list = cands.map((c) => [boxDist(c.box, p), c]).sort((a, b) => a[0] - b[0]);
-  let q = null, best = null, bd = Infinity, second = Infinity;
+  let q = null, best = null, bd = Infinity, second = Infinity, sc = null;
   for (const [lb, c] of list) {
     if (lb > second) break;
     q ||= new R.DistanceQuery(R.makeVertex(p));
     const dd = q.distanceTo(shapeOf(c));
-    if (dd < bd) { second = bd; bd = dd; best = c; } else if (dd < second) second = dd;
+    if (dd < bd) { second = bd; sc = best; bd = dd; best = c; } else if (dd < second) { second = dd; sc = c; }
   }
-  return { best, bd, second };
+  return { best, bd, second, sc };
 }
 
 const findEdge = (body, ref) => findEdgeInfo(body, ref)?.e ?? null;
@@ -762,8 +762,18 @@ const findEdge = (body, ref) => findEdgeInfo(body, ref)?.e ?? null;
 // What the reference searches found and missed while one feature is rebuilt (set by rebuild): references
 // not found are reported (res.missing) so they can be fixed; when one was found again only by a looser
 // search (it moved), the feature's references are written back so they follow the model from then on.
+// (guess: found as the nearest of look-alikes, faces or edges of the same kind and size, so it may be the wrong one: marked
+// on the reference (ref.guess) and the feature shown for checking until its references are accepted)
 let refLog = null;
-const refFound = (ref, hit, moved) => { if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; } return hit; };
+const refFound = (ref, hit, moved, guess = false) => {
+  if (refLog) { refLog.found.add(ref); if (moved) refLog.moved = true; if (guess && ref.guess !== 1) { ref.guess = 1; refLog.moved = true; } }
+  return hit;
+};
+// Two edges (edge infos) of the same kind and length, or two faces of the same kind and area: a reference could not
+// tell one from the other but by where it is.
+const sameSize = (x, y) => Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x));
+const edgeLookAlike = (a, b) => !!b && a.t === b.t && sameSize(edgeLength(a.e), edgeLength(b.e)) && (!a.circ || !b.circ || sameSize(a.circ.r, b.circ.r));
+const faceLookAlike = (f, g) => !!g && f.geomType === g.geomType && sameSize(faceArea(f), faceArea(g));
 const refLost = (ref) => { if (refLog) refLog.lost.push(ref); return null; };
 
 // ------------------------------------------------------------ edges named by the extrusion that made them
@@ -897,7 +907,7 @@ function findEdgeInfo(body, ref) {
     const near = candidates.map((c) => [boxDist(c.box, p), c]).sort((x, y) => x[0] - y[0]).slice(0, 80).map((x) => x[1]).filter(fits);
     if (near.length === 1 && candidates.length <= 80) return refFound(ref, near[0], true);
     const r = nearestTwo(near, p, (c) => c.e);
-    if (r.best && r.second > r.bd * 1.6 + b.diag * 1e-6) return refFound(ref, r.best, true);
+    if (r.best && r.second > r.bd * 1.6 + b.diag * 1e-6) return refFound(ref, r.best, true, edgeLookAlike(r.best, r.sc));
   }
   return refLost(ref);
 }
@@ -1032,7 +1042,7 @@ function findFace(body, ref, facing = false) {
   const search = (p) => nearestTwo(cands, p, (c) => c.face);
   const tol = Math.max(0.05, b.diag * 0.15);
   const ok = (r) => r.best && r.bd < tol && (r.bd < 1e-3 || r.second > r.bd * 1.6);
-  let hit = null, moved = false;
+  let hit = null, moved = false, guess = false;
   const raw = search(ref.p);
   if (raw.best && raw.bd < 1e-3) hit = raw.best;
   else {
@@ -1042,17 +1052,32 @@ function findFace(body, ref, facing = false) {
     if (choices.length) hit = choices[0].best;
     // further away: the only face facing that way, or the one clearly nearest the old place
     else if (cands.length === 1) hit = cands[0];
-    else if (mapped?.best && mapped.bd < b.diag * 0.5 && mapped.second > mapped.bd * 2.5) hit = mapped.best;
+    else if (mapped?.best && mapped.bd < b.diag * 0.5 && mapped.second > mapped.bd * 2.5) { hit = mapped.best; guess = faceLookAlike(hit.face, mapped.sc?.face); }
   }
   if (!hit) return refLost(ref);
-  refFound(ref, hit, moved);
+  refFound(ref, hit, moved, guess);
   // a point on the found face's plane: project the reference point onto it
   const c = vec(hit.face.center);
   const p = add(ref.p, mul(hit.n, dot(sub(c, ref.p), hit.n)));
   ref.p = p;
   ref.n = hit.n;
   ref.box = { min: b.min, max: b.max };
-  return { p, n: hit.n };
+  return { p, n: hit.n, face: hit.face };
+}
+
+// A flat face's outline across and along two directions u, v of its plane: [min u, max u, min v, max v]
+function faceSpan(face, u, v) {
+  const out = [Infinity, -Infinity, Infinity, -Infinity], edges = face.edges;
+  try {
+    for (const e of edges) {
+      const n = e.geomType === 'LINE' ? 1 : 16;
+      for (let k = 0; k <= n; k++) {
+        const q = vec(e.pointAt(k / n)), x = dot(q, u), y = dot(q, v);
+        out[0] = Math.min(out[0], x); out[1] = Math.max(out[1], x); out[2] = Math.min(out[2], y); out[3] = Math.max(out[3], y);
+      }
+    }
+  } finally { edges.forEach((e) => e.delete?.()); }
+  return out;
 }
 
 // ------------------------------------------------------------ meshes of bodies (cached per body)
@@ -1136,6 +1161,31 @@ function surfOf(face) {
     if (t === 'SPHERE') { const c = ad.Sphere(), L = c.Location(); return { t, p: [L.X(), L.Y(), L.Z()], r: c.Radius() }; }
     return { t: 'OTHER' };
   } catch { return { t: 'OTHER' }; } finally { ad?.delete(); }
+}
+
+// What a curved face is, kept with a reference to it: its kind, radii and axis direction (as surfOf; a cone's half
+// angle too), its area and its centre. (Not its axis's place: that is what changes when the face moves.)
+function surfSig(face) {
+  const g = surfOf(face);
+  if (g.t === 'PLANE') return null;
+  const s = { t: face.geomType, a: faceArea(face), c: vec(face.center) };
+  if (!Number.isFinite(s.a) || !s.c.every(Number.isFinite)) return null;
+  if (g.r !== undefined) s.r = g.r;
+  if (g.r2 !== undefined) s.r2 = g.r2;
+  if (g.d) s.d = g.d;
+  if (s.t === 'CONE') {
+    const oc = R.getOC(), ad = new oc.BRepAdaptor_Surface(face.wrapped, true);
+    try { s.k = ad.Cone().SemiAngle(); } catch (e) { if (isFatal(e)) throw e; } finally { ad.delete(); }
+  }
+  return s;
+}
+// The same kind of face with the same sizes (axes the same way); a freeform face (no radius): the same area.
+function sameSig(s, q) {
+  if (s.t !== q.t) return false;
+  const near = (x, y) => (x === undefined && y === undefined) || (x !== undefined && y !== undefined && Math.abs(x - y) <= Math.max(1e-6, Math.abs(x) * 1e-6));
+  if (s.r === undefined && q.r === undefined) return sameSize(s.a, q.a);
+  if (!near(s.r, q.r) || !near(s.r2, q.r2) || (s.k !== undefined && q.k !== undefined && Math.abs(s.k - q.k) > 1e-9)) return false;
+  return !s.d || !q.d || Math.abs(Math.abs(dot(s.d, q.d)) - 1) < 1e-6;
 }
 
 // ------------------------------------------------------------ meshing only what changed
@@ -2677,6 +2727,11 @@ function noteRefs(f, res) {
     walk(f, []);
     if (paths.length) (res.missing ||= {})[f.id] = paths;
   }
+  if (!log.moved && log.sigs.length) {
+    const learnt = new Set(log.sigs);
+    const holds = (x, depth) => !!x && typeof x === 'object' && depth < 6 && (learnt.has(x) || Object.values(x).some((v) => holds(v, depth + 1)));
+    if (holds(f, 0)) log.moved = true;
+  }
   if (log.moved) {
     const u = {};
     for (const [k, v] of Object.entries(f)) if (v && typeof v === 'object') u[k] = v;
@@ -2980,6 +3035,108 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const sectionOf = (ref, thin) => (isFaceProfile(ref) ? faceSection(ref, thin) : getSketch(ref, thin));
   // A surface extrusion's or revolution's contours: { frame, planar, wires: [{ wire, closed }], pts? } for each sketch
   // contour, flat model face (its outer and inner edges) and the chains of the picked model edges (f.edges)
+  // Shared splitting tools: finite faces stay finite when extension is disabled;
+  // selected faces retain their body reference when coincident surfaces exist.
+  const splittingTool = (f, targets) => {
+    const owned = [], own = shape => (owned.push(shape), shape);
+    let plane = null;
+    try {
+      const span = 4 * Math.max(1, bboxOfAll(targets).diag) + 10;
+      // Legacy features used finite sketch/surface tools and extended planar face tools.
+      const extend = f.extendTool ?? (!!f.toolFace && f.type==='split');
+      const faceTool = face => {
+        if (face.geomType === 'PLANE') {
+          plane = { p: vec(face.center), n: unit(vec(face.normalAt())) };
+          if (extend) return own(planeFace(plane.p, plane.n));
+        }
+        if (!extend) return own(face.clone());
+        const oc = R.getOC(), surface = oc.BRep_Tool.Surface(face.wrapped);
+        let maker;
+        try { maker = new oc.BRepBuilderAPI_MakeFace(surface, 1e-7); return own(R.cast(maker.Face())); }
+        finally { maker?.delete(); surface.delete(); }
+      };
+      let shape;
+      const sk = sketches.get(f.tool);
+      if (sk) {
+        if (f.splitType === 'intersection') throw new Error('Intersection requires a plane, model face or surface body; use Projection for a sketch');
+        const direction = f.projection === 'vector' ? unit(resolveAxis(f.direction || 'z').d) : sk.frame.n;
+        if (Math.abs(dot(direction, sk.frame.n)) < 1e-9) throw new Error('The projection direction lies in the sketch plane');
+        const wires = sketchWires(sk.sk, sk.frame, true), chains = S.curveChains(sk.sk), walls = [];
+        try {
+          for (const [i, original] of wires.entries()) {
+            let wire = original;
+            if (extend && !chains[i].closed) {
+              const edges = wire.edges, first = edges[0], last = edges.at(-1), a = vec(wire.startPoint), b = vec(wire.endPoint);
+              const tangent = (edge, at, end) => {
+                const forward = len(sub(vec(edge.startPoint), at)) < 1e-6;
+                const d = vec(edge.tangentAt(forward ? 0 : 1));
+                return mul(unit(d), (forward ? 1 : -1) * (end ? -1 : 1));
+              };
+              const lead = R.makeLine(sub(a, mul(tangent(first,a,false),span)),a), tail = R.makeLine(b,add(b,mul(tangent(last,b,true),span)));
+              try { wire = R.assembleWire([lead,...edges,tail]); }
+              finally { lead.delete();tail.delete();edges.forEach(e=>e.delete()); }
+            }
+            const moved = wire.clone().translate(mul(direction,-span)), v = new R.Vector(mul(direction,2*span)), oc=R.getOC();
+            let maker;
+            try { maker=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);walls.push(own(R.cast(maker.Shape()))); }
+            finally { maker?.delete();v.delete();moved.delete();if(wire!==original)wire.delete(); }
+          }
+          shape = own(asShape(walls));
+        } finally { wires.forEach(w=>w.delete()); }
+      } else {
+        if (f.splitType === 'projection') throw new Error('Projection requires a sketch; use Intersection for a plane or surface');
+        if (f.tool && (STD[f.tool] || planes.has(f.tool))) {
+          const fr = resolveFrame(f.tool); plane = {p:fr.o,n:fr.n}; shape=own(planeFace(fr.o,fr.n));
+        } else if (f.tool) {
+          const rec=needBody(f.tool,'splitting tool');
+          if(!surfaces.includes(rec))throw new Error('Select a surface body, model face, plane or sketch as the splitting tool');
+          const faces=rec.shape.faces;
+          try { shape=own(asShape(faces.map(faceTool))); if(faces.length!==1)plane=null; }
+          finally { faces.forEach(face=>face.delete()); }
+        } else if(f.toolFace) {
+          const hit=findFaceAny([...solids,...surfaces],f.toolFace);
+          if(!hit)throw new Error('The splitting tool face is missing');
+          shape=faceTool(hit.face);
+        } else throw new Error('Select a splitting tool: a sketch, plane, model face or surface body');
+      }
+      return {shape,plane,dispose:()=>owned.reverse().forEach(x=>x.delete())};
+    } catch(e) { owned.reverse().forEach(x=>x.delete());throw e; }
+  };
+
+  // Model profiles keep the exact trimmed edges produced by Split Face. Their
+  // references are resolved on their owning bodies, never on the source sketch.
+  const modelLoftWire = ref => {
+    needEdges('Loft profiles from model edges');
+    if(!ref.edges?.length)throw new Error('Select at least one model edge for this profile');
+    const owned=[],edges=[],nodes=[],near=(a,b)=>len(sub(a,b))<1e-6;
+    const node=p=>{let i=nodes.findIndex(n=>near(n.p,p));if(i<0){i=nodes.length;nodes.push({p,edges:[]});}return i;};
+    try{
+      for(const r of ref.edges){
+        const owners=[...solids,...surfaces].filter(b=>!r.body||b.id===r.body),found=owners.map(body=>({body,hit:findEdgeInfo(body.shape,r)})).filter(x=>x.hit);
+        if(found.length!==1)throw new Error('A loft profile edge is missing or ambiguous; reselect it on the split body');
+        const {body,hit}=found[0];
+        if(edges.some(x=>x.edge.isSame(hit.e)))throw new Error('A loft profile cannot contain the same edge twice');
+        r.body=body.id;r.feature=body.last;updateEdgeRef(r,hit.e,body.shape);
+        const edge=hit.e.clone();owned.push(edge);
+        const u=node(vec(edge.startPoint)),v=node(vec(edge.endPoint)),i=edges.length;
+        edges.push({edge,u,v});nodes[u].edges.push(i);nodes[v].edges.push(i);
+      }
+      if(nodes.some(n=>n.edges.length>2))throw new Error('A loft profile must be one unbranched chain of model edges');
+      const ends=nodes.map((n,i)=>n.edges.length===1?i:-1).filter(i=>i>=0);
+      if(ends.length!==0&&ends.length!==2)throw new Error('The selected model edges do not form one profile');
+      let at=ends[0]??edges[0].u;const used=new Set(),ordered=[];
+      while(used.size<edges.length){
+        const index=nodes[at].edges.find(i=>!used.has(i));
+        if(index===undefined)throw new Error('The selected model edges are disconnected; add the edges joining them or use separate profiles');
+        used.add(index);const {edge,u,v}=edges[index];
+        if(u===at)ordered.push(edge);
+        else{const reversed=R.cast(edge.wrapped.Reversed());owned.push(reversed);ordered.push(reversed);}
+        at=u===at?v:u;
+      }
+      return R.assembleWire(ordered);
+    }finally{owned.reverse().forEach(e=>e.delete());}
+  };
+
   const surfaceSections = (f, revolve = false) => {
     const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [], out = [];
     if (!refs.length && !f.edges?.length) throw new Error('Select one or more surface contours, or model edges');
@@ -3002,7 +3159,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       // (a revolve's axis line, when it is in the sketch, is not part of the surface)
       const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
       const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
-      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
+      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame, true);
       out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, chains, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
     }
     if (f.edges?.length) out.push(edgeSection(f));
@@ -3347,6 +3504,27 @@ async function rebuild(doc, previewId = null, opts = {}) {
       return { p, n: unit(vec(hit.face.normalAt(p))) };
     });
   };
+  // A point clicked on a flat face (a hole's, a boss's…), kept on the face as the model changes: on the face's plane
+  // where it is now (a thicker plate: on its new top), and as far from the face's edges as it was placed, from the
+  // nearer edge across and the nearer along (fc.at: [side, distance] each way, the side -1 for the low edge, 1 the
+  // high, and the point it gave). A point moved since (at.p not it: typed, or clicked again) is measured afresh.
+  const onFace = (fc) => {
+    if (!body) return fc.p;
+    const was = fc.p, hit = findFace(body, fc, true);
+    if (!hit) throw new Error('The face a point was placed on could not be found in the model');
+    const n = unit(hit.n), u = unit(cross(Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0], n)), v = cross(n, u);
+    const [u0, u1, v0, v1] = faceSpan(hit.face, u, v), at = fc.at, h = dot(hit.p, n);
+    let x = dot(hit.p, u), y = dot(hit.p, v), side = null;
+    if (at?.p && len(sub(at.p, was)) < 1e-6) {
+      x = at.u[0] < 0 ? u0 + at.u[1] : u1 - at.u[1];
+      y = at.v[0] < 0 ? v0 + at.v[1] : v1 - at.v[1];
+      side = [at.u[0], at.v[0]];
+    } else side = [x - u0 <= u1 - x ? -1 : 1, y - v0 <= v1 - y ? -1 : 1];
+    const p = add(add(mul(u, x), mul(v, y)), mul(n, h)).map((c) => +c.toFixed(9));
+    const next = { u: [side[0], side[0] < 0 ? x - u0 : u1 - x], v: [side[1], side[1] < 0 ? y - v0 : v1 - y], p };
+    if (JSON.stringify(next) !== JSON.stringify(at) || len(sub(p, was)) > 1e-9) { fc.at = next; fc.p = p; if (refLog) refLog.moved = true; }
+    return p;
+  };
   // Where a 3D-printing fastener goes, as Hole places its holes: the points and circle centres of a sketch (or a 3D
   // sketch), and points clicked on a face (a curved one: moved onto it, square to it there): [{ p, dir (into the
   // material) }]
@@ -3354,7 +3532,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const locs = [];
     if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
     for (const fc of f.faces || []) {
-      if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+      if (fc.n) { const p = onFace(fc); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
       const hit = body && findFaceAny(solids, fc);
       if (!hit) throw new Error('A position’s face could not be found in the model');
       const q = vec(hit.face.pointOnSurface(...hit.face.uvCoordinates(fc.p).map((x, i) => { const b = hit.face.UVBounds; return i ? (x - b.vMin) / (b.vMax - b.vMin) : (x - b.uMin) / (b.uMax - b.uMin); })));
@@ -3938,16 +4116,47 @@ async function rebuild(doc, previewId = null, opts = {}) {
     const all = [...solids, ...surfaces];
     if (ref.kind === 'vertex') return { geo: { kind: 'point', p: ref.p }, body: bodyAt(all, ref.p) };
     if (ref.kind === 'edge') {
-      const q = new R.DistanceQuery(R.makeVertex(ref.p));
-      let best = null, bd = Infinity;
-      for (const b of all) { if (b.dense) continue; for (const e of b.shape.edges) { const d = q.distanceTo(e); if (d < bd) { bd = d; best = { b, e }; } } }
-      if (!best || bd > Math.max(1e-3, bbox(best.b.shape).diag * 2e-3)) throw new Error('A mate edge could not be found in the model');
+      // (found as other features find their edges: again after it moved, e.g. a hole whose position changed; what
+      // it learns of the edge kept with the mate)
+      const recs = all.filter((b) => !b.dense), comp = compoundOf(recs);
+      const hit = comp && findEdgeInfo(comp, ref);
+      const owner = hit && (recs.length === 1 ? recs[0] : recs.find((b) => b.shape === hit.part));
+      if (!hit || !owner) throw new Error('A mate edge could not be found in the model');
+      const knew = ref.t;
+      updateEdgeRef(ref, hit.e, comp);
+      if (!knew && refLog) refLog.moved = true;
+      const best = { b: owner, e: hit.e };
       const g = edgeGeom(best.e, bbox(best.b.shape).diag);
       if (g?.type === 'line') return { geo: { kind: 'line', p: g.a, d: unit(sub(g.b, g.a)) }, body: best.b };
       if (g?.type === 'circle' || g?.type === 'arc') return { geo: { kind: 'line', p: g.c, d: unit(g.normal) }, body: best.b };
       throw new Error('Use straight or circular edges for mates');
     }
-    const hit = findFaceAny(all, ref);
+    let hit = findFaceAny(all, ref);
+    // (a round face that moved, e.g. a hole's wall: the one of the same radius with its axis the same way, clearly
+    // nearest the old point; the mate's point moved onto it)
+    if (!hit && ref.cyl) {
+      const oc = R.getOC(), near = [];
+      for (const b of all) {
+        if (b.dense) continue;
+        for (const face of b.shape.faces) {
+          if (face.geomType !== 'CYLINDRE') continue;
+          const ad = new oc.BRepAdaptor_Surface(face.wrapped, false);
+          try {
+            const cy = ad.Cylinder(), ax = cy.Axis(), L = ax.Location(), D = ax.Direction(), d = unit([D.X(), D.Y(), D.Z()]);
+            if (Math.abs(cy.Radius() - ref.cyl.r) > Math.max(1e-6, ref.cyl.r * 1e-6) || Math.abs(Math.abs(dot(d, ref.cyl.d)) - 1) > 1e-6) continue;
+            const o = [L.X(), L.Y(), L.Z()], c0 = add(o, mul(d, dot(sub(vec(face.center), o), d)));
+            near.push({ b, face, c0, d, dist: len(sub(sub(ref.p, c0), mul(d, dot(sub(ref.p, c0), d)))) });
+          } finally { ad.delete(); }
+        }
+      }
+      near.sort((x, y) => x.dist - y.dist);
+      if (near.length && (near.length === 1 || near[1].dist > near[0].dist * 1.6 + 1e-6)) {
+        const m = near[0], w = sub(sub(ref.p, m.c0), mul(m.d, dot(sub(ref.p, m.c0), m.d)));
+        const u = len(w) > 1e-9 ? mul(w, 1 / len(w)) : unit(cross(m.d, Math.abs(m.d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+        ref.p = add(m.c0, mul(u, ref.cyl.r));
+        hit = refFound(ref, { body: m.b, face: m.face }, true, near.length > 1 && faceLookAlike(m.face, near[1].face));
+      }
+    }
     if (!hit) throw new Error('A mate face could not be found in the model');
     const t = hit.face.geomType;
     if (t === 'PLANE') {
@@ -3959,6 +4168,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
     try {
       if (t === 'CYLINDRE' || t === 'CONE' || t === 'TORUS') {
         const ax = (t === 'CYLINDRE' ? ad.Cylinder() : t === 'CONE' ? ad.Cone() : ad.Torus()).Axis(), L = ax.Location(), D = ax.Direction();
+        // (a cylinder's radius and axis kept with the mate, to find it again if it moves)
+        if (t === 'CYLINDRE') {
+          const cyl = { r: ad.Cylinder().Radius(), d: unit([D.X(), D.Y(), D.Z()]) };
+          if (!ref.cyl || Math.abs(ref.cyl.r - cyl.r) > 1e-9 || Math.abs(Math.abs(dot(ref.cyl.d, cyl.d)) - 1) > 1e-9) { ref.cyl = cyl; if (refLog) refLog.moved = true; }
+        }
         return { geo: { kind: 'line', p: [L.X(), L.Y(), L.Z()], d: unit([D.X(), D.Y(), D.Z()]) }, body: hit.body };
       }
       if (t === 'SPHERE') { const L = ad.Sphere().Location(); return { geo: { kind: 'point', p: [L.X(), L.Y(), L.Z()] }, body: hit.body }; }
@@ -4296,7 +4510,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
     applied = [];
     blendStep = null;
     blendPair = null;
-    refLog = { lost: [], found: new Set(), moved: false };
+    refLog = { lost: [], found: new Set(), moved: false, sigs: [] };
     try {
       // (a function, so that patterns can run a copy of another feature)
       const runFeature = async (f) => {
@@ -5346,10 +5560,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const sk=sketches.get(LR.sourceId(ref));if(!sk)throw new Error('A planar surface sketch is missing, suppressed or has errors');
               const selected=typeof ref==='string'?null:LR.resolveContour(sk.sk,ref);
               if(selected?.chain&&!selected.chain.closed)throw new Error('Planar Surface requires a closed contour');
-              const regions=selected?.region?[selected.region]:S.profileRegions(selected?.sketch||sk.sk);
+              const regions=selected?.region?[selected.region]:S.profileRegions(selected?.sketch||sk.sk,true);
               if(!regions.length)throw new Error('The selected entities do not form a closed profile');
               for(const region of regions){
-                const outer=loopWire(sk.frame,region.outer.segs),holes=region.holes.map(h=>loopWire(sk.frame,h.segs));
+                const outer=exactLoopWire(sk.sk,sk.frame,region.outer.segs),holes=region.holes.map(h=>exactLoopWire(sk.sk,sk.frame,h.segs));
                 try{let face=R.makeFace(outer);if(holes.length){const original=face;try{face=R.addHolesInFace(original,holes);}finally{original.delete();}}parts.push(face);owned.push(face);}finally{outer.delete();holes.forEach(w=>w.delete());}
               }
             }
@@ -5435,7 +5649,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
                   }
                   return shape;
                 };
-                if(!drafted){parts.push(trim(sweep(wire)));continue;}
+                if(!drafted){
+                  if(s.sk?.curves.some(c=>c.type==='spline'&&c.ctrl&&!c.closed)){
+                    // A ruled loft of translated exact wires is the same extrusion, with
+                    // native B-spline patches whose knot spans are retained for integration.
+                    const ends=[wire.clone().translate(mul(a,h0)),wire.clone().translate(mul(a,h1))];
+                    try{parts.push(trim(R.loft(ends,{ruled:true},true)));}finally{ends.forEach(w=>w.delete());}
+                  }else parts.push(trim(sweep(wire)));
+                  continue;
+                }
                 if(!closed){
                   // (an open contour, lines and arcs of a sketch: leaning to its left as drawn (Draft outward: its right)
                   // away from where it starts; the contour offset in its plane by the height times the angle's tangent,
@@ -5527,23 +5749,36 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // a surface through two or more profiles (open or closed chains of sketches / 3D sketches)
           const ids = (f.profiles || []).filter(Boolean);
           if (ids.length < 2) throw new Error('Select at least two profiles (in order)');
+          const modelProfiles=ids.some(LR.isModelEdgeChain);
+          if(modelProfiles&&(LC.hasManualConnections(f)||hasLoftEnds(f)||(f.guides||[]).length))throw new Error('Model-edge loft profiles currently require free end conditions, automatic correspondence and no guide curves');
           const connectorControls=loftConnectionControls(f,ids);
+          // Simple surface lofts can use the original spline edges. The guided / end-condition
+          // builders still require their cubic section representation for correspondence.
+          const exactProfiles = !connectorControls && !(f.guides || []).filter(Boolean).length && !hasLoftEnds(f) && ids.some(id => {
+            const source = sketches.get(LR.sourceId(id));
+            if (!source) return false;
+            const subset = typeof id === 'string' ? source.sk : LR.resolveContour(source.sk, id).sketch;
+            return subset.curves.some(c => !c.construction && c.type === 'spline' && c.ctrl && !c.closed);
+          });
           const wires = ids.map((id) => {
+            if(LR.isModelEdgeChain(id))return modelLoftWire(id);
             if (curves.has(id)) return curves.get(id).wire;
             const sk = sketches.get(LR.sourceId(id));
             if (!sk) throw new Error('A profile is missing, suppressed or has errors');
             const resolved = typeof id === 'string' ? { sketch: sk.sk } : LR.resolveContour(sk.sk, id);
-            if (resolved.region) return sectionWire(loftSection(sk.frame, resolved.region.outer.segs));
+            if (resolved.region) return exactProfiles ? exactLoopWire(sk.sk, sk.frame, resolved.region.outer.segs) : sectionWire(loftSection(sk.frame, resolved.region.outer.segs));
             const subset = resolved.sketch;
-            const ws = sketchWires(subset, sk.frame);
+            const ws = sketchWires(subset, sk.frame, exactProfiles);
             if (ws.length !== 1) throw new Error(`${sk.sk.name} must be one connected chain of curves (it has ${ws.length})`);
             return ws[0];
           });
+          if(modelProfiles)res.features[f.id]={...(res.features[f.id]||{}),profiles:ids};
           // (a sketch's chain says itself whether it is closed; a curve is when its ends meet, to a thousandth of a mm)
           const ends = wires.map((w) => len(sub(vec(w.startPoint), vec(w.endPoint))));
           // (a profile: a sketch, a contour of one (loftrefs.js), or a curve)
-          const pname = (id, i) => (curves.has(id) ? doc.features.find((x) => x.id === id)?.name : sketches.get(LR.sourceId(id))?.sk.name) || `Profile ${i + 1}`;
+          const pname = (id, i) => LR.isModelEdgeChain(id)?LR.describeRef(doc,id):(curves.has(id) ? doc.features.find((x) => x.id === id)?.name : sketches.get(LR.sourceId(id))?.sk.name) || `Profile ${i + 1}`;
           const closed = ids.map((id, i) => {
+            if(LR.isModelEdgeChain(id))return ends[i]<1e-6;
             if (curves.has(id)) return ends[i] < 1e-3;
             const sk = sketches.get(LR.sourceId(id)), resolved = typeof id === 'string' ? { sketch: sk.sk } : LR.resolveContour(sk.sk, id);
             return !!resolved.region || S.curveChains(resolved.sketch).some((c) => c.closed);
@@ -5554,7 +5789,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             throw new Error(`The profiles must all be open, or all closed: ${nm(ic)} is closed but ${nm(io)} is open (its ends are ${ends[io] < 0.01 ? ends[io].toExponential(1) : ends[io].toFixed(2)} mm apart)`);
           }
           let list = wires, closedSecs = null;
-          if (closed[0]) {
+          if (closed[0] && !exactProfiles && !modelProfiles) {
             // closed profiles: matched like a solid loft (same start points, same way round)
             const secs = ids.map((id, i) => {
               if (curves.has(id)) return null;
@@ -5575,7 +5810,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               list = closedSecs.map(sectionWire);
               if(connectorControls)loftConnectionInfo(f,ids,closedSecs,true);
             }
-          } else {
+          } else if (!closed[0]) {
             // open profiles: each one runs the same way as the one before it
             list = [wires[0]];
             for (let i = 1; i < wires.length; i++) {
@@ -6075,57 +6310,71 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = `${n} face${n === 1 ? '' : 's'} untrimmed`;
           break;
         }
-        case 'projCurve':
         case 'splitLine': {
-          // a sketch projected along its normal onto faces: as a 3D curve, or splitting the faces along it
-          // (Split Line can also split with a plane or a surface body)
-          const all = [...solids, ...surfaces];
-          const hits = (f.faces || []).map((r) => findFaceAny(all, r));
-          if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
-          if (f.type === 'splitLine' && !hits.length) throw new Error('Click the faces to split');
-          const L = (all.length ? bboxOfAll(all.map((r) => r.shape)).diag : 100) * 2 + 10;
-          let tool;
-          const sk = sketches.get(f.type === 'projCurve' ? f.sketch : f.tool);
-          if (sk) {
-            const ws = sketchWires(sk.sk, sk.frame);
-            if (!ws.length) throw new Error('The sketch has no curves to project');
-            const oc = R.getOC();
-            tool = asShape(ws.map((w) => { const v = new R.Vector(mul(sk.frame.n, 2 * L)), mk = new oc.BRepPrimAPI_MakePrism(w.clone().translate(mul(sk.frame.n, -L)).wrapped, v.wrapped, false, true); const sh = R.cast(mk.Shape()); mk.delete(); v.delete(); return sh; }));
-          } else if (f.type === 'splitLine' && f.tool && (STD[f.tool] || planes.has(f.tool))) { const fr = resolveFrame(f.tool); tool = planeFace(fr.o, fr.n); }
-          else if (f.type === 'splitLine' && f.tool) { const tr = surfaces.find((r) => r.id === f.tool); if (!tr) throw new Error('The split tool no longer exists'); tool = tr.shape; }
-          else throw new Error(f.type === 'projCurve' ? 'Select the sketch to project' : 'Choose what to split with: a sketch, a plane or a surface body');
-          const targets = hits.length ? hits.map((h) => h.face) : all.flatMap((r) => r.shape.faces);
-          const oc = R.getOC(), edges = [];
-          for (const face of targets) {
-            const op = new oc.BRepAlgoAPI_Section(face.wrapped, tool.wrapped, false);
-            try { op.Build(new oc.Message_ProgressRange()); if (!op.HasErrors()) edges.push(...R.cast(op.Shape()).edges); } catch (e) { if (isFatal(e)) throw e; } finally { op.delete(); }
-          }
-          if (!edges.length) throw new Error(f.type === 'projCurve' ? 'The sketch does not project onto the faces' : 'The tool does not cross the faces');
-          if (f.type === 'projCurve') {
-            const chains = chainEdges(edges);
-            const wire = chains.length === 1 ? chains[0].wire : null;
-            if (wire) curves.set(f.id, { wire, route: true });
-            res.curves[f.id] = chains.map((c) => c.pts);
-            res.notes[f.id] = `${edges.length} edge${edges.length === 1 ? '' : 's'}${chains.length > 1 ? ` in ${chains.length} separate curves (one connected curve can be a sweep path)` : ''}`;
-          } else {
-            // split the faces along the edges (the body stays one body, with more faces)
-            const byRec = new Map();
-            for (const h of hits) { if (!byRec.has(h.body)) byRec.set(h.body, []); }
-            for (const rec of byRec.keys()) {
-              const sp = new oc.BRepAlgoAPI_Splitter(), A = ocList([rec.shape]), T = ocList(edges);
-              sp.SetArguments(A); sp.SetTools(T); sp.Build(new oc.Message_ProgressRange());
-              const bad = sp.HasErrors(), out = bad ? null : R.cast(sp.Shape());
-              sp.delete(); A.delete(); T.delete();
-              if (!out) throw new Error('The faces could not be split');
-              if (solids.includes(rec)) {
-                const sol = solidsOf(out);
-                if (sol.length !== 1) throw new Error('Splitting the faces broke the body');
-                solids = solids.map((r) => (r === rec ? bodyRec(rec.id, sol[0], f.id) : r));
-              } else surfaces = surfaces.map((r) => (r === rec ? bodyRec(rec.id, out, f.id) : r));
+          const all=[...solids,...surfaces],hits=(f.faces||[]).map(ref=>findFaceAny(all,ref));
+          if(!hits.length)throw new Error('Select the faces to split');
+          if(hits.some(hit=>!hit))throw new Error('A selected face to split is missing');
+          if(!['auto','projection','intersection'].includes(f.splitType||'auto'))throw new Error('Select Projection or Intersection as the split type');
+          const owners=[...new Set(hits.map(hit=>hit.body))],tool=splittingTool(f,owners.map(rec=>rec.shape)),built=[],oc=R.getOC();
+          try{
+            for(const rec of owners){
+              const selected=hits.filter(hit=>hit.body===rec).map(hit=>hit.face),edges=[];
+              try{
+                for(const face of selected){
+                  const section=new oc.BRepAlgoAPI_Section(face.wrapped,tool.shape.wrapped,false);
+                  try{section.Build(new oc.Message_ProgressRange());if(section.HasErrors())throw new Error('The splitting tool could not be intersected with a selected face');const result=R.cast(section.Shape());try{edges.push(...result.edges);}finally{result.delete();}}
+                  finally{section.delete();}
+                }
+                if(!edges.length)continue;
+                const splitter=new oc.BRepAlgoAPI_Splitter(),args=ocList([rec.shape]),tools=ocList(edges);let out;
+                try{splitter.SetArguments(args);splitter.SetTools(tools);splitter.Build(new oc.Message_ProgressRange());if(splitter.HasErrors())throw new Error('The selected faces could not be split');out=R.cast(splitter.Shape());}
+                finally{splitter.delete();args.delete();tools.delete();}
+                if(out.faces.length<=rec.shape.faces.length){out.delete();continue;}
+                if(solids.includes(rec)){
+                  const pieces=solidsOf(out);
+                  if(pieces.length!==1){out.delete();throw new Error('Split Face must preserve one solid body; use Split Body to separate it');}
+                  out.delete();out=pieces[0];
+                }
+                built.push({rec,out});
+              }finally{edges.forEach(edge=>edge.delete());}
             }
-            body = compoundOf(solids);
-            res.notes[f.id] = `${hits.length} face${hits.length === 1 ? '' : 's'} split`;
-          }
+            if(!built.length)throw new Error('The splitting tool does not divide the selected faces; an open sketch must cross the face boundary');
+            for(const {rec,out} of built){
+              const replacement=bodyRec(rec.id,out,f.id,[rec]);
+              if(solids.includes(rec))solids=solids.map(r=>r===rec?replacement:r);
+              else surfaces=surfaces.map(r=>r===rec?replacement:r);
+            }
+            body=compoundOf(solids);res.notes[f.id]=`Faces split on ${built.length} bodies · body count unchanged`;
+          }finally{tool.dispose();}
+          break;
+        }
+        case 'projCurve': {
+          const all=[...solids,...surfaces],hits=(f.faces||[]).map(ref=>findFaceAny(all,ref));
+          if(hits.some(hit=>!hit))throw new Error('A selected face could not be found in the model');
+          const sk=sketches.get(f.sketch);
+          if(!sk)throw new Error('Select the sketch to project');
+          const L=(all.length?bboxOfAll(all.map(r=>r.shape)).diag:100)*2+10,ws=sketchWires(sk.sk,sk.frame),oc=R.getOC();
+          if(!ws.length)throw new Error('The sketch has no curves to project');
+          const walls=[];let tool;
+          try{
+            for(const w of ws){
+              const moved=w.clone().translate(mul(sk.frame.n,-L)),v=new R.Vector(mul(sk.frame.n,2*L));let maker;
+              try{maker=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);walls.push(R.cast(maker.Shape()));}
+              finally{maker?.delete();v.delete();moved.delete();}
+            }
+            tool=asShape(walls);
+            const targets=hits.length?hits.map(hit=>hit.face):all.flatMap(rec=>rec.shape.faces),edges=[];
+            for(const face of targets){
+              const section=new oc.BRepAlgoAPI_Section(face.wrapped,tool.wrapped,false);
+              try{section.Build(new oc.Message_ProgressRange());if(!section.HasErrors())edges.push(...R.cast(section.Shape()).edges);}
+              catch(e){if(isFatal(e))throw e;}finally{section.delete();}
+            }
+            if(!edges.length)throw new Error('The sketch does not project onto the faces');
+            const chains=chainEdges(edges),wire=chains.length===1?chains[0].wire:null;
+            if(wire)curves.set(f.id,{wire,route:true});
+            res.curves[f.id]=chains.map(c=>c.pts);
+            res.notes[f.id]=`${edges.length} edge${edges.length===1?'':'s'}${chains.length>1?` in ${chains.length} separate curves (one connected curve can be a sweep path)`:''}`;
+          }finally{tool?.delete();walls.forEach(w=>w.delete());ws.forEach(w=>w.delete());}
           break;
         }
         case 'compCurve': {
@@ -6243,7 +6492,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             for (const b of beads.slice(1)) { try { shape = shape.fuse(b); } catch (e) { if (isFatal(e)) throw e; shape = asShape([shape, b]); } }
             const rec = bodyRec(newId(f.id), shape, f.id);
             const L = beads.length ? edges.reduce((acc, e) => acc + R.measureLength(e), 0) : 0;
-            rec.member = { label: `Weld ${+sz.toFixed(1)}`, type: 'weld', length: +L.toFixed(1), angles: [null, null], feature: f.id, between: [A.member?.label || A.id, B.member?.label || B.id] };
+            rec.member = { label: `Weld ${+sz.toFixed(1)}`, type: 'weld', length: L, angles: [null, null], feature: f.id, between: [A.member?.label || A.id, B.member?.label || B.id] };
             solids.push(rec);
             applied.push({ op: 'add', tool: shape });
             n0++;
@@ -7610,26 +7859,35 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'split': {
-          let tool, plane = null;
-          if (f.tool && (STD[f.tool] || planes.has(f.tool))) { const fr = resolveFrame(f.tool); plane = { p: fr.o, n: fr.n }; tool = planeFace(fr.o, fr.n); }
-          else if (f.tool) { const sb = needBody(f.tool, 'surface'); if (!surfaces.includes(sb)) throw new Error('Choose a plane or a surface body to split with'); tool = sb.shape; }
-          else if (f.toolFace) { const hit = findFace(body, f.toolFace); if (!hit) throw new Error('The selected face could not be found'); plane = hit; tool = planeFace(hit.p, hit.n); }
-          else throw new Error('Choose a plane, a flat face or a surface body to split with');
-          const targets = f.bodies?.length ? f.bodies.map((id) => needBody(id)).filter((b) => solids.includes(b)) : [...solids];
-          if (!targets.length) throw new Error('There is no solid body to split');
-          let splitAny = false;
-          for (const rec of targets) {
-            let pieces = splitBy(rec.shape, tool);
-            if (pieces.length > 1) splitAny = true;
-            if (plane && f.keep !== 'all') {
-              const side = (sh) => Math.sign(dot(sub(bbox(sh).center, plane.p), plane.n));
-              const want = f.keep === 'negative' ? -1 : 1;
-              const kept = pieces.filter((sh) => side(sh) === want);
-              if (kept.length) pieces = kept;
+          const all=[...solids,...surfaces],legacy=f.allBodies===undefined;
+          const targets=f.allBodies?all.filter(r=>r.id!==f.tool):f.bodies?.length?[...new Set(f.bodies)].map(id=>needBody(id)):legacy?[...solids]:[];
+          if(!targets.length)throw new Error('Select the solid or surface bodies to split');
+          if(targets.some(r=>r.id===f.tool))throw new Error('A body cannot split itself');
+          const tool=splittingTool(f,targets.map(r=>r.shape)),built=[];
+          try{
+            for(const rec of targets){
+              let pieces=solids.includes(rec)?splitBy(rec.shape,tool.shape):splitSurfacePieces(rec.shape,tool.shape);
+              const changed=pieces.length>1;
+              if(changed&&f.keep&&f.keep!=='all'){
+                if(!tool.plane)throw new Error('Keeping one side requires a plane or a planar splitting tool');
+                const want=f.keep==='negative'?-1:1;
+                pieces=pieces.filter(sh=>Math.sign(dot(sub(bbox(sh).center,tool.plane.p),tool.plane.n))===want);
+              }
+              built.push({rec,pieces,changed});
             }
-            replaceSolid(rec, compoundOf(pieces.map((shape) => ({ shape }))), f.id);
-          }
-          if (!splitAny) throw new Error('The tool does not cut through the selected bodies');
+            if(!built.some(x=>x.changed))throw new Error('The splitting tool does not divide the selected bodies; extend the tool or choose one that cuts through them');
+            for(const {rec,pieces,changed} of built){
+              if(!changed)continue;
+              if(solids.includes(rec))replaceSolid(rec,asShape(pieces),f.id);
+              else{
+                pieces.sort((a,b)=>R.measureArea(b)-R.measureArea(a));
+                const recs=pieces.map((shape,i)=>bodyRec(i?newId(`${rec.id}~${i+1}`):rec.id,shape,f.id,[rec]));
+                surfaces.splice(surfaces.indexOf(rec),1,...recs);
+              }
+            }
+            body=compoundOf(solids);
+            res.notes[f.id]=`${built.filter(x=>x.changed).length} bodies split · ${built.reduce((n,x)=>n+x.pieces.length,0)} resulting bodies`;
+          }finally{tool.dispose();}
           break;
         }
         case 'moveBody': {
@@ -8130,7 +8388,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // normal from the face's X direction
           const locs = [];
           if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, n: mul(n, f.reverse ? -1 : 1) });
-          for (const fc of f.faces || []) if (fc.n) locs.push({ p: fc.p, n: mul(unit(fc.n), f.reverse ? -1 : 1) });
+          for (const fc of f.faces || []) if (fc.n) locs.push({ p: onFace(fc), n: mul(unit(fc.n), f.reverse ? -1 : 1) });
           if (!locs.length) throw new Error('Click points on a flat face for them, or select a sketch with points on the face');
           if (!body) throw new Error('There is no body to put them on');
           const poly = (fr, pts) => R.makePolygon(pts.map(([x, y]) => add(add(fr.o, mul(fr.x, x)), mul(fr.z, y))));
@@ -8630,7 +8888,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const locs = [];
           if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
           for (const fc of f.faces || []) {
-            if (fc.n) { locs.push({ p: fc.p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+            if (fc.n) { const p = onFace(fc); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
             // (a point on a curved face: moved onto it, the hole square to it there)
             if (!body) break;
             const hit = findFaceAny(solids, fc);
@@ -9279,7 +9537,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (!(R0 > 0)) throw new Error('The bend radius must be greater than zero');
           let out = SM.addFlanges(sheet, edges, {
             length: ev(f.length), lengthRef: f.lengthRef, angle: ev(f.angle), position: f.position, offset: ev(f.offset || 0),
-            R: R0, flip: !!f.flip, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
+            R: R0, flip: !!f.flip, sameSide: !!f.sameSide, relief: { type: f.reliefType || 'rect', ratio: ev(f.reliefRatio ?? 0.5) },
             extent: { type: f.widthType || 'full', a: ev(f.startOffset ?? 0), b: ev(f.endOffset ?? 0), width: ev(f.flangeWidth ?? 0), swap: !!f.swapEnds },
           });
           // corners between these flanges: closed with the gap (older parts: open)
@@ -10004,15 +10262,17 @@ async function assemblySolids(asm) {
       try { let s; try { s = shape.wrapped.Moved(loc, false); } catch { s = shape.wrapped.Moved(loc); } return R.cast(s); } finally { loc.delete(); }
     } finally { t.delete(); }
   };
-  const walk = async (d, M, prefix, depth) => {
+  // (over: where the components of a flexible sub-assembly are in the assembly using it, c.flex)
+  const walk = async (d, M, prefix, depth, over = null) => {
     if (depth > 16) return;
     for (const c of d.components || []) {
       const e = effIn(d, c);
       if (e.suppressed || e.hidden) continue;
       const p = (d.parts || []).find((x) => x.id === c.part);
       if (!p?.doc) continue;
-      const Mc = mul(M, poseM(c)), cfg = e.config && (p.doc.configs || []).some((x) => x.id === e.config) ? e.config : null;
-      if (p.doc.kind === 'assembly') { await walk({ ...p.doc, activeConfig: cfg }, Mc, `${prefix}${c.id}/`, depth + 1); continue; }
+      const o = over?.[c.id];
+      const Mc = mul(M, poseM(o ? { pos: o.pos, rot: o.rot } : c)), cfg = e.config && (p.doc.configs || []).some((x) => x.id === e.config) ? e.config : null;
+      if (p.doc.kind === 'assembly') { await walk({ ...p.doc, activeConfig: cfg }, Mc, `${prefix}${c.id}/`, depth + 1, c.flexible ? c.flex : null); continue; }
       // (a top component cut by the assembly's holes and cuts: its part with them)
       const extra = depth === 0 && cuts.get(c.id);
       const pd = { ...p.doc, activeConfig: cfg, rollbackAt: null, ...(extra ? { features: [...p.doc.features, ...extra] } : {}) };
@@ -10079,7 +10339,9 @@ async function exportAssemblySTEP(docJson, opts = {}) {
       const shape = list.length === 1 ? list[0].shape : compoundOf(list);
       label = tool.AddShape(shape.wrapped, false, false);
       oc.TDataStd_Name.Set(label, str(p.name || p.doc.name || 'Part'));
-      if (p.exportColor) ctool.SetColor(label, rgb(p.exportColor), SURF);
+      // (the part's colour: its only body's own, given one, else its material's)
+      const own = list.length === 1 ? p.doc.bodies?.[list[0].id]?.color : null;
+      if (own || p.exportColor) ctool.SetColor(label, rgb(own || p.exportColor), SURF);
       // (bodies with a colour of their own)
       if (list.length > 1) for (const s of list) {
         const c = p.doc.bodies?.[s.id]?.color;
@@ -11964,7 +12226,11 @@ function findFaceAny(bodies, ref) {
       if (d < bd - 1e-9 || (Math.abs(d - bd) <= 1e-9 && ref.body && e.b.id === ref.body)) { bd = d; best = { body: e.b, face: e.x.face }; }
     }
   } finally { q?.delete(); }
-  if (best && bd < Math.max(1e-3, bbox(best.body.shape).diag * 2e-3)) return refFound(ref, best, false);
+  if (best && bd < Math.max(1e-3, bbox(best.body.shape).diag * 2e-3)) {
+    // (a curved face's kind, sizes and centre learnt, to find it again if it moves: written back with the feature)
+    if (refLog && !ref.n && !ref.sf && best.face.geomType !== 'PLANE') { const q = surfSig(best.face); if (q) { ref.sf = q; refLog.sigs.push(ref); } }
+    return refFound(ref, best, false);
+  }
   // a planar face that moved (a dimension before it changed): the face facing the same way clearly
   // nearest the old point; the reference is moved onto it, so it follows the face from now on
   if (Array.isArray(ref.n) && ref.n.length === 3) {
@@ -11980,7 +12246,31 @@ function findFaceAny(bodies, ref) {
       ref.p = add(ref.p, mul(r.best.n, dot(sub(c, ref.p), r.best.n)));
       // (and onto the face itself, when the old point is now beside it)
       try { const q = new R.DistanceQuery(R.makeVertex(ref.p)); if (q.distanceTo(r.best.face) > 1e-6) ref.p = vec(r.best.face.center); } catch (e) { if (isFatal(e)) throw e; }
-      return refFound(ref, { body: r.best.body, face: r.best.face }, true);
+      return refFound(ref, { body: r.best.body, face: r.best.face }, true, faceLookAlike(r.best.face, r.sc?.face));
+    }
+  }
+  // a curved face that moved (a hole whose position changed, a fillet or boss elsewhere on the part): the face of the
+  // same kind and sizes (a cylinder's, cone's or torus's radii and axis, a sphere's radius, a freeform face's area)
+  // whose centre is clearly nearest its old centre; the reference is moved onto it, as far from its centre as before
+  if (ref.sf && !ref.n) {
+    const s = ref.sf, near = [];
+    for (const b of bodies) {
+      if (b.dense) continue;
+      for (const { face } of facesWithBox(b.shape)) {
+        if (face.geomType !== s.t) continue;
+        const q = surfSig(face);
+        if (q && sameSig(s, q)) near.push({ b, face, q, dist: len(sub(q.c, s.c)) });
+      }
+    }
+    near.sort((x, y) => x.dist - y.dist);
+    if (near.length && (near.length === 1 || near[1].dist > near[0].dist * 1.6 + 1e-6)) {
+      const m = near[0];
+      let p = add(m.q.c, sub(ref.p, s.c));
+      const v = R.makeVertex(p), dq = new R.DistanceQuery(v);
+      try { dq.distanceTo(m.face); const w = dq.wrapped.PointOnShape2(1); p = [w.X(), w.Y(), w.Z()]; w.delete(); } catch (e) { if (isFatal(e)) throw e; } finally { dq.delete(); v.delete(); }
+      ref.p = p;
+      ref.sf = m.q;
+      return refFound(ref, { body: m.b, face: m.face }, true, near.length > 1 && sameSize(near[1].q.a, m.q.a));
     }
   }
   return refLost(ref);
@@ -11994,10 +12284,86 @@ function bodyAt(bodies, p) {
   return best && bd < Math.max(1e-3, bbox(best.shape).diag * 1e-4) ? best : null;
 }
 
+// Keep an open control spline as one exact (possibly rational) B-spline edge, rather
+// than the display/region builder's approximation by many cubic Bezier edges.
+function controlSplineEdge(sk, c, fr) {
+  const oc = R.getOC(), owned = [], own = (x) => (owned.push(x), x);
+  try {
+    const count = c.pts.length, degree = Math.max(1, Math.min(c.degree ?? 3, count - 1)), spans = count - degree;
+    const poles = own(new oc.NCollection_Array1_gp_Pnt(1, count));
+    c.pts.forEach((id, i) => {
+      const p = S.getPoint(sk, id), q = new oc.gp_Pnt(...S.fromFrame2D(fr, p.x, p.y));
+      try { poles.SetValue(i + 1, q); } finally { q.delete(); }
+    });
+    const knots = own(new oc.NCollection_Array1_double(1, spans + 1));
+    const mults = own(new oc.NCollection_Array1_int(1, spans + 1));
+    for (let i = 0; i <= spans; i++) {
+      knots.SetValue(i + 1, i); mults.SetValue(i + 1, i === 0 || i === spans ? degree + 1 : 1);
+    }
+    let curve;
+    if (c.weights) {
+      const weights = own(new oc.NCollection_Array1_double(1, count));
+      c.weights.forEach((w, i) => weights.SetValue(i + 1, w));
+      curve = own(new oc.Geom_BSplineCurve(poles, weights, knots, mults, degree, false, true));
+    } else curve = own(new oc.Geom_BSplineCurve(poles, knots, mults, degree, false));
+    const builder = own(new oc.BRepBuilderAPI_MakeEdge(curve));
+    return new R.Edge(builder.Edge());
+  } finally { owned.reverse().forEach((x) => x.delete()); }
+}
+
+// Region boundaries may contain only a trimmed portion of a source curve. Replace
+// a run only when it spans the complete spline; retain the selected boundary otherwise.
+function exactLoopWire(sk, fr, segs) {
+  const edges = [];
+  try {
+    for (let i = 0; i < segs.length;) {
+      let end = i + 1;
+      const g = segs[i], c = S.getCurve(sk, g.sourceCurve);
+      while (g.sourceCurve && end < segs.length && segs[end].sourceCurve === g.sourceCurve && segs[end].sourceDirection === g.sourceDirection) end++;
+      let exact = false;
+      if (c?.type === 'spline' && c.ctrl && !c.closed) {
+        const edge = controlSplineEdge(sk, c, fr), a = S.fromFrame2D(fr, ...g.a), b = S.fromFrame2D(fr, ...segs[end - 1].b);
+        const start = vec(edge.startPoint), finish = vec(edge.endPoint);
+        const forward = len(sub(a, start)) < 1e-7 && len(sub(b, finish)) < 1e-7;
+        const backward = len(sub(a, finish)) < 1e-7 && len(sub(b, start)) < 1e-7;
+        if (forward) { edges.push(edge); exact = true; }
+        else {
+          try { if (backward) { edges.push(R.cast(edge.wrapped.Reversed())); exact = true; } }
+          finally { edge.delete(); }
+        }
+      }
+      if (!exact) {
+        const wire = loopWire(fr, segs.slice(i, end));
+        try { edges.push(...wire.edges); } finally { wire.delete(); }
+      }
+      i = end;
+    }
+    return R.assembleWire(edges);
+  } finally { edges.forEach(e => e.delete()); }
+}
+
 // Wires of a sketch's (non-construction) chains, on the sketch plane.
-function sketchWires(sk, fr) {
+function sketchWires(sk, fr, exactSplines = false) {
   const wires = [];
   for (const ch of S.curveChains(sk)) {
+    if (exactSplines && ch.items.some(({ c }) => c.type === 'spline' && c.ctrl && !c.closed)) {
+      const edges = [];
+      try {
+        for (const item of ch.items) {
+          const { c, rev } = item;
+          if (c.type === 'spline' && c.ctrl && !c.closed) {
+            const edge = controlSplineEdge(sk, c, fr);
+            if (rev) { try { edges.push(R.cast(edge.wrapped.Reversed())); } finally { edge.delete(); } }
+            else edges.push(edge);
+          } else {
+            const section = loftSection(fr, S.chainSegs(sk, { items: [item] })), wire = sectionWire(section);
+            try { edges.push(...wire.edges); } finally { wire.delete(); }
+          }
+        }
+        wires.push(R.assembleWire(edges));
+      } finally { edges.forEach((e) => e.delete()); }
+      continue;
+    }
     const segs = S.chainSegs(sk, ch);
     if (segs.length === 1 && segs[0].type === 'circle') {
       wires.push(R.drawSingleCircle(segs[0].r).translate(segs[0].c[0], segs[0].c[1]).sketchOnPlane(rPlane(fr)).wire);
@@ -12049,6 +12415,33 @@ function splitBy(shape, tool) {
   const res = R.cast(sp.Shape());
   sp.delete(); A.delete(); T.delete();
   return solidsOf(res);
+}
+
+// Separate a surface quilt at the cutting edges, retaining existing connections
+// elsewhere. A shell containing two split faces is not yet two surface bodies.
+function splitSurfacePieces(shape, tool) {
+  const oc=R.getOC(),splitter=new oc.BRepAlgoAPI_Splitter(),args=ocList([shape]),tools=ocList([tool]);
+  let result;
+  try{
+    splitter.SetArguments(args);splitter.SetTools(tools);splitter.Build(new oc.Message_ProgressRange());
+    if(splitter.HasErrors())throw new Error('The surface body could not be split');
+    result=R.cast(splitter.Shape());
+  }finally{splitter.delete();args.delete();tools.delete();}
+  const faces=result.faces,parent=faces.map((_,i)=>i),root=i=>parent[i]===i?i:(parent[i]=root(parent[i]));
+  const tol=Math.max(1e-7,bbox(shape).diag*1e-8);
+  const onTool=e=>{
+    const vertex=R.makeVertex(vec(e.pointAt(.5))),query=new R.DistanceQuery(vertex);
+    try{return query.distanceTo(tool)<tol;}finally{query.delete?.();vertex.delete();}
+  };
+  try{
+    for(let i=0;i<faces.length;i++)for(let j=i+1;j<faces.length;j++){
+      const a=faces[i].edges,b=faces[j].edges;
+      try{if(a.some(e=>b.some(other=>other.isSame(e))&&!onTool(e)))parent[root(i)]=root(j);}
+      finally{a.forEach(e=>e.delete());b.forEach(e=>e.delete());}
+    }
+    const groups=new Map();faces.forEach((face,i)=>{const key=root(i);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(face);});
+    return [...groups.values()].map(group=>group.length===1?group[0].clone():sewShapes(group,1e-7));
+  }finally{faces.forEach(face=>face.delete());result.delete();}
 }
 
 // Edges sorted into connected chains: [{ wire, pts }] (each chain joined end to end; pts for showing it).

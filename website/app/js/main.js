@@ -66,6 +66,9 @@ const $ = (s) => document.querySelector(s);
 // features whose sketch slot takes a 3D sketch too (its points, lines or circle)
 // (the kinds of things shown, all hidden: the Visibility button turned off)
 const VIS_OFF = Object.freeze({ planes: false, sketches: false, axes: false, points: false, surfaces: false, construction: false });
+// Features placed at the points clicked on faces (a hole, a boss, a form…): another click on a face adds another, even
+// on the same face; a click on one already placed takes it away
+const POINT_PLACED = new Set(['hole', 'boss', 'snapHook', 'nutPocket', 'insertHole', 'plasticScrewHole', 'smForm']);
 const SKETCH_OR_3D = new Set(['smTransition', 'hole', 'boss', 'snapHook', 'nutPocket', 'insertHole', 'plasticScrewHole', 'moldRunner', 'helix', 'spattern']);
 
 class App {
@@ -730,9 +733,13 @@ class App {
       Object.assign(f, s.data);
       delete f.entities;
     }
+    // (the feature open in the panel keeps what is typed in it; what the kernel found of its references is kept
+    // aside, for when it is accepted)
+    this._pmRefs = null;
     for (const [fid, u] of Object.entries(r.features)) {
       const f = M.findFeature(doc, fid);
       if (f && this.pm?.feature !== f) Object.assign(f, u);
+      else if (f) this._pmRefs = { f, u };
     }
     this.takeImportedPMI(r);
     if (r.body?.same) {
@@ -767,8 +774,10 @@ class App {
     this.result.detected = new Map(Object.entries(r.detected || {})); // what features found in the model (e.g. a converted sheet's thickness)
     this.clearCycle(); // the mesh (and its face/body indices) changed
     this._featureFaceCache = new Map();
+    this._holeBoxes = null; // (holes' typed positions: measured on the model now shown)
     if (this.isolated && ![...this.isolated].some((id) => this.bodyById(id))) this.isolated = null;
     this.pushBody();
+    this.ui.refreshHolePos();
     this.viewport.setPreview(this.pm?.kind === 'feature' ? r.preview : null);
     this.updateRefGeometry();
     this.hoverFaceKey = null;
@@ -782,7 +791,7 @@ class App {
     this.updatePlanes();
     this.drawPrintBed();
     this.ui.renderTree();
-    const n = this.result.errors.size;
+    const n = this.result.errors.size - (this.pm?.feature && this.waitingFor(this.pm.feature) ? 1 : 0);
     $('#status-rebuild').textContent = `Rebuild ${this.result.time.toFixed(0)} ms` + (n ? ` · ${n} error${n > 1 ? 's' : ''}` : '');
     $('#status-rebuild').style.color = n ? '#c62828' : '';
     // (the error count opens Fix References)
@@ -1662,7 +1671,7 @@ class App {
     if (data.flip) fr.n = fr.n.clone().negate();
     this.viewport.showFlat({ mesh: data.mesh, lines: this.flatLines(data), frame: fr });
     const [w, h] = data.size.map((x) => +x.toFixed(2));
-    this.showBanner(`Flat pattern of ${b.name}: ${w} × ${h} mm, ${data.bends.length} bend${data.bends.length === 1 ? '' : 's'}, seen from the ${data.flip ? 'bottom' : 'top'} face${data.stale ? ` (not including ${data.stale})` : ''}`,
+    this.showBanner(`Flat pattern of ${this.sheetPartName(b)}: ${w} × ${h} mm, ${data.bends.length} bend${data.bends.length === 1 ? '' : 's'}, seen from the ${data.flip ? 'bottom' : 'top'} face${data.stale ? ` (not including ${data.stale})` : ''}`,
       [{ label: 'Export DXF…', action: () => this.exportSheetDXF(b.id) }, { label: 'Exit Flatten', action: () => this.exitFlatten() }]);
     this.status('Flat pattern. Red bend lines bend up, blue ones down (seen from this side). Export DXF… saves it; Esc or Flatten again goes back.');
     this.ui.refreshCommandStates();
@@ -1722,12 +1731,21 @@ class App {
   }
 
   // Text block for a DXF: part name, material, thickness, quantity, flat size, bends.
+  // What a sheet metal body is called on its flat pattern (the DXF's name, its PART line): its own name, given one;
+  // else the part's, when it is the part's only sheet metal body (an unnamed body goes by the last feature that
+  // changed it, a hole or a flange, which says nothing of the part)
+  sheetPartName(b) {
+    const own = M.bodySettings(this.doc, b.id)?.name;
+    if (own) return own;
+    return (this.result?.bodies || []).filter((x) => x.sheet).length === 1 && this.doc.name ? this.doc.name : b.name;
+  }
+
   sheetPartInfo(b, data) {
     const qty = (M.bodySettings(this.doc, b.id)?.qty || 1) * this.bodyCount(b);
     const [w, h] = data.size.map((x) => +x.toFixed(2));
     return {
       h: Math.min(Math.max(Math.max(w, h) * 0.02, 2), 6),
-      lines: [`PART: ${b.name}`, `MATERIAL: ${b.material?.name || 'NOT SPECIFIED'}`, `THICKNESS: ${+data.t.toFixed(3)} MM`, `QTY: ${qty}`, `FLAT SIZE: ${w} X ${h} MM`, `BENDS: ${data.bends.length}`,
+      lines: [`PART: ${this.sheetPartName(b)}`, `MATERIAL: ${b.material?.name || 'NOT SPECIFIED'}`, `THICKNESS: ${+data.t.toFixed(3)} MM`, `QTY: ${qty}`, `FLAT SIZE: ${w} X ${h} MM`, `BENDS: ${data.bends.length}`,
         ...(data.cut ? [`CUT LENGTH: ${+data.cut.length.toFixed(1)} MM`, `PIERCES: ${data.cut.loops}`] : [])],
     };
   }
@@ -1912,15 +1930,16 @@ class App {
       let data = this.flatView?.bodyId === b.id ? this.flatView.data : null; // (shown now: already flattened)
       if (!data) try { data = await this.withProgress(`Flattening ${b.name}…`, () => this.kernel.request('sheetFlat', { bodyId: b.id, flip: this.flatFlip(b.id) })); } catch (err) { this.toast(`${b.name}: ${err.message}`, true); skipped++; continue; }
       const info = this.sheetPartInfo(b, data);
-      const r = await this.ui.showDxfPreview({ title: `DXF Export — ${b.name}${list.length > 1 ? ` (${i + 1} of ${list.length})` : ''}`, data, info, bulk: list.length > 1, fileName: dxfFileName(b.name) }, settings);
+      const name = this.sheetPartName(b);
+      const r = await this.ui.showDxfPreview({ title: `DXF Export — ${name}${list.length > 1 ? ` (${i + 1} of ${list.length})` : ''}`, data, info, bulk: list.length > 1, fileName: dxfFileName(name) }, settings);
       if (r.action === 'abort') { aborted = true; break; }
       if (r.action === 'skip') { skipped++; continue; }
       settings.mapping = r.mapping; settings.options = r.options;
       if (r.remember) saveDxfSettings(settings);
       const bytes = new TextEncoder().encode(buildDXF(r.ents || selectEnts(data.ents, r.options, info), r.mapping));
       try {
-        const path = all ? await platform.saveInto(folder, dxfFileName(b.name), bytes) : await platform.saveBinary(dxfFileName(b.name), bytes, 'dxf');
-        if (path) done++; else if (all) { this.toast(`${b.name}: could not write the file`, true); skipped++; }
+        const path = all ? await platform.saveInto(folder, dxfFileName(name), bytes) : await platform.saveBinary(dxfFileName(name), bytes, 'dxf');
+        if (path) done++; else if (all) { this.toast(`${name}: could not write the file`, true); skipped++; }
       } catch (err) { this.toast('DXF export failed: ' + err.message, true); }
     }
     if (done || skipped || aborted) this.toast(`${done} DXF file${done === 1 ? '' : 's'} exported${skipped ? `, ${skipped} skipped` : ''}${aborted ? ', export aborted' : ''}${all && platform.desktop && done ? ` to ${folder}` : ''}`);
@@ -2562,6 +2581,9 @@ class App {
     this.mode = 'drawing';
     this.drawing = ed;
     this.selection = null;
+    // (the part's highlighted faces — its selected or hovered feature — not left over the assembly)
+    this.viewport.clearFaceSets();
+    this._hoverFeature = null;
     this.showBanner(null);
     this.ui.closeClaude?.();
     ed.attach();
@@ -2600,7 +2622,7 @@ class App {
     let name = partDoc ? (partPath ? M.fileStem(partPath) : partDoc.name) : 'Drawing1';
     if (!partDoc) for (let n = 1; names.has(name); n++) name = 'Drawing' + n;
     // set up the drawing: its template, name, title block and sheet
-    const setup = await this.ui.newDrawingSetup({ name, title: partDoc ? name : '' });
+    const setup = await this.ui.newDrawingSetup({ name, title: partDoc ? name : '', fromModel: !!partDoc });
     if (!setup) { if (fromPart && partTab) this.status('Drawing not made.'); return; }
     const doc = drawingFromTemplate(setup.template, { name: setup.name, props: setup.props, sheet: setup.sheet });
     const ed = this.openDrawingTab(doc, null);
@@ -2610,6 +2632,14 @@ class App {
       ed.startTool('std3', { model: mid, choice: { key: 'm:' + mid, model: mid, label: partDoc.name } });
       await ed.placeStandard3(ed.tool);
       this.status(`Drawing of ${partDoc.name}: add views (View Layout) and dimensions (Annotation), then File ▸ Export ▸ PDF.`);
+      // (Dimension the views, ticked: once they are drawn, Auto Dimension with the options last used)
+      if (setup.autoDim) {
+        for (let i = 0; i < 600 && this.drawing === ed && !ed.doc.views.every((v) => (ed.geos.get(v.id)?.edges?.length || 0) > 0); i++) await new Promise((r) => setTimeout(r, 100));
+        if (this.drawing === ed && ed.doc.views.length) {
+          const n = ed.autoDimension();
+          if (n) this.status(`Drawing of ${partDoc.name}: ${n} dimension${n === 1 ? '' : 's'} added. Drag them to tidy up (Ctrl+Z takes them all away), then File ▸ Export ▸ PDF.`);
+        }
+      }
     } else {
       ed.startTool('model');
       this.status('New drawing: pick a part (open in another tab, or browse for its file), then click on the sheet to place a view.');
@@ -2816,6 +2846,13 @@ class App {
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.status('Locate the imported bodies: for each mate pick an entity on them, then one on the part. ✔ applies; Cancel leaves them where they are.');
+  }
+
+  // A new feature in the panel whose only trouble is what it still needs picked ("Select the bodies to move", "Add at
+  // least one mate"…): said as what to do next, not as an error
+  waitingFor(f) {
+    const err = this.result?.errors.get(f.id);
+    return !!(err && this.pm?.isNew && this.pm.feature === f && /^(Select|Pick|Add at least|Click|Choose)/.test(err));
   }
 
   startFeatureOnBody(type, id) {
@@ -3027,6 +3064,25 @@ class App {
 
   loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false && !this.pm.planarEdges)); }
 
+  modelLoftPicking() { return this.pm?.kind==='feature'&&this.pm.feature.type==='surfLoft'&&!this.pm.loftEndSlot&&(this.pm.loftSlot||'profiles')==='profiles'&&this.pm.loftModelEdges; }
+
+  pickLoftModelEdge(hit) {
+    const body=this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id;
+    if(!body)return;
+    const source=this.result.bodies.find(b=>b.id===body),before=this.doc.features.findIndex(f=>f.id===source.last),current=this.doc.features.indexOf(this.pm.feature);
+    if(before>=current){this.toast('Select profile edges from a body before this loft',true);return;}
+    const draft=this.pm.loftModelDraft||={kind:'modelEdgeChain',edges:[]};
+    const p=[...hit.edge.mid],index=draft.edges.findIndex(e=>e.body===body&&Math.hypot(...e.p.map((x,i)=>x-p[i]))<1e-6);
+    if(index<0)draft.edges.push({body,p,feature:source.last});else draft.edges.splice(index,1);
+    this.ui.renderPM();this.updateEdgeHighlights();
+    this.status(`${draft.edges.length} model edges selected for this profile. Add the profile before selecting the next one.`);
+  }
+
+  finishLoftModelSelection() {
+    if(!this.pm?.loftModelDraft?.edges.length)return;
+    try{this.addLoftContour(structuredClone(this.pm.loftModelDraft));}catch(e){this.toast(e.message,true);}
+  }
+
   loftCandidates() {
     if (!this.loftPicking()) return [];
     const before = this.doc.features.indexOf(this.pm.feature);
@@ -3083,6 +3139,12 @@ class App {
     const f = this.pm.feature;
     if(['sweep','surfSweep'].includes(f.type)){this.setSweepReference(ref,this.pm.sweepSlot||'profile',true);return;}
     const key = this.pm.loftSlot || 'profiles', guide = key === 'guides';
+    if(LR.isModelEdgeChain(ref)){
+      if(f.type!=='surfLoft'||guide)throw new Error('Select model edges as Surface Loft profiles');
+      f.profiles||=[];
+      if(!f.profiles.some(r=>LR.refKey(r)===LR.refKey(ref)))f.profiles.push(ref);
+      this.pm.loftModelDraft=null;this.preview(true);this.updateSketchDisplay();this.updateEdgeHighlights();return;
+    }
     const source = this.result.sketches.get(LR.sourceId(ref));
     if (!source) throw new Error('The source sketch is unavailable');
     const result = LR.resolveContour(source.sketch, ref, guide);
@@ -3193,6 +3255,7 @@ class App {
     if (this.pm?.kind === 'section') return 'section';
     const f = this.pm?.kind === 'feature' ? this.pm.feature : null;
     if (!f) return null;
+    if(this.modelLoftPicking())return 'edge';
     if(['loft','surfLoft'].includes(f.type)&&this.pm.loftConnector&&!this.pm.loftEndSlot)return 'loftConnector';
     if(this.pm.scopePick&&['extrude','revolve','sweep'].includes(f.type)&&['cut','intersect'].includes(f.op)&&f.scopeAll===false)return 'body';
     if (['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) return 'edge';
@@ -3225,7 +3288,8 @@ class App {
     if (f.type === 'boundarySurf' && (f.continuity || 'G0') !== 'G0' && this.pm.patchSupportPick) return 'faces';
     if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet' || f.type === 'moldSide' || f.type === 'freeform') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
-    if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
+    if (['split','splitLine'].includes(f.type)) return this.pm.splitSlot==='tool'?'anyface':f.type==='split'?'body':'faces';
+    if (f.type === 'projCurve' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
@@ -3282,6 +3346,7 @@ class App {
   applyModelPick(hit) {
     const f = this.pm.feature;
     const mode = this.pickMode();
+    if(mode==='edge'&&this.modelLoftPicking()){this.pickLoftModelEdge(hit);return;}
     if (mode === 'edge' && f.type === 'fillet' && this.pm.pickEdgePoint) {
       // a variable fillet's point added where its edge was clicked: the share of the edge's length from its start
       const k = f.edges.findIndex((x) => this.viewport.edgeIndexForPoint(x.p) === hit.index);
@@ -3400,7 +3465,7 @@ class App {
       vp.setVertexMarkers(hs?.length ? { selected: hs.filter((x) => !x.off).map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
     }
     if (mode === 'edge') {
-      const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
+      const refs = this.modelLoftPicking()?[...(f.profiles||[]).filter(LR.isModelEdgeChain).flatMap(r=>r.edges),...(this.pm.loftModelDraft?.edges||[])]:['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
       const selected = refs.map((e) => vp.edgeIndexForPoint(e.p)).filter((i) => i >= 0);
       vp.setEdgeHighlights({ selected, hover: this.hoverEdge ?? null });
       // (a variable fillet's points along its edges: where the panel puts them, so a drag moves them at once; else
@@ -3436,7 +3501,7 @@ class App {
     if (f) {
       if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(['split','splitLine'].includes(f.type)&&f.toolFace?[f.toolFace]:[]), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
@@ -3484,8 +3549,15 @@ class App {
     } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) {
       f.bodies = Array.isArray(f.bodies) ? f.bodies : [];
       toggle(f.bodies);
+    } else if (f.type === 'splitLine' && this.pm.splitSlot==='tool') {
+      if(b?.kind!=='surface'){this.toast('Select a surface body or pick a model face as the splitting tool');return true;}
+      f.tool=id;f.toolFace=null;
     } else if (f.type === 'moveBody' || f.type === 'split') {
-      if (f.type === 'split' && b?.kind === 'surface') { f.tool = id; f.toolFace = null; }
+      if (f.type === 'split' && this.pm.splitSlot==='tool') {
+        if(b?.kind!=='surface'){this.toast('Select a surface body or pick a model face as the splitting tool');return true;}
+        if(f.bodies?.includes(id)){this.toast('A body cannot split itself');return true;}
+        f.tool = id; f.toolFace = null;
+      }
       else toggle(f.bodies);
     } else return false;
     this.ui.renderPM();
@@ -3500,6 +3572,10 @@ class App {
     if (!slot || !f.mates[slot.i]) return false;
     f.mates[slot.i][slot.which] = ref;
     const m = f.mates[slot.i];
+    // (two flat faces made Coincident or Distance: facing the way they sit now, so the body isn't turned over — a
+    // pin's top on a plate's top stays the right way up; Flip alignment turns it round)
+    const na = m.a?.n, nb = m.b?.n;
+    if (m.a && m.b && ['coincident', 'distance'].includes(m.type) && Array.isArray(na) && Array.isArray(nb)) m.flip = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] > 0;
     this.pm.mateSlot = slot.which === 'a' && !m.b ? { i: slot.i, which: 'b' } : null;
     this.ui.renderPM();
     this.updateEdgeHighlights();
@@ -3599,7 +3675,7 @@ class App {
 
   updateSketchDisplay() {
     const res = this.result, list = [];
-    const loft = this.loftPicking(), loftFeature = loft ? this.pm.feature : null;
+    const loft = this.loftPicking()&&!this.modelLoftPicking(), loftFeature = loft||this.modelLoftPicking() ? this.pm.feature : null;
     const sweepFeature = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     if (!loft) this._loftPickCache = null;
     // Dependent sketches still contain the last rebuilt projections while their source is being edited.
@@ -3643,8 +3719,9 @@ class App {
       if (c) list.push({ frame: s.frame, polylines: [{ pts: S.curvePoints(s.sketch, c), construction: false }], highlight: true, color: 0xf97316 });
     }
     const tags = [];
-    if (loft || sweepFeature) {
+    if (loft || sweepFeature || this.modelLoftPicking()) {
       const show = (ref, color, label = '') => {
+        if(LR.isModelEdgeChain(ref)){if(label&&ref.edges?.length)tags.push({text:label,at:new THREE.Vector3(...ref.edges[0].p),color});return;}
         const s = res.sketches.get(LR.sourceId(ref));
         if (!s) {
           const cv = res.curves?.get(ref), pts = Array.isArray(cv?.[0]?.[0]) ? cv[0] : cv;
@@ -3659,7 +3736,7 @@ class App {
           tags.push({ text: label, at: G.toWorld(s.frame, p[0], p[1]), color });
         }
       };
-      if (loft && !sweepFeature) {
+      if ((loft||this.modelLoftPicking()) && !sweepFeature) {
         (loftFeature.profiles || []).forEach((r, i) => show(r, 0x0ea5e9, `Profile ${i + 1}`));
         (loftFeature.guides || []).forEach((r, i) => show(r, 0xf97316, `Guide ${i + 1}`));
         if (this.pm.loftDraft?.curves.length) show(this.pm.loftDraft, 0x16a34a);
@@ -3990,7 +4067,9 @@ class App {
       const col = new THREE.Color(c); // three.js converts the sRGB hex to linear components
       return '#' + [col.r, col.g, col.b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
     };
-    for (const b of this.result?.bodies || []) info[b.id] = { name: b.name, color: hex(b.kind === 'surface' ? M.SURFACE_COLOR : b.material?.color ?? M.DEFAULT_BODY_COLOR) };
+    // (each body's colour as the view shows it: its own, given one, else its material's)
+    const colors = this.bodyColors();
+    (this.result?.bodies || []).forEach((b, i) => { info[b.id] = { name: b.name, color: hex(colors[i]) }; });
     return info;
   }
 
@@ -4041,7 +4120,12 @@ class App {
     }
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot && ['plane', 'axis', 'point'].includes(kind)) return this.pmPickMate({ kind, id });
     let key = null;
-    if (kind === 'plane' && (f.type === 'split' || f.type === 'printSplit')) { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (['split','splitLine'].includes(f.type) && ['plane','sketch'].includes(kind)) {
+      if(this.pm.splitSlot!=='tool')return false;
+      f.toolFace=null;f.tool=id;this.preview(true);return true;
+    }
+    if (kind === 'plane' && f.type === 'printSplit') { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (kind === 'axis' && f.type==='splitLine' && f.projection==='vector') { f.direction=id; this.preview(true); return true; }
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';
@@ -4132,10 +4216,56 @@ class App {
     this.updatePlanes();
   }
 
+  // Double-click on the model: the sizes of the feature that made the face there (its own values that are
+  // dimensions, and its sketch's dimensions), in a small box by the cursor to type new ones into
+  async quickDimsAt(e) {
+    const fh = this.faceAt(e);
+    if (!fh) return;
+    const gi = fh.hit.face, at = M.rollbackIndex(this.doc);
+    for (const f of this.doc.features.slice(0, at).reverse()) {
+      if (f.suppressed || ['sketch', 'sketch3d', 'plane', 'axis', 'point'].includes(f.type)) continue;
+      if ((await this.featureFaces(f.id)).includes(gi)) { this.ui.showQuickDims(f, e.clientX, e.clientY); return; }
+    }
+  }
+
   faceAt(e) {
     const hit = this.viewport.pickBody(e);
     if (!hit || hit.face < 0) return null;
     return { hit };
+  }
+
+  // A hole's point on a flat face (r: { p, n }): the face as a frame at the point (X along the face, Y the face's up,
+  // as a sketch on it has them) and the face outline's extent in it, so the point's distances from the outline's
+  // left and bottom edges can be shown and typed; kept for the point while its panel is open (the hole's preview
+  // cuts the face where the point is). null: not on a flat face.
+  holeFaceBox(r) {
+    if (!r?.n || !r?.p) return null;
+    this._holeBoxes ||= new WeakMap();
+    if (this._holeBoxes.has(r)) return this._holeBoxes.get(r);
+    const vp = this.viewport, n = new THREE.Vector3(...r.n).normalize(), p = new THREE.Vector3(...r.p), fr = G.frameFromNormal(p, n);
+    const onPlane = (q) => q?.planar && q.normal.dot(n) > 0.999 && Math.abs(q.normal.dot(p) - q.d) < 1e-3 * (1 + Math.abs(q.d));
+    let face = null;
+    // (the face found at the point, or (the hole's preview in the way) a little to the side of it)
+    for (const d of [0, 1, 4, 8, 16, 32]) {
+      if (face) break;
+      for (const [i, j] of d ? [[1, 0], [-1, 0], [0, 1], [0, -1]] : [[0, 0]]) {
+        const gi = vp.faceIndexNear(p.clone().addScaledVector(fr.u, i * d).addScaledVector(fr.v, j * d).toArray()), q = gi >= 0 ? vp.faceInfo(gi) : null;
+        if (onPlane(q)) { face = q; break; }
+      }
+    }
+    if (!face) return null;
+    const P = face.geometry.getAttribute('position'), w = new THREE.Vector3();
+    let minU = Infinity, minV = Infinity;
+    for (let k = 0; k < P.count; k++) { w.fromBufferAttribute(P, k).sub(p); minU = Math.min(minU, w.dot(fr.u)); minV = Math.min(minV, w.dot(fr.v)); }
+    const box = { fr, minU, minV, x: -minU, y: -minV };
+    this._holeBoxes.set(r, box);
+    return box;
+  }
+  // The hole's point moved to x, y from the face outline's left and bottom edges
+  setHolePos(r, box, x, y) {
+    box.x = x; box.y = y;
+    const q = box.fr.o.clone().addScaledVector(box.fr.u, box.minU + x).addScaledVector(box.fr.v, box.minV + y);
+    r.p = q.toArray().map((c) => +c.toFixed(9));
   }
 
   faceFrame(face) {
@@ -4156,7 +4286,7 @@ class App {
     vp.onPointerDown = (e) => { if (this.lightDown(e) || this.loftConnectorDown(e) || this.sectionDragDown(e) || this.filletPointDown(e) || this.freeformDown(e)) return; if (asm()) asm().vpEvent('down', e); else if (exT()) exT().down(e); else if (this.mode === 'sketch') this.sketcher.pointerDown(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerDown(e); };
     vp.onPointerMoveImmediate = (e) => { if (this.lightMove(e) || this.loftConnectorMove(e) || this.sectionDragMove(e) || this.filletPointMove(e) || this.freeformMove(e)) return; if (asm()) asm().vpEvent('move', e); else if (exT()?.drag) exT().move(e); else if (this.mode === 'sketch' && !this.toolWheel.isOpen) this.sketcher.pointerMove(e); else if (this.mode === 'sketch3d') this.sketch3d.pointerMove(e); };
     vp.onPointerUp = (e) => { if (this.lightUp(e) || this.loftConnectorUp(e) || this.sectionDragUp(e) || this.filletPointUp(e) || this.freeformUp(e)) return; if (asm()) asm().vpEvent('up', e); else if (exT()?.drag) exT().up(e); else if (this.mode === 'sketch' && e.button === 0) this.sketcher.pointerUp(e); else if (this.mode === 'sketch3d' && e.button === 0) this.sketch3d.pointerUp(e); };
-    vp.onDoubleClick = (e) => { if (asm()) asm().vpEvent('dbl', e); else if (this.mode === 'sketch') this.sketcher.doubleClick(); else if (this.mode === 'sketch3d') this.sketch3d.doubleClick(); };
+    vp.onDoubleClick = (e) => { if (asm()) asm().vpEvent('dbl', e); else if (this.mode === 'sketch') this.sketcher.doubleClick(); else if (this.mode === 'sketch3d') this.sketch3d.doubleClick(); else if (this.mode === 'part' && !this.pm && !this.flatView) this.quickDimsAt(e); };
     vp.onLeave = () => {
       if (asm()) { asm().vpEvent('leave'); return; }
       if (this.mode === 'sketch') this.sketcher.leave();
@@ -4326,11 +4456,19 @@ class App {
       return;
     }
     if (mode === 'anyface') {
+      if(['split','splitLine'].includes(this.pm.feature.type)&&this.pm.splitSlot==='tool'){
+        const curve=this.sketchCurveAt(e);
+        if(curve){this.pmPick('sketch',curve.sketch);return;}
+        const datum=this.pickAt(e);
+        if(datum?.kind==='plane'){this.pmPick('plane',datum.id);return;}
+      }
       const fh = this.faceAt(e);
       if (!fh) return;
       const face = this.viewport.faceInfo(fh.hit.face), body = this.result.bodies[this.viewport.faceBody[fh.hit.face]]?.id;
       // (body: which of several faces on top of each other was clicked, e.g. a copied surface on its solid)
-      this.pm.feature.face = { p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) };
+      const f=this.pm.feature,ref={ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) };
+      if(['split','splitLine'].includes(f.type)&&this.pm.splitSlot==='tool'){f.toolFace=ref;f.tool='';}
+      else f.face = ref;
       this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
       return;
     }
@@ -4366,9 +4504,9 @@ class App {
       const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep', 'boundarySurf'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
-      const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
+      const i = POINT_PLACED.has(f.type) && key === 'faces' ? f[key].findIndex((r) => this.screenGap(r.p, e) < 10) : f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
-      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
+      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill','splitLine'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
       if (f.type === 'freeform' && f.faces.length > 1) f.faces.splice(0, f.faces.length - 1); // (one face: the last clicked)
       this.ui.renderPM();
       this.updateEdgeHighlights();
@@ -4569,6 +4707,12 @@ class App {
     return true;
   }
 
+  // How far (in pixels) a model point shows from where the mouse is
+  screenGap(p, e) {
+    const sp = this.viewport.project(new THREE.Vector3(...p)), r = this.viewport.canvas.getBoundingClientRect();
+    return Math.hypot(r.left + sp.x - e.clientX, r.top + sp.y - e.clientY);
+  }
+
   clearCycle() {
     if (!this._cycle) return;
     this._cycle = null;
@@ -4584,7 +4728,7 @@ class App {
     if (c.facesMode) {
       if (mode === 'faces') {
         const f = this.pm.feature, face = vp.faceInfo(pick.k);
-        if (!f.faces.some((r) => vp.faceIndexNear(r.p) === pick.k)) f.faces.push({ p: pick.h.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}) });
+        if (POINT_PLACED.has(f.type) || !f.faces.some((r) => vp.faceIndexNear(r.p) === pick.k)) f.faces.push({ p: pick.h.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}) });
         this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
       } else this.select({ kind: 'face', face: vp.faceInfo(pick.k), point: pick.h.point.toArray(), body: vp.faceBody[pick.k], xray: c.i > 0 });
       this.status('Face selected.');
@@ -4641,6 +4785,7 @@ class App {
           this.transparencyItem([b.id]),
           { label: 'Isolate', icon: 'isolate', action: () => this.isolateBodies([b.id]) },
           { label: 'Body Appearance…', icon: 'appearance', action: () => this.startAppearance({ bodies: [b.id] }) },
+          { label: b.kind === 'surface' ? 'Move/Copy Surface…' : 'Move/Copy Body…', icon: 'moveBody', action: () => this.startFeatureOnBody('moveBody', b.id) },
           ...(b.kind === 'surface' ? [{ label: 'Convert to Solid…', icon: 'surfSolid', action: () => this.startFeatureOnBody('surfSolid', b.id) }, { label: 'Repair Mesh…', icon: 'meshRepair', action: () => this.startFeatureOnBody('meshRepair', b.id) }] : []),
           ...(b.sheet ? [
             { label: 'View Flat Pattern', icon: 'smFlatten', action: () => this.toggleFlatten(b.id) },
@@ -4804,6 +4949,10 @@ class App {
     if (this.pendingAirfoil) { this.pendingAirfoil = false; this.sketcher.makeAirfoil(); }
     else if (this.pendingTool) { this.sketcher.setTool(this.pendingTool); this.pendingTool = null; }
     else this.status(isNew ? 'Sketching. Pick a tool from the Sketch tab — Line, Rectangle, Circle…' : 'Editing sketch. Click a dimension to change it.');
+    // (a feature waiting for this sketch: said, so exiting the sketch is known to go on to it)
+    const pf = this.pendingFeature;
+    const pfName = pf && String(M.TYPE_INFO[pf.type]?.[pf.op === 'cut' ? 'cutBase' : 'base'] || pf.type).replace(/-/g, ' ');
+    if (pf) this.showBanner(`Draw the ${pf.type === 'structMember' ? 'frame (a line for each member)' : pf.type === 'smTransition' || pf.type === 'revolve' ? 'sketch' : 'profile'} for the ${pfName}, then exit the sketch: the ${pfName} continues with it.`);
   }
 
   // ------------------------------------------------------------ 3D sketch
@@ -4915,7 +5064,9 @@ class App {
     const kept = this.doc.features.includes(f);
     this.selection = kept ? { kind: 'feature', id: f.id } : null;
     this.rebuild();
-    this.ui.setCmTab('features');
+    // (back to the tab a waiting feature was started from: Sheet Metal for a Base Flange, say)
+    this.ui.setCmTab(this.pendingFeature?.tab || 'features');
+    if (this.pendingFeature) this.showBanner(null);
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.status(kept && save ? `${f.name} saved. Choose a feature such as Extrude to use it.` : 'Ready');
@@ -4941,7 +5092,7 @@ class App {
       return;
     }
     this.selection = { kind: 'feature', id: sk.id };
-    this.startFeature(pf.type, pf.op, pf.opts);
+    this.startFeature(pf.type, pf.op, { ...pf.opts, drawnFor: sk.id });
   }
 
   // The Sketch tab's tools: in a 3D sketch the ones it has; otherwise a 2D sketch (a plane is asked for first)
@@ -4961,6 +5112,8 @@ class App {
   // ------------------------------------------------------------ feature flow
   // opts.surfaces: Move/Copy started from the Surfaces tab (picks surface bodies)
   startFeature(type, op, opts = {}) {
+    // (a feature still open in the panel: applied, discarded or kept first, never lost unasked)
+    if (this.pm?.kind === 'feature' && !opts.settled) { this.settleOpenFeature().then((go) => go && this.startFeature(type, op, { ...opts, settled: true })); return; }
     breadcrumb(`Start feature: ${type}${op ? ' ' + op : ''}`);
     this.collapseExplode();
     this.warnDenseMesh(type);
@@ -4994,7 +5147,7 @@ class App {
       // (sketches with several lines there: the panel opens and the axis line is clicked in one of them)
       if (!sk && before.length) this.status('Click the axis line (bottom centre to top centre) in a sketch or 3D sketch, or choose it under Axis.');
       else if (!sk) {
-        this.pendingFeature = { type, op, opts };
+        this.pendingFeature = { type, op, opts, tab: this.ui.cmTab };
         this.pendingTool = 'line';
         this.startSketch();
         if (this.mode !== 'sketch') {
@@ -5014,7 +5167,7 @@ class App {
       }
       if (!sk && !(type === 'extrude' && doc.features.slice(0, M.rollbackIndex(doc)).some((f) => f.type === 'sketch' && !f.suppressed))) {
         // nothing to use: sketch the profile first (on the selected plane/face, or pick one), then come back
-        this.pendingFeature = { type, op, opts };
+        this.pendingFeature = { type, op, opts, tab: this.ui.cmTab };
         this.startSketch();
         if (this.mode !== 'sketch') this.status(`Select a plane or flat face to sketch the profile on; ${M.TYPE_INFO[type].base} continues when you exit the sketch.`);
         return;
@@ -5033,8 +5186,11 @@ class App {
       const sketch=preSketch||(selF?.type==='sketch'?selF:null);
       props.profiles=[];
       if(sketch){const regions=LR.selectableRegions(this.result.sketches.get(sketch.id)?.sketch||sketch);if(regions.length===1)props.profiles=[LR.regionRef(sketch.id,regions[0])];}
+      // (a surface from the sketch just drawn for it (or left to start it), open curves and all: the whole of it; a
+      // sketch only selected is left to pick contours in)
+      if(sketch&&!props.profiles.length&&['surfExtrude','surfRevolve'].includes(type)&&(preSketch||opts.drawnFor===sketch.id))props.profiles=[sketch.id];
       if(type==='surfPlanar'&&sel?.kind==='edge')props.edges=[{p:sel.p,...(this.result.bodies?.[sel.body]?.id?{body:this.result.bodies[sel.body].id}:{})}];
-      if(!sketches.length&&!this.result.bodies?.length){this.pendingFeature={type,op,opts};this.startSketch();return;}
+      if(!sketches.length&&!this.result.bodies?.length){this.pendingFeature={type,op,opts,tab:this.ui.cmTab};this.startSketch();return;}
     }
     if(type==='loft'){
       props.profiles=[];if(!doc.features.some(f=>f.type==='sketch')){this.toast('A loft needs two or more sketches: draw the profiles on different planes first.',true);return;}
@@ -5098,6 +5254,7 @@ class App {
     const selBody = sel?.kind === 'body' ? this.bodyById(sel.id) : sel?.kind === 'face' ? this.result.bodies?.[sel.body] : null;
     // (the bodies selected, several with Ctrl+click; of one kind)
     const selIds = sel?.kind === 'body' ? this.selectedBodyIds() : selBody ? [selBody.id] : [], selOf = (k) => selIds.filter((id) => this.bodyById(id)?.kind === k);
+    if(type==='splitLine'&&sel?.kind==='face')props.faces=[{p:sel.point||sel.face.center.toArray(),...(sel.face.planar?{n:sel.face.normal.toArray()}:{}),...(selBody?{body:selBody.id}:{})}];
     if (['smCornerRelief', 'smClosedCorner'].includes(type)) props.body = selBody?.sheet ? selBody.id : sheets.length === 1 ? sheets[0].id : null;
     if (type === 'smTabSlot' && sel?.kind === 'edge') props.edge = { p: sel.p };
     // (3D printing shapes: the build orientation they are made for kept with the part)
@@ -5111,7 +5268,14 @@ class App {
     if (type === 'structMember') {
       const isPath = (x) => x && (x.type === 'sketch' || x.type === 'sketch3d') && !x.suppressed;
       const src = isPath(selF) ? selF : [...doc.features].reverse().find(isPath);
-      if (!src) { this.toast('Draw the frame first: a sketch or 3D sketch with a line for each member', true); return; }
+      // (no frame yet: sketch it first (on the selected plane, or one picked), then the members follow)
+      if (!src) {
+        this.pendingFeature = { type, op, opts, tab: this.ui.cmTab };
+        this.pendingTool = 'line';
+        this.startSketch();
+        if (this.mode !== 'sketch') this.status('Select a plane (or flat face) and sketch the frame, a line for each member; the Structural Member continues when you exit the sketch.');
+        return;
+      }
       props.path = src.id;
       // the profile last used
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
@@ -5157,7 +5321,7 @@ class App {
       this.toast(type === 'deleteSurface' ? 'There are no surface bodies to delete' : 'There are no bodies to delete', true);
       return;
     }
-    if (type === 'split') props.bodies = selOf('solid');
+    if (type === 'split') props.bodies = selIds;
     if (type === 'split' && sel?.kind === 'plane') props.tool = sel.id;
     if (type === 'split' && selF?.type === 'plane') props.tool = selF.id;
     if (type === 'point' && sel?.kind === 'vertex') { props.pointType = 'vertex'; props.vertex = { p: sel.p }; }
@@ -5165,7 +5329,10 @@ class App {
     const f = M.createFeature(doc, type, props);
     if (this.units === 'in') this.ui.inchDefaults(f); // (default sizes in round inches)
     M.insertFeature(doc, f);
-    this.pm = { kind: 'feature', feature: f, isNew: true };
+    this.pm = { kind: 'feature', feature: f, isNew: true, start: JSON.stringify(f) };
+    // (a profile seen straight on, as it was drawn: the view turned so the depth of the extrude or revolve shows)
+    const fromSk = preSketch || (selF?.type === 'sketch' ? selF : null), fr = fromSk && this.result.sketches.get(fromSk.id)?.frame;
+    if (['extrude', 'revolve', 'smBase', 'smExtrude', 'surfExtrude', 'surfRevolve', 'structMember'].includes(type) && fr && Math.abs(this.viewport.camera.getWorldDirection(new THREE.Vector3()).dot(fr.n)) > 0.98) this.viewport.setStandardView('iso');
     this.selection = null;
     this.viewport.clearFaceHighlights();
     this.rebuild();
@@ -5185,9 +5352,11 @@ class App {
     this.toast(`Heads up: ${dense.length > 1 ? 'some bodies are' : (dense[0].name || dense[0].defaultName) + ' is'} an imported mesh with ${n.toLocaleString()} faces. Cutting or joining it can take several minutes. If it runs too long, click Stop.`);
   }
 
-  editFeature(id) {
+  editFeature(id, settled = false) {
     const f = M.findFeature(this.doc, id);
     if (!f) return;
+    if (this.pm?.kind === 'feature' && this.pm.feature !== f && !settled) { this.settleOpenFeature().then((go) => go && this.editFeature(id, true)); return; }
+    if (this.pm?.kind === 'feature' && this.pm.feature === f) return;
     if (f.type === 'sketch') return this.editSketch(id);
     if (f.type === 'sketch3d') return this.editSketch3D(id);
     this.collapseExplode();
@@ -5251,6 +5420,9 @@ class App {
     this.viewport.setFaceSet([]);
     if (pm.kind === 'section') this.viewport.setSectionArrow(null); // (the section stays on; its arrow goes)
     if (pm.kind === 'feature') {
+      // (its references as found in the model, and those found as the nearest of look-alikes accepted: it was looked at)
+      if (this._pmRefs?.f === pm.feature) Object.assign(pm.feature, this._pmRefs.u);
+      M.acceptGuessedRefs(pm.feature);
       breadcrumb(`OK feature: ${pm.feature.name} ${JSON.stringify(pm.feature).slice(0, 300)}`);
       this.commit();
       this.selection = { kind: 'feature', id: pm.feature.id };
@@ -5259,6 +5431,52 @@ class App {
     const err = pm.kind === 'feature' && this.result.errors.get(pm.feature.id);
     if (err) this.toast(`${pm.feature.name}: ${err}`, true);
     this.status('Ready');
+  }
+
+  // Right-click ▸ Accept Found References: the references found again as the nearest of look-alikes are the right ones
+  acceptFoundRefs(id) {
+    const f = M.findFeature(this.doc, id);
+    if (!f) return;
+    const n = M.acceptGuessedRefs(f);
+    this.commit();
+    this.ui.renderTree();
+    this.status(`${f.name}: ${n} found reference${n === 1 ? '' : 's'} accepted.`);
+  }
+
+  // ✔+ (Shift+Enter): the new feature applied, and another of the same kind (cut or added) started straight away
+  async okAndNext() {
+    const pm = this.pm;
+    if (pm?.kind !== 'feature' || !pm.isNew) return this.okPM();
+    const { type, op } = pm.feature;
+    await this.okPM();
+    if (this.pm === pm || this.pm) return; // (refused: still open to put right)
+    this.selection = null;
+    this.startFeature(type, op, { settled: true });
+    this.status(`Applied. Another ${(op === 'cut' && M.TYPE_INFO[type]?.cutBase) || M.TYPE_INFO[type]?.base || type}: pick what it needs.`);
+  }
+
+  // Another feature started (or edited) while one is open in the panel: the open one applied, discarded or kept
+  // open, as the user says; asked only when there is something to lose (a new feature that builds, or one worked
+  // on). Resolves true when the other may start.
+  async settleOpenFeature() {
+    const pm = this.pm;
+    if (pm?.kind !== 'feature') return true;
+    const f = pm.feature, touched = JSON.stringify(f) !== (pm.isNew ? pm.start : pm.snapshot);
+    clearTimeout(this._previewTimer);
+    await this.rebuild();
+    for (let i = 0; i < 200 && this.kernel.pending && this.pm === pm; i++) await new Promise((r) => setTimeout(r, 50));
+    if (this.pm !== pm) return true;
+    const error = this.isSuppressed(f) ? null : this.result.errors.get(f.id);
+    if (!touched && (error || !pm.isNew)) { this.cancelPM(); return true; }
+    const what = pm.isNew ? f.name : `Your changes to ${f.name}`;
+    const msg = document.createElement('p');
+    msg.textContent = error ? `${what} can't be applied as it is: ${error}` : `Apply ${pm.isNew ? f.name : 'your changes'} first, or discard ${pm.isNew ? 'it' : 'them'}?`;
+    const choice = await this.ui.choose(`${f.name} is still open`, error ? 'error' : M.TYPE_INFO[f.type]?.icon || 'body', msg,
+      error ? [['discard', pm.isNew ? `Discard ${f.name}` : 'Discard the changes'], ['keep', 'Keep editing', true]] : [['apply', 'Apply', true], ['discard', 'Discard'], ['keep', 'Keep editing']]);
+    if (this.pm !== pm) return true;
+    if (choice === 'apply') { await this.okPM(); return this.pm !== pm; }
+    if (choice === 'discard') { this.cancelPM(); return true; }
+    return false;
   }
 
   // ✔ on a feature that fails: why, and what to do (it stays open; nothing is added to the tree)
@@ -6135,6 +6353,24 @@ class App {
     this.status('Undo');
   }
 
+  // Straight back (or forward) to step i of the undo history (the list on the Undo button)
+  undoTo(i) {
+    if (this.mode === 'sketch' || this.mode === 'sketch3d') return;
+    if (this.pm) this.cancelPM();
+    const prev = this.history.stack[this.history.idx], from = this.history.idx;
+    const d = this.history.goTo(i);
+    if (!d) return;
+    this.doc = d;
+    this.macros?.sync(prev);
+    this.selection = null;
+    this.dirty = true;
+    this._dimSnap = null; this.checkLostDims();
+    this.refresh();
+    this.updateTitle();
+    const n = Math.abs(i - from);
+    this.status(`${i < from ? 'Undone' : 'Redone'}: ${n} step${n === 1 ? '' : 's'}`);
+  }
+
   redo() {
     if (this.mode === 'sketch') { this.sketcher.redo(); return; }
     if (this.mode === 'sketch3d') { this.sketch3d.redo(); return; }
@@ -6450,7 +6686,7 @@ class App {
         return;
       }
       if (typing) {
-        if (e.key === 'Enter' && this.pm?.kind === 'feature' && e.target.tagName === 'INPUT') { e.preventDefault(); this.okPM(); }
+        if (e.key === 'Enter' && this.pm?.kind === 'feature' && e.target.tagName === 'INPUT') { e.preventDefault(); if (e.shiftKey) this.okAndNext(); else this.okPM(); }
         return;
       }
       if (document.querySelector('.modal-back')) return;
@@ -6479,7 +6715,7 @@ class App {
       // on a focused button presses it)
       if (e.key === 'Tab' && !e.altKey && (e.target === document.body || e.target.id === 'c')) { e.preventDefault(); this.tabHide(e.shiftKey); return; }
       if (onControl(e) && (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab')) return;
-      if (e.key === 'Enter' && this.pm && this.pm.kind !== 'sketch') { e.preventDefault(); this.okPM(); return; }
+      if (e.key === 'Enter' && this.pm && this.pm.kind !== 'sketch') { e.preventDefault(); if (e.shiftKey && this.pm.kind === 'feature') this.okAndNext(); else this.okPM(); return; }
       if (e.key === 'Delete') { this.deleteSelection(); return; }
       if (k === 'f') { this.viewport.zoomToFit(); return; }
       if (this.mode !== 'sketch' && this.mode !== 'sketch3d' && !e.altKey) {
@@ -6491,7 +6727,7 @@ class App {
   }
 
   // ------------------------------------------------------------ feedback
-  status(msg) { $('#status-msg').textContent = msg; }
+  status(msg) { const s = $('#status-msg'); s.textContent = msg; s.title = msg; }
 
   // A note across the top of the view, optionally with a button { label, action }.
   // button: { label, action } or a list of them

@@ -68,6 +68,8 @@ const dot2 = (a, b) => a[0] * b[0] + a[1] * b[1];
 export function viewCamera(dwg, v, depth = 0) {
   let dir, up;
   if (v.type === 'flat') return camFrom([0, 0, 1], [0, 1, 0]);
+  // (a view broken from its parent: the direction it had then)
+  if (v.free && v.cam) return camFrom(v.cam.dir, v.cam.up);
   if (v.type === 'model') {
     const o = ORIENTATIONS[v.orient] || ORIENTATIONS.front;
     dir = v.dir || o.dir; up = v.up || o.up;
@@ -115,6 +117,7 @@ function camFrom(dir, up) {
 
 // The section plane of a section view (3D): { o, n } (n points to the side that is removed).
 export function sectionPlane(dwg, v) {
+  if (v.plane) return v.plane; // (broken from its parent: the cut it had then)
   const p = findView(dwg, v.parent);
   const pc = viewCamera(dwg, p);
   const a = v.section.a;
@@ -132,11 +135,63 @@ export function viewRequest(dwg, v) {
 }
 
 export const sheetScale = (dwg, sheetId) => { const s = sheetOf(dwg, sheetId).scale || [1, 1]; return s[0] / s[1]; };
+// A view's scale. The views made from a view (projected, section, auxiliary) share its scale: the scale is kept
+// on the first view of the family (scaleOwner), its own or the sheet's. A detail view has a scale of its own.
 export function viewScale(dwg, v) {
-  if (v.scale) return v.scale[0] / v.scale[1];
-  if (v.type === 'detail') { const p = findView(dwg, v.parent); return (p ? viewScale(dwg, p) : 1) * 2; }
-  if (v.type !== 'model' && v.parent) { const p = findView(dwg, v.parent); if (p) return viewScale(dwg, p); }
-  return sheetScale(dwg, v.sheet);
+  if (v.type === 'detail') {
+    if (v.scale) return v.scale[0] / v.scale[1];
+    const p = findView(dwg, v.parent); return (p ? viewScale(dwg, p) : 1) * 2;
+  }
+  const o = scaleOwner(dwg, v);
+  return o.scale ? o.scale[0] / o.scale[1] : sheetScale(dwg, o.sheet);
+}
+// (views that take their scale and place from their parent)
+const FOLLOWS = new Set(['projected', 'section', 'aux']);
+const follows = (v) => FOLLOWS.has(v.type) && !v.free && !!v.parent;
+// The view whose scale v shows: the first of its family (a model or flat view, or a view broken from its parent).
+export function scaleOwner(dwg, v) {
+  let x = v;
+  for (let i = 0; i < 30 && follows(x); i++) { const p = findView(dwg, x.parent); if (!p || p.type === 'detail') break; x = p; }
+  return x;
+}
+// The views that share the owner's scale, the owner first and each view before the views made from it.
+export function scaleFamily(dwg, owner) {
+  const out = [owner];
+  for (let i = 0; i < out.length; i++) for (const c of dwg.views) if (c.parent === out[i].id && follows(c) && !out.includes(c)) out.push(c);
+  return out;
+}
+
+// Make a view made from another one (projected, section, auxiliary) independent of it, as it is: it keeps its
+// direction, cut, scale and place, and no longer moves with its parent or takes its scale. A projected view becomes
+// a model view of its own; a section or auxiliary view keeps its parent only for the cutting line or arrow drawn on it.
+// Its own projected and section views go with it.
+export function breakFromParent(dwg, v) {
+  if (!follows(v)) return false;
+  const cam = viewCamera(dwg, v), o = scaleOwner(dwg, v);
+  const scale = o.scale ? [...o.scale] : o.sheet !== v.sheet ? scaleOf(viewScale(dwg, v)) : null;
+  if (v.type === 'section') v.plane = sectionPlane(dwg, v);
+  if (v.type === 'projected') {
+    const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 1e-6;
+    const key = Object.keys(ORIENTATIONS).find((k) => { const c = camFrom(ORIENTATIONS[k].dir, ORIENTATIONS[k].up); return near(c.dir, cam.dir) && near(c.y, cam.y); });
+    v.type = 'model'; v.orient = key || 'front';
+    if (!key) { v.dir = cam.dir; v.up = cam.y; }
+    delete v.parent; delete v.side;
+  } else { v.free = true; v.cam = { dir: cam.dir, up: cam.y }; }
+  v.scale = scale;
+  return true;
+}
+const scaleOf = (k) => (k >= 1 ? [+k.toFixed(4), 1] : [1, +(1 / k).toFixed(4)]);
+
+// Drawings saved before a family shared its scale: a view made from another with a scale of its own that differs
+// from its family's is broken from its parent (it looks as it did); one with the same scale just follows it.
+export function upgradeViewScales(dwg) {
+  for (const v of dwg.views) {
+    if (!follows(v) || !v.scale) continue;
+    const own = v.scale[0] / v.scale[1], o = scaleOwner(dwg, v);
+    const fam = o.scale ? o.scale[0] / o.scale[1] : sheetScale(dwg, o.sheet);
+    if (Math.abs(own - fam) < 1e-9) { v.scale = null; continue; }
+    const keep = [...v.scale]; breakFromParent(dwg, v); v.scale = keep;
+  }
 }
 export const scaleText = (k) => {
   if (k >= 1) return `${+k.toFixed(3)}:1`;
@@ -196,6 +251,7 @@ export function viewRect(dwg, v, geos) {
 // Views aligned with another move along one axis only: projected and section views stay in line
 // with their parent. Returns 'x' (moves horizontally only), 'y' or null (free).
 export function alignAxis(v) {
+  if (v.free) return null;
   if (v.type === 'projected') return v.side === 'up' || v.side === 'down' ? 'y' : 'x';
   if (v.type === 'section') return v.section.angle != null ? null : v.section.horizontal ? 'y' : 'x';
   return null;

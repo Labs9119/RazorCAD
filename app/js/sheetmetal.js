@@ -1017,10 +1017,13 @@ export function addFlanges(sheet, edges, opts) {
   const ang = (Math.min(Math.max(opts.angle, 1), opts.maxAngle || 179) * Math.PI) / 180;
   if (!(opts.length > 0) && !opts.rolled) throw new Error('The flange length must be greater than zero');
   const ba = bendAllowance(ang, R0, K, t);
+  // (sameSide: every flange folds the way the first edge's does, whichever face of the thin sheet each edge was
+  // picked on; else each folds away from its own face)
+  const first = opts.sameSide && edges.length > 1 ? locateEdge(sheet, edges[0].a, edges[0].b) : null;
   const items = edges.map((ed, i) => {
     const loc = locateEdge(sheet, ed.a, ed.b);
     if (!loc) throw new Error(`Edge ${i + 1} is not a straight edge on the top or bottom face of the sheet`);
-    const up = loc.top !== !!opts.flip;
+    const up = (first ? first.top : loc.top) !== !!opts.flip;
     // how far the bend line moves in from the edge
     const pos = opts.position || 'inside';
     let dt = pos === 'inside' ? setback(ang, R0 + t) : pos === 'outside' ? setback(ang, R0) : 0;

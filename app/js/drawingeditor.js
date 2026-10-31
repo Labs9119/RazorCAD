@@ -25,6 +25,8 @@ import { t as tr } from './i18n.js';
 // Assemblies this big (solids, or display triangles) are drawn with fast hidden-line removal unless a view asks
 // for exact (exact on thousands of solids takes many minutes a view)
 const FAST_SOLIDS = 200, FAST_TRIANGLES = 600000;
+// the standard drawing scales, largest first
+const STD_SCALES = [[10, 1], [5, 1], [2, 1], [1, 1], [1, 2], [1, 2.5], [1, 5], [1, 10], [1, 20], [1, 50], [1, 100]];
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -57,6 +59,7 @@ export class DrawingEditor {
     this.dirty = false;
     this.undoStack = [];
     this.redoStack = [];
+    D.upgradeViewScales(doc);
     this.snap = JSON.stringify(doc);
     this.sheetId = doc.sheets[0].id;
     this.geos = new Map();     // view id -> kernel geometry (view coordinates)
@@ -522,6 +525,119 @@ export class DrawingEditor {
   }
 
   // ------------------------------------------------------------ hit testing
+  // A view just placed that lies over the title block or another view: said, so it can be dragged clear (its lines
+  // waited for, a detail's being made after it is placed)
+  warnOverlap(v, tries = 20) {
+    const g = this.geos.get(v.id);
+    if (!g && tries > 0) { setTimeout(() => this.warnOverlap(v, tries - 1), 250); return; }
+    if (!this.doc.views.includes(v)) return;
+    let r;
+    try { r = D.viewRect(this.doc, v, this.geos); } catch { return; }
+    const hit = (q) => q && r.x0 < q.x1 - 0.5 && r.x1 > q.x0 + 0.5 && r.y0 < q.y1 - 0.5 && r.y1 > q.y0 + 0.5;
+    const over = [];
+    if (hit(titleBlockRect(this.sheet, this.doc.format))) over.push('the title block');
+    for (const o of this.doc.views) {
+      if (o === v || o.sheet !== v.sheet) continue;
+      try { if (hit(D.viewRect(this.doc, o, this.geos))) over.push(o.name); } catch { /* not drawn yet */ }
+    }
+    if (over.length) this.app.toast(`${v.name} lies over ${over.join(', ')}: drag it to a clear spot (Ctrl+Z takes it away)`, true);
+  }
+
+  // A view with no clear spot on its sheet: the largest scale that gives it one (of the view, of the view its scale
+  // comes from, or the sheet's), or the smallest larger sheet that does, offered; then the view placed clear. Or it
+  // is left where it is.
+  async offerRoom(v) {
+    const sheet = D.sheetOf(this.doc, v.sheet);
+    const owner = D.scaleOwner(this.doc, v);
+    const own = !!owner.scale, k = own ? owner.scale[0] / owner.scale[1] : D.sheetScale(this.doc, sheet.id);
+    // (tried as if set: the first that leaves the view a clear spot)
+    const fits = (set, undo) => { set(); try { return !!this.clearSpot(v); } finally { undo(); } };
+    const was = { scale: owner.scale, sheetScale: sheet.scale, size: sheet.size };
+    const down = STD_SCALES.filter(([a, b]) => a / b < k - 1e-9).find((sc) => fits(() => { if (own) owner.scale = sc; else sheet.scale = sc; }, () => { owner.scale = was.scale; sheet.scale = was.sheetScale; }));
+    const sizes = Object.keys(SHEET_SIZES).sort((x, y) => SHEET_SIZES[x][0] - SHEET_SIZES[y][0]);
+    const bigger = sizes.slice(sizes.indexOf(sheet.size) + 1).find((sz) => fits(() => { sheet.size = sz; }, () => { sheet.size = was.size; }));
+    if (!down && !bigger) { this.warnOverlap(v); return; }
+    const msg = document.createElement('p');
+    msg.textContent = `${v.name} has no clear spot on ${sheet.name}: wherever it goes it lies over the title block or another view.`;
+    const choice = await this.app.ui.choose(`${v.name} doesn't fit`, 'drawing', msg, [
+      ...(down ? [['scale', `Scale ${own ? (owner === v ? 'the view' : owner.name) : 'the sheet'} down to ${down[0]} : ${down[1]}`, true]] : []),
+      ...(bigger ? [['sheet', `Use a larger sheet (${bigger})`, !down]] : []),
+      ['keep', 'Leave it'],
+    ]);
+    if (!this.doc.views.includes(v)) return;
+    if (choice === 'scale') { if (own) this.setFamilyScale(owner, down, false); else this.setSheetScale(sheet, down, false); }
+    else if (choice === 'sheet') sheet.size = bigger;
+    else { this.warnOverlap(v); return; }
+    this.changed(); this.renderSheetTabs(); this.fit();
+    this.app.status(choice === 'scale' ? `Scaled down to ${down[0]} : ${down[1]}.` : `Sheet made ${bigger}.`);
+    this.placeClear(v, 20, false);
+  }
+
+  // Where a view can go clear of the title block and the other views inside the frame: the move [dx, dy] ([0, 0]
+  // where it lies over none of them already, or is not drawn yet), or null. The view's dimensions and notes go with
+  // it; the other views' dimensions and notes, and the sheet's, are in the way as their views are. A projected or
+  // section view only along its line from the view it comes from, so it stays lined up with it.
+  clearSpot(v) {
+    const annBox = (a) => { try { return primsBox(D.annPrims(this.doc, a, { geos: this.geos })); } catch { return null; } };
+    const join = (p, q) => (!p ? q : !q ? p : { x0: Math.min(p.x0, q.x0), y0: Math.min(p.y0, q.y0), x1: Math.max(p.x1, q.x1), y1: Math.max(p.y1, q.y1) });
+    const own = this.doc.anns.filter((a) => a.view === v.id).map(annBox).reduce(join, null);
+    const rectAt = (dx, dy) => {
+      const x = v.x, y = v.y;
+      v.x = x + dx; v.y = y + dy;
+      try { return join(D.viewRect(this.doc, v, this.geos), own && { x0: own.x0 + dx, y0: own.y0 + dy, x1: own.x1 + dx, y1: own.y1 + dy }); } catch { return null; } finally { v.x = x; v.y = y; }
+    };
+    const sheet = D.sheetOf(this.doc, v.sheet) || this.sheet, fr = frameRect(sheet, this.doc.format);
+    const others = [titleBlockRect(sheet, this.doc.format)];
+    for (const o of this.doc.views) { if (o !== v && o.sheet === v.sheet) try { others.push(D.viewRect(this.doc, o, this.geos)); } catch { /* not drawn yet */ } }
+    for (const a of this.doc.anns) if (a.sheet === v.sheet && a.view !== v.id) { const b = annBox(a); if (b) others.push(b); }
+    const gap = 3, hit = (r, q) => q && r.x0 < q.x1 + gap && r.x1 > q.x0 - gap && r.y0 < q.y1 + gap && r.y1 > q.y0 - gap;
+    const clear = (r) => r && r.x0 >= fr.x0 && r.x1 <= fr.x1 && r.y0 >= fr.y0 && r.y1 <= fr.y1 && !others.some((q) => hit(r, q));
+    const r0 = rectAt(0, 0);
+    if (!r0 || !others.some((q) => hit(r0, q))) return [0, 0]; // (over nothing, or not drawn)
+    const tries = [];
+    const parent = (v.type === 'projected' || v.type === 'section') && !v.free && D.findView(this.doc, v.parent);
+    const pr = parent && (() => { try { return D.viewRect(this.doc, parent, this.geos); } catch { return null; } })();
+    if (pr) {
+      // along the line from the parent, away from it first
+      const dx = (r0.x0 + r0.x1 - pr.x0 - pr.x1) / 2, dy = (r0.y0 + r0.y1 - pr.y0 - pr.y1) / 2;
+      const ax = Math.abs(dx) >= Math.abs(dy) ? [Math.sign(dx) || 1, 0] : [0, Math.sign(dy) || 1];
+      for (let t = 5; t <= 600; t += 5) tries.push([ax[0] * t, ax[1] * t], [-ax[0] * t, -ax[1] * t]);
+    } else for (let t = 5; t <= 600; t += 5) for (let k = 0; k < 16; k++) tries.push([t * Math.cos((k * Math.PI) / 8), t * Math.sin((k * Math.PI) / 8)]);
+    return tries.find(([dx, dy]) => clear(rectAt(dx, dy))) || null;
+  }
+
+  // A table just placed (a bill of materials, hole table, cut list) over a view, its dimensions, the title block or
+  // another table: moved to the nearest clear spot inside the frame; left where it is when there is none
+  tableClear(t) {
+    const sheet = D.sheetOf(this.doc, t.sheet), fr = frameRect(sheet, this.doc.format);
+    const boxOf = (a) => { try { return primsBox(D.annPrims(this.doc, a, { geos: this.geos })); } catch { return null; } };
+    const others = [titleBlockRect(sheet, this.doc.format)];
+    for (const v of this.doc.views) if (v.sheet === t.sheet) try { others.push(D.viewRect(this.doc, v, this.geos)); } catch { /* not drawn yet */ }
+    for (const a of this.doc.anns) if (a !== t && a.sheet === t.sheet) { const b = boxOf(a); if (b) others.push(b); }
+    const b0 = boxOf(t), gap = 3;
+    if (!b0) return;
+    const at = (dx, dy) => ({ x0: b0.x0 + dx, y0: b0.y0 + dy, x1: b0.x1 + dx, y1: b0.y1 + dy });
+    const clear = (r) => r.x0 >= fr.x0 && r.x1 <= fr.x1 && r.y0 >= fr.y0 && r.y1 <= fr.y1 && !others.some((q) => q && r.x0 < q.x1 + gap && r.x1 > q.x0 - gap && r.y0 < q.y1 + gap && r.y1 > q.y0 - gap);
+    if (clear(at(0, 0))) return;
+    for (let d = 5; d <= 600; d += 5) for (let k = 0; k < 16; k++) {
+      const dx = d * Math.cos((k * Math.PI) / 8), dy = d * Math.sin((k * Math.PI) / 8);
+      if (clear(at(dx, dy))) { t.pos = [t.pos[0] + dx, t.pos[1] + dy]; return; }
+    }
+  }
+
+  // A view just placed over the title block or another view: moved to the nearest clear spot (clearSpot). When there
+  // is none, a smaller scale or a larger sheet is offered (offer false: only warned).
+  placeClear(v, tries = 20, offer = true) {
+    if (!this.geos.get(v.id) && tries > 0) { setTimeout(() => this.placeClear(v, tries - 1, offer), 250); return; }
+    if (!this.doc.views.includes(v)) return;
+    const to = this.clearSpot(v);
+    if (!to) { if (offer) this.offerRoom(v); else this.warnOverlap(v); return; }
+    if (!to[0] && !to[1]) return;
+    v.x += to[0]; v.y += to[1];
+    this.changed();
+    this.app.status(`${v.name} moved clear of the title block and the other views: drag it if you'd like it elsewhere.`);
+  }
+
   viewAt(P, tol = 2) {
     let best = null, bestA = Infinity;
     for (const v of this.doc.views.filter((x) => x.sheet === this.sheetId)) {
@@ -692,10 +808,12 @@ export class DrawingEditor {
       }
       items.push({ label: 'Detail View', icon: 'detailView', action: () => this.startTool('detail', { parent: v.id }) });
       if (v.type !== 'detail') {
-        items.push({ label: v.brk ? 'Remove Break' : 'Break View', icon: 'breakView', action: () => { if (v.brk) { const keep = this.viewCentre(v); delete v.brk; this.recentre(v, keep); this.changed(); } else this.startTool('break', { view: v.id }); } });
+        items.push({ label: v.brk ? 'Remove Break Lines' : 'Break Lines', icon: 'breakView', action: () => { if (v.brk) { const keep = this.viewCentre(v); delete v.brk; this.recentre(v, keep); this.changed(); } else this.startTool('break', { view: v.id }); } });
         items.push({ label: v.crop ? 'Remove Crop' : 'Crop View', icon: 'cropView', action: () => { if (v.crop) { const keep = this.viewCentre(v); delete v.crop; this.recentre(v, keep); this.changed(); } else this.startTool('crop', { view: v.id }); } });
         items.push(v.breakout ? { label: 'Remove Broken-out Section', icon: 'section', action: () => { delete v.breakout; this.changed(); this.updateGeometry(); } } : { label: 'Broken-out Section', icon: 'section', action: () => this.startTool('breakout', { view: v.id }) });
       }
+      if (D.scaleOwner(this.doc, v) !== v) items.push('sep', { label: 'Break from Parent View', icon: VIEW_ICONS[v.type], action: () => this.breakView(v) });
+      if (D.scaleOwner(this.doc, v) === v || v.type === 'detail') items.push({ label: 'Move to Sheet…', icon: 'addSheet', action: () => this.moveToSheet(v) });
       items.push('sep', { label: 'Delete View', icon: 'trash', action: () => this.deleteSelection() });
     } else {
       items.push({ label: 'Sheet Properties…', icon: 'sheetProps', action: () => this.sheetPropsDialog() });
@@ -735,8 +853,10 @@ export class DrawingEditor {
     const kill = new Set(ids);
     // views take their derived views and their annotations with them
     let grew = true;
-    while (grew) { grew = false; for (const v of this.doc.views) if (v.parent && kill.has(v.parent) && !kill.has(v.id)) { kill.add(v.id); grew = true; } }
+    // (a view broken from its parent stays, without it)
+    while (grew) { grew = false; for (const v of this.doc.views) if (v.parent && kill.has(v.parent) && !kill.has(v.id) && !v.free) { kill.add(v.id); grew = true; } }
     this.doc.views = this.doc.views.filter((v) => !kill.has(v.id));
+    for (const v of this.doc.views) if (v.free && kill.has(v.parent)) delete v.parent;
     this.doc.anns = this.doc.anns.filter((a) => !kill.has(a.id) && !(a.view && kill.has(a.view)) && !(a.of && kill.has(a.of)));
     for (const id of kill) { this.geos.delete(id); this.geoKeys.delete(id); }
   }
@@ -862,8 +982,7 @@ export class DrawingEditor {
     const availW = (f.x1 - f.x0) * 0.8, availH = (f.y1 - f.y0 - (tb.y1 - tb.y0)) * 0.85;
     // room for about two views across and two down (a flat pattern on its own needs less)
     const need = Math.max((room * d) / availW, (room * d) / availH);
-    const scales = [[10, 1], [5, 1], [2, 1], [1, 1], [1, 2], [1, 2.5], [1, 5], [1, 10], [1, 20], [1, 50], [1, 100]];
-    const pick = scales.find(([a, b]) => a / b <= 1 / need) || scales[scales.length - 1];
+    const pick = STD_SCALES.find(([a, b]) => a / b <= 1 / need) || STD_SCALES[STD_SCALES.length - 1];
     this.sheet.scale = pick;
   }
 
@@ -1066,6 +1185,7 @@ export class DrawingEditor {
       this.geos.set(v.id, t.geom);
       this.geoKeys.delete(v.id);
       this.changed();
+      this.placeClear(v);
       if (flat) { this.cancelTool(); return; }
       // carry on placing projected views from it
       if (!['iso', 'dimetric', 'trimetric'].includes(t.orient)) this.startTool('projected', { parent: v.id });
@@ -1088,6 +1208,7 @@ export class DrawingEditor {
       this.doc.views.push(v);
       this.geos.set(v.id, g);
       this.changed();
+      this.placeClear(v);
       t.geoms = {}; t.side = null;
       return;
     }
@@ -1106,7 +1227,7 @@ export class DrawingEditor {
         return;
       }
       const g = t.side && t.geoms?.[t.side];
-      if (!g) return;
+      if (!g) { this.app.status('Move to the side of the cutting line the arrows point to, and click there when the section view shows.'); return; }
       const s = D.viewScale(this.doc, p);
       const { x, y } = this.sectionPlace(p, t, g.box, P, s);
       const v = { id: D.newId(this.doc, 'v'), name: `Section View ${t.letter}-${t.letter}`, type: 'section', parent: p.id, model: p.model, sheet: p.sheet, style: 'hlr', tangent: p.tangent !== false, x, y, scale: null, section: this.sectionSpec(t, t.side) };
@@ -1114,6 +1235,7 @@ export class DrawingEditor {
       this.geos.set(v.id, g);
       this.changed();
       this.cancelTool();
+      this.placeClear(v);
       return;
     }
     if (t.kind === 'detail') {
@@ -1129,6 +1251,7 @@ export class DrawingEditor {
       this.doc.views.push(v);
       this.changed();
       this.cancelTool();
+      this.placeClear(v);
       return;
     }
     if (t.kind === 'dim') {
@@ -1677,7 +1800,9 @@ export class DrawingEditor {
     const mid = v && isAsm(v.model) ? v.model : this.doc.models.find((x) => x.doc?.kind === 'assembly')?.id;
     if (!mid) { this.app.toast('A bill of materials needs a view of an assembly', true); return; }
     const f = frameRect(this.sheet, this.doc.format), W = D.bomColumns(null).reduce((s, c) => s + c.w, 0);
-    this.doc.anns.push({ id: D.newId(this.doc, 'a'), type: 'bom', sheet: this.sheetId, model: mid, pos: [f.x1 - W - 8, f.y0 + 12] });
+    const bom = { id: D.newId(this.doc, 'a'), type: 'bom', sheet: this.sheetId, model: mid, pos: [f.x1 - W - 8, f.y0 + 12] };
+    this.doc.anns.push(bom);
+    this.tableClear(bom);
     this.changed();
     this.app.status(`Bill of materials added (${bomRows(this.doc.models.find((x) => x.id === mid).doc).filter((r) => !r.depth).length} items): drag it where you want it. Right-click it to show the sub-assemblies' parts.`);
   }
@@ -1691,6 +1816,7 @@ export class DrawingEditor {
     const f = frameRect(this.sheet, this.doc.format);
     const a = { id: D.newId(this.doc, 'a'), type: 'holetable', sheet: this.sheetId, of: v.id, pos: [f.x0 + 8, f.y0 + 12] };
     this.doc.anns.push(a);
+    this.tableClear(a);
     this.changed();
     const n = D.holeTableRows(this.doc, a, this.geos)?.length || 0;
     this.app.status(`Hole table added (${n} hole${n === 1 ? '' : 's'} in ${v.name}): drag it where you want it.`);
@@ -1705,7 +1831,9 @@ export class DrawingEditor {
     const mid = v?.model || this.doc.models[0]?.id;
     if (!mid) { this.app.toast('Add a view of the part first', true); return; }
     const f = frameRect(this.sheet, this.doc.format);
-    this.doc.anns.push({ id: D.newId(this.doc, 'a'), type: 'cutlist', sheet: this.sheetId, model: mid, pos: [f.x0 + 8, f.y0 + 12] });
+    const cl = { id: D.newId(this.doc, 'a'), type: 'cutlist', sheet: this.sheetId, model: mid, pos: [f.x0 + 8, f.y0 + 12] };
+    this.doc.anns.push(cl);
+    this.tableClear(cl);
     this.changed();
     this.updateCutLists();
     this.app.status('Cut list table added: drag it where you want it.');
@@ -1887,8 +2015,7 @@ export class DrawingEditor {
     const availW = f.x1 - f.x0 - 3 * gap, availH = f.y1 - f.y0 - (tb.y1 - tb.y0) - 3 * gap;
     if (!this.doc.views.some((v) => v.sheet === sheet.id)) {
       const needW = W(g.box) + W(gs?.box), needH = H(g.box) + H(gv?.box);
-      const scales = [[10, 1], [5, 1], [2, 1], [1, 1], [1, 2], [1, 2.5], [1, 5], [1, 10], [1, 20], [1, 50], [1, 100]];
-      sheet.scale = scales.find(([a, b]) => (needW * a) / b <= availW && (needH * a) / b <= availH) || scales[scales.length - 1];
+      sheet.scale = STD_SCALES.find(([a, b]) => (needW * a) / b <= availW && (needH * a) / b <= availH) || STD_SCALES[STD_SCALES.length - 1];
     }
     const s = D.sheetScale(this.doc, sheet.id);
     const wF = W(g.box) * s, hF = H(g.box) * s, wS = W(gs?.box) * s, hV = H(gv?.box) * s;
@@ -1983,7 +2110,7 @@ export class DrawingEditor {
       v.bendLines ??= true; v.bendNotes ??= true; v.bendRegion ??= false;
     } else {
       if (v.type === 'flat') { v.type = 'model'; v.style ||= 'hlr'; v.tangent ??= true; }
-      v.orient = k;
+      v.orient = k; delete v.dir; delete v.up;
     }
     this.selected = new Set([v.id]);
     this.changed();
@@ -1994,6 +2121,79 @@ export class DrawingEditor {
   recentre(v, P) {
     const c = this.viewCentre(v);
     if (Math.hypot(c[0] - P[0], c[1] - P[1]) > 1e-9) D.moveView(this.doc, v, P[0] - c[0], P[1] - c[1], false);
+  }
+
+  // The scale of a view's family (the views made from one view share its scale): set on the first of them (null:
+  // the sheet's). The first view keeps its middle and each view made from it its gap to its parent.
+  setFamilyScale(v, scale, commit = true) {
+    const owner = D.scaleOwner(this.doc, v), fam = D.scaleFamily(this.doc, owner);
+    const before = new Map(fam.map((x) => [x.id, D.viewRect(this.doc, x, this.geos)]));
+    owner.scale = scale ? [...scale] : null;
+    for (const x of fam) if (x !== owner) x.scale = null;
+    this.respace(fam, before);
+    if (commit) this.changed();
+  }
+  // A sheet's scale; the families that use it keep their gaps as with setFamilyScale.
+  setSheetScale(sheet, scale, commit = true) {
+    const fams = this.doc.views.filter((v) => v.sheet === sheet.id && v.type !== 'detail' && !v.scale && D.scaleOwner(this.doc, v) === v).map((o) => D.scaleFamily(this.doc, o));
+    const before = new Map(fams.flat().map((x) => [x.id, D.viewRect(this.doc, x, this.geos)]));
+    sheet.scale = [...scale];
+    for (const fam of fams) this.respace(fam, before);
+    if (commit) this.changed();
+  }
+  // (after a scale change: the first view back to its middle, then each view made from it to its old gap from its
+  // parent, along the line between them; before: view id -> its rectangle before)
+  respace(fam, before) {
+    const mid = (r) => [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2];
+    const half = (r, u) => (Math.abs(u[0]) * (r.x1 - r.x0) + Math.abs(u[1]) * (r.y1 - r.y0)) / 2;
+    const rect = (x) => D.viewRect(this.doc, x, this.geos);
+    this.recentre(fam[0], mid(before.get(fam[0].id)));
+    for (const c of fam.slice(1)) {
+      const p = D.findView(this.doc, c.parent), bp = before.get(p?.id), bc = before.get(c.id);
+      if (!bp || !bc) continue;
+      const d = [mid(bc)[0] - mid(bp)[0], mid(bc)[1] - mid(bp)[1]], ax = D.alignAxis(c), l = Math.hypot(d[0], d[1]);
+      if (l < 1e-9) continue;
+      const u = ax === 'x' ? [Math.sign(d[0]) || 1, 0] : ax === 'y' ? [0, Math.sign(d[1]) || 1] : [d[0] / l, d[1] / l];
+      const gap = d[0] * u[0] + d[1] * u[1] - half(bp, u) - half(bc, u);
+      const np = rect(p), nc = rect(c), now = (mid(nc)[0] - mid(np)[0]) * u[0] + (mid(nc)[1] - mid(np)[1]) * u[1];
+      const k = half(np, u) + gap + half(nc, u) - now;
+      D.moveView(this.doc, c, u[0] * k, u[1] * k, false);
+    }
+  }
+
+  // Break a view from the view it was made from (D.breakFromParent): it stays as it is, and can be moved, scaled and
+  // put on another sheet on its own.
+  breakView(v) {
+    const k = D.viewScale(this.doc, v);
+    if (!D.breakFromParent(this.doc, v)) return;
+    if (!v.name) v.name = this.nextViewName();
+    this.changed();
+    this.app.status(`${v.name} is independent now (at ${D.scaleText(k)}): drag it, scale it (View Properties) or right-click ▸ Move to Sheet.`);
+  }
+
+  // Move a view (with the views that share its scale, and their dimensions and notes) to another sheet, or a new one.
+  async moveToSheet(v) {
+    const others = this.doc.sheets.filter((s) => s.id !== v.sheet);
+    const fam = v.type === 'detail' ? [v] : D.scaleFamily(this.doc, v), ids = new Set(fam.map((x) => x.id));
+    const msg = document.createElement('p');
+    msg.textContent = `Move ${v.name || 'the view'}${fam.length > 1 ? ' and the views made from it' : ''} to:`;
+    const to = await this.app.ui.choose('Move to Sheet', 'addSheet', msg, [...others.map((s, i) => [s.id, s.name, i === 0]), ['new', 'A new sheet', !others.length], ['cancel', 'Cancel']]);
+    if (!to || to === 'cancel' || !this.doc.views.includes(v)) return;
+    if (to === 'new') this.addSheet();
+    const sheet = to === 'new' ? this.sheet : D.sheetOf(this.doc, to);
+    for (const x of fam) x.sheet = sheet.id;
+    for (const a of this.doc.anns) if (ids.has(a.view) || ids.has(a.of)) a.sheet = sheet.id;
+    // (kept where it was on the sheet; brought to the middle of the frame when it falls outside it)
+    const fr = frameRect(sheet, this.doc.format), rs = fam.map((x) => D.viewRect(this.doc, x, this.geos));
+    const bx = { x0: Math.min(...rs.map((r) => r.x0)), y0: Math.min(...rs.map((r) => r.y0)), x1: Math.max(...rs.map((r) => r.x1)), y1: Math.max(...rs.map((r) => r.y1)) };
+    if (bx.x0 < fr.x0 || bx.x1 > fr.x1 || bx.y0 < fr.y0 || bx.y1 > fr.y1) {
+      const dx = (fr.x0 + fr.x1 - bx.x0 - bx.x1) / 2, dy = (fr.y0 + fr.y1 - bx.y0 - bx.y1) / 2;
+      for (const x of fam) { x.x += dx; x.y += dy; }
+    }
+    this.sheetId = sheet.id;
+    this.selected = new Set([v.id]);
+    this.changed(); this.renderSheetTabs(); this.fit();
+    this.app.status(`${v.name || 'The view'} moved to ${sheet.name}.`);
   }
 
   // the selected view (for Break / Crop started from the toolbar)
@@ -2067,7 +2267,9 @@ export class DrawingEditor {
           const a = +q('.s-s1').value, b = +q('.s-s2').value;
           if (!(a > 0 && b > 0)) { this.app.toast('Enter a scale like 1 : 2', true); return false; }
           const before = new Map(this.doc.views.map((v) => [v.id, D.viewRect(this.doc, v, this.geos)])), oldProj = s.projection;
-          s.name = q('.s-name').value.trim() || s.name; s.size = q('.s-size').value; s.orientation = q('.s-or').value; s.scale = [a, b]; s.projection = q('.s-proj').value;
+          const scaled = s.scale[0] !== a || s.scale[1] !== b;
+          s.name = q('.s-name').value.trim() || s.name; s.size = q('.s-size').value; s.orientation = q('.s-or').value; s.projection = q('.s-proj').value;
+          if (scaled) this.setSheetScale(s, [a, b], false);
           if (s.projection !== oldProj) D.flipProjectedViews(this.doc, s.id, before);
           this.changed(); this.renderSheetTabs(); this.fit();
         },
@@ -2304,9 +2506,9 @@ export class DrawingEditor {
           ondblclick: () => this.startViewProps(v),
           oncontext: (e) => { this.selected.clear(); this.selected.add(v.id); this.render(); this.contextAt(e); },
         });
-        for (const c of this.doc.views.filter((x) => x.parent === v.id)) add(c, depth + 1);
+        for (const c of this.doc.views.filter((x) => x.parent === v.id && x.sheet === v.sheet)) add(c, depth + 1);
       };
-      for (const v of this.doc.views.filter((x) => x.sheet === s.id && !x.parent)) add(v, 2);
+      for (const v of this.doc.views.filter((x) => x.sheet === s.id && D.findView(this.doc, x.parent)?.sheet !== s.id)) add(v, 2);
     }
   }
 
@@ -2316,7 +2518,7 @@ export class DrawingEditor {
     const t = this.tool;
     if (!t) { root.appendChild(el('div', { class: 'pm-msg' }, 'Pick a drawing command (View Layout or Annotation tab) or double-click a view to edit it.')); return; }
     const titles = { model: t.orient === 'flat' ? ['smFlatten', 'Flat Pattern'] : ['modelView', 'Model View'], std3: ['std3View', 'Standard Views'], projected: ['projView', 'Projected View'], section: ['sectionView', 'Section View'], detail: ['detailView', 'Detail View'], dim: ['smartdim', 'Dimension'], note: ['note', 'Note'], cmark: ['centerMark', 'Center Mark'], cline: ['centerline', 'Centerline'], viewprops: ['modelView', 'Drawing View'],
-      callout: ['holeCallout', 'Hole Callout'], balloon: ['balloon', 'Balloon'], baseline: ['baselineDim', 'Baseline Dimension'], ordinate: ['ordinateDim', 'Ordinate Dimension'], chamferDim: ['chamferDim', 'Chamfer Dimension'], datum: ['datum', 'Datum Feature'], fcf: ['gdt', 'Geometric Tolerance'], sfin: ['surfFinish', 'Surface Finish'], weld: ['weld', 'Weld Symbol'], aux: ['auxView', 'Auxiliary View'], break: ['breakView', 'Break View'], crop: ['cropView', 'Crop View'] };
+      callout: ['holeCallout', 'Hole Callout'], balloon: ['balloon', 'Balloon'], baseline: ['baselineDim', 'Baseline Dimension'], ordinate: ['ordinateDim', 'Ordinate Dimension'], chamferDim: ['chamferDim', 'Chamfer Dimension'], datum: ['datum', 'Datum Feature'], fcf: ['gdt', 'Geometric Tolerance'], sfin: ['surfFinish', 'Surface Finish'], weld: ['weld', 'Weld Symbol'], aux: ['auxView', 'Auxiliary View'], break: ['breakView', 'Break Lines'], crop: ['cropView', 'Crop View'] };
     const [ic, title] = titles[t.kind] || ['modelView', t.kind];
     root.appendChild(el('div', { class: 'pm-head' }, `<span class="ti">${icon(ic)}</span><span>${esc(title)}</span>`));
     const act = el('div', { class: 'pm-actions' });
@@ -2486,18 +2688,26 @@ export class DrawingEditor {
         }
       }
       const sc = group('Scale');
-      const useSheet = !v.scale;
-      const cb = el('label', {}, `<input type="checkbox" ${useSheet ? 'checked' : ''}> Use the sheet scale (${D.scaleText(D.sheetScale(this.doc, v.sheet))})`);
-      cb.querySelector('input').onchange = (e) => { v.scale = e.target.checked ? null : scaleOf(D.viewScale(this.doc, v)); this.changed(); };
-      if (v.type === 'model' || v.type === 'detail' || v.type === 'flat') sc.appendChild(cb);
-      if (v.scale) {
+      const scaleRow = (cur, set) => {
         const r = el('div', { class: 's-scale-row' }, '<input type="number" min="0.001" step="any"> : <input type="number" min="0.001" step="any">');
         const [i1, i2] = r.querySelectorAll('input');
-        i1.value = v.scale[0]; i2.value = v.scale[1];
-        const set = () => { const a = +i1.value, b = +i2.value; if (a > 0 && b > 0) { v.scale = [a, b]; this.changed(); } };
-        i1.onchange = set; i2.onchange = set;
+        i1.value = cur[0]; i2.value = cur[1];
+        const go = () => { const a = +i1.value, b = +i2.value; if (a > 0 && b > 0) set([a, b]); };
+        i1.onchange = go; i2.onchange = go;
         sc.appendChild(r);
-      } else if (v.type !== 'model' && v.type !== 'detail' && v.type !== 'flat') sc.appendChild(el('div', { class: 'pm-hint' }, 'Same scale as the view it was made from.'));
+      };
+      if (v.type === 'detail') {
+        // (a detail view: a scale of its own)
+        scaleRow(v.scale || scaleOf(D.viewScale(this.doc, v)), (k) => { v.scale = k; this.changed(); });
+      } else {
+        // (a view and the views made from it share one scale, kept on the first of them)
+        const owner = D.scaleOwner(this.doc, v), fam = D.scaleFamily(this.doc, owner);
+        const cb = el('label', {}, `<input type="checkbox" ${owner.scale ? '' : 'checked'}> Use the sheet scale (${D.scaleText(D.sheetScale(this.doc, owner.sheet))})`);
+        cb.querySelector('input').onchange = (e) => this.setFamilyScale(v, e.target.checked ? null : scaleOf(D.viewScale(this.doc, v)));
+        sc.appendChild(cb);
+        if (owner.scale) scaleRow(owner.scale, (k) => this.setFamilyScale(v, k));
+        if (fam.length > 1) sc.appendChild(el('div', { class: 'pm-hint', 'data-scale-family': '' }, `Scales together with ${esc(fam.filter((x) => x !== v).map((x) => x.name || 'a projected view').join(', '))}${D.scaleOwner(this.doc, v) !== v ? ' (Break from Parent View, in its right-click menu, scales it on its own)' : ''}.`));
+      }
       if (v.type === 'section' || v.type === 'detail' || v.type === 'flat') {
         const lb = el('label', {}, `<input type="checkbox" ${v.showLabel !== false ? 'checked' : ''}> Show the view label`);
         lb.querySelector('input').onchange = (e) => { v.showLabel = e.target.checked; this.changed(); };
@@ -2536,7 +2746,7 @@ export class DrawingEditor {
         { icon: 'sectionView', label: 'Section View', action: () => this.startTool('section'), active: this.tool?.kind === 'section' },
         { icon: 'detailView', label: 'Detail View', action: () => this.startTool('detail'), active: this.tool?.kind === 'detail' },
         { icon: 'auxView', label: 'Auxiliary View', action: () => this.startTool('aux'), active: this.tool?.kind === 'aux' },
-        { icon: 'breakView', label: 'Break', action: () => this.startTool('break', this.selViewOpt()), active: this.tool?.kind === 'break' },
+        { id: 'Break', icon: 'breakView', label: 'Break Lines', action: () => this.startTool('break', this.selViewOpt()), active: this.tool?.kind === 'break' },
         { icon: 'cropView', label: 'Crop View', action: () => this.startTool('crop', this.selViewOpt()), active: this.tool?.kind === 'crop' },
         { icon: 'section', label: 'Broken-out Section', action: () => this.startTool('breakout', this.selViewOpt()), active: this.tool?.kind === 'breakout' },
         { icon: 'drawing', label: 'Compare With', action: () => this.compareDialog() },
@@ -2703,6 +2913,24 @@ function entPrims(e, color) {
 }
 
 // Distance from a sheet point to a primitive (picking annotations).
+// The box round a set of drawing primitives (sheet mm), or null
+function primsBox(prims) {
+  let b = null;
+  const add = (x0, y0, x1, y1) => { b = b ? { x0: Math.min(b.x0, x0), y0: Math.min(b.y0, y0), x1: Math.max(b.x1, x1), y1: Math.max(b.y1, y1) } : { x0, y0, x1, y1 }; };
+  for (const p of prims) {
+    if (p.t === 'line') add(Math.min(p.a[0], p.b[0]), Math.min(p.a[1], p.b[1]), Math.max(p.a[0], p.b[0]), Math.max(p.a[1], p.b[1]));
+    else if (p.t === 'poly') for (const q of p.pts) add(q[0], q[1], q[0], q[1]);
+    else if (p.t === 'circle') add(p.c[0] - p.r, p.c[1] - p.r, p.c[0] + p.r, p.c[1] + p.r);
+    else if (p.t === 'text') {
+      const w = D.textWidth(p.text, p.h, p.bold, p.font), h = p.h * 1.2;
+      // (turned text: anywhere it could reach round its point)
+      if (p.rot) { const r = Math.max(w, h); add(p.p[0] - r, p.p[1] - r, p.p[0] + r, p.p[1] + r); continue; }
+      const x0 = p.anchor === 'middle' ? -w / 2 : p.anchor === 'end' ? -w : 0;
+      add(p.p[0] + x0, p.p[1] - h, p.p[0] + x0 + w, p.p[1] + h);
+    }
+  }
+  return b;
+}
 function primDist(p, P) {
   if (p.t === 'line') return D.distToSeg(P, p.a, p.b);
   if (p.t === 'poly') { let d = Infinity; for (let i = 0; i < p.pts.length - 1; i++) d = Math.min(d, D.distToSeg(P, p.pts[i], p.pts[i + 1])); if (p.fill && p.closed) d = Math.min(d, insidePoly(P, p.pts) ? 0 : d); return d; }

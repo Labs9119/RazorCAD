@@ -17,7 +17,7 @@ import { RELATION_INFO, analyzeSketch } from './solver.js';
 import * as SM from './sketchmodel.js';
 import * as DIM from './dimids.js';
 import * as LR from './loftrefs.js';
-import { axisCandidates, PATTERN_SKIP, fileStem, folderOfFeature, newFeatureFolder, putFeatureInFolder } from './model.js';
+import { axisCandidates, PATTERN_SKIP, fileStem, folderOfFeature, newFeatureFolder, putFeatureInFolder, guessedRefs } from './model.js';
 import { BUILTIN_TEMPLATES, DEFAULT_TEMPLATE_ID, templateSummary, isTemplate } from './drawtemplates.js';
 import { SHEET_SIZES as DW_SIZES } from './drawingformats.js';
 import { inferPlaneType, planeRefs, legacyDatumRefs, useReferenceRelations } from './refgeom.js';
@@ -687,6 +687,7 @@ const PM_SCHEMAS = {
         { key: 'position', type: 'select', label: 'Position', options: [['inside', 'Material inside (outer face on the edge)'], ['outside', 'Material outside (inner face on the edge)'], ['bend', 'Bend outside (the bend starts at the edge)']] },
         { key: 'offset', type: 'expr', label: 'Offset (moves the flange outward)', unit: 'mm' },
         { key: 'flip', type: 'check', label: 'Flip direction' },
+        { key: 'sameSide', type: 'check', label: 'Every flange the same way as the first edge’s', show: (f) => (f.edges?.length || 0) > 1 },
       ],
     },
     {
@@ -943,7 +944,7 @@ const PM_SCHEMAS = {
       { key: 'eHint', type: 'hint', show: (f) => f.end === 'upToNext', text: 'Up To Next: each hole goes until its axis first comes out of the material (through the wall it starts in).' },
     ] },
     { title: 'Positions', fields: [
-      { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), or (for exact places) select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole' },
+      { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), then type each one’s distances from the face’s left and bottom edges; or select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole', holePos: true },
       { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
     ] },
   ],
@@ -1433,8 +1434,17 @@ const PM_SCHEMAS = {
     { title: 'Surfaces to Delete', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['surface'], hint: 'Click surface bodies on the model or tick them here. Delete or suppress this feature to bring them back.' }] },
   ],
   split: [
-    { title: 'Trim Tool', fields: [{ key: 'tool', type: 'splitTool', label: 'Split with' }, { key: 'keep', type: 'select', label: 'Keep', options: [['all', 'All pieces'], ['positive', 'The piece on the normal side'], ['negative', 'The piece on the other side']], show: (f) => !window.app?.bodyById(f.tool) }] },
-    { title: 'Target Bodies', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['solid'], hint: 'Leave empty to split every solid body the tool crosses.' }] },
+    { title: 'Bodies to Split', fields: [
+      { type: 'splitPick', slot: 'targets', label: 'Select bodies' },
+      { key: 'bodies', type: 'bodyList', kinds: ['solid','surface'], hint: 'Select solid or surface bodies. The splitting tool is kept.' },
+      { key: 'allBodies', type: 'check', label: 'All intersected bodies' },
+    ] },
+    { title: 'Splitting Tool', fields: [
+      { type: 'splitPick', slot: 'tool', label: 'Select splitting tool' },
+      { key: 'tool', type: 'splitTool', label: 'Splitting Tool' },
+      { key: 'extendTool', type: 'check', label: 'Extend Splitting Tool' },
+    ] },
+    { title: 'Result', fields: [{ key: 'keep', type: 'select', label: 'Keep', options: [['all','All bodies'],['positive','Positive side'],['negative','Negative side']], show: f => !f.tool || !!STD_PLANES[f.tool] || window.app?.doc.features.find(x=>x.id===f.tool)?.type==='plane' }] },
   ],
   moveBody: [
     { title: 'Bodies to Move/Copy', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['solid', 'surface'] }, { key: 'copy', type: 'check', label: 'Copy (keep the original bodies)' }, { key: 'copies', type: 'expr', label: 'Copies', unit: '#', show: (f) => f.copy && f.mode !== 'mates' }] },
@@ -1479,7 +1489,7 @@ const PM_SCHEMAS = {
     { title: 'Model Boundary Edges', fields: [{ key: 'edges', type: 'edges' }] },
   ],
   surfLoft: [
-    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true }] },
+    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true },{key:'modelEdgeHint',type:'hint',show:f=>(f.profiles||[]).some(LR.isModelEdgeChain),text:'Model-edge profiles currently use Free end conditions, Automatic correspondence and no guide curves.'}] },
     {title:'Profile Correspondence',fields:[{key:'loftCorrespondence',type:'loftCorrespondence'}]},
     ...LOFT_END_GROUPS,
     { title: 'Guide Curves', fields: [
@@ -1660,7 +1670,7 @@ const PM_SCHEMAS = {
     { title: 'Faces to Flatten', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click the faces (of a surface or a solid) to unroll. They are laid flat beside the model as a surface body.' },
       { key: 'iterations', type: 'expr', label: 'Relaxing passes (doubly curved faces)', unit: '#' },
-      { key: 'flHint', type: 'hint', text: 'Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (e.g. a dome) cannot lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the area change. A closed tube needs a seam (Split Line) to open out.' },
+      { key: 'flHint', type: 'hint', text: 'Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (e.g. a dome) cannot lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the area change. A closed tube needs a seam (Split Face) to open out.' },
     ] },
   ],
   projCurve: [
@@ -1670,9 +1680,17 @@ const PM_SCHEMAS = {
     ] },
   ],
   splitLine: [
-    { title: 'Split With', fields: [
-      { key: 'tool', type: 'trimTool', label: 'Split with' },
-      { key: 'faces', type: 'faceList', hint: 'Click the faces to split. A sketch is projected onto them along its normal; a plane or surface splits them where it crosses them. The body stays one body, with the faces split (e.g. for a part line, a draft, or a face to colour).' },
+    { title: 'Faces to Split', fields: [
+      { type: 'splitPick', slot: 'targets', label: 'Select faces' },
+      { key: 'faces', type: 'faceList', hint: 'Select faces on solid or surface bodies. Split Face keeps each body as one body.' },
+    ] },
+    { title: 'Splitting Tool', fields: [
+      { type: 'splitPick', slot: 'tool', label: 'Select splitting tool' },
+      { key: 'tool', type: 'splitTool', label: 'Splitting Tool' },
+      { key: 'splitType', type: 'select', label: 'Split Type', options: [['auto','Automatic'],['projection','Projection'],['intersection','Intersection']] },
+      { key: 'projection', type: 'select', label: 'Projection Direction', options: [['normal','Sketch normal'],['vector','Along Vector']], show: f => f.splitType!=='intersection' && window.app?.doc.features.find(x=>x.id===f.tool)?.type==='sketch' },
+      { key: 'direction', type: 'direction', label: 'Direction', show: f => f.projection==='vector' && f.splitType!=='intersection' && window.app?.doc.features.find(x=>x.id===f.tool)?.type==='sketch' },
+      { key: 'extendTool', type: 'check', label: 'Extend Splitting Tool' },
     ] },
   ],
   compCurve: [
@@ -1995,6 +2013,7 @@ export class UI {
       Edit: [
         { label: 'Undo', icon: 'undo', key: 'Ctrl+Z', action: () => a.undo(), disabled: !a.history.canUndo() || a.mode === 'sketch' },
         { label: 'Redo', icon: 'redo', key: 'Ctrl+Y', action: () => a.redo(), disabled: !a.history.canRedo() || a.mode === 'sketch' },
+        { label: 'Undo History…', icon: 'undo', action: () => this.showUndoHistory($('#hud') || document.body), disabled: a.mode === 'sketch' ? a.sketcher.steps().list.length < 2 : a.mode === 'sketch3d' || a.history.stack.length < 2 },
         'sep',
         { label: 'Rebuild', icon: 'rebuild', key: 'Ctrl+B', action: () => a.rebuild({ force: true }) },
         { label: 'Delete', icon: 'trash', key: 'Del', action: () => a.deleteSelection(), disabled: a.selection?.kind !== 'feature' },
@@ -2045,7 +2064,8 @@ export class UI {
         { label: 'Features ▸ Combine…', icon: 'combine', action: () => a.startFeature('combine') },
         { label: 'Features ▸ Subtract Bodies…', icon: 'subtract', action: () => a.startFeature('combine', 'subtract') },
         { label: 'Features ▸ Delete Body…', icon: 'deleteBody', action: () => a.startFeature('deleteBody') },
-        { label: 'Features ▸ Split…', icon: 'split', action: () => a.startFeature('split') },
+        { label: 'Features ▸ Split Body…', icon: 'split', action: () => a.startFeature('split') },
+        { label: 'Features ▸ Split Face…', icon: 'splitLine', action: () => a.startFeature('splitLine') },
         { label: 'Features ▸ Move/Copy Bodies…', icon: 'moveBody', action: () => a.startFeature('moveBody') },
         { label: 'Features ▸ Imported Body (STEP / STL)…', icon: 'import', action: () => a.importFile() },
         'sep',
@@ -2185,6 +2205,12 @@ export class UI {
     const only2d = (d) => (s3 ? { ...d, disabled: true, active: false } : d);
     return {
       features: [
+        // (Sketch here too: a part starts with one)
+        sk ? { icon: 'exitSketch', label: 'Exit Sketch', action: () => a.exitSketch(true) }
+          : s3 ? { icon: 'exitSketch', label: 'Exit 3D Sketch', action: () => a.exitSketch3D(true) }
+            : { icon: 'sketch', label: 'Sketch', action: () => a.startSketch() },
+        { icon: 'sketch3d', label: '3D Sketch', action: () => (s3 ? null : a.startFeature('sketch3d')), active: s3 },
+        'sep',
         { icon: 'extrude', label: 'Extrude', action: () => a.startFeature('extrude', 'add') },
         { icon: 'revolve', label: 'Revolve', action: () => a.startFeature('revolve', 'add') },
         'sep',
@@ -2230,7 +2256,8 @@ export class UI {
         'sep',
         { icon: 'combine', label: 'Combine', action: () => a.startFeature('combine') },
         { icon: 'subtract', label: 'Subtract Bodies', action: () => a.startFeature('combine', 'subtract') },
-        { icon: 'split', label: 'Split', action: () => a.startFeature('split') },
+        { icon: 'split', label: 'Split Body', action: () => a.startFeature('split') },
+        { icon: 'splitLine', label: 'Split Face', action: () => a.startFeature('splitLine') },
         { icon: 'moveBody', label: 'Move/Copy Bodies', action: () => a.startFeature('moveBody') },
         { icon: 'deleteBody', label: 'Delete Body', action: () => a.startFeature('deleteBody') },
         'sep',
@@ -2310,12 +2337,13 @@ export class UI {
         { icon: 'surfTrim', label: 'Trim Surface', action: () => a.startFeature('surfTrim') },
         { icon: 'surfExtend', label: 'Extend Surface', action: () => a.startFeature('surfExtend') },
         { icon: 'untrim', label: 'Untrim Surface', action: () => a.startFeature('untrim') },
-        { icon: 'splitLine', label: 'Split Line', action: () => a.startFeature('splitLine') },
+        { icon: 'splitLine', label: 'Split Face', action: () => a.startFeature('splitLine') },
         { icon: 'projCurve', label: 'Projected Curve', action: () => a.startFeature('projCurve') },
         { icon: 'compCurve', label: 'Composite Curve', action: () => a.startFeature('compCurve') },
         { icon: 'ruledSurface', label: 'Ruled Surface', action: () => a.startFeature('ruledSurface') },
         { icon: 'knit', label: 'Knit Surface', action: () => a.startFeature('knit') },
         { icon: 'surfSolid', label: 'Convert to Solid', action: () => a.startFeature('surfSolid') },
+        { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
         { icon: 'deleteFace', label: 'Delete Face', action: () => a.startFeature('deleteFace') },
         { icon: 'fillet', label: 'Delete / Resize Fillet', action: () => a.startFeature('editFillet') },
         { icon: 'deleteFace', label: 'Defeature', action: () => a.startFeature('defeature') },
@@ -2323,14 +2351,15 @@ export class UI {
         { icon: 'surfFill', label: 'Freeform', action: () => a.startFeature('freeform') },
         { icon: 'surfPlanar', label: 'Fit Surface to Points', action: () => a.startFeature('fitSurface') },
         { icon: 'meshRepair', label: 'Repair Mesh', action: () => a.startFeature('meshRepair') },
-        { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
         { icon: 'flattenSurf', label: 'Flatten Surface', action: () => a.startFeature('flattenSurf') },
         'sep',
-        { icon: 'split', label: 'Split (with a surface)', action: () => a.startFeature('split') },
+        { icon: 'split', label: 'Split Body', action: () => a.startFeature('split') },
         { icon: 'moveBody', label: 'Move/Copy Surfaces', action: () => a.startFeature('moveBody', null, { surfaces: true }) },
         { icon: 'deleteSurface', label: 'Delete Surface', action: () => a.startFeature('deleteSurface') },
       ],
       weldments: [
+        // (the frame: a sketch (flat frames) or 3D sketch)
+        sk ? { icon: 'exitSketch', label: 'Exit Sketch', action: () => a.exitSketch(true) } : { icon: 'sketch', label: 'Sketch', action: () => a.startSketch() },
         { icon: 'sketch3d', label: '3D Sketch', action: () => a.startFeature('sketch3d') },
         { icon: 'structMember', label: 'Structural Member', action: () => a.startFeature('structMember') },
         { icon: 'sweep', label: 'Pipe Route', action: () => a.startFeature('pipeRoute') },
@@ -2490,14 +2519,16 @@ export class UI {
         const open=()=>{this.closeContext();const r=group.getBoundingClientRect();this.showContext(r.left,r.bottom,d.children);arrow.setAttribute('aria-expanded','true');};
         arrow.onclick=open;b.onkeydown=e=>{if(e.key==='ArrowDown'){e.preventDefault();open();}};
         group.addEventListener('contextmenu',(e)=>{e.preventDefault();this.showToolbarCustomize('sketch');});
-        group.append(b,arrow);btns.appendChild(group);continue;
+        group._def=d;group.append(b,arrow);btns.appendChild(group);continue;
       }
       // (the click that ends a drag is not a press)
       b.addEventListener('click', (e) => { if (this._tbJustDragged) { e.preventDefault(); return; } this.app.macros?.note(d.label); d.action(); });
       b.addEventListener('contextmenu', (e) => { e.preventDefault(); this.showContext(e.clientX, e.clientY, this.toolbarButtonMenu(d)); });
       this.toolbarDraggable(b);
+      b._def = d;
       btns.appendChild(b);
     }
+    this.fitCommandManager(btns);
     if (custom && !custom.items.length) btns.appendChild(el('div', { class: 'cm-empty' }, `<b>${esc(custom.name)}</b> is empty. Drag buttons from the other toolbars onto its tab, right-click a button ▸ Add to "${esc(custom.name)}", or use <a href="#" class="cm-cust">Customize…</a>`));
     btns.querySelector('.cm-cust')?.addEventListener('click', (e) => { e.preventDefault(); this.showToolbarCustomize(this.cmTab); });
     const tabs = $('#cm-tabs');
@@ -2513,6 +2544,31 @@ export class UI {
     const add = el('button', { class: 'cm-tab-add', title: 'New toolbar (your own, with any tools)' }, '+');
     add.onclick = () => this.newToolbar();
     tabs.appendChild(add);
+  }
+
+  // The buttons that don't fit the window's width: under a More button at the end of the ribbon instead of a
+  // scroll bar (left in place, hidden, so dragging the others keeps their order); fitted again as the window
+  // changes size
+  fitCommandManager(btns) {
+    if (!btns._fitObs && window.ResizeObserver) {
+      btns._fitObs = new ResizeObserver(() => {
+        clearTimeout(this._fitTimer);
+        this._fitTimer = setTimeout(() => { if (!this._tbDrag && btns.clientWidth !== btns._fitW && this.app.mode !== 'drawing') this.renderCommandManager(); }, 120);
+      });
+      btns._fitObs.observe(btns);
+    }
+    btns._fitW = btns.clientWidth;
+    if (btns.scrollWidth <= btns.clientWidth + 1) return;
+    const kids = [...btns.children].filter((k) => k._def || k.classList.contains('cm-sep'));
+    const more = el('button', { class: 'cm-btn cm-more', title: tr('More commands'), 'aria-haspopup': 'menu' }, `<span class="cm-ic">${icon('more')}</span><span>${esc(tr('More'))}</span>`);
+    btns.appendChild(more);
+    const hidden = [];
+    for (let i = kids.length - 1; i >= 0 && btns.scrollWidth > btns.clientWidth + 1; i--) { kids[i].classList.add('cm-hidden'); hidden.unshift(kids[i]); }
+    // (a separator left last: hidden too)
+    for (let i = kids.length - hidden.length - 1; i >= 0 && kids[i].classList.contains('cm-sep'); i--) { kids[i].classList.add('cm-hidden'); hidden.unshift(kids[i]); }
+    const items = hidden.flatMap((k) => (k._def ? (k._def.children || [k._def]) : ['sep'])).filter((d, i, all) => d !== 'sep' || (i && all[i - 1] !== 'sep'));
+    if (items[0] === 'sep') items.shift();
+    more.onclick = () => { const r = more.getBoundingClientRect(); this.showContext(r.left, r.bottom, items.map((d) => (d === 'sep' ? 'sep' : { ...d, action: () => { this.app.macros?.note(d.label); d.action(); } }))); };
   }
 
   // ------------------------------------------------------------ toolbar layout (the user's own)
@@ -3265,7 +3321,7 @@ export class UI {
       });
       n.style.paddingLeft = 6 + (opts.depth || 0) * 16 + 'px';
       if (opts.fid) n.dataset.fid = opts.fid;
-      n.innerHTML = `<span class="tw">${opts.twisty ?? ''}</span><span class="ti">${icon(opts.icon)}</span><span class="tl">${esc(tr(opts.label))}</span>${opts.sub ? `<span class="tsub">${esc(opts.sub)}</span>` : ''}${opts.error ? `<span class="terr" title="${esc(opts.error)}">!</span>` : ''}<span class="tvis"></span>`;
+      n.innerHTML = `<span class="tw">${opts.twisty ?? ''}</span><span class="ti">${icon(opts.icon)}</span><span class="tl">${esc(tr(opts.label))}</span>${opts.sub ? `<span class="tsub">${esc(opts.sub)}</span>` : ''}${opts.error ? `<span class="terr" title="${esc(opts.error)}">!</span>` : opts.warn ? `<span class="twarn" title="${esc(opts.warn)}">?</span>` : ''}<span class="tvis"></span>`;
       // the visibility column: an eye to show or hide the item
       if (opts.vis && opts.vis.on !== null && opts.vis.on !== undefined) {
         const v = n.querySelector('.tvis');
@@ -3475,10 +3531,13 @@ export class UI {
       const dof = f.type === 'sketch' && !err && !rolled ? this.sketchFreedom(f) : 0;
       // (⚠ a sketch's note, e.g. the face it is on no longer in the model: a sketch has no Property panel to show it)
       const note = f.type === 'sketch' && !err && !rolled ? res?.notes?.get(f.id) : null;
+      // (? references found again as the nearest of look-alikes, after the model changed: to be checked)
+      const guessed = !err && !rolled ? guessedRefs(f).length : 0;
       const shown = a.featureVisible(f);
       const hidden = shown === false;
       const n = node({
         icon: iconFor(f), label: (note ? '⚠ ' : '') + (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
+        warn: guessed ? `${guessed} reference${guessed > 1 ? 's were' : ' was'} found again after the model changed by taking the nearest of faces or edges that look the same: check ${guessed > 1 ? 'they are' : 'it is'} still the right one${guessed > 1 ? 's' : ''}. Right-click ▸ Accept Found References, or edit the feature and click ✔.` : null,
         title: rolled ? 'Rolled back (below the rollback bar)' : err || (note ? note + '\n' : '') + (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
         cls: (hidden ? 'hidden-item' : '') + (rolled ? ' rolled' : ''),
         vis: { on: shown, toggle: () => a.toggleFeatureVisible(f.id) },
@@ -4217,6 +4276,7 @@ export class UI {
     }
     else {
       if (a.result?.errors.has(f.id)) items.push({ label: 'Fix References…', icon: 'fix', action: () => this.showFixReferences(f.id) });
+      if (guessedRefs(f).length) items.push({ label: 'Accept Found References', icon: 'fix', action: () => a.acceptFoundRefs(f.id) });
       items.push(f.type === 'sketch3d' ? { label: 'Edit 3D Sketch', icon: 'sketch3d', action: () => a.editFeature(f.id) } : { label: 'Edit Feature', icon: 'edit', action: () => a.editFeature(f.id) });
       if (f.sketch) items.push({ label: 'Edit Sketch', icon: 'sketch', action: () => a.editSketch(f.sketch) });
     }
@@ -4324,16 +4384,18 @@ export class UI {
       return;
     }
     const missed = !err && this.app.result?.previewOf === f.id && this.app.result?.preview?.missed;
-    msg.className = 'pm-msg pm-status' + (err ? ' err' : missed ? ' warn' : '');
+    msg.className = 'pm-msg pm-status' + (err && !this.app.waitingFor(f) ? ' err' : missed ? ' warn' : '');
     msg.textContent = err || (missed
       ? '⚠ This cut does not remove any material. Check the profile (which loops are closed), the direction and the end condition.'
       : 'Preview updated. Click ✔ to accept.');
   }
 
-  pmHeader(root, iconName, title, { ok = true, cancel = true } = {}) {
+  pmHeader(root, iconName, title, { ok = true, cancel = true, next = false } = {}) {
     root.appendChild(el('div', { class: 'pm-head' }, `<span class="ti">${icon(iconName)}</span><span>${esc(tr(title))}</span>`));
     const act = el('div', { class: 'pm-actions' });
     if (ok) act.appendChild(el('button', { title: 'OK (Enter)', onclick: () => this.app.okPM() }, icon('ok')));
+    // (a new feature: applied, and another of the same kind started straight away)
+    if (ok && next) act.appendChild(el('button', { class: 'pm-next', title: 'OK and start another (Shift+Enter)', 'aria-label': 'OK and start another', 'data-pm-next': '', onclick: () => this.app.okAndNext() }, `${icon('ok')}<b>+</b>`));
     if (cancel) act.appendChild(el('button', { title: 'Cancel (Esc)', onclick: () => this.app.cancelPM() }, icon('cancel')));
     act.appendChild(el('button', { class: 'pm-help', title: `${tr(title)} in the manual (F1)`, 'aria-label': `${tr(title)} in the manual`, 'data-pm-help': '', onclick: () => this.helpForPM() }, '?'));
     root.appendChild(act);
@@ -4484,6 +4546,67 @@ export class UI {
     }
     return keys;
   }
+  // The sizes of a feature in a small box by the cursor (double-click on the model): its values that are dimensions
+  // and the dimensions of the sketches it is made from, each typed and applied with Enter (one undo step each);
+  // Edit Feature opens its panel. Closed with Esc, ✕ or a click elsewhere.
+  showQuickDims(f, x, y) {
+    const a = this.app;
+    document.querySelector('.quick-dims')?.remove();
+    const sketches = new Set(sketchesUsedBy(f));
+    const labelOf = (key) => { for (const g of PM_SCHEMAS[f.type] || []) for (const fd of g.fields || []) if (fd.key === key) { try { return typeof fd.label === 'function' ? fd.label(f, a) : fd.label; } catch { return key; } } return key; };
+    const KIND = { hdist: 'horizontal', vdist: 'vertical', dist: 'distance', radius: 'radius', diameter: 'diameter', angle: 'angle', pointLine: 'distance' };
+    const dims = DIM.dimsOf(a.doc).filter((d) => !d.driven && ((d.where === 'field' && d.f === f) || (d.where === 'sketch' && sketches.has(d.f.id))));
+    const box = el('div', { class: 'quick-dims', 'data-quick-dims': f.id });
+    const head = el('div', { class: 'qd-h' }, `${icon(iconFor(f))}<b>${esc(f.name)}</b>`);
+    const editBtn = el('button', { class: 'pm-btn', title: 'Open its Property panel' }, esc(tr('Edit Feature')));
+    const x0 = el('button', { class: 'x', title: 'Close' }, '✕');
+    head.append(editBtn, x0);
+    box.appendChild(head);
+    if (!dims.length) box.appendChild(el('div', { class: 'pm-hint' }, esc(tr('It has no sizes to change here: Edit Feature for its settings.'))));
+    const vars = a.liveVars ? a.liveVars() : a.result?.vars || {};
+    for (const d of dims) {
+      const what = d.where === 'field' ? labelOf(d.key) : `${d.f.name}, ${KIND[d.item.kind] || 'dimension'}`;
+      const unit = d.where === 'sketch' && d.item.kind === 'angle' ? '°' : d.where === 'field' && /angle/i.test(d.key) ? '°' : 'mm';
+      let pending = null;
+      const inp = this.exprInput(d.expr ?? '', unit === '°' ? '°' : 'mm', (v) => { pending = v; });
+      inp.dataset.quickDim = d.did || d.key;
+      const field = inp.querySelector('input');
+      field.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault(); e.stopPropagation();
+        if (pending === null || pending === '') return;
+        try { if (!Number.isFinite(evaluate(pending, vars))) return; } catch { return; }
+        if (d.where === 'field') d.f[d.key] = pending; else d.item.value = pending;
+        pending = null;
+        a.commit(); a.refresh();
+        a.status(`${d.did || ''} ${what} changed. Ctrl+Z to undo.`.trim());
+      });
+      box.appendChild(el('div', { class: 'qd-row' }, `<span class="qd-id">${esc(d.did || '')}</span><span class="qd-l">${esc(tr(what))}</span>`)).appendChild(inp);
+    }
+    box.appendChild(el('div', { class: 'pm-hint' }, esc(tr('Type a size and press Enter. Esc closes.'))));
+    const close = () => { box.remove(); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', onKey, true); };
+    const outside = (e) => { if (!box.contains(e.target)) close(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+      // (Ctrl+Z / Ctrl+Y here undo and redo the model, not the typing; the box shows the sizes again)
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'y') && box.contains(e.target)) {
+        e.preventDefault(); e.stopPropagation();
+        if (k === 'y' || e.shiftKey) a.redo(); else a.undo();
+        const g = findFeature(a.doc, f.id);
+        close();
+        if (g) setTimeout(() => this.showQuickDims(g, x, y), 0);
+      }
+    };
+    x0.onclick = close;
+    editBtn.onclick = () => { close(); a.editFeature(f.id); };
+    document.body.appendChild(box);
+    const w = box.offsetWidth, h = box.offsetHeight;
+    box.style.left = Math.max(4, Math.min(x + 12, innerWidth - w - 4)) + 'px';
+    box.style.top = Math.max(4, Math.min(y + 12, innerHeight - h - 4)) + 'px';
+    setTimeout(() => { document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', onKey, true); box.querySelector('input')?.focus(); box.querySelector('input')?.select(); }, 0);
+  }
+
   // A dimension's ID as a small tag before a field's label (drawn from its data-dim-id, so the label's text stays the
   // field's name): a click on it renames the dimension (and every value that uses it)
   dimTagOn(label, did) {
@@ -4531,7 +4654,7 @@ export class UI {
     if(['revolve','surfRevolve'].includes(f.type)){if(!f.extent){try{f.extent=evaluate(f.angle??360,a.result?.vars||{})>=360?'full':'angle';}catch{f.extent='angle';}}f.end ||= 'oneway';}
     if (f.type === 'surfPlanar') f.edges ||= [];
     if (f.type === 'surfPlanar' && pm.planarEdges === undefined) pm.planarEdges = !!f.edges?.length && !f.profiles.length;
-    this.pmHeader(root, iconFor(f), f.name);
+    this.pmHeader(root, iconFor(f), f.name, { next: !!pm.isNew });
     if(f.type==='point'&&f.pointType==='coords')root.appendChild(el('div',{'data-datum-status':'checking',class:'pm-msg'},'Updating preview…'));
     const err = a.result?.errors.get(f.id);
     if (f.type === 'loft' && f.ruled && pm.loftSlot === 'guides') { pm.loftSlot = 'profiles'; pm.loftDraft = null; pm.loftHover = null; }
@@ -4539,11 +4662,13 @@ export class UI {
     const waitingForProfiles = ['loft', 'surfLoft'].includes(f.type) && (f.profiles || []).length < 2;
     if (waitingForProfiles) root.appendChild(el('div', { class: 'pm-msg' }, 'Select two or more section profiles in the canvas.'));
     else if (f.type === 'extrude' && !f.profiles.length) root.appendChild(el('div', { class: 'pm-msg' }, 'Select one or more profiles in the canvas, or select a whole sketch in the tree.'));
-    else if (err && !waitingForRefs) root.appendChild(el('div', { class: 'pm-msg pm-status err' }, esc(err)));
+    else if (err && !waitingForRefs) root.appendChild(el('div', { class: 'pm-msg pm-status' + (a.waitingFor(f) ? '' : ' err') }, esc(err)));
     else if (pm.isNew && !waitingForRefs) root.appendChild(el('div', { class: 'pm-msg pm-status' }, 'Set the parameters. The model previews live. Click ✔ to accept.'));
 
     const note = a.result?.notes?.get(f.id);
     if (note && !err) root.appendChild(el('div', { class: 'pm-msg ok','data-pm-note':'' }, esc(note)));
+    const guessed = guessedRefs(f).length;
+    if (guessed && !err) root.appendChild(el('div', { class: 'pm-msg warn', 'data-pm-guessed': '' }, `${guessed} reference${guessed > 1 ? 's were' : ' was'} found again after the model changed by taking the nearest of faces or edges that look the same. Check ${guessed > 1 ? 'they are' : 'it is'} still the right one${guessed > 1 ? 's' : ''} (pick again if not); ✔ accepts ${guessed > 1 ? 'them' : 'it'}.`));
     const idx = doc.features.indexOf(f);
     const before = doc.features.slice(0, idx < 0 ? doc.features.length : idx);
     const schema = PM_SCHEMAS[f.type] || [];
@@ -4692,6 +4817,9 @@ export class UI {
               body.appendChild(this.row(label, inp));
             }
           }
+        } else if (fd.type === 'splitPick') {
+          const active = (pm.splitSlot || 'targets') === fd.slot;
+          body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'data-split-slot': fd.slot, 'aria-pressed': String(active), onclick: () => { pm.splitSlot = fd.slot; this.renderPM(); a.updateEdgeHighlights(); } }, (active ? '● ' : '') + fd.label));
         } else if (fd.type === 'trimTool') {
           const opts = [['', '— choose the trim tool —'], ...Object.entries(STD_PLANES).map(([k, p]) => [k, 'Plane: ' + p.name]),
             ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, 'Plane: ' + x.name]),
@@ -5493,8 +5621,36 @@ export class UI {
     const clr = btn('filterClear', 'Clear Selection Filters (F5)', () => a.toggleFilter('clear'));
     clr.disabled = !a.filters.size;
     sep();
-    btn('undo', 'Undo (Ctrl+Z)', () => a.undo());
+    // (its arrow, or a right-click: the list of steps, to go back several at once)
+    const ub = btn('undo', 'Undo (Ctrl+Z) · its arrow or a right-click: the list of steps', (e, b) => (e.offsetX > b.offsetWidth - 10 ? this.showUndoHistory(b) : a.undo()), { drop: true });
+    ub.oncontextmenu = (e) => { e.preventDefault(); this.showUndoHistory(ub); };
     btn('redo', 'Redo (Ctrl+Y)', () => a.redo());
+  }
+
+  // The undo history: the part's last steps (in a sketch, the sketch's own since it was opened), newest at the top; a
+  // click goes straight back (or forward) to just after that step. Steps undone are shown greyed, still there to redo
+  // until something new is done.
+  showUndoHistory(anchor) {
+    const a = this.app, cm = $('#ctxmenu');
+    if (a.mode === 'sketch3d') { a.status('In a 3D sketch, Ctrl+Z and Ctrl+Y undo and redo its steps one at a time.'); return; }
+    const sk = a.mode === 'sketch' ? a.sketcher : null, h = a.history, steps = sk?.steps();
+    const n = sk ? steps.list.length : h.stack.length, idx = sk ? steps.idx : h.idx, what = sk ? 'sketch' : 'part';
+    const describe = (i) => (sk ? sk.describeStep(i) : h.describe(i)), goTo = (i) => (sk ? sk.undoTo(i) : a.undoTo(i));
+    cm.innerHTML = '';
+    cm.appendChild(el('div', { class: 'vis-h' }, esc(sk ? `Undo history: ${sk.f.name || 'sketch'}` : 'Undo history')));
+    const first = Math.max(0, n - 30);
+    for (let i = n - 1; i >= first; i--) {
+      const row = el('div', { class: 'mi undo-row' + (i > idx ? ' undone' : '') + (i === idx ? ' current' : ''), 'data-undo-step': i },
+        `<span class="mi-label">${esc(describe(i))}</span>${i === idx ? '<span class="mi-key">now</span>' : ''}`);
+      row.title = i === idx ? `The ${what} as it is now` : i > idx ? 'Undone: click to redo up to here' : 'Click to undo back to just after this step';
+      row.onclick = () => { this.closeContext(); goTo(i); };
+      cm.appendChild(row);
+    }
+    if (first > 0) cm.appendChild(el('div', { class: 'pm-hint', style: 'padding:4px 10px 6px' }, `and ${first} older step${first === 1 ? '' : 's'}`));
+    cm.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    cm.style.left = Math.max(4, Math.min(r.left, innerWidth - cm.offsetWidth - 4)) + 'px';
+    cm.style.top = Math.min(r.bottom + 4, innerHeight - cm.offsetHeight - 4) + 'px';
   }
 
   // Visibility filter: tick what to show; it stays open while ticking.
@@ -5528,11 +5684,17 @@ export class UI {
     if (!bar) return;
     bar.innerHTML = '';
     bar.classList.add('doctabs');
+    // (a drawing named as a part that is open too, its usual name: "Drawing" after it, so the two tabs tell apart)
+    const partNames = new Set(a.tabs.map((t, i) => {
+      if (t.kind === 'drawing') return null;
+      const doc = i === a.tabIndex ? a.doc : t.doc, path = i === a.tabIndex ? a.filePath : t.filePath;
+      return doc ? (path ? fileStem(path) : doc.name) : null;
+    }).filter(Boolean));
     a.tabs.forEach((t, i) => {
       const cur = i === a.tabIndex;
       if (t.kind === 'drawing') {
-        const d = t.drawing;
-        const tab = el('div', { class: 'doctab' + (cur ? ' active' : ''), title: d.filePath || 'Not saved yet' }, `${icon(d.tabIcon || 'drawing')}<span>${esc(d.name)}${d.dirty ? ' *' : ''}</span>`);
+        const d = t.drawing, kind = d.kindLabel || 'Drawing', same = partNames.has(d.name);
+        const tab = el('div', { class: 'doctab' + (cur ? ' active' : ''), title: `${kind}: ${d.filePath || 'not saved yet'}` }, `${icon(d.tabIcon || 'drawing')}<span>${esc(d.name)}${same ? ` <small class="doctab-kind">${esc(tr(kind))}</small>` : ''}${d.dirty ? ' *' : ''}</span>`);
         const x = el('button', { class: 'doctab-x', title: `Close this ${(d.kindLabel || 'drawing').toLowerCase()}` }, '✕');
         x.onclick = (e) => { e.stopPropagation(); a.closeTab(i); };
         tab.appendChild(x);
@@ -6333,9 +6495,42 @@ export class UI {
       if (fd.shellThick) { const own = this.exprInput(r.t ?? '', 'mm', (value) => { r.t = value; a.preview(); }); own.dataset.shellWallThickness = i; own.title = 'This wall’s thickness'; li.insertBefore(own, li.querySelector('.x')); }
       li.querySelector('.x').onclick = () => { f[key].splice(i, 1); this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
       ul.appendChild(li);
+      // (a hole on a flat face: where it is, typed as distances from the face's left and bottom edges)
+      const box = fd.holePos && a.holeFaceBox(r);
+      if (box) {
+        const row = el('div', { class: 'hole-pos', 'data-hole-pos': i });
+        for (const [k, lab, tip] of [['x', 'From left', 'From the left edge of the face (looking at it, its up as the part’s)'], ['y', 'From bottom', 'From the bottom edge of the face']]) {
+          const inp = this.exprInput(String(+box[k].toFixed(3)), 'mm', (v) => {
+            let val;
+            try { val = evaluate(v, a.liveVars ? a.liveVars() : a.result?.vars || {}); } catch { return; }
+            if (!Number.isFinite(val)) return;
+            const bx = a.holeFaceBox(r) || box; // (measured again when the model shown has changed)
+            a.setHolePos(r, bx, k === 'x' ? val : bx.x, k === 'y' ? val : bx.y);
+            a.updateEdgeHighlights(); a.preview();
+          });
+          inp.dataset.holeAxis = k; inp.title = tip;
+          row.append(el('span', { class: 'pm-hint' }, esc(tr(lab))), inp);
+        }
+        ul.appendChild(row);
+      }
     });
     body.appendChild(ul);
     if (f[key].length) body.appendChild(el('button', { class: 'pm-btn', onclick: () => { f[key].length = 0; this.renderPM(); a.updateEdgeHighlights(); a.preview(); } }, 'Clear'));
+  }
+
+  // A hole's typed positions shown again once the model shown changes (e.g. rolled back to before the hole being
+  // edited); a field being typed in is left alone
+  refreshHolePos() {
+    const f = this.app.pm?.feature;
+    if (f?.type !== 'hole') return;
+    for (const row of document.querySelectorAll('#pm [data-hole-pos]')) {
+      const box = this.app.holeFaceBox(f.faces?.[+row.dataset.holePos]);
+      if (!box) continue;
+      for (const w of row.querySelectorAll('[data-hole-axis]')) {
+        const inp = w.querySelector('input') || w;
+        if (document.activeElement !== inp) inp.value = String(+box[w.dataset.holeAxis].toFixed(3));
+      }
+    }
   }
 
   renderSweepSelection(body,f,before,fd){
@@ -6466,6 +6661,8 @@ export class UI {
     const a = this.app, pm = a.pm, key = fd.key, guide = key === 'guides';
     const extrude = f.type === 'extrude', planar = f.type === 'surfPlanar', common=['revolve','surfExtrude','surfRevolve'].includes(f.type), surface=['surfExtrude','surfRevolve'].includes(f.type);
     pm.loftSlot ||= 'profiles'; f[key] ||= [];
+    if(f.type==='surfLoft'&&!guide&&pm.loftModelEdges===undefined)pm.loftModelEdges=f.profiles.some(LR.isModelEdgeChain);
+    const modelEdges=f.type==='surfLoft'&&!guide&&!!pm.loftModelEdges;
     const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false && !pm.planarEdges);
     body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'aria-pressed': String(active), disabled: guide && f.ruled, 'data-loft-slot': key, onclick: () => {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
@@ -6474,13 +6671,20 @@ export class UI {
       if (common) { pm.profilePick=!active; pm.revolveEndPick=false; pm.planarEdges=false; pm.extrudeSurfaceSlot=null; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
-    if (!guide) {
+    if(f.type==='surfLoft'&&!guide){
+      const source=el('select',{'data-loft-profile-source':''});
+      for(const [value,label] of [['sketch','Sketch contours'],['edges','Model edges']])source.appendChild(el('option',{value},label));
+      source.value=modelEdges?'edges':'sketch';
+      source.onchange=()=>{pm.loftModelEdges=source.value==='edges';pm.loftSlot='profiles';pm.loftEndSlot=null;pm.loftDraft=null;pm.loftModelDraft=null;pm.loftHover=null;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();};
+      body.appendChild(this.row('Profile Source',source));
+    }
+    if (!guide && !modelEdges) {
       const cb = el('input', { type: 'checkbox', 'data-loft-chain': '' }); cb.checked = pm.loftChain !== false;
       cb.onchange = () => { pm.loftChain = cb.checked; pm.loftDraft = null; pm.loftHover = null; this.renderPM(); a.updateSketchDisplay(); };
       const label = el('label'); label.append(cb, document.createTextNode(' Chain selection'));
       body.appendChild(this.row(null, label, 'check'));
     }
-    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
+    body.appendChild(el('div', { class: 'pm-hint' }, modelEdges?'Click only the model edges of the split portion, then add them as one profile. Repeat for the next section. Edges in each profile must form one connected chain.':common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
     const ul = el('div', { class: 'pm-list', 'data-loft-list': key });
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, guide ? 'No guides selected' : 'No profiles selected'));
     f[key].forEach((ref, i) => {
@@ -6500,7 +6704,13 @@ export class UI {
       ul.appendChild(li);
     });
     body.appendChild(ul);
-    if (active && pm.loftChain === false) {
+    if(active&&modelEdges){
+      const count=pm.loftModelDraft?.edges.length||0;
+      body.appendChild(el('div',{class:'pm-hint'},`${count} model edges selected for this profile`));
+      body.appendChild(el('button',{class:'pm-btn','data-loft-model-finish':'',disabled:!count,onclick:()=>a.finishLoftModelSelection()},'Add selected edges as profile'));
+      if(count)body.appendChild(el('button',{class:'pm-btn',onclick:()=>{pm.loftModelDraft=null;this.renderPM();a.updateEdgeHighlights();}},'Clear selected edges'));
+    }
+    if (active && !modelEdges && pm.loftChain === false) {
       const count = pm.loftDraft?.curves.length || 0;
       body.appendChild(el('div', { class: 'pm-hint' }, `Manual selection: ${count} curves. Click segments to add/remove them, then confirm this contour.`));
       body.appendChild(el('button', { class: 'pm-btn', 'data-loft-finish': '', disabled: !count, onclick: () => a.finishLoftSelection() }, 'Add selected contour'));
@@ -6553,6 +6763,7 @@ export class UI {
       const on = f[fd.key].includes(b.id);
       const li = el('div', { class: 'li' + (on ? ' sel' : '') }, `<input type="checkbox" ${on ? 'checked' : ''} style="margin:0 4px 0 0">${icon(b.kind === 'surface' ? 'surfBody' : 'body')}<span>${esc(b.name)}</span>`);
       li.onclick = () => {
+        if(f.type==='split')a.pm.splitSlot='targets';
         const i = f[fd.key].indexOf(b.id);
         if (i >= 0) f[fd.key].splice(i, 1); else f[fd.key].push(b.id);
         this.renderPM(); a.updateEdgeHighlights(); a.preview();
@@ -6577,16 +6788,20 @@ export class UI {
 
   renderSplitTool(body, f, before) {
     const a = this.app;
-    const opts = [['', f.toolFace ? '✔ Flat face picked on the model' : '— click a flat face on the model —'],
+    const opts = [['', f.toolFace ? '✔ Face picked on the model' : '— select a splitting tool —'],
       ...Object.entries(STD_PLANES).map(([k, p]) => [k, p.name]),
       ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, x.name]),
-      ...(a.result?.bodies || []).filter((b) => b.kind === 'surface').map((b) => [b.id, 'Surface: ' + b.name])];
+      ...(a.result?.bodies || []).filter((b) => b.kind === 'surface' && !f.bodies?.includes(b.id)).map((b) => [b.id, 'Surface: ' + b.name]),
+      ...(['split','splitLine'].includes(f.type) ? before.filter(x=>x.type==='sketch'&&!x.suppressed).map(x=>[x.id,'Sketch: '+x.name]) : [])];
     const s = el('select');
     for (const [v, l] of opts) { const o = el('option', { value: v }, esc(l)); if ((f.tool || '') === v) o.selected = true; s.appendChild(o); }
+    s.dataset.splitTool = '';
+    s.onfocus = () => { if(['split','splitLine'].includes(f.type)) a.pm.splitSlot = 'tool'; };
     s.onchange = () => { f.tool = s.value || ''; if (f.tool) f.toolFace = null; this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
     const w = el('div', { class: 'pm-input' }); w.appendChild(s);
-    body.appendChild(this.row('Split with', w));
-    body.appendChild(el('div', { class: 'pm-hint' }, 'A plane, a flat face of the model or a surface body that cuts through the bodies.'));
+    body.appendChild(this.row(f.type==='printSplit'?'Split with':'Splitting Tool', w));
+    body.appendChild(el('div', { class: 'pm-hint' }, f.type==='printSplit'?'A plane or a flat face.':'Select a sketch, construction plane, model face or surface body. Extend Splitting Tool uses the underlying surface and extends open sketch ends.'));
+    if(f.toolFace)body.appendChild(el('button',{class:'pm-btn',onclick:()=>{f.toolFace=null;a.preview(true);}},'Clear tool face'));
   }
 
   // Mates for Move/Copy Body: each ties an entity of the moving bodies to fixed geometry.
@@ -6777,7 +6992,7 @@ export class UI {
     f.edges.forEach((e, i) => {
       const li = el('div', { class: 'li' }, `${icon('edge')}<span>Edge&lt;${i + 1}&gt;</span><span class="x" title="Remove">✕</span>`);
       if(f.type==='surfFill')li.dataset.patchEdgeRow=i;
-      if(sized){const own=this.exprInput(e.size??'','mm',value=>{if(value===''||value==null)delete e.size;else e.size=value;a.preview();});own.dataset.edgeSize=i;own.title='Own size (blank: the feature’s)';li.insertBefore(own,li.querySelector('.x'));}
+      if(sized){const own=this.exprInput(e.size??'','mm',value=>{if(value===''||value==null)delete e.size;else e.size=value;a.preview();},{optional:true});own.dataset.edgeSize=i;own.title='Own size (blank: the feature’s)';li.insertBefore(own,li.querySelector('.x'));}
       if(f.type==='surfFill'){
         const select=el('select',{'data-patch-edge':i,'aria-label':`Edge ${i+1} continuity`});
         for(const [value,label] of [['','Use boundary setting'],['G0','G0 Contact'],['G1','G1 Tangent'],['G2','G2 Curvature']]){
@@ -7066,8 +7281,9 @@ export class UI {
       const k = label.split('▸').pop().trim().toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
-      const own = Object.entries(this.shortcutPrefs()).find(([, v]) => v.k === k)?.[0];
-      out.push({ label, where, icon: d.icon || '', key: own || d.key || '', action: d.action, k });
+      const aliases = k==='split body'?['split','split (with a surface)']:k==='split face'?['split line','split-line']:[];
+      const own = Object.entries(this.shortcutPrefs()).find(([, v]) => v.k === k || aliases.includes(v.k))?.[0];
+      out.push({ label, where, aliases, icon: d.icon || '', key: own || d.key || '', action: d.action, k });
     };
     for (const [name, items] of Object.entries(this.menuDefs() || {})) for (const d of items || []) add(d, name + ' menu');
     let defs = {};
@@ -7103,7 +7319,7 @@ export class UI {
       if (!words.length) return [...recent.map((k) => all.find((c) => c.k === k)).filter(Boolean), ...all.filter((c) => !recent.includes(c.k))].slice(0, 12);
       const scored = [];
       for (const c of all) {
-        const name = tr(c.label).replace(/\u00ad/g, '').toLowerCase(), text = name + ' ' + c.label.toLowerCase() + ' ' + c.where.toLowerCase();
+        const name = tr(c.label).replace(/\u00ad/g, '').toLowerCase(), text = name + ' ' + c.label.toLowerCase() + ' ' + c.where.toLowerCase() + ' ' + (c.aliases||[]).join(' ');
         if (!words.every((w) => text.includes(w))) continue;
         const q0 = words.join(' '), last = c.k;
         let s = last.startsWith(q0) ? 0 : name.startsWith(q0) ? 1 : words.every((w) => new RegExp(`(^|[^a-z])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(name)) ? 2 : 3;
@@ -7151,7 +7367,7 @@ export class UI {
     if (!map || !Object.keys(map).length) return false;
     const combo = comboOf(e), b = combo && map[combo];
     if (!b) return false;
-    const c = this.commandList().find((x) => x.k === b.k);
+    const commands=this.commandList(), c = commands.find(x=>x.k===b.k)||commands.find(x=>x.aliases?.includes(b.k));
     if (!c) { this.app.status(`${combo}: "${b.label}" is not available here.`); return true; }
     this.app.macros?.note(c.label);
     c.action();
@@ -7328,7 +7544,7 @@ export class UI {
   // template becomes the default (chosen first next time). Resolves { template, name, props, sheet } or null.
   // change: { key, sheet } switches an existing drawing's template instead (its current template is
   // chosen first; only the sheet size, orientation and projection are asked): resolves { template, sheet }.
-  async newDrawingSetup({ name = 'Drawing1', title = '', change = null } = {}) {
+  async newDrawingSetup({ name = 'Drawing1', title = '', change = null, fromModel = false } = {}) {
     const a = this.app;
     const prefs = (await platform.getPrefs().catch(() => ({}))) || {};
     const extra = Array.isArray(prefs.templatePaths) ? prefs.templatePaths : [];
@@ -7380,6 +7596,7 @@ export class UI {
           <div class="k">Projection</div><div><select class="nd-proj"><option value="first">First angle (ISO / Europe)</option><option value="third">Third angle (ANSI / USA)</option></select></div>
         </div>
         <label class="nd-def"><input type="checkbox" class="nd-default"> Use this template as my default</label>
+        ${fromModel && !change ? '<label class="nd-def"><input type="checkbox" class="nd-autodim"> Dimension the views (Auto Dimension)</label>' : ''}
         ${change ? '<div class="pm-hint">The drawing keeps its views, dimensions and title block entries. The template brings its sheet format, sheet size and projection (on every sheet), drawing settings and notes.</div>' : ''}`;
       const q = (c) => form.querySelector(c);
       // switching templates: only the sheet is asked
@@ -7392,6 +7609,7 @@ export class UI {
       }
       q('.nd-name').value = name;
       q('.nd-title').value = title;
+      if (q('.nd-autodim')) q('.nd-autodim').checked = this.prefs?.autoDimNew !== false;
       const fill = (t) => {
         const s = t.sheets?.[0] || {};
         q('.nd-tname').textContent = t.name;
@@ -7464,7 +7682,9 @@ export class UI {
         props.company = q('.nd-company').value.trim();
         if (q('.nd-default').checked && prefs.defaultDrawingTemplate !== chosenKey) platform.setPrefs({ ...prefs, defaultDrawingTemplate: chosenKey }).catch(() => {});
         else if (!q('.nd-default').checked && prefs.defaultDrawingTemplate === chosenKey) { const p2 = { ...prefs }; delete p2.defaultDrawingTemplate; platform.setPrefs(p2).catch(() => {}); }
-        finish({ template: current, name: q('.nd-name').value.trim() || name, props, sheet: { size: q('.nd-size').value, orientation: q('.nd-or').value, scale: [s1, s2], projection: q('.nd-proj').value } });
+        const autoDim = !!q('.nd-autodim')?.checked;
+        if (q('.nd-autodim') && (this.prefs?.autoDimNew !== false) !== autoDim) { this.prefs ||= {}; this.prefs.autoDimNew = autoDim; this.savePrefs(); }
+        finish({ template: current, name: q('.nd-name').value.trim() || name, props, autoDim, sheet: { size: q('.nd-size').value, orientation: q('.nd-or').value, scale: [s1, s2], projection: q('.nd-proj').value } });
         dlg.close();
         return true;
       };

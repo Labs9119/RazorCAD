@@ -914,6 +914,490 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the pipe and its flange; the panel`};
   },
 
+  // What a hands-on run with a multibody part and an assembly found: a pin moved into a plate's hole with mates
+  // (Move/Copy Body) follows the hole when the hole moves, mated to its edge or to its wall; a hole being edited
+  // shows its place measured on the model before it (not on the pin later put in it); a new Move/Copy Body says what
+  // to pick, not an error; two flat faces made Coincident keep the body the right way up; the face menu has
+  // Move/Copy Body; a part's highlighted faces are not left over an assembly's tab
+  async 'multibody-mates-hands-on'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    const d=M.newDoc(),s1=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[0,0],[100,0],[100,60],[0,60]].map(([u,v])=>S.addPoint(s1,u,v));q.forEach((p,i)=>S.addLine(s1,p,q[(i+1)%4]));
+    const plate=M.createFeature(d,'extrude',{sketch:s1.id,depth:10}),hole=M.createFeature(d,'hole',{holeType:'simple',size:'custom',diameter:20,end:'through',faces:[{p:[50,10,-30],n:[0,1,0]}]});
+    const s2=M.createFeature(d,'sketch',{plane:{ref:'top'}});S.addCircle(s2,S.addPoint(s2,-50,-50),10);
+    const pin=M.createFeature(d,'extrude',{sketch:s2.id,depth:40,merge:false});
+    d.features.push(s1,plate,hole,s2,pin);
+    await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+    // (a new Move/Copy Body: what to pick, not an error)
+    a.startFeature('moveBody');await done();
+    const st=document.querySelector('#pm .pm-status');
+    if(!st||st.classList.contains('err')||/error/.test(document.querySelector('#status-rebuild').textContent))bad.push(`new Move Body shown as an error: ${st?.className} / ${document.querySelector('#status-rebuild').textContent}`);
+    // (mates: the pin's wall concentric with the hole's top edge; its top face on the plate's top: picked as in the
+    // view, so it keeps the right way up)
+    const mb=a.pm.feature;mb.bodies=[pin.id];mb.mode='mates';
+    mb.mates=[{type:'concentric',a:{kind:'face',p:[-40,20,50]},b:{kind:'edge',p:[50,10,-40]},value:10,flip:false},{type:'coincident',a:null,b:null,value:10,flip:false}];
+    a.pm.mateSlot={i:1,which:'a'};a.pmPickMate({kind:'face',p:[-50,40,50],n:[0,1,0]});a.pmPickMate({kind:'face',p:[20,10,-10],n:[0,1,0]});
+    if(mb.mates[1].flip!==true)bad.push('two upward faces made Coincident would turn the pin over');
+    await a.okPM();await done();
+    const pinAt=(cx,cz)=>{const P=a.viewport.edgeList.flatMap(e=>e.pts).filter(p=>Math.abs(Math.hypot(p.x-cx,p.z-cz)-10)<0.01);return P.length?[Math.min(...P.map(p=>p.y)),Math.max(...P.map(p=>p.y))]:null;};
+    let y=pinAt(50,-30);
+    if(a.result.errors.size||!y||Math.abs(y[0]+30)>1e-6||Math.abs(y[1]-10)>1e-6)bad.push(`pin not in the hole: ${y} ${[...a.result.errors.values()]}`);
+    // (the hole moved: the pin with it)
+    const H=()=>M.findFeature(a.doc,hole.id),MB=()=>M.findFeature(a.doc,mb.id);
+    H().faces[0].p=[25,10,-30];a.commit();await a.rebuild();await done();
+    y=pinAt(25,-30);
+    if(a.result.errors.size||!y)bad.push(`pin did not follow the hole (edge mate): ${[...a.result.errors.values()]}`);
+    // (mated to the hole's wall instead, and the hole moved again)
+    MB().mates[0].b={kind:'face',p:[35,5,-30]};a.commit();await a.rebuild();await done();
+    H().faces[0].p=[70,10,-25];a.commit();await a.rebuild();await done();
+    y=pinAt(70,-25);
+    if(a.result.errors.size||!y)bad.push(`pin did not follow the hole (wall mate): ${[...a.result.errors.values()]}`);
+    // (the hole edited: its place measured on the plate before it, though the pin now sits in it)
+    a.editFeature(hole.id);await done();await until(()=>document.querySelector('[data-hole-pos] input')?.value==='70',5000,50);
+    const pos=[...document.querySelectorAll('[data-hole-pos] input')].map(i=>i.value);
+    if(pos.join()!=='70,25')bad.push(`edited hole shows ${pos}`);
+    a.cancelPM();await done();
+    // (the face menu: Move/Copy Body)
+    a.viewport.setStandardView('iso',false);a.viewport.fitAll?.();await wait(80);
+    const sp=a.viewport.project(new (a.viewport.camera.position.constructor)(5,5,-0.001)),r=a.viewport.canvas.getBoundingClientRect();
+    a.viewportMenu({clientX:r.left+sp.x,clientY:r.top+sp.y,button:2,type:'contextmenu',preventDefault(){},stopPropagation(){}});await wait(80);
+    if(!/Move\/Copy Body/.test(document.querySelector('#ctxmenu')?.textContent||''))bad.push('no Move/Copy Body in the face menu');
+    a.ui.closeContext();
+    // (a feature selected, then an assembly's tab: its highlighted faces gone)
+    a.select({kind:'feature',id:plate.id});await wait(80);
+    const had=Object.keys(a.viewport._faceSets||{}).length;
+    const ed={attach(){},detach(){},doc:{},name:'x'};try{a.enterDrawing(ed);}catch{}
+    const left=Object.keys(a.viewport._faceSets||{}).length;
+    try{a.exitDrawing();}catch{}
+    if(!had||left)bad.push(`highlighted faces: ${had} before, ${left} left over the assembly`);
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'pin follows the hole (edge and wall mates), edited hole place, no error while picking, right way up, face menu, no leftover highlight'};
+  },
+
+  // The suggested fixes: a reference found again as the nearest of look-alikes is marked for checking (and accepted);
+  // too close to call, it fails rather than taking the wrong one; a curved face (a countersink's cone) found again
+  // when it moves; sizes typed for arcs, ellipses, slots and a polygon's sides; the undo history inside a sketch; a
+  // drawing view with no clear spot offered the largest scale that gives it one
+  async 'suggested-fixes'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),D=await import('/js/drawing.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    const plate=(holeProps)=>{const d=M.newDoc(),s1=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[0,0],[100,0],[100,60],[0,60]].map(([u,v])=>S.addPoint(s1,u,v));q.forEach((p,i)=>S.addLine(s1,p,q[(i+1)%4]));
+      const hole=M.createFeature(d,'hole',{end:'through',...holeProps}),s2=M.createFeature(d,'sketch',{plane:{ref:'top'}});S.addCircle(s2,S.addPoint(s2,-50,-50),holeProps.pin);delete hole.pin;
+      const pin=M.createFeature(d,'extrude',{sketch:s2.id,depth:40,merge:false});d.features.push(s1,M.createFeature(d,'extrude',{sketch:s1.id,depth:10}),hole,s2,pin);return {d,hole,pin};};
+    const mate=async(pin,a0,b0)=>{a.startFeature('moveBody');await done();const mb=a.pm.feature;mb.bodies=[pin.id];mb.mode='mates';mb.mates=[{type:'concentric',a:a0,b:b0,value:10,flip:false}];await a.okPM();await done();return mb;};
+    // (two holes the same size: the pin's wall mated to the first one's; the first one moved nearer the edge)
+    {
+      const {d,hole,pin}=plate({holeType:'simple',size:'custom',diameter:20,faces:[{p:[30,10,-30],n:[0,1,0]},{p:[70,10,-30],n:[0,1,0]}],pin:10});
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      const mb=await mate(pin,{kind:'face',p:[-40,20,50]},{kind:'face',p:[20,5,-30]});
+      const H=()=>M.findFeature(a.doc,hole.id),MB=()=>M.findFeature(a.doc,mb.id);
+      const pinAt=(cx)=>a.viewport.edgeList.flatMap(e=>e.pts).some(p=>Math.abs(Math.hypot(p.x-cx,p.z+30)-10)<0.01&&p.y>10.5);
+      if(!MB().mates[0].b.sf)bad.push('the hole wall the pin is mated to: what it is not kept');
+      H().faces[0].p=[12,10,-30];a.commit();await a.rebuild();await done();
+      if(a.result.errors.size||!pinAt(12)||pinAt(70))bad.push(`the pin did not follow its hole past the other: ${[...a.result.errors.values()]}`);
+      if(M.guessedRefs(MB()).length!==1||!document.querySelector(`[data-fid="${mb.id}"] .twarn`))bad.push(`not marked for checking: ${M.guessedRefs(MB()).length}`);
+      if(!a.ui.featureMenu(MB()).some(x=>x.label==='Accept Found References'))bad.push('no Accept Found References');
+      a.acceptFoundRefs(mb.id);await done();
+      if(M.guessedRefs(MB()).length||document.querySelector(`[data-fid="${mb.id}"] .twarn`))bad.push('still marked after Accept');
+      await a.rebuild();await done();
+      if(M.guessedRefs(MB()).length)bad.push('marked again after a rebuild');
+      // (edited and accepted with ✔: no longer marked either)
+      H().faces[0].p=[28,10,-30];a.commit();await a.rebuild();await done();
+      a.editFeature(mb.id);await done();
+      if(!document.querySelector('[data-pm-guessed]'))bad.push('the panel does not say a reference was guessed');
+      await a.okPM();await done();await a.rebuild();await done();
+      if(M.guessedRefs(MB()).length)bad.push('still marked after ✔');
+      // (moved past the other hole, so it is nearer the old place: not found, rather than the wrong hole)
+      H().faces[0].p=[88,10,-30];a.commit();await a.rebuild();await done();
+      if(!a.result.errors.get(mb.id))bad.push('too close to call, yet a hole was taken');
+    }
+    // (a countersink's cone: the pin mated to it follows the hole)
+    {
+      const {d,hole,pin}=plate({holeType:'csink',size:'M10',faces:[{p:[50,10,-30],n:[0,1,0]}],pin:5});
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      const mb=await mate(pin,{kind:'face',p:[-45,20,50]},{kind:'face',p:[59.35,8,-30]});
+      if(M.findFeature(a.doc,mb.id).mates[0].b.sf?.t!=='CONE')bad.push('the cone is not kept as a cone');
+      M.findFeature(a.doc,hole.id).faces[0].p=[20,10,-30];a.commit();await a.rebuild();await done();
+      const P=a.viewport.edgeList.flatMap(e=>e.pts).filter(p=>p.y>12),x=P.length?(Math.min(...P.map(p=>p.x))+Math.max(...P.map(p=>p.x)))/2:null;
+      if(a.result.errors.size||Math.abs(x-20)>1e-6)bad.push(`the pin did not follow the countersink: ${x} ${[...a.result.errors.values()]}`);
+    }
+    // (sizes typed: an arc, an ellipse, a slot, a polygon's sides, a tangent arc, a 3 point arc's radius)
+    await a.newDocument?.();closeModals();await a.setDoc(M.newDoc());await done();
+    a.select({kind:'plane',id:'front'});await a.startSketch();await until(()=>a.mode==='sketch',5000,50);
+    const sk=a.sketcher,cv=a.viewport.canvas.getBoundingClientRect(),cx=cv.left+cv.width/2,cy=cv.top+cv.height/2;
+    const at=(dx,dy)=>({button:0,clientX:cx+dx,clientY:cy+dy,ctrlKey:false,shiftKey:false,metaKey:false});
+    const key=(k,t=window)=>t.dispatchEvent(new KeyboardEvent('keydown',{key:k,bubbles:true,cancelable:true}));
+    const labels=()=>[...document.querySelectorAll('.sk-type .sk-type-row span')].map(s=>s.textContent).join();
+    const type=async(vals)=>{const ins=[...document.querySelectorAll('.sk-type input')];vals.forEach((v,i)=>{ins[i].value=v;ins[i].dispatchEvent(new Event('input',{bubbles:true}));});key('Enter',ins[0]);await wait(30);};
+    const dims=()=>sk.f.constraints.filter(k=>k.type==='dim').map(k=>k.kind+(k.axis?'/'+k.axis:'')+':'+k.value);
+    const arcOf=(c)=>{const C=S.getPoint(sk.f,c.c),A=S.getPoint(sk.f,c.p1),B=S.getPoint(sk.f,c.p2);return {r:Math.hypot(A.x-C.x,A.y-C.y),sweep:(((Math.atan2(B.y-C.y,B.x-C.x)-Math.atan2(A.y-C.y,A.x-C.x))*180/Math.PI)%360+360)%360,C};};
+    sk.setTool('arc');sk.pointerDown(at(-200,0));sk.pointerMove(at(-150,0));key('2');await wait(30);
+    if(labels()!=='Radius,Sweep °')bad.push(`arc box: ${labels()}`);
+    await type(['20','120']);
+    const arc=sk.f.curves.find(c=>c.type==='arc'),g=arc&&arcOf(arc);
+    if(!g||Math.abs(g.r-20)>1e-6||Math.abs(g.sweep-120)>1e-6)bad.push(`typed arc ${g?.r} ${g?.sweep}`);
+    sk.setTool('ellipse');sk.pointerDown(at(0,0));sk.pointerMove(at(40,10));key('3');await wait(30);await type(['30','12']);
+    const e=sk.f.curves.find(c=>c.type==='ellipse'),eg=e&&S.ellipseGeom(sk.f,e);
+    if(!eg||Math.abs(eg.ra-30)>1e-6||Math.abs(eg.rb-12)>1e-6)bad.push(`typed ellipse ${eg?.ra} ${eg?.rb}`);
+    sk.setTool('slot');sk.pointerDown(at(-100,120));sk.pointerMove(at(-50,100));key('5');await wait(30);
+    if(labels()!=='Length,Width')bad.push(`slot box: ${labels()}`);
+    await type(['50','16']);
+    const slotArcs=sk.f.curves.filter(c=>c.type==='arc').slice(1).map(arcOf);
+    if(slotArcs.length!==2||slotArcs.some(x=>Math.abs(x.r-8)>1e-6)||Math.abs(Math.hypot(slotArcs[0].C.x-slotArcs[1].C.x,slotArcs[0].C.y-slotArcs[1].C.y)-50)>1e-6)bad.push('typed slot not 50 long, 16 wide');
+    sk.setTool('polygon');sk.pointerDown(at(150,-120));sk.pointerMove(at(180,-120));key('4');await wait(30);await type(['40','8']);
+    if(sk.polySides!==8||sk.f.curves.filter(c=>c.type==='line'&&!c.construction).length!==10)bad.push(`typed polygon: ${sk.polySides} sides`);
+    const want=['radius:20','radius/major:30','radius:12','distance:50','diameter:16','diameter:40'];
+    if(dims().join()!==want.join())bad.push(`dimensions ${dims()}`);
+    // (a tangent arc from a line's end: R 15, 90°)
+    sk.setTool('line');sk.pointerDown(at(-250,-150));sk.pointerDown(at(-200,-150));sk.endDraw();
+    const ln=sk.f.curves.filter(c=>c.type==='line').pop(),P0=S.getPoint(sk.f,ln.p2);
+    sk.setTool('tarc');sk.draw={tool:'tarc',from:ln.p2,curve:ln.id,t:S.endTangent(sk.f,ln,ln.p2),p0:{x:P0.x,y:P0.y},p1:{x:P0.x+10,y:P0.y+5}};
+    key('1');await wait(30);await type(['15','90']);
+    const ta=arcOf(sk.f.curves.filter(c=>c.type==='arc').pop());
+    if(Math.abs(ta.r-15)>1e-6||Math.abs(Math.min(ta.sweep,360-ta.sweep)-90)>1e-6)bad.push(`typed tangent arc ${ta.r} ${ta.sweep}`);
+    // (a 3 point arc's radius; one too small refused in the box)
+    sk.setTool('arc3');const A0={x:100,y:100,kind:'grid'},B0={x:140,y:100,kind:'grid'};
+    sk.draw={tool:'arc3',stage:2,s0:A0,p0:A0,s1:B0,p1:B0,p2:{x:120,y:110},sweep:0};
+    key('5');await wait(30);await type(['5']);
+    if(!/at least half/.test(document.querySelector('.sk-type .merr')?.textContent||''))bad.push('a too small radius was not refused');
+    key('Escape',document.querySelector('.sk-type input'));await wait(30);
+    sk.draw={tool:'arc3',stage:2,s0:A0,p0:A0,s1:B0,p1:B0,p2:{x:120,y:110},sweep:0};
+    key('2');await wait(30);await type(['25']);
+    const a3=arcOf(sk.f.curves.filter(c=>c.type==='arc').pop());
+    if(Math.abs(a3.r-25)>1e-6||a3.C.y>100)bad.push(`typed 3 point arc r ${a3.r}, centre y ${a3.C.y}`);
+    sk.endDraw();
+    // (the sketch's undo history: in words; one step per typed shape; back to just after the arc)
+    const st=sk.steps(),steps=st.list.map((_,i)=>sk.describeStep(i));
+    if(steps[1]!=='Added Arc with 1 dimension'||steps[0]!=='Opened')bad.push(`sketch steps ${steps.join(' | ')}`);
+    a.ui.showUndoHistory(document.querySelector('#hud'));
+    const rows=[...document.querySelectorAll('#ctxmenu [data-undo-step]')];
+    if(rows.length!==st.list.length||!/^Undo history: /.test(document.querySelector('#ctxmenu .vis-h')?.textContent||''))bad.push(`${rows.length} rows in the sketch's undo list`);
+    rows.find(r=>r.dataset.undoStep==='1')?.click();await wait(50);
+    if(sk.f.curves.length!==1||sk.steps().idx!==1)bad.push(`the undo list did not go back to just after the arc: ${sk.f.curves.length} curves`);
+    a.ui.showUndoHistory(document.querySelector('#hud'));document.querySelector('#ctxmenu [data-undo-step]')?.click();await wait(50);
+    if(!sk.f.curves.some(c=>c.type==='ellipse'))bad.push('the undo list did not redo to the end');
+    a.exitSketch(true);await done();
+    // (a drawing view far too big for its sheet: the largest scale that gives it a clear spot, offered)
+    {
+      const d=M.newDoc(),s1=M.createFeature(d,'sketch',{plane:{ref:'front'}}),q=[[0,0],[100,0],[100,60],[0,60]].map(([u,v])=>S.addPoint(s1,u,v));q.forEach((p,i)=>S.addLine(s1,p,q[(i+1)%4]));
+      d.features.push(s1,M.createFeature(d,'extrude',{sketch:s1.id,depth:20}));
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      const keep=a.ui.newDrawingSetup;
+      a.ui.newDrawingSetup=async(o)=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A4L'),name:o.name,props:{},sheet:null,autoDim:false});
+      try{await a.newDrawing(true);}finally{a.ui.newDrawingSetup=keep;}
+      const ed=a.drawing,v=ed.doc.views.find(x=>x.type==='model');
+      await until(()=>ed.geos.get(v.id),10000,50);
+      v.scale=[5,1];ed.changed();await wait(300);ed.placeClear(v);await until(()=>document.querySelector('#modal-root .modal'),5000,50);
+      const btns=[...document.querySelectorAll('#modal-root .modal button')];
+      if(!btns.some(b=>b.textContent==='Scale the view down to 1 : 1')||!btns.some(b=>/larger sheet \(A1\)/.test(b.textContent)))bad.push(`offered ${btns.map(b=>b.textContent)}`);
+      btns.find(b=>/Scale/.test(b.textContent))?.click();await wait(300);
+      if(JSON.stringify(v.scale)!=='[1,1]'||!ed.clearSpot(v)||document.querySelector('#modal-root .modal'))bad.push(`after scaling down: ${JSON.stringify(v.scale)}`);
+    }
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'guessed reference marked, accepted and refused when too close; cone found again; typed arc, ellipse, slot, polygon, tangent and 3 point arcs; sketch undo history; view offered a scale that fits'};
+  },
+
+  // What hands-on use of sheet metal, patterns and configurations, a bigger assembly and STEP found: a second hole
+  // clicked on a face adds one (it took the first away); a blind hole follows a thicker plate (it was left buried)
+  // and keeps its distance from the edge as a configuration changes the width; a flat pattern's DXF is named after
+  // the part; a view placed clear of the other views' dimensions too; a bill of materials placed clear of the views;
+  // a nut through two plates bolted together goes under both (it went between them); a body's own colour in the STEP
+  async 'hands-on-round-3'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),D=await import('/js/drawing.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    const plateDoc=(w,h,t,faces,name='Plate')=>{const d=M.newDoc();d.name=name;const s=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));
+      const ex=M.createFeature(d,'extrude',{sketch:s.id,depth:t});d.features.push(s,ex);if(faces)d.features.push(M.createFeature(d,'hole',{holeType:'simple',size:'custom',diameter:11,end:'through',faces}));return {d,ex};};
+    // (two holes clicked on one face; a click on one takes it away)
+    {
+      const {d}=plateDoc(200,120,10);
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      a.viewport.setStandardView('iso',false);a.viewport.fitAll?.();await wait(150);
+      const V3=a.viewport.camera.position.constructor,r=a.viewport.canvas.getBoundingClientRect();
+      const ev=(x,y,z)=>{const sp=a.viewport.project(new V3(x,y,z));return {clientX:r.left+sp.x,clientY:r.top+sp.y,button:0,shiftKey:false};};
+      a.startFeature('hole');await done();
+      a.handleClick(ev(-60,10,0));await done();a.handleClick(ev(60,10,0));await done();a.handleClick(ev(0,10,0));await done();
+      const n3=a.pm.feature.faces.length;a.handleClick(ev(0,10,0));await done();
+      if(n3!==3||a.pm.feature.faces.length!==2)bad.push(`holes clicked on one face: ${n3}, then ${a.pm.feature.faces.length} after a click on one`);
+      a.cancelPM();await done();
+    }
+    // (a blind hole in a plate made thicker; 20 from the left edge, as the plate is made narrower)
+    {
+      const {d,ex}=plateDoc(100,60,10);
+      const h=M.createFeature(d,'hole',{holeType:'simple',size:'custom',diameter:10,end:'blind',depth:6,faces:[{p:[-30,10,0],n:[0,1,0]}]});d.features.push(h);
+      const sk=d.features[0];
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      const ys=()=>[...new Set(a.viewport.edgeList.flatMap(e=>e.pts).filter(p=>Math.abs(Math.hypot(p.x+30,p.z)-5)<0.01).map(p=>+p.y.toFixed(3)))].sort((x,y)=>x-y).join();
+      M.findFeature(a.doc,ex.id).depth=20;a.commit();await a.rebuild();await done();
+      if(ys()!=='14,20')bad.push(`blind hole after the plate was made thicker: at y ${ys()}`);
+      // (the plate narrower: its left edge moves in by 20; the hole stays 20 from it)
+      const sk2=M.findFeature(a.doc,sk.id);for(const p of sk2.points)if(p.x<0)p.x+=20;a.commit();await a.rebuild();await done();
+      const xs=a.viewport.edgeList.flatMap(e=>e.pts).filter(p=>Math.abs(p.y-20)<1e-6&&Math.abs(p.z)<5.01&&p.x<0&&p.x>-29.9).map(p=>p.x);
+      const cx=xs.length?(Math.min(...xs)+Math.max(...xs))/2:null;
+      if(a.result.errors.size||Math.abs(cx+10)>1e-3)bad.push(`hole after the left edge moved in by 20: centre x ${cx} (left edge -30) ${[...a.result.errors.values()]}`);
+    }
+    // (a sheet metal part: its flat pattern named after the part, not the last feature)
+    {
+      const d=M.newDoc();d.name='Bracket';const s=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[-50,-30],[50,-30],[50,30],[-50,30]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));
+      d.features.push(s,M.createFeature(d,'smBase',{sketch:s.id}),M.createFeature(d,'hole',{holeType:'simple',size:'custom',diameter:8,end:'through',faces:[{p:[0,2,0],n:[0,1,0]}]}));
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      const b=a.result.bodies.find(x=>x.sheet);
+      if(a.sheetPartName(b)!=='Bracket')bad.push(`flat pattern named ${a.sheetPartName(b)} (body ${b.name})`);
+      a.updateBody(b.id,{name:'Side panel'});await done();
+      if(a.sheetPartName(a.result.bodies.find(x=>x.sheet))!=='Side panel')bad.push('a named body: not its name on the flat pattern');
+    }
+    // (an assembly: two plates bolted together, legs under them)
+    const top=plateDoc(400,240,10,[-150,-50,50,150].flatMap(x=>[-80,0,80].map(z=>({p:[x,10,z],n:[0,1,0]}))),'Clamp plate').d;
+    const leg=plateDoc(40,40,300,null,'Leg');leg.d.bodies={[leg.ex.id]:{color:'#cc2222'}};
+    a.newAssembly();await wait(300);closeModals();
+    const asm=a.drawing,pp=asm.addPart(top,null,null),pl=asm.addPart(leg.d,null,null);
+    await asm.addComponent(pp);await asm.addComponent(pp);
+    const [cA,cB]=asm.doc.components;Object.assign(cA,{pos:[0,0,0],rot:[0,0,0,1],fixed:true});Object.assign(cB,{pos:[0,10,0],rot:[0,0,0,1],fixed:true});
+    for(const [x,z] of [[-180,-100],[180,-100],[180,100],[-180,100]]){await asm.addComponent(pl);Object.assign(asm.doc.components.at(-1),{pos:[x,-300,z],rot:[0,0,0,1],fixed:true});}
+    await asm.loadParts();asm.solve();
+    const ref={comp:cB.id,kind:'axis',p:[-150,10,-80],d:[0,-1,0],r:5.5,circle:true};
+    const h=asm.holeOf(ref),hs=asm.throughStack(h);
+    if(Math.abs(hs.depth-20)>1e-6)bad.push(`the hole through both plates is ${hs.depth} deep`);
+    await asm.insertStdPart('hexBolt','M10',40,'steel',h,{all:true,washer:true,nut:true});
+    const ys=(re)=>[...new Set(asm.doc.components.filter(c=>re.test(c.name)).map(c=>+c.pos[1].toFixed(3)))].sort((x,y)=>x-y).join();
+    if(asm.doc.components.length!==54||ys(/Nut/)!=='-2'||ys(/Washer/)!=='0,20')bad.push(`${asm.doc.components.length} components; nuts at y ${ys(/Nut/)}, washers at ${ys(/Washer/)}`);
+    const coll=await asm.collisions({});
+    if((Array.isArray(coll)?coll.length:coll?.pairs?.length)!==0)bad.push('the fastened plates interfere');
+    // (its STEP: the leg's own colour kept)
+    const step=await a.readStepAssembly(new TextDecoder().decode((await (a.kernelPool||a.kernel).request('exportAssemblySTEP',{doc:JSON.stringify(asm.exportDoc())},'asm-parts')).bytes));
+    if(step.parts.find(p=>p.name==='Leg')?.appearance?.c!==0xcc2222)bad.push(`the leg's colour in the STEP: ${JSON.stringify(step.parts.find(p=>p.name==='Leg')?.appearance)}`);
+    // (its drawing: the bill of materials clear of the views)
+    const keep=a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup=async(o)=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A3L'),name:o.name,props:{},sheet:null,autoDim:false});
+    try{await a.newDrawing(true);}finally{a.ui.newDrawingSetup=keep;}
+    const ed=a.drawing;await until(()=>ed.doc.views.length&&ed.doc.views.every(v=>ed.geos.get(v.id)),60000,50);
+    ed.addBOM();ed.draw();
+    const bom=ed.doc.anns.find(x=>x.type==='bom'),pts=(ed.annCache.get(bom.id)||[]).flatMap(p=>p.a?[p.a,p.b]:p.pts||(p.p?[p.p]:[]));
+    const bx=[Math.min(...pts.map(q=>q[0])),Math.min(...pts.map(q=>q[1])),Math.max(...pts.map(q=>q[0])),Math.max(...pts.map(q=>q[1]))];
+    const over=ed.doc.views.filter(v=>{const r=D.viewRect(ed.doc,v,ed.geos);return r.x0<bx[2]&&r.x1>bx[0]&&r.y0<bx[3]&&r.y1>bx[1];}).map(v=>v.name);
+    if(over.length)bad.push(`the bill of materials lies over ${over.join(', ')}`);
+    // (a view placed where another view's dimension is: moved clear of it)
+    const v1=ed.doc.views[0],r1=D.viewRect(ed.doc,v1,ed.geos);
+    ed.doc.anns.push({id:D.newId(ed.doc,'a'),type:'note',sheet:v1.sheet,text:'CLEAR OF THIS NOTE',pos:[r1.x1+30,(r1.y0+r1.y1)/2],h:5});ed.draw();
+    const note=ed.doc.anns.at(-1),v2=ed.doc.views.find(v=>v.type==='projected'&&v.side==='right');
+    if(v2){v2.x+=note.pos[0]-(D.viewRect(ed.doc,v2,ed.geos).x0+D.viewRect(ed.doc,v2,ed.geos).x1)/2;ed.placeClear(v2,20,false);ed.draw();
+      const r2=D.viewRect(ed.doc,v2,ed.geos),np=(ed.annCache.get(note.id)||[]).flatMap(p=>p.a?[p.a,p.b]:p.pts||(p.p?[p.p]:[]));
+      if(np.some(q=>q[0]>r2.x0&&q[0]<r2.x1&&q[1]>r2.y0&&q[1]<r2.y1))bad.push('a view placed over a note was left there');}
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'holes clicked on one face, blind hole on a thicker plate, hole kept from its edge, flat pattern named after the part, nut under a stack, STEP colour, bill of materials and view placed clear'};
+  },
+
+  // View scales: a view and the views made from it share one scale (set on any of them, the others follow and keep
+  // their gaps), a detail view keeps its own; Break from Parent View leaves a projected or section view as it is but
+  // on its own (scaled alone, moved to another sheet, kept when its parent is deleted); an old drawing with a
+  // projected view at a scale of its own opens with it broken free, looking as it did
+  async 'view-scales'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),D=await import('/js/drawing.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    const d=M.newDoc();d.name='Block';const s=M.createFeature(d,'sketch',{plane:{ref:'front'}}),q=[[-50,-30],[50,-30],[50,30],[-50,30]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));
+    d.features.push(s,M.createFeature(d,'extrude',{sketch:s.id,depth:20}));
+    await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+    const keep=a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup=async(o)=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A3L'),name:o.name,props:{},sheet:null,autoDim:false});
+    try{await a.newDrawing(true);}finally{a.ui.newDrawingSetup=keep;}
+    const ed=a.drawing,doc=ed.doc,ready=()=>until(()=>doc.views.every(v=>v.type==='detail'||ed.geos.get(v.id)),60000,50);
+    await until(()=>doc.views.length>=3,20000,50);await ready();
+    const front=doc.views.find(v=>v.type==='model'),side=doc.views.find(v=>v.type==='projected'&&(v.side==='right'||v.side==='left')),vert=doc.views.find(v=>v.type==='projected'&&v.side!==side.side);
+    const R=(v)=>D.viewRect(doc,v,ed.geos),mid=(r)=>[(r.x0+r.x1)/2,(r.y0+r.y1)/2],k=(v)=>D.viewScale(doc,v);
+    const gapX=()=>{const f=R(front),r=R(side);return r.x0>f.x1?r.x0-f.x1:f.x0-r.x1;},gapY=()=>{const f=R(front),r=R(vert);return r.y0>f.y1?r.y0-f.y1:f.y0-r.y1;};
+    // (the side view's scale set: the front and top follow; the front keeps its middle, the others their gaps)
+    const k0=k(front),c0=mid(R(front)),gx=gapX(),gy=gapY();
+    ed.startViewProps(side);
+    if(!document.querySelector('#pm [data-scale-family]'))bad.push('the side view\'s panel does not say what it scales with');
+    ed.setFamilyScale(side,k0>=1?[k0*2,1]:[1,1/(k0*2)]);
+    if([front,side,vert].some(v=>Math.abs(k(v)-k0*2)>1e-6)||side.scale||!front.scale)bad.push(`scales after the side view was scaled: ${[front,side,vert].map(k)} (own ${JSON.stringify([front.scale,side.scale])})`);
+    if(Math.hypot(mid(R(front))[0]-c0[0],mid(R(front))[1]-c0[1])>1e-6||Math.abs(gapX()-gx)>1e-6||Math.abs(gapY()-gy)>1e-6)bad.push(`layout after scaling: front middle ${mid(R(front))} (was ${c0}), gaps ${gapX()} / ${gapY()} (were ${gx} / ${gy})`);
+    ed.cancelTool?.();
+    // (a detail view of the front keeps its own scale as the front's changes)
+    const det={id:D.newId(doc,'v'),name:'Detail View A',type:'detail',parent:front.id,model:front.model,sheet:front.sheet,x:60,y:60,scale:[5,1],detail:{c:[40,20],r:8,letter:'A'}};
+    doc.views.push(det);ed.setFamilyScale(front,null);
+    if(k(det)!==5||Math.abs(k(side)-D.sheetScale(doc,front.sheet))>1e-9)bad.push(`detail scale ${k(det)}, side ${k(side)} after the front went back to the sheet scale`);
+    // (a section of the front, then the side view broken free: it looks as it did, and scales on its own)
+    const sec={id:D.newId(doc,'v'),name:'Section View B-B',type:'section',parent:front.id,model:front.model,sheet:front.sheet,style:'hlr',tangent:true,x:front.x,y:front.y+120,scale:null,section:{a:[-60,0],b:[60,0],arrow:[0,-1],horizontal:true,letter:'B'}};
+    doc.views.push(sec);ed.changed();await ready();
+    const cam0=D.viewCamera(doc,side),r0=R(side);
+    ed.breakView(side);await ready();
+    const cam1=D.viewCamera(doc,side),r1=R(side);
+    if(side.type!=='model'||side.parent||!side.name||Math.hypot(...cam0.dir.map((x,i)=>x-cam1.dir[i]))>1e-9||Math.hypot(...cam0.y.map((x,i)=>x-cam1.y[i]))>1e-9||Math.abs(r0.x0-r1.x0)+Math.abs(r0.y0-r1.y0)+Math.abs(r0.x1-r1.x1)>1e-6)bad.push(`broken side view: ${side.type}, parent ${side.parent}, camera ${cam1.dir} (was ${cam0.dir}), rect ${JSON.stringify(r1)} (was ${JSON.stringify(r0)})`);
+    ed.setFamilyScale(side,[1,10]);
+    if(Math.abs(k(side)-0.1)>1e-9||Math.abs(k(front)-D.sheetScale(doc,front.sheet))>1e-9)bad.push(`the broken view scaled alone: ${k(side)}, the front ${k(front)}`);
+    // (the section broken free: same cut, survives its parent's deletion)
+    const pl0=D.sectionPlane(doc,sec);ed.breakView(sec);
+    const pl1=D.sectionPlane(doc,sec);
+    if(!sec.free||Math.hypot(...pl0.n.map((x,i)=>x-pl1.n[i]))>1e-9||Math.hypot(...pl0.o.map((x,i)=>x-pl1.o[i]))>1e-9||D.alignAxis(sec))bad.push(`broken section: free ${sec.free}, plane ${JSON.stringify(pl1)} (was ${JSON.stringify(pl0)})`);
+    // (moved to a new sheet, with its own scale)
+    const ch=a.ui.choose;a.ui.choose=async()=> 'new';
+    try{await ed.moveToSheet(side);}finally{a.ui.choose=ch;}
+    if(doc.sheets.length!==2||side.sheet!==doc.sheets[1].id||ed.sheetId!==side.sheet||Math.abs(k(side)-0.1)>1e-9)bad.push(`moved to a new sheet: ${doc.sheets.length} sheets, on ${side.sheet}, scale ${k(side)}`);
+    ed.removeItems([front.id]);ed.changed();await ready();
+    if(!doc.views.includes(sec)||sec.parent||doc.views.includes(vert)||doc.views.includes(det)||ed.errors.get(sec.id))bad.push(`front deleted: section ${doc.views.includes(sec)} (parent ${sec.parent}, ${ed.errors.get(sec.id)}), top ${doc.views.includes(vert)}, detail ${doc.views.includes(det)}`);
+    // (an old drawing: a projected view with a scale of its own other than its parent's)
+    const old={views:[{id:'v1',type:'model',orient:'front',sheet:'s1',x:100,y:100,scale:null},{id:'v2',type:'projected',parent:'v1',side:'right',sheet:'s1',x:200,y:100,scale:[1,5]},{id:'v3',type:'projected',parent:'v1',side:'up',sheet:'s1',x:100,y:50,scale:[1,2]}],sheets:[{id:'s1',scale:[1,2],projection:'first'}]};
+    const c2=D.viewCamera(old,old.views[1]);D.upgradeViewScales(old);
+    const [o1,o2,o3]=old.views;
+    if(o2.type!=='model'||o2.parent||Math.abs(D.viewScale(old,o2)-0.2)>1e-9||Math.hypot(...c2.dir.map((x,i)=>x-D.viewCamera(old,o2).dir[i]))>1e-9||o3.scale||o3.parent!=='v1')bad.push(`old drawing: ${JSON.stringify(old.views)}`);
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'family scaled together keeping its gaps, detail on its own scale, projected and section views broken free as they were, moved to a new sheet, kept when the parent went, an old drawing upgraded'};
+  },
+
+  // The bigger usability items: sizes typed while drawing a rectangle, a circle and a line (made at those sizes and
+  // dimensioned); the grid's step in the status bar; the undo history (described, and gone straight back to); ✔+
+  // starts another of the same; a drawing made with Dimension the views ticked is dimensioned; a view placed over
+  // the title block moved clear of it; an edge picked on a thin sheet is the one nearer the eye
+  async 'bigger-usability'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    await a.newDocument?.();closeModals();await a.setDoc(M.newDoc());await done();
+    a.select({kind:'plane',id:'front'});await a.startSketch();await until(()=>a.mode==='sketch',5000,50);
+    const sk=a.sketcher,cv=a.viewport.canvas.getBoundingClientRect(),cx=cv.left+cv.width/2,cy=cv.top+cv.height/2;
+    const at=(dx,dy)=>({button:0,clientX:cx+dx,clientY:cy+dy,ctrlKey:false,shiftKey:false,metaKey:false});
+    const key=(k,t=window)=>t.dispatchEvent(new KeyboardEvent('keydown',{key:k,bubbles:true,cancelable:true}));
+    const type=async(vals)=>{const ins=[...document.querySelectorAll('.sk-type input')];vals.forEach((v,i)=>{if(v==null)return;ins[i].value=v;ins[i].dispatchEvent(new Event('input',{bubbles:true}));});key('Enter',ins[0]);await wait(30);};
+    // (a rectangle: first corner, mouse to the upper right, 4 typed: Width 40, Height 25)
+    sk.setTool('rect');sk.pointerDown(at(-100,40));sk.pointerMove(at(-60,10));key('4');await wait(30);
+    if(!document.querySelector('.sk-type'))bad.push('no size box when typing during a rectangle');
+    else await type(['40','25']);
+    const dims=()=>sk.f.constraints.filter(k=>k.type==='dim');
+    const lines=sk.f.curves.filter(c=>c.type==='line'),P=id=>S.getPoint(sk.f,id);
+    const xs=lines.flatMap(c=>[P(c.p1).x,P(c.p2).x]),ys=lines.flatMap(c=>[P(c.p1).y,P(c.p2).y]);
+    const W=Math.max(...xs)-Math.min(...xs),H=Math.max(...ys)-Math.min(...ys);
+    if(lines.length!==4||Math.abs(W-40)>1e-6||Math.abs(H-25)>1e-6)bad.push(`rectangle ${lines.length} lines ${W} × ${H}`);
+    if(dims().length!==2)bad.push(`${dims().length} dimensions on the typed rectangle`);
+    // (a circle: Ø 30)
+    sk.setTool('circle');sk.pointerDown(at(80,0));sk.pointerMove(at(100,0));key('3');await wait(30);await type(['30']);
+    const circ=sk.f.curves.find(c=>c.type==='circle');
+    if(!circ||Math.abs(S.radiusOf(sk.f,circ)-15)>1e-6)bad.push(`circle r ${circ&&S.radiusOf(sk.f,circ)}`);
+    if(!dims().some(k=>k.kind==='diameter'&&+k.value===30))bad.push('no Ø30 dimension');
+    // (a line: length 50 at 90°: vertical)
+    sk.setTool('line');sk.pointerDown(at(0,-120));sk.pointerMove(at(10,-160));key('5');await wait(30);await type(['50','90']);
+    const ln=sk.f.curves.filter(c=>c.type==='line').pop(),A=P(ln.p1),B=P(ln.p2);
+    if(Math.abs(Math.hypot(B.x-A.x,B.y-A.y)-50)>1e-6||Math.abs(B.x-A.x)>1e-6)bad.push(`line ${B.x-A.x}, ${B.y-A.y}`);
+    if(!sk.f.constraints.some(k=>k.type==='vertical'&&k.refs[0]===ln.id))bad.push('the typed 90° line is not vertical');
+    sk.endDraw();
+    // (the grid's step shown)
+    await wait(80);
+    if(!/^Grid /.test(document.querySelector('#status-grid')?.textContent||'')||document.querySelector('#status-grid').hidden)bad.push('no grid size in the status bar');
+    a.exitSketch(true);await done();
+    if(!document.querySelector('#status-grid').hidden)bad.push('grid size still shown after the sketch');
+    // (✔+: the extrude applied, another started)
+    a.startFeature('extrude','add');a.pm.feature.profiles=[a.doc.features[0].id];a.ui.renderPM();await done();
+    await a.okAndNext();await done();
+    if(a.doc.features.filter(f=>f.type==='extrude'&&f!==a.pm?.feature).length!==1||a.pm?.feature?.type!=='extrude'||!a.pm.isNew)bad.push(`✔+: ${a.doc.features.map(f=>f.type)} / ${a.pm?.feature?.type}`);
+    a.cancelPM();await done();
+    // (undo history: Sketch1 added, then Extrude1; back to just after the sketch)
+    const h=a.history,steps=h.stack.map((_,i)=>h.describe(i));
+    if(steps[h.idx]!=='Added Extrude1'||!steps.includes('Added Sketch1'))bad.push(`history ${steps.join(' | ')}`);
+    a.ui.showUndoHistory(document.querySelector('#hud'));
+    const rows=[...document.querySelectorAll('#ctxmenu [data-undo-step]')];
+    if(rows.length!==h.stack.length)bad.push(`${rows.length} rows in the undo list, ${h.stack.length} steps`);
+    rows.find(r=>r.textContent.includes('Added Sketch1'))?.click();await done();
+    if(a.doc.features.some(f=>f.type==='extrude'))bad.push('the undo list did not go back to before the extrude');
+    a.redo();await done();
+    // (a drawing with Dimension the views ticked)
+    const keep=a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup=async(o)=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A3L'),name:o.name,props:{},sheet:null,autoDim:true});
+    try{await a.newDrawing(true);}finally{a.ui.newDrawingSetup=keep;}
+    const ed=a.drawing;
+    if(!ed?.doc.anns.length)bad.push('the new drawing was not dimensioned');
+    // (a view put over the title block: moved clear of it)
+    const {titleBlockRect}=await import('/js/drawingformats.js'),D=await import('/js/drawing.js');
+    const tb=titleBlockRect(ed.sheet,ed.doc.format),v=ed.doc.views.find(x=>x.type==='model'),r0=D.viewRect(ed.doc,v,ed.geos);
+    v.x+=(tb.x0+tb.x1)/2-(r0.x0+r0.x1)/2;v.y+=(tb.y0+tb.y1)/2-(r0.y0+r0.y1)/2;ed.placeClear(v);
+    const r1=D.viewRect(ed.doc,v,ed.geos);
+    if(r1.x0<tb.x1&&r1.x1>tb.x0&&r1.y0<tb.y1&&r1.y1>tb.y0)bad.push('the view was left over the title block');
+    // (a thin sheet seen at a slant: its top edge picked, not the bottom one just behind it)
+    {
+      const d=M.newDoc(),s=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[-40,-30],[40,-30],[40,30],[-40,30]].map(([u,w])=>S.addPoint(s,u,w));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));
+      d.features.push(s,M.createFeature(d,'smBase',{sketch:s.id,thickness:2}));
+      await a.newDocument?.();closeModals();await a.setDoc(d);await done();
+      a.viewport.setStandardView('iso',false);a.viewport.fitAll?.();await wait(80);
+      const E=a.viewport.edgeList,yTop=Math.max(...E.flatMap(e=>e.pts.map(p=>p.y))),zMax=Math.max(...E.flatMap(e=>e.pts.map(p=>p.z)));
+      const top=E.find(e=>e.pts.every(p=>Math.abs(p.y-yTop)<1e-6&&Math.abs(p.z-zMax)<1e-6));
+      if(!top)bad.push('no top front edge found');
+      else{
+        const mid=top.pts[0].clone().lerp(top.pts[top.pts.length-1],.5),sp=a.viewport.project(mid),r=a.viewport.canvas.getBoundingClientRect();
+        const below=mid.clone();below.y-=2;const sb=a.viewport.project(below);
+        // (clicked between the two, a little nearer the bottom one)
+        const px=sp.x*.4+sb.x*.6,py=sp.y*.4+sb.y*.6,hit=a.viewport.pickEdge({clientX:r.left+px,clientY:r.top+py},6);
+        if(!hit||Math.abs(hit.point.y-yTop)>1e-3)bad.push(`thin sheet edge picked at y ${hit?.point.y} (top ${yTop})`);
+      }
+    }
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'typed rectangle, circle and line, grid size, undo history, ✔+, auto-dimensioned drawing, view moved clear, top edge picked'};
+  },
+
+  // The hands-on review's fixes: a feature left open when another is started is asked about (applied here), never
+  // lost; a hole's place typed from the face's edges; double-click sizes (the feature's and its sketch's) typed in a
+  // box; blank own sizes of fillet edges not shown as errors; an empty sketch says so; Edge Flange edges on both faces
+  // of the sheet fold the same way; an Extruded Surface and a Structural Member go on from the sketch drawn for them;
+  // a drawing's tab says Drawing beside a part of the same name; a view over the title block is warned about
+  async 'usability-fixes'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),bad=[];
+    const done=()=>until(()=>!a.kernel.pending,60000,50);
+    const plate=()=>{const d=M.newDoc(),s=M.createFeature(d,'sketch',{plane:{ref:'front'}}),q=[[-50,-30],[50,-30],[50,30],[-50,30]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));S.addRel(s,'dim',[q[0],q[1]],{kind:'hdist',value:100,s:1});d.features.push(s,M.createFeature(d,'extrude',{sketch:s.id,depth:20}));return d;};
+    await a.newDocument?.();closeModals();await a.setDoc(plate());await done();
+    a.viewport.setStandardView('front',false);a.viewport.fitAll?.();await wait(50);
+    // (a hole on the front face, typed 20 from the left and 15 from the bottom)
+    a.startFeature('hole');a.pm.feature.faces.push({p:[0,0,20],n:[0,0,1]});a.ui.renderPM();await done();
+    const pos=[...document.querySelectorAll('[data-hole-pos] input')];
+    if(pos.length!==2||Math.abs(+pos[0].value-50)>1e-3||Math.abs(+pos[1].value-30)>1e-3)bad.push(`hole place shown ${pos.map(i=>i.value)}`);
+    else{pos[0].value='20';pos[0].dispatchEvent(new Event('input',{bubbles:true}));pos[1].value='15';pos[1].dispatchEvent(new Event('input',{bubbles:true}));}
+    const hp=a.pm.feature.faces[0].p;if(Math.abs(hp[0]+30)>1e-6||Math.abs(hp[1]+15)>1e-6)bad.push(`hole moved to ${hp}`);
+    // (Chamfer started with the hole open: asked; Apply keeps the hole)
+    a.startFeature('chamfer');await until(()=>document.querySelector('.modal-back'),5000,50);
+    const dlg=document.querySelector('.modal-back');
+    if(!dlg||!/Hole1 is still open/.test(dlg.textContent))bad.push('no question about the open hole');
+    [...(dlg?.querySelectorAll('.modal-f button')||[])].find(b=>b.textContent==='Apply')?.click();
+    await until(()=>a.pm?.feature?.type==='chamfer',8000,50);
+    if(!a.doc.features.some(f=>f.type==='hole'))bad.push('the hole was lost');
+    if(a.pm?.feature?.type!=='chamfer')bad.push('Chamfer did not start after Apply');
+    a.cancelPM();await done();
+    // (fillet edges: a blank own size is no error)
+    a.startFeature('fillet');a.pm.feature.edges=[{p:[-50,0,20]},{p:[50,0,20]}];a.ui.renderPM();await done();
+    if([...document.querySelectorAll('[data-edge-size] input, input[data-edge-size]')].some(i=>i.classList.contains('bad')))bad.push('blank edge sizes shown as errors');
+    a.cancelPM();await done();
+    // (double-click sizes: the extrude's depth and its sketch's width, typed)
+    const ex=a.doc.features.find(f=>f.type==='extrude');a.ui.showQuickDims(ex,300,300);await wait(30);
+    const qd=document.querySelector('.quick-dims'),rows=[...(qd?.querySelectorAll('[data-quick-dim]')||[])];
+    if(rows.length!==2)bad.push(`${rows.length} sizes in the double-click box`);
+    const depth=rows.map(r=>r.querySelector('input')).find(i=>i.value==='20');
+    if(depth){depth.value='35';depth.dispatchEvent(new Event('input',{bubbles:true}));depth.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await done();if(+M.findFeature(a.doc,ex.id).depth!==35)bad.push('the typed depth was not applied');}
+    else bad.push('no depth in the double-click box');
+    document.querySelector('.quick-dims')?.remove();
+    // (an empty sketch)
+    const s2=M.createFeature(a.doc,'sketch',{plane:{ref:'top'}});a.doc.features.push(s2);await a.editSketch(s2.id);await wait(100);
+    if(!/Empty/.test(document.querySelector('#pm')?.textContent||''))bad.push('an empty sketch does not say it is empty');
+    a.exitSketch(false);await done();
+    // (edge flanges on the top and the bottom face of the sheet: both up)
+    {
+      const d=M.newDoc(),s=M.createFeature(d,'sketch',{plane:{ref:'top'}}),q=[[-30,-25],[40,-25],[40,30],[-30,30]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));
+      d.features.push(s,M.createFeature(d,'smBase',{sketch:s.id}),M.createFeature(d,'smFlange',{edges:[{p:[5,2,25]},{p:[40,0,2.5]}]}));
+      await a.setDoc(d);await done();
+      let lo=Infinity;const V=a.result.body?.vertices||[];for(let i=1;i<V.length;i+=3)lo=Math.min(lo,V[i]);
+      if(a.result.errors.size||!(lo>-1e-6))bad.push(`flanges on both faces: lowest ${lo}, ${[...a.result.errors.values()]}`);
+    }
+    // (an Extruded Surface and a Structural Member started with nothing drawn: sketched first, then on with it)
+    for(const [type,draw] of [['surfExtrude',(sk)=>{const p=[[0,0],[40,30],[80,0]].map(([x,y])=>S.addPoint(sk,x,y));S.addLine(sk,p[0],p[1]);S.addLine(sk,p[1],p[2]);}],['structMember',(sk)=>{const q=[[0,0],[200,0],[200,100],[0,100]].map(([x,y])=>S.addPoint(sk,x,y));q.forEach((p,i)=>S.addLine(sk,p,q[(i+1)%4]));}]]){
+      await a.newDocument?.();closeModals();await a.setDoc(M.newDoc());await done();
+      a.select({kind:'plane',id:'front'});a.startFeature(type);await until(()=>a.mode==='sketch',5000,50);
+      if(!/continues with it/.test(document.querySelector('#vp-banner')?.textContent||''))bad.push(`${type}: no word that it continues after the sketch`);
+      draw(a.sketcher.f);a.exitSketch(true);await until(()=>a.pm?.feature?.type===type,8000,50);await done();
+      if(a.pm?.feature?.type!==type||a.result.errors.get(a.pm.feature.id))bad.push(`${type} after its sketch: ${a.pm?.feature?.type} ${a.result.errors.get(a.pm?.feature?.id)||''}`);
+      a.cancelPM();await done();
+    }
+    // (a drawing of a part of the same name: its tab says Drawing; a view over the title block: warned)
+    await a.newDocument?.();closeModals();await a.setDoc(plate());await done();
+    const keep=a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup=async(o)=>({template:BUILTIN_TEMPLATES.find((t)=>t.id==='builtin:A3L'),name:o.name,props:{},sheet:null});
+    try{await a.newDrawing(true);}finally{a.ui.newDrawingSetup=keep;}
+    const ed=a.drawing;
+    await until(()=>ed.doc.views.every((v)=>(ed.geos.get(v.id)?.edges?.length||0)>0),60000,100);
+    if(!document.querySelector('#doc-title .doctab-kind'))bad.push('the drawing tab does not say Drawing');
+    const {titleBlockRect}=await import('/js/drawingformats.js'),tb=titleBlockRect(ed.sheet,ed.doc.format),v=ed.doc.views[2];
+    v.x=(tb.x0+tb.x1)/2;v.y=(tb.y0+tb.y1)/2;ed.warnOverlap(v);await wait(50);
+    if(!/lies over the title block/.test(document.querySelector('#toast')?.textContent||''))bad.push('no warning for a view over the title block');
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'open feature asked about, hole place typed, double-click sizes, edge sizes, empty sketch, flanges one way, surface and members after their sketch, drawing tab, overlap warning'};
+  },
+
   // Bodies selected together: with the body filter on, a click selects a body, Ctrl+click adds one or takes it away
   // (all highlighted); a right-click on one of them keeps them all and offers what to do with them (Delete Bodies
   // filled with them; Edit Material puts one material on them all); the tree's Ctrl+click as well. Bodies or faces
@@ -2264,7 +2748,8 @@ const UI = {
       await until(() => panel.querySelector('.hv-article h2')?.textContent === 'Fillet' || null, 5000);
       panel.querySelector('[data-help-pop]').click();
       const P = await import('/js/platform.js');
-      const win = await until(() => { const w = P.platform._helpWin; return w && !w.closed && w.document?.querySelector('.hv-article h2') ? w : null; }, 10000).catch(() => null);
+      // (a slow machine: the window and its manual take a while to load)
+      const win = await until(() => { const w = P.platform._helpWin; return w && !w.closed && w.document?.querySelector('.hv-article h2') ? w : null; }, 40000).catch(() => null);
       out.push(['⧉: a window of its own at the same section, the panel closed', !!win && win.document.querySelector('.hv-article h2').textContent === 'Fillet' && panel.hidden, win ? win.document.querySelector('.hv-article h2')?.textContent : 'no window (pop-ups blocked?)']);
       if (win) {
         await a.ui.help.open('Freeform');
@@ -2320,7 +2805,8 @@ const UI = {
     fire('pointerup', ...to, { button: 0, buttons: 0 }); await wait(100);
     await until(() => !a.kernel.pending, 30000);
     await wait(300);
-    a.okPM?.(); await wait(200); await a.rebuild();
+    // (OK finished before measuring: while the feature is open the part is shown without it)
+    await a.okPM?.(); await until(() => (!a.pm?.feature && !a.kernel.pending) || null, 30000); await a.rebuild();
     const v1 = await vol(), note = a.result.notes.get(ff.id) || '';
     const ok = h1 > 2.5 && Math.abs(during[1] - (10 + h1)) < 1e-6 && v1 > v0 + 1 && /met to/.test(note) && !a.result.errors?.size;
     return { ok, detail: `handle dragged from 2 to ${h1} mm (its mark at y ${during[1]?.toFixed?.(3)} while dragging); volume ${v0?.toFixed(2)} → ${v1?.toFixed(2)} mm³; ${note}${a.result.errors?.size ? ' ' + JSON.stringify([...a.result.errors]) : ''}` };

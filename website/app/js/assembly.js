@@ -628,14 +628,19 @@ export class AssemblyEditor {
     const out = comps.filter((c) => !flex.includes(c)), outMates = [], inner = new Map();
     for (const S of flex) {
       const sd = this.subView(this.part(S.part).doc, this.eff(S).config), PS = poseOf(S), rel = new Map();
-      for (const c of sd.components || []) {
+      // (its components and mates as the configuration it is used in has them)
+      const cf = (sd.configs || []).find((x) => x.id === sd.activeConfig);
+      const effC = (c) => ('suppressed' in (cf?.comps?.[c.id] || {}) ? { ...c, suppressed: cf.comps[c.id].suppressed } : c);
+      const effM = (m) => (cf?.mates?.[m.id] ? { ...m, ...cf.mates[m.id] } : m);
+      for (const c0 of sd.components || []) {
+        const c = effC(c0);
         if (c.suppressed) continue;
         const o = S.flex?.[c.id], pr = { p: (o?.pos || c.pos).slice(), q: new THREE.Quaternion(...(o?.rot || c.rot)).normalize() };
         rel.set(c.id, pr);
         const q = PS.q.clone().multiply(pr.q);
         out.push({ ...c, id: `${S.id}/${c.id}`, name: `${S.name} ▸ ${c.name}`, pos: toWorld(PS, pr.p), rot: [q.x, q.y, q.z, q.w], fixed: !!(S.fixed && c.fixed), _flexOf: S.id, _inner: c.id });
       }
-      for (const m of sd.mates || []) if (!m.suppressed && rel.has(m.a.comp) && rel.has(m.b.comp)) outMates.push({ ...m, id: `${S.id}/${m.id}`, a: { ...m.a, comp: `${S.id}/${m.a.comp}` }, b: { ...m.b, comp: `${S.id}/${m.b.comp}` } });
+      for (const m of (sd.mates || []).map(effM)) if (!m.suppressed && rel.has(m.a.comp) && rel.has(m.b.comp)) outMates.push({ ...m, id: `${S.id}/${m.id}`, a: { ...m.a, comp: `${S.id}/${m.a.comp}` }, b: { ...m.b, comp: `${S.id}/${m.b.comp}` } });
       inner.set(S.id, rel);
     }
     // (a reference on a part inside a flexible sub-assembly: given in the sub-assembly's frame, moved into its part's)
@@ -1751,7 +1756,7 @@ export class AssemblyEditor {
   standardParts() {
     const a = this.app, U = unitOf(this.doc);
     const sr = this.sel?.kind === 'refs' ? this.sel.refs.find((r) => r.kind === 'axis' && r.r > 0 && r.comp !== ORIGIN) : null;
-    const hole = sr ? this.holeOf(sr) : null;
+    const hole = sr ? this.throughStack(this.holeOf(sr)) : null; // (through the plates lined up with it)
     const others = hole ? this.matchingHoles(hole) : [];
     const last = this._stdLast || { type: 'hexBolt', material: 'steel' };
     const body = el('div', { class: 'stdparts' });
@@ -1841,7 +1846,8 @@ export class AssemblyEditor {
       made.push(c);
       return c;
     };
-    for (const h of [hole, ...(opts.all ? this.matchingHoles(hole) : [])]) {
+    for (const h0 of [hole, ...(opts.all ? this.matchingHoles(hole) : [])]) {
+      const h = opts.nut ? this.throughStack(h0) : h0;
       if (wsp) {
         if (opts.washer) {
           const w = place(wsp, h, h.end, h.face, -1);
@@ -2344,6 +2350,22 @@ export class AssemblyEditor {
     holes.forEach((h, i) => { const k = find(i); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(h); });
     // (one hole per component: the widest of a stepped one is its counterbore)
     return [...groups.values()].map((hs) => ({ holes: [...new Map(hs.sort((x, y) => x.r - y.r).map((h) => [h.comp.id, h])).values()] }));
+  }
+  // A hole as from holeOf, its far end moved to the far end of the stack of lined-up holes it leads into (plates bolted
+  // together: the washer and nut go under the last one, not between the plates), and its depth through them all
+  throughStack(h) {
+    if (!h) return h;
+    const P = this.poseOfId(h.ref.comp), u = unit(dirWorld(P, h.end.n)), p0 = toWorld(P, h.end.p), on = toWorld(P, h.ref.p);
+    const st = this.holeStacks().find((s) => s.holes.length > 1 && s.holes.some((x) => len(cross(x.d, u)) < 1e-4 && len(cross(sub(x.p, on), u)) < 1e-3));
+    if (!st) return h;
+    let bot = null;
+    for (const x of st.holes) {
+      const hh = this.holeOf(x.ref), X = this.poseOfId(x.comp.id);
+      if (hh) for (const [e, fc] of [[hh.end, hh.face], [hh.far, hh.farFace]]) { const t = dot(sub(toWorld(X, e.p), p0), u); if (!bot || t < bot.t) bot = { t, e, fc, X }; }
+    }
+    if (!bot || -bot.t <= h.depth + 1e-6) return h;
+    const qi = P.q.clone().invert(), local = (w) => applyQ(qi, sub(w, P.p));
+    return { ...h, depth: -bot.t, far: { p: local(toWorld(bot.X, bot.e.p)).map(r6), n: unit(applyQ(qi, dirWorld(bot.X, bot.e.n))).map(r6), sign: -1 }, farFace: bot.fc };
   }
   // A fastener in each stack of lined-up holes through two or more components (singles: in every hole), sized to the
   // holes, as long as the stack (with a washer under its head, and a washer and nut on the far side), mated in it;
@@ -3119,9 +3141,13 @@ export class AssemblyEditor {
         row({ ic: iconFor(f), label: f.name, depth, cls: (f.suppressed ? 'suppressed' : '') + (f.type === 'import' && f.context ? ' hidden-item' : ''), title: `${f.name} (a feature of ${p.name}): double-click to edit the part`, onDbl: edit, featureOf: p.id });
       }
     };
+    const viewMates = this.view().mates;
     for (const c of this.doc.components) {
       const e = this.eff(c), p = this.part(c.part);
-      const dof = this.dofs.get(c.id) || 0, mated = this.view().mates.some((m) => !m.suppressed && (m.a.comp === c.id || m.b.comp === c.id));
+      // (a flexible sub-assembly is solved as its components, "sub/inner": its freedoms are theirs)
+      const ofC = (id) => id === c.id || (c.flexible && String(id).startsWith(c.id + '/'));
+      const dof = c.flexible ? [...this.dofs].reduce((t, [id, d]) => t + (ofC(id) ? d : 0), 0) : this.dofs.get(c.id) || 0;
+      const mated = viewMates.some((m) => !m.suppressed && (ofC(m.a.comp) || ofC(m.b.comp)));
       const prefix = e.suppressed ? '' : c.fixed ? '(f) ' : dof > 0 || !mated ? '(-) ' : '';
       const isSub = this.isSub(p), open = this._openSubs.has(c.id), has = isSub || featureRowsOf(p).length;
       row({

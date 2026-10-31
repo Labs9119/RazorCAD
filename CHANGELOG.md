@@ -6,6 +6,149 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-01 22:00 — Version 0.21.2-beta
+
+- Installer, user manual and website for 0.21.2-beta.
+- Two tests that sometimes failed on GitHub's slower machines (Freeform handle drag, the manual's own window) wait
+  long enough there.
+
+## 2026-11-01 21:50 — Exact spline surfaces, Split Body and Split Face, lofted surfaces from model edges (PR #11)
+
+From a contribution by Claw267:
+- **Exact spline edges in surfaces:** open control-point splines stay exact B-spline edges in Planar Surface,
+  Extruded Surface and in lofted surfaces without guides or end conditions, instead of being approximated.
+- **Split Body** (was Split): splits solid or surface bodies into separate bodies with a sketch, plane, model face or
+  surface body, picked in their own boxes (a surface picked as a target stays a target). **Extend Splitting Tool**
+  carries a trimmed face's surface and open sketch ends on past the model; **All intersected bodies** is optional;
+  a tool that divides nothing gives an error.
+- **Split Face** (was Split Line): faces first, then a sketch projected along its normal or a direction, or a plane,
+  face or surface they are intersected with. The body count stays the same; only the faces picked are divided.
+- **Lofted Surface from model edges:** Profile Source ▸ Model edges lofts just the portions Split Face made, each
+  profile one edge or a connected chain of them, kept as its exact trimmed curve and following the split when it
+  changes.
+
+## 2026-11-01 21:30 — Break View renamed Break Lines
+
+- **Break View is now Break Lines** (the ribbon button, the right-click menu and its panel; Remove Break Lines puts
+  the view back whole), so it is not mistaken for Break from Parent View. A ribbon you have arranged keeps it where
+  you put it.
+
+## 2026-11-01 21:10 — Views scaled with their family, detail views on their own scale, Break from Parent View, Move to Sheet
+
+- **A view and the views made from it share one scale:** the scale of a projected, section or auxiliary view can be
+  changed in its panel like any other view's, and its parent and the parent's other views change with it (a model
+  view's change takes its projected views along too). The first view keeps its middle and the others their gaps to
+  it. The scale is the sheet's or one of the views' own, whatever the sheet's.
+- **Detail views have a scale of their own:** set in their panel (no longer a "use the sheet scale" tick that went
+  back to 2:1 of the parent); a change of the parent's scale leaves it alone.
+- **Changing the sheet's scale** keeps the gaps between a view and the views made from it, so they no longer spread
+  apart or run into each other.
+- **Break from Parent View** (right-click a projected, section or auxiliary view): it stays exactly as it is but on
+  its own: dragged anywhere, scaled alone, moved to another sheet, kept when its parent is deleted. A projected view
+  becomes a model view; a section or auxiliary view keeps its cutting line or arrow on its parent.
+- **Move to Sheet…** (right-click a model, flat pattern, detail or independent view): to another sheet or a new
+  one, with the views made from it and their dimensions and notes.
+- Drawings saved before open looking as they did: a view made from another with a scale of its own that differs
+  from its parent's opens broken from it.
+
+## 2026-11-01 19:45 — References to check, curved faces followed, more typed sizes, sketch undo history, room for views; holes that keep to their faces
+
+The suggested changes:
+- **Found references to check:** a reference found again after the model changed as the nearest of faces or edges
+  that look the same (two holes of one size) is marked with an orange **?** on its feature, as it may be the wrong
+  one. Right-click ▸ **Accept Found References**, or edit the feature and click ✔. When the look-alikes are too
+  close to call, the reference is not taken: the feature fails and Fix References lists it.
+- **Curved faces found again when they move:** a hole's wall, a countersink's cone, a fillet's round, a sphere, a
+  torus or a freeform face remembers its kind, radii and axis (a freeform face its area), and is found again as the
+  face of that kind and size clearly nearest where it was. Before, only flat faces (and, for Move/Copy Body mates,
+  cylinders) were.
+- **More sizes typed while drawing:** a Centerpoint Arc's Radius and Sweep, a 3 Point Arc's Radius, a Tangent Arc's
+  Radius and Sweep, an Ellipse's Major and Minor R, a Straight, Center Point or Overall Slot's Length and Width, and
+  a Polygon's Sides. A shape and its dimensions are one undo step.
+- **Undo history in a sketch:** the sketch's own steps since it was opened, in words ("Added 4 Lines with 2
+  dimensions", "Dimension 40 → 50", "Deleted Arc", "Moved"); click one to go back (or forward) to it.
+- **A drawing view with no room:** you are offered the largest scale that gives it a clear spot, or the smallest
+  larger sheet that does, or to leave it.
+
+Found by using sheet metal, patterns and configurations, a bigger assembly and STEP by hand, and put right:
+- **Holes keep to their faces:** a hole clicked on a flat face was kept at the point clicked. Made thicker, the
+  plate buried a blind hole inside it (nothing showed on the new top); made narrower or wider (a dimension, a
+  configuration), its holes stayed put, off the edge or no longer 20 from it. Now a hole starts on its face where
+  the face is, and stays as far from the face's nearer edges as it was placed. Bosses, snap hooks and the
+  3D-printing holes and pockets the same.
+- **A second hole clicked on the same face** took the first away. Each click adds one; a click on a hole already
+  placed takes it away (bosses, snap hooks, pockets and forms too).
+- **Bolting plates together:** with a washer and nut on the far side, Standard Parts put them between the plates
+  (inside the second one). They go under the last plate in line now, and the length is picked for the whole stack.
+- **Drawing views placed clear of other views' dimensions and notes** (a flat pattern was put over another view's
+  dimensions), their own dimensions going with them. A **BOM table**, hole table or cut list is placed clear of the
+  views too (it was put over a view).
+- **A flat pattern named after the part:** an unnamed sheet metal body goes by the last feature that changed it, so
+  its DXF was "Hole2.dxf". The part's only sheet metal body now gives the part's name (its own, once you name it).
+- **STEP colours:** a body's own colour (Appearances) was left out of the STEP file (the material's went instead),
+  for parts and for assemblies' single-body parts.
+
+## 2026-11-01 14:30 — Typed sizes while sketching, undo history, ✔+, views placed clear; mates that follow
+
+The bigger items from the hands-on review:
+- **Sizes typed while drawing:** with a rectangle, circle, polygon or line started, type a number: a box by the
+  cursor takes Width and Height, Ø, or Length and Angle (Tab between them). The shape follows what you type;
+  Enter makes it at those sizes and dimensions each size typed.
+- **The grid** is drawn at the step points snap to (finer as you zoom in, round the middle of the view), and the
+  status bar shows it ("Grid 5 mm") while a sketch is open. Before, a fixed 10 mm grid was drawn whatever the snap.
+- **Undo history:** right-click the Undo button (or its small arrow, or Edit ▸ Undo History…) for the part's last
+  steps in words ("Added Extrude2", "Edited Hole1"); click one to go straight back to just after it.
+- **✔+ (Shift+Enter)** on a new feature: accepted, and another of the same kind started at once.
+- **New drawings dimensioned:** "Dimension the views (Auto Dimension)" in the New Drawing dialog (remembered).
+- **Drawing views placed clear:** a view placed over the title block or another view is moved to the nearest clear
+  spot in the frame (projected and section views only along their line, so they stay lined up).
+- **Thin sheet edges:** where a sheet's top and bottom edges lie almost on top of each other on the screen, a
+  click takes the one nearer you (any edge pick: of edges about as near the cursor, the one nearest the eye).
+
+Found by using multibody parts and assemblies by hand, and put right:
+- **Move/Copy Body mates follow what they are mated to:** a pin mated into a plate's hole now moves with the hole
+  when the hole moves (mated to the hole's edge or its wall). Before, the mate failed with "A mate edge could not
+  be found in the model".
+- **Coincident flat faces in Move/Copy Body** start facing the way they sit, as assembly mates do: a pin's top on
+  the plate's top keeps the pin the right way up (it was turned over until Flip alignment was ticked).
+- **A hole being edited** showed From left / From bottom measured on the wrong face (a pin later put in the hole);
+  it is measured on the model as it is before the hole.
+- **A new feature still waiting for a pick** ("Select the bodies to move", "Add at least one mate") is said in
+  black, not as a red error, and not counted as an error in the status bar.
+- **Right-click a face ▸ Move/Copy Body…** (it was only on the body's own menu).
+- **A part's highlighted faces** (its selected feature) were left drawn over an assembly or drawing opened next.
+
+## 2026-11-01 01:10 — Fixes from a hands-on review (parts, sheet metal, surfaces, structures, drawings)
+
+RazorCAD was driven by mouse and keyboard as a user would, and what got in the way was put right:
+- **A feature left open is never lost:** starting (or editing) another feature while one is open asks **Apply**,
+  **Discard** or **Keep editing** (asked only when there is something to lose); before, the open one was thrown away.
+- **Hole positions typed:** each hole clicked on a flat face shows **From left** / **From bottom** (its distances
+  from the face's edges); type them to place it exactly.
+- **Double-click sizes:** double-click a face of the model for a small box of the sizes of the feature that made it
+  (its own and its sketch's dimensions); type one and press Enter (Ctrl+Z there undoes it).
+- **Extrude, Revolve, Base Flange, Extruded Surface and Structural Member** started looking straight at their sketch
+  turn the view so the depth shows.
+- **Sketch first, then on:** a banner says the feature continues when the sketch is exited, and the ribbon returns
+  to the tab it was started from (not always Features). **Structural Member** with no frame yet opens a sketch for
+  it (it used only to say "draw the frame first"); **Extruded Surface** goes on with the open sketch just drawn
+  (it asked for contours again).
+- **Edge Flange:** with several edges, every flange folds the way the first edge's does, even if an edge was
+  picked on the other face of the thin sheet (it is hard to tell top from bottom); a box turns it off. Older parts
+  keep their flanges as they were.
+- **Ribbon:** buttons that don't fit a narrow window go under **More** at the end (no scroll bar); **Sketch** and
+  **3D Sketch** on the Features tab, **Sketch** on Fast Structure; **Thicken** next to Convert to Solid on Surfaces.
+- **Panels:** the message at the top of a feature's panel keeps room for three lines, so fields don't jump as it
+  changes; rows no longer run wider than the panel (the Base Flange's gauge list cut the panel off); a fillet's or
+  chamfer's blank own-size boxes are no longer shown as errors; an empty sketch says "Empty" (not "Fully Defined").
+- **Status bar:** a long message is cut short on one line (all of it in its tooltip); the items at the right stay
+  whole.
+- **Drawings:** a drawing named as an open part shows "Drawing" on its tab; a section or detail view placed over the
+  title block or another view is warned about; a section placement click on the wrong side of its cutting line says
+  where to click.
+- **Weld bead lengths** in the cut list add up to the Weld Bead's total (each was rounded before adding).
+- Test usability-fixes.
+
 ## 2026-10-31 23:05 — The release attaches the user manual
 
 - The release workflow attaches the user manual PDF to the draft as `RazorCAD-User-Manual-<version>.pdf` (the PDF

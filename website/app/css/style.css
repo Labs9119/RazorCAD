@@ -100,6 +100,19 @@ table.bom td.num { text-align: right; }
 .datum-definition [data-datum-slot] .pm-btn:first-child { flex: 1; min-width: 0; padding: 4px 6px; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .datum-definition select { min-width: 0; width: 100%; height: 26px; border: 1px solid var(--border); border-radius: 3px; background: var(--panel); }
 .datum-definition .pm-input { min-width: 0; }
+.cm-btn.cm-hidden, .cm-sep.cm-hidden, .cm-split.cm-hidden { display: none; }
+.hole-pos { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 3px 6px; align-items: center; padding: 2px 6px 6px 26px; min-width: 0; }
+.hole-pos .pm-input { min-width: 0; }
+.hole-pos .pm-input input { width: 100%; min-width: 0; box-sizing: border-box; }
+.quick-dims { position: fixed; z-index: 60; min-width: 250px; max-width: 340px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 16px rgba(0,0,0,.18); padding: 6px 8px 8px; }
+.quick-dims .qd-h { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.quick-dims .qd-h b { flex: 1; }
+.quick-dims .qd-h svg { width: 18px; height: 18px; flex: none; }
+.quick-dims .qd-h .pm-btn { white-space: nowrap; }
+.quick-dims .qd-h .x { border: 0; background: none; cursor: pointer; }
+.quick-dims .qd-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) 120px; align-items: center; gap: 6px; margin: 3px 0; }
+.quick-dims .qd-id { color: var(--muted); font-size: 11px; }
+.cm-more { grid-row: 1 / span 2; height: auto; justify-content: center; }
 .cm-sep { width: 1px; background: var(--border-soft); margin: 3px 3px; grid-row: 1 / span 2; }
 #cm-tabs { display: flex; padding: 0 6px; border-top: 1px solid var(--border-soft); background: var(--panel); }
 #cm-tabs button {
@@ -194,6 +207,7 @@ table.bom th { background: #f1f5f9; font-weight: 600; }
 .tn .ti svg { width: 16px; height: 16px; }
 .tn .tl { overflow: hidden; text-overflow: ellipsis; }
 .tn .terr { color: var(--danger); font-weight: 700; margin-left: 2px; }
+.tn .twarn { color: #fff; background: #d98a1c; border-radius: 50%; width: 14px; height: 14px; display: inline-grid; place-items: center; font-size: 10px; font-weight: 800; margin-left: 4px; flex: none; }
 .tn.suppressed .tl { color: #9aa1ab; font-style: italic; }
 .tn.suppressed .ti { opacity: .45; }
 .tn.hidden-item .ti { opacity: .4; }
@@ -212,6 +226,9 @@ table.bom th { background: #f1f5f9; font-weight: 600; }
 }
 .pm-actions button:hover { background: var(--hover); }
 .pm-actions button svg { width: 18px; height: 18px; }
+/* (the panel's message: room for three lines kept, so the fields below don't jump as it changes) */
+.pm-status { min-height: calc(3 * 1.35em); }
+.doctab-kind { opacity: .7; font-size: 11px; }
 .pm-msg { margin: 0 8px 8px; padding: 6px 8px; background: #fff8dc; border: 1px solid #ecd98d; border-radius: 3px; line-height: 1.35; }
 .pm-msg.err { background: #fdecea; border-color: #f2b8b5; color: #8e1c1c; }
 .pm-group { margin: 0 6px 8px; border: 1px solid var(--border-soft); border-radius: 3px; background: var(--panel2); }
@@ -221,7 +238,7 @@ table.bom th { background: #f1f5f9; font-weight: 600; }
 .pm-group > .pm-gt .caret { font-size: 9px; color: var(--muted); width: 10px; }
 .pm-group.collapsed > .pm-gb { display: none; }
 .pm-gb { padding: 6px 8px; display: grid; gap: 6px; }
-.pm-row { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 6px; }
+.pm-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 6px; }
 .pm-row label { color: var(--muted); }
 .pm-row.check { grid-template-columns: 1fr; }
 .pm-row.check label { color: var(--text); display: flex; align-items: center; gap: 6px; }
@@ -418,6 +435,9 @@ table.bom th { background: #f1f5f9; font-weight: 600; }
 /* ---------- Status bar ---------- */
 #statusbar { display: flex; align-items: center; gap: 14px; padding: 0 10px; background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 #statusbar .spacer { flex: 1; }
+/* (a long message cut short on one line, all of it in its tooltip; the items at the right always whole) */
+#status-msg { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#statusbar > span:not(#status-msg):not(.spacer) { flex: none; white-space: nowrap; }
 #status-units { color: var(--text); }
 
 /* ---------- Modal ---------- */
@@ -943,3 +963,15 @@ label.has-dim-id::before { content: attr(data-dim-id); display: inline-block; fo
 /* Spotlights panel: a light's place and aim as X, Y, Z side by side */
 .lt-xyz { display: flex; gap: 4px; }
 .lt-xyz input { width: 0; flex: 1 1 0; min-width: 0; }
+/* sizes typed while sketching */
+.sk-type { width: 170px; }
+.sk-type .sk-type-row { display: grid; grid-template-columns: 52px minmax(0,1fr); align-items: center; gap: 4px; margin-top: 3px; }
+.sk-type .merr { color: var(--muted, #6b7280); }
+.sk-type input.bad { border-color: var(--danger); }
+.sk-type input.bad ~ .merr, .sk-type:has(input.bad) .merr { color: var(--danger); }
+/* the undo history list */
+#ctxmenu .undo-row.undone .mi-label { color: var(--muted, #8a94a3); font-style: italic; }
+#ctxmenu .undo-row.current { font-weight: 600; }
+/* ✔+: OK and start another */
+.pm-actions .pm-next { position: relative; }
+.pm-actions .pm-next b { position: absolute; right: 0; top: -3px; font-size: 16px; font-weight: 900; line-height: 1; color: var(--accent); text-shadow: 0 0 2px var(--panel2, #fff), 0 0 2px var(--panel2, #fff); }

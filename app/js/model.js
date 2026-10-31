@@ -204,6 +204,24 @@ export function sketchesUsedBy(f) {
   return [...new Set([f.sketch, f.profile, f.path, f.guide, f.profileA, f.profileB, ...(Array.isArray(f.profiles) ? f.profiles : []), ...(f.guides || []), ...(f.type === 'structMember' && Array.isArray(f.groups) ? f.groups.flatMap((g) => (g.segs || []).map((k) => k.s)) : [])].map((x) => typeof x === 'string' ? x : x?.sketch).filter(Boolean))];
 }
 
+// A feature's references found again after the model changed as the nearest of look-alike faces or edges (marked
+// ref.guess by the kernel): to be checked, and accepted (acceptGuessedRefs) or picked again.
+export function guessedRefs(f) {
+  const out = [];
+  const walk = (x, depth) => {
+    if (!x || typeof x !== 'object' || depth > 6) return;
+    if (x.guess === 1) out.push(x);
+    for (const v of Object.values(x)) walk(v, depth + 1);
+  };
+  walk(f, 0);
+  return out;
+}
+export function acceptGuessedRefs(f) {
+  const refs = guessedRefs(f);
+  for (const r of refs) delete r.guess;
+  return refs.length;
+}
+
 export function iconFor(f) {
   const t = TYPE_INFO[f.type];
   return f.op === 'cut' && t.cutIcon ? t.cutIcon : t.icon;
@@ -447,7 +465,7 @@ export function createFeature(doc, type, props = {}) {
     // corner: 'square' (flanges meeting at a corner each run square up to the other's inside face, their
     // inner edges cornerGap apart, the outside corner open) | 'butt' (mitred: they meet on the diagonal,
     // cornerGap apart) | 'closed' (one runs on to cover the other's end) | 'open'
-    smFlange: { edges: [], length: 20, lengthRef: 'outer', angle: 90, position: 'inside', offset: 0, flip: false, useDefaultRadius: true, radius: 2, reliefType: 'rect', reliefRatio: 0.5, corner: 'square', cornerGap: 0.5, cornerSwap: false, cornerBend: 'vcut' },
+    smFlange: { edges: [], length: 20, lengthRef: 'outer', angle: 90, position: 'inside', offset: 0, flip: false, sameSide: true, useDefaultRadius: true, radius: 2, reliefType: 'rect', reliefRatio: 0.5, corner: 'square', cornerGap: 0.5, cornerSwap: false, cornerBend: 'vcut' },
     smCornerRelief: { body: null, reliefType: 'rect', size: 4 },
     // faces: picked flange faces, one per corner (none: every corner); cornerType: overlap | underlap | square | butt
     // bendCorner: 'vcut' (bends as formed from the flat, lens-shaped opening) | 'mitre' (bends closed on the diagonal)
@@ -644,6 +662,37 @@ export class History {
   canRedo() { return this.idx < this.stack.length - 1; }
   undo() { return this.canUndo() ? JSON.parse(this.stack[--this.idx]) : null; }
   redo() { return this.canRedo() ? JSON.parse(this.stack[++this.idx]) : null; }
+  // Straight to step i (the undo history list)
+  goTo(i) { if (i < 0 || i >= this.stack.length || i === this.idx) return null; this.idx = i; return JSON.parse(this.stack[i]); }
+  // What step i did, in words (worked out from the part before and after it)
+  describe(i) {
+    if (i <= 0 || i >= this.stack.length) return 'Opened';
+    try { return describeChange(JSON.parse(this.stack[i - 1]), JSON.parse(this.stack[i])); } catch { return 'Change'; }
+  }
+}
+
+// What changed from part a to part b, in a few words: a feature added, deleted, renamed, suppressed or edited, the
+// features reordered, or another setting of the part
+export function describeChange(a, b) {
+  const fa = a.features || [], fb = b.features || [];
+  const A = new Map(fa.map((f) => [f.id, f])), B = new Map(fb.map((f) => [f.id, f]));
+  const nm = (f) => f.name || f.type;
+  const added = fb.filter((f) => !A.has(f.id)), gone = fa.filter((f) => !B.has(f.id));
+  if (added.length) return added.length === 1 ? `Added ${nm(added[0])}` : `Added ${nm(added[0])} and ${added.length - 1} more`;
+  if (gone.length) return gone.length === 1 ? `Deleted ${nm(gone[0])}` : `Deleted ${nm(gone[0])} and ${gone.length - 1} more`;
+  const changed = fb.filter((f) => JSON.stringify(f) !== JSON.stringify(A.get(f.id)));
+  if (!changed.length && fa.map((f) => f.id).join() !== fb.map((f) => f.id).join()) return 'Reordered features';
+  if (changed.length === 1) {
+    const f = changed[0], o = A.get(f.id);
+    if (f.name !== o.name) return `Renamed ${nm(o)} to ${nm(f)}`;
+    if (!!f.suppressed !== !!o.suppressed) return `${f.suppressed ? 'Suppressed' : 'Unsuppressed'} ${nm(f)}`;
+    return `Edited ${nm(f)}`;
+  }
+  if (changed.length > 1) return `Edited ${nm(changed[0])} and ${changed.length - 1} more`;
+  if (fa.map((f) => f.id).join() !== fb.map((f) => f.id).join()) return 'Reordered features';
+  const words = { material: 'Changed the material', equations: 'Changed the equations', appearance: 'Changed the appearance', units: 'Changed the units', props: 'Changed the properties', bodies: 'Changed the bodies', rollbackAt: 'Moved the rollback bar' };
+  const key = [...new Set([...Object.keys(a), ...Object.keys(b)])].find((k) => k !== 'features' && k !== 'nextId' && JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+  return key ? words[key] || `Changed ${key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()}` : 'Change';
 }
 
 // ---------------------------------------------------------------- example part
