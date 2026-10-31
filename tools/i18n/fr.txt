@@ -977,3 +977,24 @@
 977|Droite
 978|Dessous
 979|Trimétrique
+980|Diviser le corps
+981|Diviser la face
+982|Corps à diviser
+983|Faces à diviser
+984|Outil de division
+985|Sélectionner des corps
+986|Sélectionner des faces
+987|Sélectionner l’outil de division
+988|Tous les corps traversés
+989|Prolonger l’outil de division
+990|Type de division
+991|Direction de projection
+992|Normale à l’esquisse
+993|Selon un vecteur
+994|Côté positif
+995|Côté négatif
+996|Source du profil
+997|Contours d’esquisse
+998|Arêtes du modèle
+999|Ajouter les arêtes sélectionnées comme profil
+1000|Effacer les arêtes sélectionnées

@@ -1,0 +1,57 @@
+name: Spline surface Windows preview
+
+on:
+  push:
+    branches: [codex/nuovo-lavoro]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install test and build tools
+        run: python -m pip install --upgrade pip playwright pywebview pyinstaller pillow
+      - name: Verify spline surfaces and related workflows
+        run: python tests/run_tests.py --only loft-model-edges split-body-face exact-spline-surfaces planar-surface-selection surface-extrude-controls surface-loft-closed-check surface-loft-guides loft-manual-correspondence loft-end-conditions step-roundtrip --jobs 2
+        env:
+          CI: 'true'
+      - name: Build Windows installer
+        shell: cmd
+        run: call installer\build_installer.bat
+      - name: Prepare preview files
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.txt -Raw).Trim()
+          $short = '${{ github.sha }}'.Substring(0, 7)
+          $source = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'RazorCAD Install'
+          $dest = Join-Path $env:RUNNER_TEMP 'spline-preview'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item (Join-Path $source "RazorCAD-Setup-$version.exe") (Join-Path $dest "RazorCAD-Setup-$version-spline-preview-$short.exe")
+          @"
+          RazorCAD spline surface preview
+          Version: $version
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+
+          This preview preserves open control-point splines as exact B-spline edges
+          in planar and extruded surfaces and surface lofts without guides or end conditions.
+          Split Body supports solids and surfaces; Split Face supports projection and
+          intersection, with separate target/tool selection and explicit tool extension.
+          Surface Loft can use exact model-edge profiles from the split portions.
+          The application version remains $version. This is a test installer, not a published release.
+          "@ | Set-Content -Encoding utf8 (Join-Path $dest 'Preview.txt')
+          Get-ChildItem $dest -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content -Encoding utf8 (Join-Path $dest 'SHA256SUMS.txt')
+      - uses: actions/upload-artifact@v6
+        with:
+          name: RazorCAD-Windows-spline-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/spline-preview/
+          if-no-files-found: error
+          retention-days: 14

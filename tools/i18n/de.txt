@@ -977,3 +977,24 @@
 977|Rechts
 978|Unten
 979|Trimetrisch
+980|Körper teilen
+981|Fläche teilen
+982|Zu teilende Körper
+983|Zu teilende Flächen
+984|Teilungswerkzeug
+985|Körper auswählen
+986|Flächen auswählen
+987|Teilungswerkzeug auswählen
+988|Alle geschnittenen Körper
+989|Teilungswerkzeug verlängern
+990|Teilungstyp
+991|Projektionsrichtung
+992|Skizzennormale
+993|Entlang eines Vektors
+994|Positive Seite
+995|Negative Seite
+996|Profilquelle
+997|Skizzenkonturen
+998|Modellkanten
+999|Ausgewählte Kanten als Profil hinzufügen
+1000|Ausgewählte Kanten löschen

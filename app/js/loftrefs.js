@@ -2,10 +2,12 @@
 import * as S from './sketchmodel.js';
 
 export const sourceId = (ref) => typeof ref === 'string' ? ref : ref?.sketch;
+export const isModelEdgeChain = ref => ref?.kind === 'modelEdgeChain';
+const edgeKey = edge => JSON.stringify([edge.body || null, ...edge.p.map(x=>Math.round(x*1e6))]);
 const sorted = (ids) => [...new Set(ids)].sort();
 const boundaryIds = (loop) => sorted(loop.segs.map((g) => g.sourceCurve));
 export const regionKey = (region) => JSON.stringify([boundaryIds(region.outer), region.holes.map(boundaryIds).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]);
-export const refKey = (ref) => !ref || typeof ref === 'string' ? ref : ref.kind === 'modelFace' ? JSON.stringify(['modelFace', ref.body || null, ...ref.p.map((x) => Math.round(x * 1e4))]) : JSON.stringify([ref.sketch, sorted(ref.curves || []), ref.region || null,...(ref.face?[ref.face]:[])]);
+export const refKey = (ref) => !ref || typeof ref === 'string' ? ref : isModelEdgeChain(ref) ? JSON.stringify(['modelEdgeChain', (ref.edges||[]).map(edgeKey).sort()]) : ref.kind === 'modelFace' ? JSON.stringify(['modelFace', ref.body || null, ...ref.p.map((x) => Math.round(x * 1e4))]) : JSON.stringify([ref.sketch, sorted(ref.curves || []), ref.region || null,...(ref.face?[ref.face]:[])]);
 const loopFaceKey=loop=>{
   const items=[],same=(a,b)=>a&&b&&a[0]===b[0]&&a[1]===b[1];for(const g of loop.segs){const key=[g.sourceCurve,g.sourceDirection||1];if(!same(items.at(-1),key))items.push(key);}
   if(items.length>1&&same(items[0],items.at(-1)))items.pop();
@@ -16,6 +18,7 @@ const faceKey=region=>JSON.stringify([loopFaceKey(region.outer),region.holes.map
 // Sweep roles may use different contours from one sketch, but must not reuse
 // the same entities. A whole-sketch reference includes every contour in it.
 export function overlappingRefs(a,b){
+  if(isModelEdgeChain(a)||isModelEdgeChain(b)){const keys=new Set((a?.edges||[]).map(edgeKey));return (b?.edges||[]).some(edge=>keys.has(edgeKey(edge)));}
   if(!a||!b||sourceId(a)!==sourceId(b))return false;
   if(typeof a==='string'||typeof b==='string')return true;
   const ids=new Set(a.curves||[]);return (b.curves||[]).some(id=>ids.has(id));
@@ -67,6 +70,7 @@ export function chainRef(sk, sketch, curve, chain = true, guide = false) {
 }
 
 export function describeRef(doc, ref) {
+  if (isModelEdgeChain(ref)) return `Model edges (${ref.edges?.length||0})`;
   if (ref?.kind === 'modelFace') return 'Model face';
   const sk = doc.features.find((f) => f.id === sourceId(ref));
   return typeof ref === 'string' ? sk?.name || '(missing)' : `${sk?.name || '(missing)'} · ${ref.region ? 'region' : 'contour'} (${ref.curves?.length || 0} curves)`;

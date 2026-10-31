@@ -279,7 +279,7 @@ export function makeRC(app, macros, log) {
     commands: () => app.ui.commandList().map((c) => c.label),
     async command(name) {
       commit(); await build();
-      const k = cmdKey(name), c = app.ui.commandList().find((x) => x.k === k);
+      const k = cmdKey(name), commands=app.ui.commandList(), c = commands.find(x=>x.k===k)||commands.find(x=>x.aliases?.includes(k));
       if (!c) throw new Error(`"${name}" is not a command here`);
       await c.action();
       await wait(30);

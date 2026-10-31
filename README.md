@@ -253,8 +253,8 @@ and reference geometry being edited is drawn in orange. Click ✔ to finish the 
   is smaller than the wall, the shell still works: the outside keeps the fillet and the inside gets a sharp corner
   there (the shell is made from the body without those small blends and cut out of the real body).
 - **Combine**: **Add**, **Subtract** or **Common** solid bodies. The first body clicked is the main body.
-- **Split**: cut bodies into separate bodies with a plane, a flat face or a surface body. With a plane or face you can
-  keep all pieces or just the piece on one side.
+- **Split Body**: select solid or surface bodies, then a sketch, plane, model face or surface splitting tool. Extend the tool when needed; with a planar tool, keep all pieces or one side.
+- **Split Face**: select faces, then project a sketch (normal or along a vector) or intersect a plane, face or surface. Creates face boundaries while preserving each body.
 - **Move/Copy Bodies**: move (or copy) solid and surface bodies either by **coordinates** (ΔX/ΔY/ΔZ plus a rotation
   about X/Y/Z or a reference axis, through the axis or the bodies' center; copies repeat the step) or with **mates**:
   Coincident, Distance, Parallel, Perpendicular, Angle and Concentric between an entity of the moving bodies (face,
@@ -273,7 +273,9 @@ The **Surfaces** tab builds surface bodies (zero-thickness faces), listed under 
 - **Knit Surface** sews surfaces together. When they enclose a volume, *Try to form a solid* turns them into a solid.
 - **Thicken** gives a surface a wall thickness (one side or both) and makes it a solid.
 
-Surfaces can split solid bodies (Split), and can be moved or copied. Cuts and Combine only act on solid bodies.
+Lofted Surface can also use **Model edges**: select the trimmed boundary edges made by Split Face, add each connected chain as a profile, then loft only those portions. Model-edge profiles currently use free ends and automatic correspondence without guides.
+
+Surfaces can split solid or surface bodies (Split Body), and can be moved or copied. Cuts and Combine only act on solid bodies.
 
 ## Project layout
 ```
