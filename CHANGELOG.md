@@ -6,6 +6,10 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 22:30 — Version 0.21.1-beta
+
+- Installer, user manual (122 pages) and website for 0.21.1-beta.
+
 ## 2026-10-31 22:10 — Right-click anywhere for the selection's menu
 
 - With bodies or faces selected, a right-click anywhere in the model view (empty space, or elsewhere on the model)
