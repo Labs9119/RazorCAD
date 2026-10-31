@@ -916,7 +916,8 @@ const UI = {
 
   // Bodies selected together: with the body filter on, a click selects a body, Ctrl+click adds one or takes it away
   // (all highlighted); a right-click on one of them keeps them all and offers what to do with them (Delete Bodies
-  // filled with them; Edit Material puts one material on them all); the tree's Ctrl+click as well
+  // filled with them; Edit Material puts one material on them all); the tree's Ctrl+click as well. Bodies or faces
+  // selected: a right-click anywhere in the view brings up their menu
   async 'body-multi-select'() {
     const a=window.app,{Vector3}=await import('three'),S=await import('/js/sketchmodel.js'),d=M.newDoc(),bad=[];
     for(const x of [-250,0,250]){const s=M.createFeature(d,'sketch',{plane:{ref:'front'}});const q=[[x-60,-60],[x+60,-60],[x+60,60],[x-60,60]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));d.features.push(s,M.createFeature(d,'extrude',{sketch:s.id,depth:120,merge:false}));}
@@ -944,8 +945,17 @@ const UI = {
     const mats=a.result.bodies.map((b)=>b.material?.name||'');
     if(mats.join()!=='Copper,,Copper')bad.push(`materials ${mats.join()}`);
     a.selectBody(b2,{ctrlKey:false});a.selectBody(b1,{ctrlKey:true});if(ids()!==[b2,b1].join())bad.push(`the tree's Ctrl+click: ${ids()}`);
+    // a right-click anywhere in the view (empty space, or on a body not selected): the selection's menu
+    const menuAt=(x,y)=>{let got=null;const keep=a.ui.showContext;a.ui.showContext=(cx,cy,items)=>{got=items.filter((i)=>i&&i!=='sep').map((i)=>i.label);};try{const q=vp.project(new Vector3(x,y,120));a.viewportMenu({clientX:r.left+q.x,clientY:r.top+q.y,button:2,shiftKey:false,ctrlKey:false,preventDefault(){}});}finally{a.ui.showContext=keep;}return got||[];};
+    a.select(a.bodySelOf([b1,b3]));
+    let m=menuAt(0,400);if(!m.includes('Hide 2 Bodies'))bad.push(`right-click in empty space with 2 bodies: ${m.slice(0,4).join(' / ')}`);
+    m=menuAt(0,0);if(!m.includes('Hide 2 Bodies')||ids()!==[b1,b3].join())bad.push(`right-click on a body not selected: ${m.slice(0,4).join(' / ')}; ${ids()}`);
+    a.toggleFilter('clear');a.selectAt(ev(-250,false));a.selectAt(ev(250,true));
+    m=menuAt(0,400);if(!m.includes('Face Appearance… (2 faces)')||!m.includes('Hide 2 Bodies'))bad.push(`right-click in empty space with 2 faces: ${m.slice(0,4).join(' / ')}`);
+    a.selectAt(ev(-250,false));m=menuAt(0,400);if(!m.includes('Face Appearance…')||!m.some((l)=>/^Body Properties/.test(l)))bad.push(`right-click in empty space with a face: ${m.slice(0,4).join(' / ')}`);
+    a.select(null);m=menuAt(0,400);if(m.some((l)=>/Appearance|Body Properties/.test(l)))bad.push(`nothing selected, empty space: ${m.slice(0,4).join(' / ')}`);
     a.toggleFilter('clear');a.select(null);closeModals();
-    return {ok:!bad.length,detail:bad.length?bad.join('; '):'click, Ctrl+click to add and take away, right-click, Delete Bodies, Edit Material, the tree'};
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'click, Ctrl+click to add and take away, right-click, Delete Bodies, Edit Material, the tree; a right-click anywhere brings up the menu of what is selected'};
   },
 
   // 3D sketch Dimension: a line clicked shows its length at once, with extension and dimension lines, following the

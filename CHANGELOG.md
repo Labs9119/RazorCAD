@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 22:10 — Right-click anywhere for the selection's menu
+
+- With bodies or faces selected, a right-click anywhere in the model view (empty space, or elsewhere on the model)
+  brings up the menu of the selection, as if right-clicking on it: one body or several, one face or several picked
+  with Ctrl (Face Appearance for them all, then the commands of their bodies). Click something else first for its
+  own menu.
+
 ## 2026-10-31 21:40 — Several bodies selected with Ctrl; Edit Material on the body right-click menu
 
 - **Selecting bodies:** with the Solid Bodies filter on, Ctrl+click adds a body to the selection (or takes a selected

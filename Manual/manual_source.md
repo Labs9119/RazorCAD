@@ -413,6 +413,8 @@ Hold [[Shift]] and **right-click** to step through the bodies and surfaces under
 
 ## Right-click menus
 
+With bodies or faces selected, a right-click anywhere in the view (empty space included) brings up their menu, as if on the selection itself; one face or several picked with [[Ctrl]] (Face Appearance for them all, and the commands of their bodies). To get another item's menu, click it first, or [[Esc]] to clear the selection. {idx:right-click, on the selection}
+
 | Right-click on | Offers |
 |---|---|
 | A face | Sketch, Normal To, Export Face as DXF, Fillet, Chamfer, Face Appearance…, Part Appearance… |

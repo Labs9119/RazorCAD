@@ -3963,9 +3963,9 @@ class App {
       { label: 'Body Appearance…', icon: 'appearance', action: () => this.startAppearance({ bodies: ids.slice() }) },
       ...(surf ? [] : [{ label: `Edit Material… (${n} bodies)`, icon: 'material', action: () => this.ui.showMaterial(ids.filter((id) => this.bodyById(id)?.kind !== 'surface')) }]),
       'sep',
-      { label: `Move/Copy ${n} Bodies…`, icon: 'moveBody', action: () => this.startFeature('moveBody') },
-      ...(ids.filter((id) => this.bodyById(id)?.kind === 'solid').length > 1 ? [{ label: `Combine ${n} Bodies…`, icon: 'combine', action: () => this.startFeature('combine') }] : []),
-      { label: `Delete ${n} Bodies…`, icon: 'trash', action: () => this.startFeature('deleteBody') },
+      { label: `Move/Copy ${n} Bodies…`, icon: 'moveBody', action: () => { this.select(this.bodySelOf(ids)); this.startFeature('moveBody'); } },
+      ...(ids.filter((id) => this.bodyById(id)?.kind === 'solid').length > 1 ? [{ label: `Combine ${n} Bodies…`, icon: 'combine', action: () => { this.select(this.bodySelOf(ids)); this.startFeature('combine'); } }] : []),
+      { label: `Delete ${n} Bodies…`, icon: 'trash', action: () => { this.select(this.bodySelOf(ids)); this.startFeature('deleteBody'); } },
     ];
   }
 
@@ -4623,8 +4623,15 @@ class App {
       }
       items.push('sep', { label: 'Normal To', icon: 'normalTo', action: () => this.sketcher.normalTo() });
     } else {
-      const p = this.pm ? null : this.pickEntity(e);
-      const vp = this.viewport;
+      const vp = this.viewport, sel = this.pm ? null : this.selection;
+      // bodies or faces selected: their menu wherever the right-click is, as on the selection itself (the faces
+      // picked together with Ctrl, or the one face)
+      const ctrlFaces = sel?.kind === 'face' ? this.measureSel.filter((x) => x.kind === 'face') : [];
+      const selFaces = sel?.kind !== 'face' ? null : ctrlFaces.length > 1 && ctrlFaces.some((x) => x.gi === sel.face?.index)
+        ? ctrlFaces.map((x) => ({ face: vp.faceInfo(x.gi), p: x.p, bi: x.body ?? vp.faceBody[x.gi] })).filter((x) => x.face)
+        : [{ face: sel.face, p: sel.point || sel.face.center.toArray(), bi: sel.body ?? vp.faceBody[sel.face.index] }];
+      const selBodies = this.selectedBodyIds();
+      const p = this.pm || selFaces || selBodies.length ? null : this.pickEntity(e);
       const bodyItems = (bi) => {
         const b = this.result.bodies?.[bi];
         return b ? [
@@ -4642,25 +4649,30 @@ class App {
           { label: 'Export Body as STEP…', icon: 'step', action: () => this.exportBodySTEP(b.id) },
         ] : [];
       };
-      if (p?.kind === 'face') {
-        const face = vp.faceInfo(p.hit.face);
-        const bi = vp.faceBody[p.hit.face];
-        this.select({ kind: 'face', face, point: p.hit.point.toArray(), body: bi });
-        const fp = p.hit.point.toArray(), bid = this.result.bodies?.[bi]?.id;
-        items.push({ label: 'Face Appearance…', icon: 'appearance', action: () => this.startAppearance({ faces: [{ p: fp, ...(face.planar ? { n: face.normal.toArray() } : {}), b: bid }] }) });
+      // (faces: [{ face, p, bi }], one or several)
+      const faceItems = (faces) => {
+        const one = faces.length === 1, { face, p: fp } = faces[0];
+        items.push({ label: one ? 'Face Appearance…' : `Face Appearance… (${faces.length} faces)`, icon: 'appearance', action: () => this.startAppearance({ faces: faces.map((x) => ({ p: x.p, ...(x.face.planar ? { n: x.face.normal.toArray() } : {}), b: this.result.bodies?.[x.bi]?.id })) }) });
         items.push({ label: 'Part Appearance…', icon: 'appearance', action: () => this.startAppearance({ target: 'part' }) });
-        if (face.planar) {
+        if (one && face.planar) {
           items.push({ label: 'Sketch', icon: 'sketch', action: () => this.createSketchOn(this.faceSketchPlane(face, fp)) });
           items.push({ label: 'Normal To', icon: 'normalTo', action: () => this.viewport.normalTo(this.faceFrame(face)) });
           items.push({ label: 'Export Face as DXF…', icon: 'dxf', action: () => this.exportFaceDXF() });
         }
         items.push({ label: 'Fillet…', icon: 'fillet', action: () => this.startFeature('fillet') });
         items.push({ label: 'Chamfer…', icon: 'chamfer', action: () => this.startFeature('chamfer') });
-        items.push('sep', ...bodyItems(bi), 'sep');
+        const bis = [...new Set(faces.map((x) => x.bi))].filter((bi) => this.result.bodies?.[bi]);
+        items.push('sep', ...(bis.length > 1 ? this.bodiesMenuItems(bis.map((bi) => this.result.bodies[bi].id)) : bodyItems(bis[0])), 'sep');
+      };
+      if (selFaces) faceItems(selFaces);
+      else if (selBodies.length) items.push(...(selBodies.length > 1 ? this.bodiesMenuItems(selBodies) : bodyItems(vp.bodyIndexOf(selBodies[0]))), 'sep');
+      else if (p?.kind === 'face') {
+        const face = vp.faceInfo(p.hit.face), bi = vp.faceBody[p.hit.face];
+        this.select({ kind: 'face', face, point: p.hit.point.toArray(), body: bi });
+        faceItems([{ face, p: p.hit.point.toArray(), bi }]);
       } else if (p?.kind === 'body') {
-        const id = this.result.bodies[p.index]?.id, ids = this.selectedBodyIds();
-        if (ids.length > 1 && ids.includes(id)) items.push(...this.bodiesMenuItems(ids), 'sep');
-        else { this.select({ kind: 'body', id }); items.push(...bodyItems(p.index), 'sep'); }
+        this.select({ kind: 'body', id: this.result.bodies[p.index]?.id });
+        items.push(...bodyItems(p.index), 'sep');
       } else if (p?.kind === 'edge') {
         const bi = vp.edgeBody[p.index];
         this.select({ kind: 'edge', index: p.index, p: p.edge.mid, body: bi });
