@@ -9118,12 +9118,14 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'smEndFlange': {
-          // a flange on the end of a part (a duct, a pipe, a sheet metal part; round or flat-sided): a flat ring, a
-          // sheet metal plate of its own, made as a Transition's are. The end: the flat end faces of the part's wall
-          // picked (one ring, or the pieces of a part made in parts: gaps between them closed), in one plane. Butt
-          // mounted: on the end, out past it by its thickness, its opening the inside of the end. Slipped on (socket):
-          // its opening the outside of the end and the clearance, the end through it to the offset from its face.
-          // Small rounded corners (bends, tighter than the flange is wide) squared off; bolt holes as a Transition's.
+          // flanges on the ends of parts (a duct, a pipe, a sheet metal part; round or flat-sided): each a flat ring,
+          // a sheet metal plate of its own, made as a Transition's are. The ends: the flat end faces of the parts'
+          // walls picked; faces in one plane facing the same way make an end (one ring, or the pieces of a part made
+          // in parts: gaps between them closed), each ring there an end of its own: both ends of a duct, the ends of
+          // several parts, all one size outside (one flange size). Butt mounted: on the end, out past it by its
+          // thickness, its opening the inside of the end. Slipped on (socket): its opening the outside of the end and
+          // the clearance, the end through it to the offset from its face. Small rounded corners (bends, tighter than
+          // the flange is wide) squared off; bolt holes as a Transition's.
           if (!f.faces?.length) throw new Error('Click the flat end face of the part (the end of its wall), and each piece of it for a part made in parts');
           const hits = f.faces.map((r, i) => {
             const hit = findFaceAny(solids, r);
@@ -9131,58 +9133,18 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (hit.face.geomType !== 'PLANE') throw new Error(`End face ${i + 1} is not flat: click the flat end of the part's wall`);
             return hit;
           });
-          const o = f.faces[0].p;
-          let n = unit(vec(hits[0].face.normalAt()));
-          // (out of the part: the part behind the end)
-          if (dot(sub(bbox(hits[0].body.shape).center, o), n) > 0) n = mul(n, -1);
           const size = Math.max(1, ...hits.map((h) => bbox(h.body.shape).diag));
+          // (each face out of its part: the part behind the end; faces in one plane facing the same way together)
+          const groups = [];
           hits.forEach((h, i) => {
-            const m = unit(vec(h.face.normalAt()));
-            if (Math.abs(Math.abs(dot(m, n)) - 1) > 1e-6 || Math.abs(dot(sub(f.faces[i].p, o), n)) > 1e-6 * size) throw new Error(`End face ${i + 1} is not in the plane of the first one: the end's faces must lie in one plane`);
+            const p = f.faces[i].p;
+            let m = unit(vec(h.face.normalAt()));
+            if (dot(sub(bbox(h.body.shape).center, p), m) > 0) m = mul(m, -1);
+            const g = groups.find((g0) => dot(g0.n, m) > 1 - 1e-6 && Math.abs(dot(sub(p, g0.o), g0.n)) <= 1e-6 * size);
+            if (g) g.hits.push(h);
+            else groups.push({ o: p, n: m, hits: [h] });
           });
-          const u = levelX(n), fr = { o, u, v: cross(n, u), n };
-          // the end as one region in its plane: each face (its outline less its holes) together, gaps closed
-          const loopDr = (segs) => loopDrawing({ segs });
-          let region = null;
-          for (const h of hits) {
-            let dr = loopDr(wireSegs2D(h.face.clone().outerWire(), fr));
-            for (const w of h.face.clone().innerWires()) dr = dr.cut(loopDr(wireSegs2D(w, fr)));
-            region = region ? region.fuse(dr) : dr;
-          }
-          const miter = { lineJoinType: 'miter' }, XY = { o: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] };
-          const ringOf = (dr) => { const fs = drawingRegion(dr).faces; return fs.length === 1 ? { outer: fs[0].clone().outerWire(), inner: fs[0].clone().innerWires() } : null; };
-          let ring = ringOf(region);
-          const gapMax = ev(f.flGap ?? 10);
-          if ((!ring || ring.inner.length !== 1) && gapMax > 0) {
-            // (gaps between the pieces bridged: two straight ends facing each other across a gap (nearly parallel,
-            // about as long, at most gapMax apart, the space between them empty) joined by the strip between them)
-            const loops = drawingRegion(region).faces.flatMap((fc) => [fc.clone().outerWire(), ...fc.clone().innerWires()].map((w) => wireSegs2D(w, XY)));
-            const polys = loops.map((segs) => segs.flatMap((g0) => {
-              if (g0.type === 'line') return [g0.a];
-              if (g0.type === 'circle') return Array.from({ length: 64 }, (_, k) => [g0.c[0] + g0.r * Math.cos((k * Math.PI) / 32), g0.c[1] + g0.r * Math.sin((k * Math.PI) / 32)]);
-              return [g0.a, g0.m];
-            }));
-            const inside = (p) => polys.reduce((x, P) => { let c = false; for (let k = 0, m = P.length - 1; k < P.length; m = k++) if ((P[k][1] > p[1]) !== (P[m][1] > p[1]) && p[0] < ((P[m][0] - P[k][0]) * (p[1] - P[k][1])) / (P[m][1] - P[k][1]) + P[k][0]) c = !c; return c !== x; }, false);
-            const ends = loops.flat().filter((g0) => g0.type === 'line' && Math.hypot(g0.b[0] - g0.a[0], g0.b[1] - g0.a[1]) > 1e-6);
-            const d2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]), lenOf = (g0) => d2(g0.a, g0.b);
-            const toSeg = (p, g0) => { const dx = g0.b[0] - g0.a[0], dy = g0.b[1] - g0.a[1], t0 = Math.max(0, Math.min(1, ((p[0] - g0.a[0]) * dx + (p[1] - g0.a[1]) * dy) / (dx * dx + dy * dy))); return d2(p, [g0.a[0] + dx * t0, g0.a[1] + dy * t0]); };
-            let bridged = region, nb = 0;
-            ends.forEach((e1, k1) => ends.slice(k1 + 1).forEach((e2) => {
-              const L1 = lenOf(e1), L2 = lenOf(e2), cs = Math.abs(((e1.b[0] - e1.a[0]) * (e2.b[0] - e2.a[0]) + (e1.b[1] - e1.a[1]) * (e2.b[1] - e2.a[1])) / (L1 * L2));
-              if (cs < Math.cos((10 * Math.PI) / 180) || Math.max(L1, L2) > 2 * Math.min(L1, L2)) return;
-              const gap = Math.min(toSeg(e1.a, e2), toSeg(e1.b, e2), toSeg(e2.a, e1), toSeg(e2.b, e1));
-              if (!(gap > 1e-7 && gap <= gapMax)) return;
-              const mid = [(e1.a[0] + e1.b[0] + e2.a[0] + e2.b[0]) / 4, (e1.a[1] + e1.b[1] + e2.a[1] + e2.b[1]) / 4];
-              if (inside(mid)) return;
-              const q = d2(e1.b, e2.a) < d2(e1.b, e2.b) ? [e1.a, e1.b, e2.a, e2.b] : [e1.a, e1.b, e2.b, e2.a];
-              bridged = bridged.fuse(loopDr(q.map((p0, k) => ({ type: 'line', a: p0, b: q[(k + 1) % 4] }))));
-              nb++;
-            }));
-            if (nb) ring = ringOf(bridged) || ring;
-          }
-          if (!ring) throw new Error(`The end's faces do not make one piece: pick all of them (gaps between them up to ${+gapMax.toFixed(3)} mm are closed; set more under Gaps closed)`);
           const socket = f.flMount === 'socket';
-          if (!socket && ring.inner.length !== 1) throw new Error(ring.inner.length ? 'The end has more than one opening: a butt flange goes round one' : 'The end has no opening (or a gap too wide to close): slip the flange over it instead, or set more under Gaps closed');
           const W = ev(f.flW ?? 40), T = ev(f.flT ?? 6), hd = ev(f.flHoleD ?? 0), N = Math.round(ev(f.flHoles ?? 8)), pcd = ev(f.flPCD ?? 0), pitch = ev(f.flPitch ?? 100), clear = ev(f.flClear ?? 1), off = socket ? ev(f.flOffset ?? 0) : 0;
           if (!(W > 0)) throw new Error('The flange width must be greater than zero');
           if (!(T > 0)) throw new Error('The flange thickness must be greater than zero');
@@ -9190,41 +9152,108 @@ async function rebuild(doc, previewId = null, opts = {}) {
           if (hd >= W) throw new Error(`The bolt holes (Ø${+hd.toFixed(3)}) are as wide as the flange (${+W.toFixed(3)} mm) or wider`);
           if (socket && !(clear >= 0)) throw new Error("The flange's clearance round the part can't be negative");
           if (socket && !(off >= 0 && off < T - 1e-6)) throw new Error(`The part's end can sit from flush with the flange's face (0) to less than the flange's thickness (${+T.toFixed(3)} mm) in from it, not ${+off.toFixed(3)} mm`);
-          const edge = squareCorners(wireSegs2D(socket ? ring.outer : ring.inner[0], XY), W), circ = loopCircle(edge);
-          let dr, holes = [], opening;
-          if (circ) {
-            const r = circ.r + (socket ? clear : 0);
-            dr = R.drawCircle(r + W).cut(R.drawCircle(r));
-            if (hd > 0) {
-              if (!(N >= 1 && N <= 360)) throw new Error('The number of bolt holes must be 1 to 360');
-              const rb = pcd > 0 ? pcd / 2 : r + W / 2;
-              if (rb - hd / 2 <= r + 1e-6 || rb + hd / 2 >= r + W - 1e-6) throw new Error(`The bolt circle (Ø${+(2 * rb).toFixed(3)}) puts the holes off the flange (Ø${+(2 * r).toFixed(3)} to Ø${+(2 * (r + W)).toFixed(3)})`);
-              for (let i = 0; i < N; i++) { const a = Math.PI / N + (2 * Math.PI * i) / N; holes.push([circ.c[0] + rb * Math.cos(a), circ.c[1] + rb * Math.sin(a)]); }
+          const loopDr = (segs) => loopDrawing({ segs });
+          const miter = { lineJoinType: 'miter' }, XY = { o: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] };
+          const ringsOf = (dr) => drawingRegion(dr).faces.map((fc) => ({ outer: fc.clone().outerWire(), inner: fc.clone().innerWires() }));
+          const gapMax = ev(f.flGap ?? 10);
+          // the ends: each plane's faces (their outlines less their holes) together, gaps closed, each ring an end
+          const ends = [];
+          for (const g of groups) {
+            const u = levelX(g.n), fr = { o: g.o, u, v: cross(g.n, u), n: g.n };
+            let region = null;
+            for (const h of g.hits) {
+              let dr = loopDr(wireSegs2D(h.face.clone().outerWire(), fr));
+              for (const w of h.face.clone().innerWires()) dr = dr.cut(loopDr(wireSegs2D(w, fr)));
+              region = region ? region.fuse(dr) : dr;
             }
-            dr = dr.translate(circ.c[0], circ.c[1]);
-            opening = `Ø${+(2 * r).toFixed(3)}`;
-          } else {
-            let op = loopDr(edge);
-            if (socket && clear > 0) op = op.offset(clear, miter);
-            dr = op.offset(W, miter).cut(op);
-            if (hd > 0) {
-              if (!(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
-              holes = boltLine(op, W, pitch);
+            let rings = ringsOf(region);
+            if (rings.some((r) => r.inner.length !== 1) && gapMax > 0) {
+              // (gaps between the pieces bridged: two straight ends facing each other across a gap (nearly parallel,
+              // about as long, at most gapMax apart, the space between them empty) joined by the strip between them)
+              const loops = drawingRegion(region).faces.flatMap((fc) => [fc.clone().outerWire(), ...fc.clone().innerWires()].map((w) => wireSegs2D(w, XY)));
+              const polys = loops.map((segs) => segs.flatMap((g0) => {
+                if (g0.type === 'line') return [g0.a];
+                if (g0.type === 'circle') return Array.from({ length: 64 }, (_, k) => [g0.c[0] + g0.r * Math.cos((k * Math.PI) / 32), g0.c[1] + g0.r * Math.sin((k * Math.PI) / 32)]);
+                return [g0.a, g0.m];
+              }));
+              const inside = (p) => polys.reduce((x, P) => { let c = false; for (let k = 0, m = P.length - 1; k < P.length; m = k++) if ((P[k][1] > p[1]) !== (P[m][1] > p[1]) && p[0] < ((P[m][0] - P[k][0]) * (p[1] - P[k][1])) / (P[m][1] - P[k][1]) + P[k][0]) c = !c; return c !== x; }, false);
+              const edges = loops.flat().filter((g0) => g0.type === 'line' && Math.hypot(g0.b[0] - g0.a[0], g0.b[1] - g0.a[1]) > 1e-6);
+              const d2 = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]), lenOf = (g0) => d2(g0.a, g0.b);
+              const toSeg = (p, g0) => { const dx = g0.b[0] - g0.a[0], dy = g0.b[1] - g0.a[1], t0 = Math.max(0, Math.min(1, ((p[0] - g0.a[0]) * dx + (p[1] - g0.a[1]) * dy) / (dx * dx + dy * dy))); return d2(p, [g0.a[0] + dx * t0, g0.a[1] + dy * t0]); };
+              let bridged = region, nb = 0;
+              edges.forEach((e1, k1) => edges.slice(k1 + 1).forEach((e2) => {
+                const L1 = lenOf(e1), L2 = lenOf(e2), cs = Math.abs(((e1.b[0] - e1.a[0]) * (e2.b[0] - e2.a[0]) + (e1.b[1] - e1.a[1]) * (e2.b[1] - e2.a[1])) / (L1 * L2));
+                if (cs < Math.cos((10 * Math.PI) / 180) || Math.max(L1, L2) > 2 * Math.min(L1, L2)) return;
+                const gap = Math.min(toSeg(e1.a, e2), toSeg(e1.b, e2), toSeg(e2.a, e1), toSeg(e2.b, e1));
+                if (!(gap > 1e-7 && gap <= gapMax)) return;
+                const mid = [(e1.a[0] + e1.b[0] + e2.a[0] + e2.b[0]) / 4, (e1.a[1] + e1.b[1] + e2.a[1] + e2.b[1]) / 4];
+                if (inside(mid)) return;
+                const q = d2(e1.b, e2.a) < d2(e1.b, e2.b) ? [e1.a, e1.b, e2.a, e2.b] : [e1.a, e1.b, e2.b, e2.a];
+                bridged = bridged.fuse(loopDr(q.map((p0, k) => ({ type: 'line', a: p0, b: q[(k + 1) % 4] }))));
+                nb++;
+              }));
+              if (nb) rings = ringsOf(bridged);
             }
-            const bb = op.boundingBox;
-            opening = `${+bb.width.toFixed(3)} × ${+bb.height.toFixed(3)}`;
+            for (const ring of rings) ends.push({ fr, ring });
           }
-          for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
-          // (butt: its inner face on the end, out past it; slipped on: its outer face the offset past the end, its
-          // material toward the part)
-          const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: socket ? { ...fr, o: add(o, mul(n, off)) } : fr, t: T, R: T, K: sheetKFactor(f, T, T), reverse: socket });
-          const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
-          rec.sheet = sheet;
-          solids.push(rec);
-          applied.push({ op: 'add', tool: shape });
+          if (!ends.length) throw new Error('The end faces picked make no end: click the flat end faces of the parts');
+          const of = (k) => (ends.length > 1 ? `End ${k + 1}: ` : '');
+          // (an outline's size: round, its diameter; else its length round and its area, the same however it is turned)
+          const sizeOf = (segs) => {
+            const c = loopCircle(segs);
+            if (c) return { round: true, d: 2 * c.r, text: `Ø${+(2 * c.r).toFixed(3)}` };
+            const P = segs.flatMap((g0) => (g0.type === 'line' ? [g0.a] : [g0.a, g0.m]));
+            let L = 0, A = 0, lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+            P.forEach((p, k) => { const q = P[(k + 1) % P.length]; L += Math.hypot(q[0] - p[0], q[1] - p[1]); A += (p[0] * q[1] - q[0] * p[1]) / 2; lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1])]; hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1])]; });
+            return { round: false, L, A: Math.abs(A), text: `${+(hi[0] - lo[0]).toFixed(3)} × ${+(hi[1] - lo[1]).toFixed(3)}` };
+          };
+          const same = (a, b) => a.round === b.round && (a.round ? Math.abs(a.d - b.d) <= 1e-4 * (1 + a.d) : Math.abs(a.L - b.L) <= 1e-4 * (1 + a.L) && Math.abs(a.A - b.A) <= 1e-4 * (1 + a.A));
+          let size0 = null;
+          const openings = [], holeCounts = [];
+          ends.forEach(({ fr, ring }, k) => {
+            if (!socket && ring.inner.length !== 1) throw new Error(of(k) + (ring.inner.length ? 'The end has more than one opening: a butt flange goes round one' : 'The end has no opening (or a gap too wide to close): slip the flange over it instead, or set more under Gaps closed'));
+            const outside = squareCorners(wireSegs2D(ring.outer, XY), W), sz = sizeOf(outside);
+            if (!size0) size0 = sz;
+            else if (!same(sz, size0)) throw new Error(`End ${k + 1} is ${sz.text} outside, not ${size0.text} as end 1: one End Flange puts one size of flange on ends of one size; add another End Flange for the other size`);
+            const edge = socket ? outside : squareCorners(wireSegs2D(ring.inner[0], XY), W), circ = loopCircle(edge);
+            let dr, holes = [], opening;
+            if (circ) {
+              const r = circ.r + (socket ? clear : 0);
+              dr = R.drawCircle(r + W).cut(R.drawCircle(r));
+              if (hd > 0) {
+                if (!(N >= 1 && N <= 360)) throw new Error('The number of bolt holes must be 1 to 360');
+                const rb = pcd > 0 ? pcd / 2 : r + W / 2;
+                if (rb - hd / 2 <= r + 1e-6 || rb + hd / 2 >= r + W - 1e-6) throw new Error(`${of(k)}The bolt circle (Ø${+(2 * rb).toFixed(3)}) puts the holes off the flange (Ø${+(2 * r).toFixed(3)} to Ø${+(2 * (r + W)).toFixed(3)})`);
+                for (let i = 0; i < N; i++) { const a = Math.PI / N + (2 * Math.PI * i) / N; holes.push([circ.c[0] + rb * Math.cos(a), circ.c[1] + rb * Math.sin(a)]); }
+              }
+              dr = dr.translate(circ.c[0], circ.c[1]);
+              opening = `Ø${+(2 * r).toFixed(3)}`;
+            } else {
+              let op = loopDr(edge);
+              if (socket && clear > 0) op = op.offset(clear, miter);
+              dr = op.offset(W, miter).cut(op);
+              if (hd > 0) {
+                if (!(pitch > hd)) throw new Error('The bolt hole pitch must be more than the hole diameter');
+                holes = boltLine(op, W, pitch);
+              }
+              const bb = op.boundingBox;
+              opening = `${+bb.width.toFixed(3)} × ${+bb.height.toFixed(3)}`;
+            }
+            for (const [x, y] of holes) dr = dr.cut(R.drawCircle(hd / 2).translate(x, y));
+            // (butt: its inner face on the end, out past it; slipped on: its outer face the offset past the end, its
+            // material toward the part)
+            const sheet = SM.baseFlange({ region: drawingRegion(dr), frame: socket ? { ...fr, o: add(fr.o, mul(fr.n, off)) } : fr, t: T, R: T, K: sheetKFactor(f, T, T), reverse: socket });
+            const shape = SM.toSolid(sheet), rec = bodyRec(newId(f.id), shape, f.id);
+            rec.sheet = sheet;
+            solids.push(rec);
+            applied.push({ op: 'add', tool: shape });
+            openings.push(opening);
+            holeCounts.push(holes.length);
+          });
           body = compoundOf(solids);
           res.features[f.id] = { faces: f.faces };
-          res.notes[f.id] = `${socket ? 'Slipped on' : 'Butt'} · opening ${opening}${holes.length ? ` · ${holes.length} bolt hole${holes.length === 1 ? '' : 's'}` : ''}`;
+          const nh = holeCounts[0], ops = [...new Set(openings)];
+          res.notes[f.id] = `${ends.length > 1 ? `${ends.length} flanges · ` : ''}${socket ? 'Slipped on' : 'Butt'} · opening${ops.length > 1 ? 's' : ''} ${ops.join(', ')}${nh ? ` · ${nh} bolt hole${nh === 1 ? '' : 's'}${ends.length > 1 ? ' each' : ''}` : ''}`;
           break;
         }
         case 'smHem': {

@@ -630,7 +630,7 @@ const PM_SCHEMAS = {
   ],
   smEndFlange: [
     { title: 'End', fields: [
-      { key: 'faces', type: 'faceList', itemLabel: 'End face', empty: 'No end face picked', hint: 'Click the flat end face of the part (the end of its wall: a duct, a pipe, a sheet metal part, round or flat-sided). A part made in pieces: click each piece’s end face.' },
+      { key: 'faces', type: 'faceList', itemLabel: 'End face', empty: 'No end face picked', hint: 'Click the flat end face of the part (the end of its wall: a duct, a pipe, a sheet metal part, round or flat-sided). A part made in pieces: click each piece’s end face. Click more ends for a flange on each, both ends of a duct or the ends of other parts, all the same size outside.' },
       { key: 'flGap', type: 'expr', label: 'Gaps between the pieces closed up to', unit: 'mm' },
     ] },
     { title: 'Flange', fields: [

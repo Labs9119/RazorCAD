@@ -7,9 +7,11 @@ import {KernelClient} from '/js/kernelclient.js';
 // A square duct 404 / 400: butt, 20 holes round it: 6 · (480² − 400² − 20 · 25π), as a Transition's.
 // A Transition's square spigot in 2 pieces, bent at its corners (radius 2): both end faces picked, the bends squared
 // off: the opening 400 × 400. No end face: refused; a butt flange on a solid end (no opening): refused.
-const ring=(doc,shape)=>{
+// Several ends in one: both ends of the pipe (z 200 to 206, −6 to 0) and of the square duct; two pipes side by side
+// (their ends in one plane: a flange each); a Ø254 pipe beside the Ø304: refused (one size of flange).
+const ring=(doc,shape,x=0,ro=152)=>{
   const s=M.createFeature(doc,'sketch',{plane:{ref:'front'}});
-  if(shape==='round'){S.addCircle(s,S.addPoint(s,0,0),152);S.addCircle(s,S.addPoint(s,0,0),150);}
+  if(shape==='round'){S.addCircle(s,S.addPoint(s,x,0),ro);S.addCircle(s,S.addPoint(s,x,0),ro-2);}
   else for(const h of shape==='solid'?[202]:[202,200]){const q=[[-h,-h],[h,-h],[h,h],[-h,h]].map(([x,y])=>S.addPoint(s,x,y));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));}
   doc.features.push(s,M.createFeature(doc,'extrude',{sketch:s.id,depth:200}));
 };
@@ -19,7 +21,7 @@ export async function run({threads=1}={}){
   const vol=async(b)=>(await k.request('measure',{refs:[{kind:'body',id:b.id}]})).items[0].volume;
   // (the flange: the body 6 thick; its span along an axis)
   const span=(B,b,ax)=>{let lo=Infinity,hi=-Infinity;for(let q=b.triStart;q<b.triStart+b.triCount;q++){const v=B.vertices[3*B.triangles[q]+ax];lo=Math.min(lo,v);hi=Math.max(hi,v);}return [lo,hi];};
-  const build=async(make,opts)=>{const d=M.newDoc();make(d);const f=M.createFeature(d,'smEndFlange',opts);d.features.push(f);const r=await k.rebuild(d);const fl=(r.body?.bodies||[]).find(b=>b.sheet?.t===6);return {r,f,fl,v:fl?await vol(fl):0,errors:r.errors.map(e=>e[1]),note:r.notes?.[f.id]};};
+  const build=async(make,opts)=>{const d=M.newDoc();make(d);const f=M.createFeature(d,'smEndFlange',opts);d.features.push(f);const r=await k.rebuild(d);const fls=(r.body?.bodies||[]).filter(b=>b.sheet?.t===6),fl=fls[0];let vs=[];for(const b of fls)vs.push(await vol(b));return {r,f,fl,fls,vs,v:fl?await vol(fl):0,errors:r.errors.map(e=>e[1]),note:r.notes?.[f.id]};};
   const P=Math.PI,hole=25*P,end=[{p:[151,0,200],n:[0,0,1]}];
   try{
     {
@@ -58,6 +60,19 @@ export async function run({threads=1}={}){
       const s=await build(rolled,{faces:at,flHoleD:0,flMount:'socket'}),wantS=6*P*(191**2-151**2);
       const no=await build(rolled,{faces:at,flHoleD:0,flGap:0});
       results.push({name:'A rolled pipe with a seam gap: the gap closed, butt and slipped on; not closed: refused',ok:!b.errors.length&&close(b.v,want)&&/opening Ø296/.test(b.note)&&!s.errors.length&&close(s.v,wantS)&&no.errors.some(e=>/no opening/.test(e)),volume:[b.v,s.v],expected:[want,wantS],note:[b.note,s.note],errors:[...b.errors,...s.errors,...no.errors]});
+    }
+    {
+      // several ends in one End Flange
+      const both=[{p:[151,0,200],n:[0,0,1]},{p:[151,0,0],n:[0,0,-1]}],want=6*(P*(190**2-150**2)-8*hole);
+      const b=await build(d=>ring(d,'round'),{faces:both}),z=b.fls.map(x=>span(b.r.body,x,2)).sort((p,q)=>p[0]-q[0]);
+      results.push({name:'Both ends of a pipe: a flange on each, out past each end',ok:!b.errors.length&&b.fls.length===2&&b.vs.every(v=>close(v,want))&&close(z[0][0],-6,1e-5)&&close(z[0][1],0,1e-5)&&close(z[1][0],200,1e-5)&&close(z[1][1],206,1e-5)&&/^2 flanges · Butt · opening Ø300 · 8 bolt holes each/.test(b.note),volume:b.vs,expected:want,z,note:b.note,errors:b.errors});
+      const sq=await build(d=>ring(d,'square'),{faces:[{p:[201,0,200],n:[0,0,1]},{p:[201,0,0],n:[0,0,-1]}]}),wantS=6*(480**2-400**2-20*hole);
+      results.push({name:'Both ends of a square duct',ok:!sq.errors.length&&sq.fls.length===2&&sq.vs.every(v=>close(v,wantS)),volume:sq.vs,expected:wantS,note:sq.note,errors:sq.errors});
+      const two=(d)=>{ring(d,'round');ring(d,'round',500);};
+      const t=await build(two,{faces:[{p:[151,0,200],n:[0,0,1]},{p:[651,0,200],n:[0,0,1]},{p:[651,0,0],n:[0,0,-1]}]});
+      results.push({name:'Two pipes, ends in one plane and another end: three flanges',ok:!t.errors.length&&t.fls.length===3&&t.vs.every(v=>close(v,want))&&/^3 flanges/.test(t.note),volume:t.vs,expected:want,note:t.note,errors:t.errors});
+      const mix=await build(d=>{ring(d,'round');ring(d,'round',500,127);},{faces:[{p:[151,0,200],n:[0,0,1]},{p:[626,0,200],n:[0,0,1]}]});
+      results.push({name:'A Ø254 pipe beside the Ø304: refused (one size)',ok:mix.errors.some(e=>/End 2 is Ø254 outside, not Ø304/.test(e)),errors:mix.errors});
     }
   }finally{k.worker.terminate();}
   return {ok:results.every(r=>r.ok),results};

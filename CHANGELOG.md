@@ -6,6 +6,14 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 20:59 — End Flange: several ends in one
+
+- **End Flange** now puts a flange on each end picked in one feature: both ends of a duct, or the ends of several
+  parts, each flange a body of its own with the same settings. The faces of one end lie in one plane facing the same
+  way (the pieces of a part made in pieces still make one end, gaps closed); ends side by side in one plane each get
+  their own. The ends must be one size outside (round: the diameter; flat-sided: the length round and the area,
+  however turned); an end of another size is refused, naming both sizes.
+
 ## 2026-10-31 14:30 — End Flange
 
 - **Sheet Metal ▸ End Flange:** a flat bolting ring on the end of any part (a duct, a pipe, a sheet metal part, round
