@@ -775,7 +775,7 @@ class App {
     this.hoverEdge = this.hoverVertex = null;
     const selKind = this.selection?.kind;
     if (selKind === 'face' || selKind === 'edge' || selKind === 'vertex') this.selection = null;
-    if (selKind === 'body' && !this.bodyById(this.selection.id)) this.selection = null;
+    if (selKind === 'body') this.selection = this.bodySelOf(this.selectedBodyIds().filter((id) => this.bodyById(id)));
     this.updateSelectionHighlight();
     if (this._hoverFeature) this.highlightFeature(this._hoverFeature, 'featureHover');
     this.updateSketchDisplay();
@@ -1109,7 +1109,7 @@ class App {
         else if (sel?.kind === 'face' && sel.point) {
           target = 'faces';
           faces = [{ p: sel.point, ...(sel.face?.planar ? { n: sel.face.normal.toArray() } : {}), b: this.result.bodies[sel.body ?? vp.faceBody[sel.face?.index]]?.id }];
-        } else if (sel?.kind === 'body' && sel.id) { target = 'bodies'; bodies = [sel.id]; } else target = 'part';
+        } else if (sel?.kind === 'body' && sel.id) { target = 'bodies'; bodies = this.selectedBodyIds().slice(); } else target = 'part';
       }
       const last = doc.appearances.at(-1)?.look;
       ap = { id: AP.nextId(doc), name: '', target, bodies, faces, look: { preset: opts.preset || last?.preset || 'color', ...(opts.color ? { color: opts.color } : last?.color ? { color: last.color } : {}) } };
@@ -1540,7 +1540,7 @@ class App {
     this.pushBody(true);
     this.clearCycle();
     this.hoverFaceKey = null;
-    if (this.selection?.kind === 'body' && this.viewport.hiddenBodies.has(this.viewport.bodyIndexOf(this.selection.id))) this.selection = null;
+    if (this.selection?.kind === 'body') this.selection = this.bodySelOf(this.selectedBodyIds().filter((id) => !this.viewport.hiddenBodies.has(this.viewport.bodyIndexOf(id))));
     if (['face', 'edge', 'vertex'].includes(this.selection?.kind)) this.selection = null;
     this.updateSelectionHighlight();
     if (this.viewport.section) this.applySection();
@@ -3715,7 +3715,8 @@ class App {
     this.ui.renderTree();
     this.ui.refreshCommandStates();
     const bodyOf = (bi) => this.result?.bodies?.[bi]?.name;
-    if (sel?.kind === 'body') this.status(`${this.bodyById(sel.id)?.name || 'Body'} selected. Right-click for Body Properties or Export Body as STEP.`);
+    if (sel?.kind === 'body' && sel.ids?.length > 1) this.status(`${sel.ids.length} bodies selected (${sel.ids.map((id) => this.bodyById(id)?.name).filter(Boolean).join(', ')}). Ctrl+click a body to add or remove it; right-click for what to do with them.`);
+    else if (sel?.kind === 'body') this.status(`${this.bodyById(sel.id)?.name || 'Body'} selected. Right-click for Body Properties or Export Body as STEP; Ctrl+click more bodies to select them too.`);
     else if (sel?.kind === 'edge') this.status(`Edge selected (${bodyOf(sel.body) || 'body'}). Right-click to fillet or chamfer it.`);
     else if (sel?.kind === 'skcurve') this.status('Sketch entity selected.');
     else if (sel?.kind === 'vertex') this.status(`Vertex selected at (${sel.p.map((x) => +x.toFixed(3)).join(', ')}) mm.`);
@@ -3859,8 +3860,11 @@ class App {
   updateSelectionHighlight() {
     const s = this.selection, vp = this.viewport;
     this.highlightFeature(s?.kind === 'feature' ? s.id : null, 'featureSel');
-    const info = s?.kind === 'face' ? s.face : s?.kind === 'body' ? vp.bodyInfo(vp.bodyIndexOf(s.id)) : null;
+    const ids = this.selectedBodyIds();
+    const info = s?.kind === 'face' ? s.face : s?.kind === 'body' && ids.length < 2 ? vp.bodyInfo(vp.bodyIndexOf(s.id)) : null;
     vp.setFaceHighlight('select', info && (s.kind === 'body' || s.xray) ? { ...info, xray: true } : info);
+    // several bodies selected together (Ctrl+click): all of them highlighted
+    vp.setFaceSet(ids.length > 1 ? ids.map((id) => vp.bodyInfo(vp.bodyIndexOf(id))).filter(Boolean) : null, 'bodySel');
     this.updateEdgeHighlights();
   }
 
@@ -3903,7 +3907,7 @@ class App {
     if (ctrl && this.measureSel.length) return; // (Ctrl+click on something else keeps what was picked so far)
     if (!p) return this.select(null);
     if (p.kind === 'plane') return G.STD_PLANES[p.id] ? this.treePickPlane(p.id) : this.treePickFeature(p.id);
-    if (p.kind === 'body') return this.select({ kind: 'body', id: this.result.bodies[p.index]?.id });
+    if (p.kind === 'body') return this.selectBodies(this.result.bodies[p.index]?.id, ctrl);
     if (p.kind === 'edge') return this.select({ kind: 'edge', index: p.index, p: p.edge.mid, body: vp.edgeBody[p.index] });
     return this.select({ kind: 'vertex', p: p.p });
   }
@@ -3927,9 +3931,42 @@ class App {
   }
 
   // ------------------------------------------------------------ bodies
-  selectBody(id) {
+  selectBody(id, e) {
     if (this.pickMode() === 'body' && this.pmPickBody(id)) return;
-    this.select({ kind: 'body', id });
+    // (a right-click on one of the bodies selected together keeps them all)
+    if (e?.type === 'contextmenu' && this.selectedBodyIds().includes(id)) return;
+    this.selectBodies(id, !!(e?.ctrlKey || e?.metaKey));
+  }
+
+  // The bodies selected: one, or several picked with Ctrl (the selection { kind: 'body', id: the last, ids })
+  selectedBodyIds() {
+    const s = this.selection;
+    return s?.kind === 'body' ? (s.ids?.length ? s.ids : s.id ? [s.id] : []) : [];
+  }
+
+  // A body clicked: on its own, or (Ctrl) added to / taken from the bodies selected before
+  selectBodies(id, add) {
+    if (!id) return this.select(null);
+    const ids = add ? this.selectedBodyIds().slice() : [], i = ids.indexOf(id);
+    if (i >= 0) ids.splice(i, 1); else ids.push(id);
+    this.select(this.bodySelOf(ids));
+  }
+  bodySelOf(ids) { return ids.length ? { kind: 'body', id: ids.at(-1), ...(ids.length > 1 ? { ids } : {}) } : null; }
+
+  // Context-menu items for several bodies selected together
+  bodiesMenuItems(ids) {
+    const n = ids.length, surf = ids.every((id) => this.bodyById(id)?.kind === 'surface');
+    return [
+      { label: `Hide ${n} ${surf ? 'Surfaces' : 'Bodies'}`, icon: 'hide', action: () => this.setBodiesHidden(ids, true) },
+      this.transparencyItem(ids),
+      { label: `Isolate ${n} Bodies`, icon: 'isolate', action: () => this.isolateBodies(ids) },
+      { label: 'Body Appearance…', icon: 'appearance', action: () => this.startAppearance({ bodies: ids.slice() }) },
+      ...(surf ? [] : [{ label: `Edit Material… (${n} bodies)`, icon: 'material', action: () => this.ui.showMaterial(ids.filter((id) => this.bodyById(id)?.kind !== 'surface')) }]),
+      'sep',
+      { label: `Move/Copy ${n} Bodies…`, icon: 'moveBody', action: () => this.startFeature('moveBody') },
+      ...(ids.filter((id) => this.bodyById(id)?.kind === 'solid').length > 1 ? [{ label: `Combine ${n} Bodies…`, icon: 'combine', action: () => this.startFeature('combine') }] : []),
+      { label: `Delete ${n} Bodies…`, icon: 'trash', action: () => this.startFeature('deleteBody') },
+    ];
   }
 
   setHoverBody(id) {
@@ -4592,6 +4629,7 @@ class App {
         const b = this.result.bodies?.[bi];
         return b ? [
           { label: `Body Properties… (${b.name})`, icon: 'body', action: () => this.ui.showBodyProps(b.id) },
+          ...(b.kind === 'surface' ? [] : [{ label: 'Edit Material…', icon: 'material', action: () => this.ui.showMaterial([b.id]) }]),
           { label: b.kind === 'surface' ? 'Hide Surface' : 'Hide Body', icon: 'hide', action: () => this.setBodyHidden(b.id, true) },
           this.transparencyItem([b.id]),
           { label: 'Isolate', icon: 'isolate', action: () => this.isolateBodies([b.id]) },
@@ -4620,8 +4658,9 @@ class App {
         items.push({ label: 'Chamfer…', icon: 'chamfer', action: () => this.startFeature('chamfer') });
         items.push('sep', ...bodyItems(bi), 'sep');
       } else if (p?.kind === 'body') {
-        this.select({ kind: 'body', id: this.result.bodies[p.index]?.id });
-        items.push(...bodyItems(p.index), 'sep');
+        const id = this.result.bodies[p.index]?.id, ids = this.selectedBodyIds();
+        if (ids.length > 1 && ids.includes(id)) items.push(...this.bodiesMenuItems(ids), 'sep');
+        else { this.select({ kind: 'body', id }); items.push(...bodyItems(p.index), 'sep'); }
       } else if (p?.kind === 'edge') {
         const bi = vp.edgeBody[p.index];
         this.select({ kind: 'edge', index: p.index, p: p.edge.mid, body: bi });
@@ -5045,6 +5084,8 @@ class App {
     if (type === 'axis' && sel?.kind === 'edge') { props.axisType = 'edge'; props.edge = { p: sel.p }; }
     if (type === 'axis' && sel?.kind === 'face' && !sel.face.planar) { props.axisType = 'cylinder'; props.face = { p: sel.point || sel.face.center.toArray() }; }
     const selBody = sel?.kind === 'body' ? this.bodyById(sel.id) : sel?.kind === 'face' ? this.result.bodies?.[sel.body] : null;
+    // (the bodies selected, several with Ctrl+click; of one kind)
+    const selIds = sel?.kind === 'body' ? this.selectedBodyIds() : selBody ? [selBody.id] : [], selOf = (k) => selIds.filter((id) => this.bodyById(id)?.kind === k);
     if (['smCornerRelief', 'smClosedCorner'].includes(type)) props.body = selBody?.sheet ? selBody.id : sheets.length === 1 ? sheets[0].id : null;
     if (type === 'smTabSlot' && sel?.kind === 'edge') props.edge = { p: sel.p };
     // (3D printing shapes: the build orientation they are made for kept with the part)
@@ -5091,18 +5132,20 @@ class App {
     }
     if (type === 'combine') {
       if ((this.result.bodies || []).filter((b) => b.kind !== 'surface').length < 2) { this.toast('Combine needs at least two solid bodies (untick Merge result on a boss to make a separate body)', true); return; }
-      props.main = selBody?.kind === 'solid' ? selBody.id : null;
+      const sol = selOf('solid');
+      props.main = sol[0] ?? null;
+      if (sol.length > 1) props.bodies = sol.slice(1);
     }
-    if (type === 'knit' || type === 'surfSolid' || type === 'meshRepair') props.bodies = selBody?.kind === 'surface' ? [selBody.id] : (type !== 'knit' && (this.result.bodies || []).filter((x) => x.kind === 'surface').length === 1 ? [(this.result.bodies || []).find((x) => x.kind === 'surface').id] : []);
+    if (type === 'knit' || type === 'surfSolid' || type === 'meshRepair') props.bodies = selOf('surface').length ? selOf('surface') : (type !== 'knit' && (this.result.bodies || []).filter((x) => x.kind === 'surface').length === 1 ? [(this.result.bodies || []).find((x) => x.kind === 'surface').id] : []);
     if (type === 'thicken') props.body = selBody?.kind === 'surface' ? selBody.id : (this.result.bodies || []).find((b) => b.kind === 'surface')?.id ?? null;
-    if (type === 'moveBody') props.bodies = selBody && (!opts.surfaces || selBody.kind === 'surface') ? [selBody.id] : [];
-    if (type === 'deleteBody') props.bodies = selBody ? [selBody.id] : [];
-    if (type === 'deleteSurface') props.bodies = selBody?.kind === 'surface' ? [selBody.id] : [];
+    if (type === 'moveBody') props.bodies = opts.surfaces ? selOf('surface') : selIds.slice();
+    if (type === 'deleteBody') props.bodies = selIds.slice();
+    if (type === 'deleteSurface') props.bodies = selOf('surface');
     if ((type === 'deleteBody' || type === 'deleteSurface') && !(this.result.bodies || []).some((b) => type === 'deleteBody' || b.kind === 'surface')) {
       this.toast(type === 'deleteSurface' ? 'There are no surface bodies to delete' : 'There are no bodies to delete', true);
       return;
     }
-    if (type === 'split') props.bodies = selBody?.kind === 'solid' ? [selBody.id] : [];
+    if (type === 'split') props.bodies = selOf('solid');
     if (type === 'split' && sel?.kind === 'plane') props.tool = sel.id;
     if (type === 'split' && selF?.type === 'plane') props.tool = selF.id;
     if (type === 'point' && sel?.kind === 'vertex') { props.pointType = 'vertex'; props.vertex = { p: sel.p }; }

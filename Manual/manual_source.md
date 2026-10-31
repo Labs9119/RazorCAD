@@ -392,6 +392,8 @@ The filter buttons on the heads-up toolbar limit what can be picked. Several fil
 | Planes | | Standard and reference planes |
 | Clear filters | [[F5]] | Back to picking anything |
 
+**Several bodies**: with the Solid Bodies filter on, click a body to select it and [[Ctrl]]+click more bodies to select them too ([[Ctrl]]+click a selected one again to take it away); in the tree, [[Ctrl]]+click works with or without the filter. {idx:bodies, selecting several} Right-click one of them for what to do with them all: Hide, Make Transparent, Isolate, Body Appearance…, **Edit Material…**, Move/Copy, Combine and Delete. Features that take bodies (Delete Body, Move/Copy Body, Split, Combine, Convert to Solid) start with the selected bodies filled in.
+
 ## Quick readout of sizes
 
 Clicking an edge shows a small tag in the view: its length, R and length for an arc, or Ø and circumference for a circle. [[Ctrl]]+click more edges for their total length (the perimeter when they go all the way round). Sketch entities shown in the view can be clicked the same way. {idx:quick readout}
@@ -416,7 +418,8 @@ Hold [[Shift]] and **right-click** to step through the bodies and surfaces under
 | A face | Sketch, Normal To, Export Face as DXF, Fillet, Chamfer, Face Appearance…, Part Appearance… |
 | An edge | Fillet, Chamfer (started with that edge), Reference Axis |
 | A vertex | Reference Point |
-| A face, edge or body | Body Properties, Body Appearance…, Export Body as STEP, Hide, Isolate, Make Transparent, folder commands |
+| A face, edge or body | Body Properties, **Edit Material…** (the body's own material, or back to the part's), Body Appearance…, Export Body as STEP, Hide, Isolate, Make Transparent, folder commands |
+| Several bodies selected | Hide, Make Transparent, Isolate, Body Appearance…, Edit Material… (one material for them all), Move/Copy, Combine, Delete |
 | A sketch in the tree | Edit, Show / Hide, Change Sketch Plane… |
 | A sheet metal body | View Flat Pattern, Export Flat Pattern as DXF |
 | Empty space | Show Hidden Bodies, Measure and view commands |

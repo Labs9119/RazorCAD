@@ -914,6 +914,40 @@ const UI = {
     return {ok:!bad.length,detail:bad.length?bad.join('; '):`${native.results.length} kernel cases by hand; the pipe and its flange; the panel`};
   },
 
+  // Bodies selected together: with the body filter on, a click selects a body, Ctrl+click adds one or takes it away
+  // (all highlighted); a right-click on one of them keeps them all and offers what to do with them (Delete Bodies
+  // filled with them; Edit Material puts one material on them all); the tree's Ctrl+click as well
+  async 'body-multi-select'() {
+    const a=window.app,{Vector3}=await import('three'),S=await import('/js/sketchmodel.js'),d=M.newDoc(),bad=[];
+    for(const x of [-250,0,250]){const s=M.createFeature(d,'sketch',{plane:{ref:'front'}});const q=[[x-60,-60],[x+60,-60],[x+60,60],[x-60,60]].map(([u,v])=>S.addPoint(s,u,v));q.forEach((p,i)=>S.addLine(s,p,q[(i+1)%4]));d.features.push(s,M.createFeature(d,'extrude',{sketch:s.id,depth:120,merge:false}));}
+    await a.newDocument?.();closeModals();await a.setDoc(d);await until(()=>!a.kernel.pending);
+    const vp=a.viewport;vp.setView?.('front');vp.fitAll?.();await wait(80);
+    a.filters.clear();a.toggleFilter('body');
+    const r=vp.canvas.getBoundingClientRect(),ev=(x,ctrl)=>{const q=vp.project(new Vector3(x,0,120));return {clientX:r.left+q.x,clientY:r.top+q.y,button:0,ctrlKey:ctrl,metaKey:false,shiftKey:false,preventDefault(){},stopPropagation(){}};};
+    const ids=()=>a.selectedBodyIds().join(','),[b1,b2,b3]=a.result.bodies.map((b)=>b.id);
+    a.selectAt(ev(-250,false));if(ids()!==b1)bad.push(`a click: ${ids()}`);
+    a.selectAt(ev(0,true));a.selectAt(ev(250,true));if(ids()!==[b1,b2,b3].join())bad.push(`Ctrl+clicks: ${ids()}`);
+    a.selectAt(ev(0,true));if(ids()!==[b1,b3].join())bad.push(`Ctrl+click again: ${ids()}`);
+    if(!vp._faceSets?.bodySel)bad.push('the bodies not highlighted');
+    a.selectBody(b3,{type:'contextmenu'});if(ids()!==[b1,b3].join())bad.push(`right-click in the tree dropped them: ${ids()}`);
+    const items=a.bodiesMenuItems(a.selectedBodyIds()),labels=items.map((x)=>x?.label).filter(Boolean);
+    for(const l of ['Hide 2 Bodies','Edit Material… (2 bodies)','Delete 2 Bodies…'])if(!labels.includes(l))bad.push(`no "${l}"`);
+    a.startFeature('deleteBody');await wait(30);
+    if((a.pm?.feature?.bodies||[]).join()!==[b1,b3].join())bad.push(`Delete Bodies started with ${JSON.stringify(a.pm?.feature?.bodies)}`);
+    a.cancelPM?.();await wait(30);
+    a.select(a.bodySelOf([b1,b3]));
+    items.find((x)=>x?.label==='Edit Material… (2 bodies)').action();await wait(30);
+    const dlg=[...document.querySelectorAll('.modal')].at(-1);
+    [...(dlg?.querySelectorAll('.li')||[])].find((x)=>x.textContent.includes('Copper'))?.click();
+    [...(dlg?.querySelectorAll('.modal-f button')||[])].find((x)=>x.textContent==='Apply')?.click();
+    await until(()=>!a.kernel.pending);await wait(30);
+    const mats=a.result.bodies.map((b)=>b.material?.name||'');
+    if(mats.join()!=='Copper,,Copper')bad.push(`materials ${mats.join()}`);
+    a.selectBody(b2,{ctrlKey:false});a.selectBody(b1,{ctrlKey:true});if(ids()!==[b2,b1].join())bad.push(`the tree's Ctrl+click: ${ids()}`);
+    a.toggleFilter('clear');a.select(null);closeModals();
+    return {ok:!bad.length,detail:bad.length?bad.join('; '):'click, Ctrl+click to add and take away, right-click, Delete Bodies, Edit Material, the tree'};
+  },
+
   // 3D sketch Dimension: a line clicked shows its length at once, with extension and dimension lines, following the
   // mouse (as in a 2D sketch); a click off it places it there, kept with the dimension (its offset) and drawn there
   async 'sketch3d-dimension-preview'() {

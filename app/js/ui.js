@@ -7,7 +7,7 @@ import { editCustomProps } from './custprops.js';
 import { compareWith } from './compare.js';
 import { setThemePref, themePref, isDark } from './theme.js';
 import { t as tr, LANGUAGES, language, setLanguage } from './i18n.js';
-import { iconFor, MATERIALS, planeName, findFeature, TYPE_INFO, bodySettings, materialById, rollbackIndex, referencesOf, dependentsOf, absorbedSketches, moveProblem, bodyOwner, folderOfBody, sketchesUsedBy } from './model.js';
+import { iconFor, MATERIALS, planeName, findFeature, TYPE_INFO, bodySettings, ensureBodySettings, materialById, rollbackIndex, referencesOf, dependentsOf, absorbedSketches, moveProblem, bodyOwner, folderOfBody, sketchesUsedBy } from './model.js';
 import { STD_PLANES } from './geometry.js';
 import { evaluate, evalEquations, fmt, isNumeric, isValidName, normalizeValue } from './expr.js';
 import { SKETCH_TOOLS } from './sketcher.js';
@@ -3325,8 +3325,8 @@ export class UI {
           cls: a.isBodyHidden?.(b.id) ? 'hidden-item' : '',
           vis: { on: !a.isBodyHidden?.(b.id), toggle: () => a.setBodyHidden(b.id, !a.isBodyHidden(b.id)) },
           title: (kind === 'surface' ? `${b.name} (surface body)` : `${b.name}${kind === 'sheet' ? ` (sheet metal, ${+b.sheet.t.toFixed(3)} mm, ${b.sheet.bends} bend${b.sheet.bends === 1 ? '' : 's'})` : ''}\nMaterial: ${b.material?.name || 'not specified'}${b.ownMaterial ? '' : ' (part material)'}`) + '\nDouble-click to rename, right-click for Body Properties',
-          selected: sel?.kind === 'body' && sel.id === b.id,
-          onClick: () => a.selectBody(b.id),
+          selected: a.selectedBodyIds().includes(b.id),
+          onClick: (e) => a.selectBody(b.id, e),
           onDbl: () => this.renameBody(b.id),
           onHover: (on) => a.setHoverBody(on ? b.id : null),
           menu: () => this.bodyMenu(b),
@@ -3347,8 +3347,8 @@ export class UI {
             vis: { on: !g.members.every((x) => a.isBodyHidden?.(x.id)), toggle: () => a.setBodiesHidden(ids, !g.members.every((x) => a.isBodyHidden(x.id))) },
             title: `${g.members.length} identical bodies (same shape${kind === 'sheet' ? ', thickness and flat pattern' : ''} and material): ${g.members.map((x) => x.name).join(', ')}\nOpen it to see each one`,
             twisty: isOpen ? '▼' : '▶', onTwisty: toggleOpen,
-            selected: sel?.kind === 'body' && ids.includes(sel.id),
-            onClick: () => a.selectBody(b.id),
+            selected: a.selectedBodyIds().some((id) => ids.includes(id)),
+            onClick: (e) => a.selectBody(b.id, e),
             onDbl: toggleOpen,
             onHover: (on) => a.setHoverBody(on ? b.id : null),
             menu: () => [
@@ -3682,11 +3682,12 @@ export class UI {
   }
 
   bodyMenu(b) {
-    const a = this.app;
+    const a = this.app, sel = a.selectedBodyIds();
+    if (sel.length > 1 && sel.includes(b.id)) return a.bodiesMenuItems(sel);
     return [
       { label: 'Body Properties…', icon: 'body', action: () => this.showBodyProps(b.id) },
       { label: 'Rename', icon: 'rename', action: () => this.renameBody(b.id) },
-      ...(b.kind === 'surface' ? [] : [{ label: 'Material…', icon: 'material', action: () => this.showBodyProps(b.id, 'material') }]),
+      ...(b.kind === 'surface' ? [] : [{ label: 'Edit Material…', icon: 'material', action: () => this.showMaterial([b.id]) }]),
       'sep',
       a.isBodyHidden(b.id) ? { label: 'Show', icon: 'show', action: () => a.setBodyHidden(b.id, false) } : { label: 'Hide', icon: 'hide', action: () => a.setBodyHidden(b.id, true) },
       a.transparencyItem([b.id]),
@@ -7010,14 +7011,16 @@ export class UI {
     ]);
   }
 
-  showMaterial() {
-    const a = this.app;
-    let chosen = a.doc.material;
+  // The part's material; or (bodies given) the material of those bodies, one or several (none: the part's)
+  showMaterial(bodies = null) {
+    const a = this.app, own = bodies?.length ? bodies.map((id) => a.doc.bodies?.[id]?.material || null) : null;
+    let chosen = own ? (own.every((m) => m === own[0]) ? own[0] : undefined) : a.doc.material;
+    const partMat = MATERIALS.find((m) => m.id === a.doc.material);
     const wrap = el('div');
     const list = el('div', { class: 'pm-list', style: 'max-height:320px;min-width:340px' });
     const render = () => {
       list.innerHTML = '';
-      for (const m of [{ id: null, name: '<not specified>', density: null, color: 0xc3cad4 }, ...MATERIALS]) {
+      for (const m of [{ id: null, name: own ? `Use part material (${partMat ? partMat.name : 'not specified'})` : '<not specified>', density: null, color: partMat && own ? partMat.color : 0xc3cad4 }, ...MATERIALS]) {
         const li = el('div', { class: 'li' + (chosen === m.id ? ' sel' : '') },
           `<span style="width:14px;height:14px;border-radius:2px;border:1px solid #889;background:#${m.color.toString(16).padStart(6, '0')}"></span><span style="flex:1">${esc(m.name)}</span><span class="pm-hint">${m.density ? m.density + ' g/cm³' : ''}</span>`);
         li.onclick = () => { chosen = m.id; render(); };
@@ -7025,11 +7028,20 @@ export class UI {
         list.appendChild(li);
       }
     };
-    const apply = () => { a.doc.material = chosen; a.commit(); a.refresh(); };
+    const apply = () => {
+      if (chosen === undefined) return;
+      if (!own) a.doc.material = chosen;
+      else for (const id of bodies) { const st = ensureBodySettings(a.doc, id); if (chosen) st.material = chosen; else delete st.material; }
+      a.commit(); a.refresh();
+    };
     render();
+    if (own) {
+      const names = bodies.map((id) => a.bodyById(id)?.name).filter(Boolean);
+      wrap.appendChild(el('p', { class: 'pm-hint', style: 'margin:0 0 8px' }, esc(`${names.length > 1 ? `${names.length} bodies: ` : ''}${names.join(', ')}.${chosen === undefined ? ' They have different materials now: pick one for them all.' : ''}`)));
+    }
     wrap.appendChild(list);
-    if (a.result?.bodies?.some((b) => b.ownMaterial)) wrap.appendChild(el('p', { class: 'pm-hint', style: 'margin:8px 0 0' }, 'Bodies with their own material (set in Body Properties) keep it; all other bodies use this material.'));
-    const dlg = this.modal('Part Material', 'material', wrap, [{ label: 'Apply', primary: true, action: apply }, { label: 'Cancel' }]);
+    if (!own && a.result?.bodies?.some((b) => b.ownMaterial)) wrap.appendChild(el('p', { class: 'pm-hint', style: 'margin:8px 0 0' }, 'Bodies with their own material (set in Body Properties) keep it; all other bodies use this material.'));
+    const dlg = this.modal(own ? 'Body Material' : 'Part Material', 'material', wrap, [{ label: 'Apply', primary: true, action: apply }, { label: 'Cancel' }]);
   }
 
   // ---- The manual (help.js): F1 opens it at what is being done (the Property panel open: its feature), else the

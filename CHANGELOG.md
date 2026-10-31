@@ -6,6 +6,16 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 21:40 — Several bodies selected with Ctrl; Edit Material on the body right-click menu
+
+- **Selecting bodies:** with the Solid Bodies filter on, Ctrl+click adds a body to the selection (or takes a selected
+  one away), as faces and edges already did; all of them are highlighted. Ctrl+click in the tree's Solid Bodies works
+  too. A right-click on one of them keeps them all selected and offers Hide, Make Transparent, Isolate, Body
+  Appearance, Edit Material, Move/Copy, Combine and Delete for them all; Delete Body, Move/Copy Body, Split, Combine
+  and Convert to Solid start with the selected bodies filled in.
+- **Edit Material…** on the right-click menu of a body (view and tree) and of several bodies: one material for them
+  all, or back to the part material.
+
 ## 2026-10-31 20:59 — End Flange: several ends in one
 
 - **End Flange** now puts a flange on each end picked in one feature: both ends of a duct, or the ends of several
