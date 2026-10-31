@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RazorCAD: free, open-source parametric 3D CAD for Windows</title>
-<meta name="description" content="Free, open-source parametric 3D CAD for Windows: sketches, solids, sheet metal, surfaces, weldments, assemblies, STEP import and 2D drawings. Runs offline.">
+<meta name="description" content="Free, open-source parametric 3D CAD for Windows: sketches, solids, sheet metal, surfaces, plastic parts, assemblies, photo-real renders, 3D printing and 2D drawings.">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <link rel="canonical" href="https://razorcad.com/">
 <meta name="theme-color" content="#a81616">
@@ -14,11 +14,11 @@
 <meta property="og:locale" content="en_US">
 <meta property="og:url" content="https://razorcad.com/">
 <meta property="og:title" content="RazorCAD: free, open-source parametric 3D CAD for Windows">
-<meta property="og:description" content="Sketch with constraints, build parts feature by feature, assemble them and make drawings. Free and open source under the GPL.">
+<meta property="og:description" content="Sketch, model parts, sheet metal and surfaces, assemble them, render them and make drawings. Free and open source under the GPL.">
 <meta property="og:image" content="https://razorcad.com/img/social.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="A RazorCAD part with a copper body, a stainless steel body with a threaded hole and a reference axis.">
+<meta property="og:image:alt" content="A copper and steel part rendered in RazorCAD on a workshop floor.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="RazorCAD: free, open-source parametric 3D CAD for Windows">
 <meta name="twitter:description" content="Sketch with constraints, build parts feature by feature, assemble them and make drawings. Free and open source under the GPL.">
@@ -64,6 +64,11 @@
         "Involute gear train and NACA airfoil generators",
         "Assemblies with mates, gear and rack-and-pinion mates, sub-assemblies, exploded views, interference checks and bills of materials",
         "2D drawings with section, detail and exploded views, balloons, bill-of-materials tables and cosmetic threads, exported to PDF and DXF",
+        "Photo-real rendering with appearances, photographed scenes and spotlights",
+        "3D printing tools: print profiles, auto-orientation, printability checks and print features",
+        "Duct fittings, pipe routes and cable harnesses with flat patterns and cut lists",
+        "Plastic part features, core and cavity moulds, direct editing and freeform faces",
+        "3D annotations exported as STEP AP242 PMI",
         "Millimetre and inch units",
         "STEP, STL and DXF import and export"
       ],
@@ -88,7 +93,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=890ece83">
+<link rel="stylesheet" href="style.css?v=fafae4e1">
 </head>
 <body>
 
@@ -124,8 +129,8 @@
     <section class="hero">
       <img class="hero-mark" src="/img/razorcad-animated.svg" alt="" width="340" height="340">
       <h1>Parametric 3D CAD for Windows. Free and open source.</h1>
-      <p class="lede">Sketch with constraints, build parts feature by feature, put them together in assemblies and
-        make drawings. RazorCAD runs offline on the OpenCascade kernel, and it’s yours to use, share and change.</p>
+      <p class="lede">Sketch with constraints, build parts, sheet metal and plastic parts feature by feature, put them
+        together in assemblies, render them and make drawings. RazorCAD runs offline, and it’s yours to use, share and change.</p>
       <div class="actions">
         <a class="btn btn-primary" href="https://github.com/Labs9119/RazorCAD/releases/download/v0.21.1-beta/RazorCAD-Setup-0.21.1-beta.exe" data-asset="setup">
           <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9 2h2v9.6l3.3-3.3 1.4 1.4L10 15.4 4.3 9.7l1.4-1.4L9 11.6zM3 16h14v2H3z"/></svg>
@@ -219,6 +224,26 @@
         </figure>
       </article>
 
+      <article class="view">
+        <div class="view-text">
+          <h2>Ready for the 3D printer</h2>
+          <p>The 3D Print tab knows your printer and material. Lay the part on the bed, let RazorCAD find the
+            orientation that needs the least support, and check the part before you slice it.</p>
+          <ul>
+            <li>Print profiles for PLA, PETG, ABS and resin, and the beds of 14 popular printers</li>
+            <li>Check Printability: overhangs, bridges, thin walls, small holes, warping, and the support and filament it needs</li>
+            <li>Nut pockets, insert and screw holes, teardrop holes, print-in-place hinges, and parts split for printing with dowels</li>
+            <li>Export 3MF or STL laid out on the bed, or open the part straight in your slicer</li>
+          </ul>
+          <p class="more"><a href="/docs/designing-for-3d-printing">3D printing in the user manual</a></p>
+        </div>
+        <figure class="view-fig">
+          <img src="img/print-overhang.webp" width="960" height="662" loading="lazy"
+               alt="The overhang map on a part: faces that print fine are green, faces close to the 45 degree limit amber, and faces that need support red.">
+          <figcaption>Overhang map: red faces need support</figcaption>
+        </figure>
+      </article>
+
       <article class="view view-pair">
         <div class="view-text">
           <h2>Sheet metal, with the flat pattern ready to cut</h2>
@@ -245,6 +270,25 @@
             <figcaption>Its flat pattern, 14 bends</figcaption>
           </figure>
         </div>
+      </article>
+
+      <article class="view">
+        <div class="view-text">
+          <h2>Ducts, pipes and cables</h2>
+          <p>Ductwork and pipework come out with their flat patterns, cut lists and drawings, so the cutting files
+            are ready when the model is.</p>
+          <ul>
+            <li>Duct fittings: elbows, cones, transitions, offsets and laterals, with flat patterns to DXF</li>
+            <li>Transitions with bolting flanges and spigots, and End Flange for the end of any duct or pipe</li>
+            <li>Pipe routes from DN15 to DN300 with elbows, tees, reducers and flanges, and a spool drawing</li>
+            <li>Cables and harnesses with their cut lengths and a formboard drawing</li>
+          </ul>
+        </div>
+        <figure class="view-fig">
+          <img src="img/duct.webp" width="1160" height="902" loading="lazy"
+               alt="A rectangular-to-round duct transition in sheet metal, with a bolting flange and spigot at the round top and a bolting flange at the rectangular bottom.">
+          <figcaption>A rectangular to round transition with flanges and spigots</figcaption>
+        </figure>
       </article>
 
       <article class="view">
@@ -313,6 +357,26 @@
         </div>
       </article>
 
+      <article class="view view-pair view-showcase">
+        <div class="view-text">
+          <h2>Renders that look like photographs</h2>
+          <p>Give faces and bodies a look from the Appearances library, then render the part in a studio or in a real
+            place, from a workshop to a forest. The place lights the part, shows in its reflections and stands behind it.</p>
+          <ul>
+            <li>Metals, anodised aluminium, paints, plastics, glass, timber, stone, rubber, gratings and fabrics, with textures at their real size</li>
+            <li>15 scenes, nine of them 360° photographs: workshop, warehouse, office, store, park, forest, sky, overcast and sunset</li>
+            <li>Spotlights you place and aim, a perspective view, decals, and PNG renders up to 3840 × 2160</li>
+            <li>Export glTF (.glb) files for other 3D viewers</li>
+          </ul>
+        </div>
+        <figure class="showcase-fig">
+          <img src="img/render-workshop.webp" srcset="img/render-workshop-960.webp 960w, img/render-workshop.webp 1920w"
+               sizes="(min-width: 1300px) 1100px, 90vw" width="1920" height="1080" loading="lazy"
+               alt="A RazorCAD render of a copper and steel part standing on the concrete floor of a workshop, with machinery and pallets behind it and its shadow on the floor.">
+          <figcaption>Rendered in RazorCAD in the photographed Workshop scene</figcaption>
+        </figure>
+      </article>
+
       <article class="view">
         <div class="view-text">
           <h2>Drawings for the workshop</h2>
@@ -348,15 +412,52 @@
           <caption>File formats</caption>
           <thead><tr><th scope="col">Format</th><th scope="col">Opens</th><th scope="col">Saves</th></tr></thead>
           <tbody>
-            <tr><th scope="row">STEP</th><td>Parts and assemblies, with colours</td><td>Parts and assemblies, exact solids</td></tr>
+            <tr><th scope="row">STEP</th><td>Parts and assemblies, with colours and PMI</td><td>Parts and assemblies, exact solids, AP242 with PMI</td></tr>
             <tr><th scope="row">IGES</th><td>Surfaces and solids, sewn into solids</td><td></td></tr>
             <tr><th scope="row">STL</th><td>Meshes up to 200,000 triangles</td><td>Binary mesh</td></tr>
             <tr><th scope="row">DXF</th><td>Into a sketch or onto a drawing</td><td>Faces, flat patterns and drawings</td></tr>
+            <tr><th scope="row">3MF, OBJ</th><td>Meshes, as solids or surfaces</td><td>Meshes, 3MF laid out for printing</td></tr>
+            <tr><th scope="row">glTF</th><td></td><td>Parts with their looks (.glb)</td></tr>
+            <tr><th scope="row">PLY, XYZ</th><td>Point clouds, with surfaces fitted</td><td></td></tr>
             <tr><th scope="row">PDF</th><td></td><td>Drawings, with fonts embedded</td></tr>
             <tr><th scope="row">RazorCAD</th><td colspan="2">.rcad parts, .rasm assemblies and .rdrw drawings, saved as readable JSON</td></tr>
           </tbody>
         </table>
       </article>
+    </section>
+
+    <section class="extras" aria-labelledby="extras-title">
+      <h2 id="extras-title">And plenty more</h2>
+      <div class="extras-list">
+        <div class="qa">
+          <h3>Plastic parts and moulds</h3>
+          <p>Mounting bosses, snap hooks, lips and grooves and vents; core and cavity with shrinkage, side cores, sprues and
+            runners; thickness and undercut checks.</p>
+        </div>
+        <div class="qa">
+          <h3>Direct editing</h3>
+          <p>Delete or resize fillets and defeature imported parts exactly. Push a face into shape with Freeform,
+            keeping its edges tangent or curvature continuous.</p>
+        </div>
+        <div class="qa">
+          <h3>Nesting</h3>
+          <p>Flat patterns nested by their true outlines on your stock sheets, into each other’s gaps and holes, and
+            written to one DXF.</p>
+        </div>
+        <div class="qa">
+          <h3>3D annotations</h3>
+          <p>Dimensions, GD&amp;T and surface finish on the model, written to STEP AP242 as PMI. Tolerance stack-ups and a
+            machining DFM check.</p>
+        </div>
+        <div class="qa">
+          <h3>Revisions and comparisons</h3>
+          <p>Keep revisions of parts and assemblies, and compare two versions of a part or a drawing to see what changed.</p>
+        </div>
+        <div class="qa">
+          <h3>Your language, your way</h3>
+          <p>English, Deutsch, Français or Español, a light or dark theme, and the user manual inside the program on F1.</p>
+        </div>
+      </div>
     </section>
 
     <section class="note" aria-labelledby="note-title">
@@ -387,17 +488,19 @@
         <div class="qa">
           <h3>Does it run on Mac or Linux?</h3>
           <p>RazorCAD is a Windows program for Windows 10 and 11. On a Mac or Linux PC you can
-            <a href="/app/">try it in your browser</a>: the same program, without auto-save or the Windows fonts.</p>
+            <a href="/app/">try it in your browser</a>: the same program, without auto-save or the Windows fonts.
+            An experimental Linux build can be made from the source code.</p>
         </div>
         <div class="qa">
           <h3>Can I open files from other CAD programs?</h3>
-          <p>Yes, through STEP, IGES, STL and DXF. STEP assemblies open with their structure and colours, IGES surfaces
+          <p>Yes, through STEP, IGES, STL, OBJ, 3MF and DXF. STEP assemblies open with their structure and colours, IGES surfaces
             are sewn into solids, STL meshes become solid bodies, and DXF files import into a sketch or onto a drawing.
             RazorCAD also saves STEP (parts and assemblies), STL, DXF and PDF.</p>
         </div>
         <div class="qa">
           <h3>What does it use for geometry?</h3>
-          <p>The OpenCascade B-rep kernel, the same engine behind FreeCAD, so STEP files come in and go out as exact solids rather than meshes.
+          <p>The OpenCascade B-rep kernel, the same engine behind FreeCAD, with RazorCAD’s own additions for exact defeaturing
+            and STEP PMI. STEP files come in and go out as exact solids rather than meshes.
             In the Windows app it runs multi-threaded, sized to your PC’s processor and memory, and a run of cuts is made in one go,
             so big parts rebuild in seconds.</p>
         </div>
