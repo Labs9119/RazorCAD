@@ -993,3 +993,8 @@ Sketch normal
 Along Vector
 Positive side
 Negative side
+Profile Source
+Sketch contours
+Model edges
+Add selected edges as profile
+Clear selected edges

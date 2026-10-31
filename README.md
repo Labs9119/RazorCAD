@@ -273,6 +273,8 @@ The **Surfaces** tab builds surface bodies (zero-thickness faces), listed under 
 - **Knit Surface** sews surfaces together. When they enclose a volume, *Try to form a solid* turns them into a solid.
 - **Thicken** gives a surface a wall thickness (one side or both) and makes it a solid.
 
+Lofted Surface can also use **Model edges**: select the trimmed boundary edges made by Split Face, add each connected chain as a profile, then loft only those portions. Model-edge profiles currently use free ends and automatic correspondence without guides.
+
 Surfaces can split solid or surface bodies (Split Body), and can be moved or copied. Cuts and Combine only act on solid bodies.
 
 ## Project layout

@@ -3048,6 +3048,40 @@ async function rebuild(doc, previewId = null, opts = {}) {
     } catch(e) { owned.reverse().forEach(x=>x.delete());throw e; }
   };
 
+  // Model profiles keep the exact trimmed edges produced by Split Face. Their
+  // references are resolved on their owning bodies, never on the source sketch.
+  const modelLoftWire = ref => {
+    needEdges('Loft profiles from model edges');
+    if(!ref.edges?.length)throw new Error('Select at least one model edge for this profile');
+    const owned=[],edges=[],nodes=[],near=(a,b)=>len(sub(a,b))<1e-6;
+    const node=p=>{let i=nodes.findIndex(n=>near(n.p,p));if(i<0){i=nodes.length;nodes.push({p,edges:[]});}return i;};
+    try{
+      for(const r of ref.edges){
+        const owners=[...solids,...surfaces].filter(b=>!r.body||b.id===r.body),found=owners.map(body=>({body,hit:findEdgeInfo(body.shape,r)})).filter(x=>x.hit);
+        if(found.length!==1)throw new Error('A loft profile edge is missing or ambiguous; reselect it on the split body');
+        const {body,hit}=found[0];
+        if(edges.some(x=>x.edge.isSame(hit.e)))throw new Error('A loft profile cannot contain the same edge twice');
+        r.body=body.id;r.feature=body.last;updateEdgeRef(r,hit.e,body.shape);
+        const edge=hit.e.clone();owned.push(edge);
+        const u=node(vec(edge.startPoint)),v=node(vec(edge.endPoint)),i=edges.length;
+        edges.push({edge,u,v});nodes[u].edges.push(i);nodes[v].edges.push(i);
+      }
+      if(nodes.some(n=>n.edges.length>2))throw new Error('A loft profile must be one unbranched chain of model edges');
+      const ends=nodes.map((n,i)=>n.edges.length===1?i:-1).filter(i=>i>=0);
+      if(ends.length!==0&&ends.length!==2)throw new Error('The selected model edges do not form one profile');
+      let at=ends[0]??edges[0].u;const used=new Set(),ordered=[];
+      while(used.size<edges.length){
+        const index=nodes[at].edges.find(i=>!used.has(i));
+        if(index===undefined)throw new Error('The selected model edges are disconnected; add the edges joining them or use separate profiles');
+        used.add(index);const {edge,u,v}=edges[index];
+        if(u===at)ordered.push(edge);
+        else{const reversed=R.cast(edge.wrapped.Reversed());owned.push(reversed);ordered.push(reversed);}
+        at=u===at?v:u;
+      }
+      return R.assembleWire(ordered);
+    }finally{owned.reverse().forEach(e=>e.delete());}
+  };
+
   const surfaceSections = (f, revolve = false) => {
     const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [], out = [];
     if (!refs.length && !f.edges?.length) throw new Error('Select one or more surface contours, or model edges');
@@ -5603,6 +5637,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // a surface through two or more profiles (open or closed chains of sketches / 3D sketches)
           const ids = (f.profiles || []).filter(Boolean);
           if (ids.length < 2) throw new Error('Select at least two profiles (in order)');
+          const modelProfiles=ids.some(LR.isModelEdgeChain);
+          if(modelProfiles&&(LC.hasManualConnections(f)||hasLoftEnds(f)||(f.guides||[]).length))throw new Error('Model-edge loft profiles currently require free end conditions, automatic correspondence and no guide curves');
           const connectorControls=loftConnectionControls(f,ids);
           // Simple surface lofts can use the original spline edges. The guided / end-condition
           // builders still require their cubic section representation for correspondence.
@@ -5613,6 +5649,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             return subset.curves.some(c => !c.construction && c.type === 'spline' && c.ctrl && !c.closed);
           });
           const wires = ids.map((id) => {
+            if(LR.isModelEdgeChain(id))return modelLoftWire(id);
             if (curves.has(id)) return curves.get(id).wire;
             const sk = sketches.get(LR.sourceId(id));
             if (!sk) throw new Error('A profile is missing, suppressed or has errors');
@@ -5623,11 +5660,13 @@ async function rebuild(doc, previewId = null, opts = {}) {
             if (ws.length !== 1) throw new Error(`${sk.sk.name} must be one connected chain of curves (it has ${ws.length})`);
             return ws[0];
           });
+          if(modelProfiles)res.features[f.id]={...(res.features[f.id]||{}),profiles:ids};
           // (a sketch's chain says itself whether it is closed; a curve is when its ends meet, to a thousandth of a mm)
           const ends = wires.map((w) => len(sub(vec(w.startPoint), vec(w.endPoint))));
           // (a profile: a sketch, a contour of one (loftrefs.js), or a curve)
-          const pname = (id, i) => (curves.has(id) ? doc.features.find((x) => x.id === id)?.name : sketches.get(LR.sourceId(id))?.sk.name) || `Profile ${i + 1}`;
+          const pname = (id, i) => LR.isModelEdgeChain(id)?LR.describeRef(doc,id):(curves.has(id) ? doc.features.find((x) => x.id === id)?.name : sketches.get(LR.sourceId(id))?.sk.name) || `Profile ${i + 1}`;
           const closed = ids.map((id, i) => {
+            if(LR.isModelEdgeChain(id))return ends[i]<1e-6;
             if (curves.has(id)) return ends[i] < 1e-3;
             const sk = sketches.get(LR.sourceId(id)), resolved = typeof id === 'string' ? { sketch: sk.sk } : LR.resolveContour(sk.sk, id);
             return !!resolved.region || S.curveChains(resolved.sketch).some((c) => c.closed);
@@ -5638,7 +5677,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             throw new Error(`The profiles must all be open, or all closed: ${nm(ic)} is closed but ${nm(io)} is open (its ends are ${ends[io] < 0.01 ? ends[io].toExponential(1) : ends[io].toFixed(2)} mm apart)`);
           }
           let list = wires, closedSecs = null;
-          if (closed[0] && !exactProfiles) {
+          if (closed[0] && !exactProfiles && !modelProfiles) {
             // closed profiles: matched like a solid loft (same start points, same way round)
             const secs = ids.map((id, i) => {
               if (curves.has(id)) return null;

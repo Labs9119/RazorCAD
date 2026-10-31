@@ -1488,7 +1488,7 @@ const PM_SCHEMAS = {
     { title: 'Model Boundary Edges', fields: [{ key: 'edges', type: 'edges' }] },
   ],
   surfLoft: [
-    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true }] },
+    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true },{key:'modelEdgeHint',type:'hint',show:f=>(f.profiles||[]).some(LR.isModelEdgeChain),text:'Model-edge profiles currently use Free end conditions, Automatic correspondence and no guide curves.'}] },
     {title:'Profile Correspondence',fields:[{key:'loftCorrespondence',type:'loftCorrespondence'}]},
     ...LOFT_END_GROUPS,
     { title: 'Guide Curves', fields: [
@@ -6488,6 +6488,8 @@ export class UI {
     const a = this.app, pm = a.pm, key = fd.key, guide = key === 'guides';
     const extrude = f.type === 'extrude', planar = f.type === 'surfPlanar', common=['revolve','surfExtrude','surfRevolve'].includes(f.type), surface=['surfExtrude','surfRevolve'].includes(f.type);
     pm.loftSlot ||= 'profiles'; f[key] ||= [];
+    if(f.type==='surfLoft'&&!guide&&pm.loftModelEdges===undefined)pm.loftModelEdges=f.profiles.some(LR.isModelEdgeChain);
+    const modelEdges=f.type==='surfLoft'&&!guide&&!!pm.loftModelEdges;
     const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false && !pm.planarEdges);
     body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'aria-pressed': String(active), disabled: guide && f.ruled, 'data-loft-slot': key, onclick: () => {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
@@ -6496,13 +6498,20 @@ export class UI {
       if (common) { pm.profilePick=!active; pm.revolveEndPick=false; pm.planarEdges=false; pm.extrudeSurfaceSlot=null; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
-    if (!guide) {
+    if(f.type==='surfLoft'&&!guide){
+      const source=el('select',{'data-loft-profile-source':''});
+      for(const [value,label] of [['sketch','Sketch contours'],['edges','Model edges']])source.appendChild(el('option',{value},label));
+      source.value=modelEdges?'edges':'sketch';
+      source.onchange=()=>{pm.loftModelEdges=source.value==='edges';pm.loftSlot='profiles';pm.loftEndSlot=null;pm.loftDraft=null;pm.loftModelDraft=null;pm.loftHover=null;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();};
+      body.appendChild(this.row('Profile Source',source));
+    }
+    if (!guide && !modelEdges) {
       const cb = el('input', { type: 'checkbox', 'data-loft-chain': '' }); cb.checked = pm.loftChain !== false;
       cb.onchange = () => { pm.loftChain = cb.checked; pm.loftDraft = null; pm.loftHover = null; this.renderPM(); a.updateSketchDisplay(); };
       const label = el('label'); label.append(cb, document.createTextNode(' Chain selection'));
       body.appendChild(this.row(null, label, 'check'));
     }
-    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
+    body.appendChild(el('div', { class: 'pm-hint' }, modelEdges?'Click only the model edges of the split portion, then add them as one profile. Repeat for the next section. Edges in each profile must form one connected chain.':common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
     const ul = el('div', { class: 'pm-list', 'data-loft-list': key });
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, guide ? 'No guides selected' : 'No profiles selected'));
     f[key].forEach((ref, i) => {
@@ -6522,7 +6531,13 @@ export class UI {
       ul.appendChild(li);
     });
     body.appendChild(ul);
-    if (active && pm.loftChain === false) {
+    if(active&&modelEdges){
+      const count=pm.loftModelDraft?.edges.length||0;
+      body.appendChild(el('div',{class:'pm-hint'},`${count} model edges selected for this profile`));
+      body.appendChild(el('button',{class:'pm-btn','data-loft-model-finish':'',disabled:!count,onclick:()=>a.finishLoftModelSelection()},'Add selected edges as profile'));
+      if(count)body.appendChild(el('button',{class:'pm-btn',onclick:()=>{pm.loftModelDraft=null;this.renderPM();a.updateEdgeHighlights();}},'Clear selected edges'));
+    }
+    if (active && !modelEdges && pm.loftChain === false) {
       const count = pm.loftDraft?.curves.length || 0;
       body.appendChild(el('div', { class: 'pm-hint' }, `Manual selection: ${count} curves. Click segments to add/remove them, then confirm this contour.`));
       body.appendChild(el('button', { class: 'pm-btn', 'data-loft-finish': '', disabled: !count, onclick: () => a.finishLoftSelection() }, 'Add selected contour'));

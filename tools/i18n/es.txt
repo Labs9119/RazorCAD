@@ -993,3 +993,8 @@
 993|A lo largo del vector
 994|Lado positivo
 995|Lado negativo
+996|Origen del perfil
+997|Contornos de boceto
+998|Aristas del modelo
+999|Añadir aristas seleccionadas como perfil
+1000|Borrar aristas seleccionadas

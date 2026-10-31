@@ -498,6 +498,7 @@ export function referencesOf(doc, f) {
   if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface')addId(f.startPlane);
   if (f.type === 'surfExtrude' && f.direction && f.direction !== 'none') addId(f.direction);
   for (const ref of [f.profile,f.path,f.guide,...(f.profiles || []), ...(f.guides || [])]) addId(typeof ref === 'string' ? ref : ref?.sketch);
+  for (const ref of [...(f.profiles||[]),...(f.guides||[])]) if(ref?.kind==='modelEdgeChain')for(const edge of ref.edges||[]){addBody(edge.body);addId(edge.feature);}
   if (f.type === 'surfFill') for (const id of [...(f.throughCurves || []), ...(f.throughPoints || [])]) addId(id);
   for (const id of expandFeatureRefs(doc, f.features)) addId(id);
   if (f.type !== 'sketch' && typeof f.plane === 'string') addId(f.plane);

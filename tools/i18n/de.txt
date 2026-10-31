@@ -993,3 +993,8 @@
 993|Entlang eines Vektors
 994|Positive Seite
 995|Negative Seite
+996|Profilquelle
+997|Skizzenkonturen
+998|Modellkanten
+999|Ausgewählte Kanten als Profil hinzufügen
+1000|Ausgewählte Kanten löschen

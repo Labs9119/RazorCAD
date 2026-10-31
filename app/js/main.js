@@ -3027,6 +3027,25 @@ class App {
 
   loftPicking() { return this.sweepPicking() || this.pm?.kind === 'feature' && (['loft', 'surfLoft'].includes(this.pm.feature.type) && !this.pm.loftEndSlot || (this.pm.feature.type === 'extrude' && this.pm.extrudePick !== false) || (this.pm.feature.type === 'surfPlanar' && !this.pm.planarEdges) || (['revolve','surfExtrude','surfRevolve'].includes(this.pm.feature.type) && this.pm.profilePick!==false && !this.pm.planarEdges)); }
 
+  modelLoftPicking() { return this.pm?.kind==='feature'&&this.pm.feature.type==='surfLoft'&&!this.pm.loftEndSlot&&(this.pm.loftSlot||'profiles')==='profiles'&&this.pm.loftModelEdges; }
+
+  pickLoftModelEdge(hit) {
+    const body=this.result.bodies?.[this.viewport.edgeBody[hit.index]]?.id;
+    if(!body)return;
+    const source=this.result.bodies.find(b=>b.id===body),before=this.doc.features.findIndex(f=>f.id===source.last),current=this.doc.features.indexOf(this.pm.feature);
+    if(before>=current){this.toast('Select profile edges from a body before this loft',true);return;}
+    const draft=this.pm.loftModelDraft||={kind:'modelEdgeChain',edges:[]};
+    const p=[...hit.edge.mid],index=draft.edges.findIndex(e=>e.body===body&&Math.hypot(...e.p.map((x,i)=>x-p[i]))<1e-6);
+    if(index<0)draft.edges.push({body,p,feature:source.last});else draft.edges.splice(index,1);
+    this.ui.renderPM();this.updateEdgeHighlights();
+    this.status(`${draft.edges.length} model edges selected for this profile. Add the profile before selecting the next one.`);
+  }
+
+  finishLoftModelSelection() {
+    if(!this.pm?.loftModelDraft?.edges.length)return;
+    try{this.addLoftContour(structuredClone(this.pm.loftModelDraft));}catch(e){this.toast(e.message,true);}
+  }
+
   loftCandidates() {
     if (!this.loftPicking()) return [];
     const before = this.doc.features.indexOf(this.pm.feature);
@@ -3083,6 +3102,12 @@ class App {
     const f = this.pm.feature;
     if(['sweep','surfSweep'].includes(f.type)){this.setSweepReference(ref,this.pm.sweepSlot||'profile',true);return;}
     const key = this.pm.loftSlot || 'profiles', guide = key === 'guides';
+    if(LR.isModelEdgeChain(ref)){
+      if(f.type!=='surfLoft'||guide)throw new Error('Select model edges as Surface Loft profiles');
+      f.profiles||=[];
+      if(!f.profiles.some(r=>LR.refKey(r)===LR.refKey(ref)))f.profiles.push(ref);
+      this.pm.loftModelDraft=null;this.preview(true);this.updateSketchDisplay();this.updateEdgeHighlights();return;
+    }
     const source = this.result.sketches.get(LR.sourceId(ref));
     if (!source) throw new Error('The source sketch is unavailable');
     const result = LR.resolveContour(source.sketch, ref, guide);
@@ -3193,6 +3218,7 @@ class App {
     if (this.pm?.kind === 'section') return 'section';
     const f = this.pm?.kind === 'feature' ? this.pm.feature : null;
     if (!f) return null;
+    if(this.modelLoftPicking())return 'edge';
     if(['loft','surfLoft'].includes(f.type)&&this.pm.loftConnector&&!this.pm.loftEndSlot)return 'loftConnector';
     if(this.pm.scopePick&&['extrude','revolve','sweep'].includes(f.type)&&['cut','intersect'].includes(f.op)&&f.scopeAll===false)return 'body';
     if (['surfPlanar', 'surfExtrude', 'surfRevolve', 'sweep', 'surfSweep'].includes(f.type) && this.pm.planarEdges) return 'edge';
@@ -3283,6 +3309,7 @@ class App {
   applyModelPick(hit) {
     const f = this.pm.feature;
     const mode = this.pickMode();
+    if(mode==='edge'&&this.modelLoftPicking()){this.pickLoftModelEdge(hit);return;}
     if (mode === 'edge' && f.type === 'fillet' && this.pm.pickEdgePoint) {
       // a variable fillet's point added where its edge was clicked: the share of the edge's length from its start
       const k = f.edges.findIndex((x) => this.viewport.edgeIndexForPoint(x.p) === hit.index);
@@ -3401,7 +3428,7 @@ class App {
       vp.setVertexMarkers(hs?.length ? { selected: hs.filter((x) => !x.off).map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);
     }
     if (mode === 'edge') {
-      const refs = ['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
+      const refs = this.modelLoftPicking()?[...(f.profiles||[]).filter(LR.isModelEdgeChain).flatMap(r=>r.edges),...(this.pm.loftModelDraft?.edges||[])]:['fillet','chamfer','smFlange','smHem','smProfileFlange','surfFill','surfPlanar'].includes(f.type) ? (f.edges || []) : f.edge ? [f.edge] : [];
       const selected = refs.map((e) => vp.edgeIndexForPoint(e.p)).filter((i) => i >= 0);
       vp.setEdgeHighlights({ selected, hover: this.hoverEdge ?? null });
       // (a variable fillet's points along its edges: where the panel puts them, so a drag moves them at once; else
@@ -3607,7 +3634,7 @@ class App {
 
   updateSketchDisplay() {
     const res = this.result, list = [];
-    const loft = this.loftPicking(), loftFeature = loft ? this.pm.feature : null;
+    const loft = this.loftPicking()&&!this.modelLoftPicking(), loftFeature = loft||this.modelLoftPicking() ? this.pm.feature : null;
     const sweepFeature = this.pm?.kind === 'feature' && ['sweep','surfSweep'].includes(this.pm.feature.type) ? this.pm.feature : null;
     if (!loft) this._loftPickCache = null;
     // Dependent sketches still contain the last rebuilt projections while their source is being edited.
@@ -3651,8 +3678,9 @@ class App {
       if (c) list.push({ frame: s.frame, polylines: [{ pts: S.curvePoints(s.sketch, c), construction: false }], highlight: true, color: 0xf97316 });
     }
     const tags = [];
-    if (loft || sweepFeature) {
+    if (loft || sweepFeature || this.modelLoftPicking()) {
       const show = (ref, color, label = '') => {
+        if(LR.isModelEdgeChain(ref)){if(label&&ref.edges?.length)tags.push({text:label,at:new THREE.Vector3(...ref.edges[0].p),color});return;}
         const s = res.sketches.get(LR.sourceId(ref));
         if (!s) {
           const cv = res.curves?.get(ref), pts = Array.isArray(cv?.[0]?.[0]) ? cv[0] : cv;
@@ -3667,7 +3695,7 @@ class App {
           tags.push({ text: label, at: G.toWorld(s.frame, p[0], p[1]), color });
         }
       };
-      if (loft && !sweepFeature) {
+      if ((loft||this.modelLoftPicking()) && !sweepFeature) {
         (loftFeature.profiles || []).forEach((r, i) => show(r, 0x0ea5e9, `Profile ${i + 1}`));
         (loftFeature.guides || []).forEach((r, i) => show(r, 0xf97316, `Guide ${i + 1}`));
         if (this.pm.loftDraft?.curves.length) show(this.pm.loftDraft, 0x16a34a);

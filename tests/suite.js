@@ -5866,6 +5866,25 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: out.join('; ') };
   },
 
+  async 'loft-model-edges'() {
+    const {run,fixture}=await import('/tests/loft-model-edges-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:native.results.filter(r=>!r.ok)};
+    const d=fixture();d.doc.features.pop();const a=window.app;await a.setDoc(d.doc);closeModals();a.startFeature('surfLoft');await wait(120);
+    const source=document.querySelector('[data-loft-profile-source]');if(!source)return {ok:false,detail:'No Model edges source selector'};
+    source.value='edges';source.dispatchEvent(new Event('change'));
+    if(a.pickMode()!=='edge')return {ok:false,detail:'Model-edge profiles still pick sketches'};
+    for(let i=0;i<2;i++){
+      const body=a.result.bodies.find(b=>b.id===d.sources[i].id),edge=a.result.body.edges.slice(body.edgeStart,body.edgeStart+body.edgeCount).find(e=>Math.abs(e.mid[0]-5)<1e-6&&e.mid[1]>7&&e.mid[1]<10);
+      if(!edge)return {ok:false,detail:'The split boundary edge is missing'};
+      const index=a.result.body.edges.indexOf(edge);a.applyModelPick({index,edge});
+      const add=document.querySelector('[data-loft-model-finish]');if(!add||add.disabled)return {ok:false,detail:'Cannot finish a model-edge profile'};add.click();await wait(120);
+    }
+    if(a.pm.feature.profiles.length!==2||a.pm.feature.profiles.some(r=>r.kind!=='modelEdgeChain'))return {ok:false,detail:'Whole sketches were selected instead of model edges'};
+    await a.okPM();await until(()=>!a.kernel.pending);
+    if(a.result.errors.size||a.result.bodies.length!==3)return {ok:false,detail:'Model-edge loft could not be committed'};
+    return {ok:true,detail:`${native.results.length} CAD checks; actual split-edge picks, separate profile confirmation and commit`};
+  },
+
   async 'split-body-face'() {
     const {run,fixture}=await import('/tests/split-cases.js'),native=await run({threads:threadsPerKernel()});
     if(!native.ok)return {ok:false,detail:native.results.filter(r=>!r.ok)};

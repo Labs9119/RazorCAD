@@ -993,3 +993,8 @@
 993|Selon un vecteur
 994|Côté positif
 995|Côté négatif
+996|Source du profil
+997|Contours d’esquisse
+998|Arêtes du modèle
+999|Ajouter les arêtes sélectionnées comme profil
+1000|Effacer les arêtes sélectionnées

@@ -1214,6 +1214,14 @@ Without a guide, **Orientation** and **Twist angle** work as in solid Sweep: per
 
 Open profiles form a sheet. Closed profiles and the Circular option form an uncapped surface shell; no end caps or solid are added. Removing the guide restores the ordinary swept surface.
 
+### Loft only the portions created by Split Face
+
+In **Lofted Surface**, choose **Profile Source → Model edges**. Select only the actual boundary edges of the split portion, then click **Add selected edges as profile**. Repeat for the second section. A profile can be one edge or a connected, unbranched chain; disconnected edges belong in separate profiles or separate lofts. Each selected edge is kept as its exact trimmed CAD curve, not replaced with its source sketch curve. {idx:Lofted Surface, model edges}{idx:Split Face, lofting divided portions}
+
+For a 3 mm strip, select the boundary segment between the original surface edge and the Split Face boundary. Do not select the whole sketch contour. When bridging the two sides of an open surface model, make a separate loft for each side. Existing sketch profiles can be removed with the **✕** buttons before selecting the split model edges.
+
+Model-edge profiles currently use **Free** start/end conditions, **Automatic** correspondence and no guides. Sketch profiles retain the guide and endpoint-condition tools below. The original bodies and the feature that made the selected edges are kept as dependencies, so changing the split rebuilds the loft.
+
 ### Start and end conditions for Lofted Surface
 
 Lofted Surface uses the same **Start Condition**, **End Condition**, **Influence** and **Reverse tangent direction** controls described under Loft. Adjacent support faces can belong to solids or surfaces. Open profiles form a sheet; closed profiles form an uncapped shell. Guide curves can be combined with endpoint conditions using **Adaptive approximation**, with the same endpoint-tangent compatibility and sampled CAD contact checks as solid Loft.

@@ -943,4 +943,9 @@ export default {
   "Along Vector": "Selon un vecteur",
   "Positive side": "Côté positif",
   "Negative side": "Côté négatif",
+  "Profile Source": "Source du profil",
+  "Sketch contours": "Contours d’esquisse",
+  "Model edges": "Arêtes du modèle",
+  "Add selected edges as profile": "Ajouter les arêtes sélectionnées comme profil",
+  "Clear selected edges": "Effacer les arêtes sélectionnées",
 };

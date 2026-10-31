@@ -968,4 +968,9 @@ export default {
   "Along Vector": "Entlang eines Vektors",
   "Positive side": "Positive Seite",
   "Negative side": "Negative Seite",
+  "Profile Source": "Profilquelle",
+  "Sketch contours": "Skizzenkonturen",
+  "Model edges": "Modellkanten",
+  "Add selected edges as profile": "Ausgewählte Kanten als Profil hinzufügen",
+  "Clear selected edges": "Ausgewählte Kanten löschen",
 };
