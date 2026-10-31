@@ -3225,7 +3225,8 @@ class App {
     if (f.type === 'boundarySurf' && (f.continuity || 'G0') !== 'G0' && this.pm.patchSupportPick) return 'faces';
     if (f.type === 'surfTrim' || f.type === 'deleteFace' || f.type === 'replaceFace' || f.type === 'untrim' || f.type === 'editFillet' || f.type === 'moldSide' || f.type === 'freeform') return 'faces';
     if (f.type === 'ruledSurface' || f.type === 'compCurve') return 'edge';
-    if (f.type === 'projCurve' || f.type === 'splitLine' || f.type === 'flattenSurf') return 'faces';
+    if (['split','splitLine'].includes(f.type)) return this.pm.splitSlot==='tool'?'anyface':f.type==='split'?'body':'faces';
+    if (f.type === 'projCurve' || f.type === 'flattenSurf') return 'faces';
     if (['smCornerRelief', 'smFold', 'defeature'].includes(f.type)) return 'body';
     if (f.type === 'wrap') return 'anyface';
     if (['revolve', 'surfRevolve'].includes(f.type) && this.pm.revolveEndPick && f.extent === 'upToVertex') return 'vertex';
@@ -3436,7 +3437,7 @@ class App {
     if (f) {
       if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(['split','splitLine'].includes(f.type)&&f.toolFace?[f.toolFace]:[]), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
@@ -3484,8 +3485,15 @@ class App {
     } else if (['lpattern', 'cpattern', 'mirror', 'spattern', 'curvePattern', 'tablePattern'].includes(f.type)) {
       f.bodies = Array.isArray(f.bodies) ? f.bodies : [];
       toggle(f.bodies);
+    } else if (f.type === 'splitLine' && this.pm.splitSlot==='tool') {
+      if(b?.kind!=='surface'){this.toast('Select a surface body or pick a model face as the splitting tool');return true;}
+      f.tool=id;f.toolFace=null;
     } else if (f.type === 'moveBody' || f.type === 'split') {
-      if (f.type === 'split' && b?.kind === 'surface') { f.tool = id; f.toolFace = null; }
+      if (f.type === 'split' && this.pm.splitSlot==='tool') {
+        if(b?.kind!=='surface'){this.toast('Select a surface body or pick a model face as the splitting tool');return true;}
+        if(f.bodies?.includes(id)){this.toast('A body cannot split itself');return true;}
+        f.tool = id; f.toolFace = null;
+      }
       else toggle(f.bodies);
     } else return false;
     this.ui.renderPM();
@@ -4041,7 +4049,12 @@ class App {
     }
     if (f.type === 'moveBody' && f.mode === 'mates' && this.pm.mateSlot && ['plane', 'axis', 'point'].includes(kind)) return this.pmPickMate({ kind, id });
     let key = null;
-    if (kind === 'plane' && (f.type === 'split' || f.type === 'printSplit')) { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (['split','splitLine'].includes(f.type) && ['plane','sketch'].includes(kind)) {
+      if(this.pm.splitSlot!=='tool')return false;
+      f.toolFace=null;f.tool=id;this.preview(true);return true;
+    }
+    if (kind === 'plane' && f.type === 'printSplit') { f.toolFace = null; f.tool = id; this.preview(true); return true; }
+    if (kind === 'axis' && f.type==='splitLine' && f.projection==='vector') { f.direction=id; this.preview(true); return true; }
     if (kind === 'axis' && f.type === 'moveBody' && f.mode !== 'mates') { f.rotAxis = id; this.preview(true); return true; }
     if (kind === 'plane') {
       if (f.type === 'mirror') key = 'plane';
@@ -4326,11 +4339,19 @@ class App {
       return;
     }
     if (mode === 'anyface') {
+      if(['split','splitLine'].includes(this.pm.feature.type)&&this.pm.splitSlot==='tool'){
+        const curve=this.sketchCurveAt(e);
+        if(curve){this.pmPick('sketch',curve.sketch);return;}
+        const datum=this.pickAt(e);
+        if(datum?.kind==='plane'){this.pmPick('plane',datum.id);return;}
+      }
       const fh = this.faceAt(e);
       if (!fh) return;
       const face = this.viewport.faceInfo(fh.hit.face), body = this.result.bodies[this.viewport.faceBody[fh.hit.face]]?.id;
       // (body: which of several faces on top of each other was clicked, e.g. a copied surface on its solid)
-      this.pm.feature.face = { p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) };
+      const f=this.pm.feature,ref={ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(body ? { body } : {}) };
+      if(['split','splitLine'].includes(f.type)&&this.pm.splitSlot==='tool'){f.toolFace=ref;f.tool='';}
+      else f.face = ref;
       this.ui.renderPM(); this.updateEdgeHighlights(); this.preview();
       return;
     }
@@ -4368,7 +4389,7 @@ class App {
       f[key] ||= [];
       const i = f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);
       if (i >= 0) f[key].splice(i, 1);
-      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
+      else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill','splitLine'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
       if (f.type === 'freeform' && f.faces.length > 1) f.faces.splice(0, f.faces.length - 1); // (one face: the last clicked)
       this.ui.renderPM();
       this.updateEdgeHighlights();
@@ -5098,6 +5119,7 @@ class App {
     const selBody = sel?.kind === 'body' ? this.bodyById(sel.id) : sel?.kind === 'face' ? this.result.bodies?.[sel.body] : null;
     // (the bodies selected, several with Ctrl+click; of one kind)
     const selIds = sel?.kind === 'body' ? this.selectedBodyIds() : selBody ? [selBody.id] : [], selOf = (k) => selIds.filter((id) => this.bodyById(id)?.kind === k);
+    if(type==='splitLine'&&sel?.kind==='face')props.faces=[{p:sel.point||sel.face.center.toArray(),...(sel.face.planar?{n:sel.face.normal.toArray()}:{}),...(selBody?{body:selBody.id}:{})}];
     if (['smCornerRelief', 'smClosedCorner'].includes(type)) props.body = selBody?.sheet ? selBody.id : sheets.length === 1 ? sheets[0].id : null;
     if (type === 'smTabSlot' && sel?.kind === 'edge') props.edge = { p: sel.p };
     // (3D printing shapes: the build orientation they are made for kept with the part)
@@ -5157,7 +5179,7 @@ class App {
       this.toast(type === 'deleteSurface' ? 'There are no surface bodies to delete' : 'There are no bodies to delete', true);
       return;
     }
-    if (type === 'split') props.bodies = selOf('solid');
+    if (type === 'split') props.bodies = selIds;
     if (type === 'split' && sel?.kind === 'plane') props.tool = sel.id;
     if (type === 'split' && selF?.type === 'plane') props.tool = selF.id;
     if (type === 'point' && sel?.kind === 'vertex') { props.pointType = 'vertex'; props.vertex = { p: sel.p }; }

@@ -2980,6 +2980,74 @@ async function rebuild(doc, previewId = null, opts = {}) {
   const sectionOf = (ref, thin) => (isFaceProfile(ref) ? faceSection(ref, thin) : getSketch(ref, thin));
   // A surface extrusion's or revolution's contours: { frame, planar, wires: [{ wire, closed }], pts? } for each sketch
   // contour, flat model face (its outer and inner edges) and the chains of the picked model edges (f.edges)
+  // Shared splitting tools: finite faces stay finite when extension is disabled;
+  // selected faces retain their body reference when coincident surfaces exist.
+  const splittingTool = (f, targets) => {
+    const owned = [], own = shape => (owned.push(shape), shape);
+    let plane = null;
+    try {
+      const span = 4 * Math.max(1, bboxOfAll(targets).diag) + 10;
+      // Legacy features used finite sketch/surface tools and extended planar face tools.
+      const extend = f.extendTool ?? (!!f.toolFace && f.type==='split');
+      const faceTool = face => {
+        if (face.geomType === 'PLANE') {
+          plane = { p: vec(face.center), n: unit(vec(face.normalAt())) };
+          if (extend) return own(planeFace(plane.p, plane.n));
+        }
+        if (!extend) return own(face.clone());
+        const oc = R.getOC(), surface = oc.BRep_Tool.Surface(face.wrapped);
+        let maker;
+        try { maker = new oc.BRepBuilderAPI_MakeFace(surface, 1e-7); return own(R.cast(maker.Face())); }
+        finally { maker?.delete(); surface.delete(); }
+      };
+      let shape;
+      const sk = sketches.get(f.tool);
+      if (sk) {
+        if (f.splitType === 'intersection') throw new Error('Intersection requires a plane, model face or surface body; use Projection for a sketch');
+        const direction = f.projection === 'vector' ? unit(resolveAxis(f.direction || 'z').d) : sk.frame.n;
+        if (Math.abs(dot(direction, sk.frame.n)) < 1e-9) throw new Error('The projection direction lies in the sketch plane');
+        const wires = sketchWires(sk.sk, sk.frame, true), chains = S.curveChains(sk.sk), walls = [];
+        try {
+          for (const [i, original] of wires.entries()) {
+            let wire = original;
+            if (extend && !chains[i].closed) {
+              const edges = wire.edges, first = edges[0], last = edges.at(-1), a = vec(wire.startPoint), b = vec(wire.endPoint);
+              const tangent = (edge, at, end) => {
+                const forward = len(sub(vec(edge.startPoint), at)) < 1e-6;
+                const d = vec(edge.tangentAt(forward ? 0 : 1));
+                return mul(unit(d), (forward ? 1 : -1) * (end ? -1 : 1));
+              };
+              const lead = R.makeLine(sub(a, mul(tangent(first,a,false),span)),a), tail = R.makeLine(b,add(b,mul(tangent(last,b,true),span)));
+              try { wire = R.assembleWire([lead,...edges,tail]); }
+              finally { lead.delete();tail.delete();edges.forEach(e=>e.delete()); }
+            }
+            const moved = wire.clone().translate(mul(direction,-span)), v = new R.Vector(mul(direction,2*span)), oc=R.getOC();
+            let maker;
+            try { maker=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);walls.push(own(R.cast(maker.Shape()))); }
+            finally { maker?.delete();v.delete();moved.delete();if(wire!==original)wire.delete(); }
+          }
+          shape = own(asShape(walls));
+        } finally { wires.forEach(w=>w.delete()); }
+      } else {
+        if (f.splitType === 'projection') throw new Error('Projection requires a sketch; use Intersection for a plane or surface');
+        if (f.tool && (STD[f.tool] || planes.has(f.tool))) {
+          const fr = resolveFrame(f.tool); plane = {p:fr.o,n:fr.n}; shape=own(planeFace(fr.o,fr.n));
+        } else if (f.tool) {
+          const rec=needBody(f.tool,'splitting tool');
+          if(!surfaces.includes(rec))throw new Error('Select a surface body, model face, plane or sketch as the splitting tool');
+          const faces=rec.shape.faces;
+          try { shape=own(asShape(faces.map(faceTool))); if(faces.length!==1)plane=null; }
+          finally { faces.forEach(face=>face.delete()); }
+        } else if(f.toolFace) {
+          const hit=findFaceAny([...solids,...surfaces],f.toolFace);
+          if(!hit)throw new Error('The splitting tool face is missing');
+          shape=faceTool(hit.face);
+        } else throw new Error('Select a splitting tool: a sketch, plane, model face or surface body');
+      }
+      return {shape,plane,dispose:()=>owned.reverse().forEach(x=>x.delete())};
+    } catch(e) { owned.reverse().forEach(x=>x.delete());throw e; }
+  };
+
   const surfaceSections = (f, revolve = false) => {
     const refs = Array.isArray(f.profiles) ? f.profiles : f.sketch ? [f.sketch] : [], out = [];
     if (!refs.length && !f.edges?.length) throw new Error('Select one or more surface contours, or model edges');
@@ -6091,57 +6159,71 @@ async function rebuild(doc, previewId = null, opts = {}) {
           res.notes[f.id] = `${n} face${n === 1 ? '' : 's'} untrimmed`;
           break;
         }
-        case 'projCurve':
         case 'splitLine': {
-          // a sketch projected along its normal onto faces: as a 3D curve, or splitting the faces along it
-          // (Split Line can also split with a plane or a surface body)
-          const all = [...solids, ...surfaces];
-          const hits = (f.faces || []).map((r) => findFaceAny(all, r));
-          if (hits.some((h) => !h)) throw new Error('A selected face could not be found in the model');
-          if (f.type === 'splitLine' && !hits.length) throw new Error('Click the faces to split');
-          const L = (all.length ? bboxOfAll(all.map((r) => r.shape)).diag : 100) * 2 + 10;
-          let tool;
-          const sk = sketches.get(f.type === 'projCurve' ? f.sketch : f.tool);
-          if (sk) {
-            const ws = sketchWires(sk.sk, sk.frame);
-            if (!ws.length) throw new Error('The sketch has no curves to project');
-            const oc = R.getOC();
-            tool = asShape(ws.map((w) => { const v = new R.Vector(mul(sk.frame.n, 2 * L)), mk = new oc.BRepPrimAPI_MakePrism(w.clone().translate(mul(sk.frame.n, -L)).wrapped, v.wrapped, false, true); const sh = R.cast(mk.Shape()); mk.delete(); v.delete(); return sh; }));
-          } else if (f.type === 'splitLine' && f.tool && (STD[f.tool] || planes.has(f.tool))) { const fr = resolveFrame(f.tool); tool = planeFace(fr.o, fr.n); }
-          else if (f.type === 'splitLine' && f.tool) { const tr = surfaces.find((r) => r.id === f.tool); if (!tr) throw new Error('The split tool no longer exists'); tool = tr.shape; }
-          else throw new Error(f.type === 'projCurve' ? 'Select the sketch to project' : 'Choose what to split with: a sketch, a plane or a surface body');
-          const targets = hits.length ? hits.map((h) => h.face) : all.flatMap((r) => r.shape.faces);
-          const oc = R.getOC(), edges = [];
-          for (const face of targets) {
-            const op = new oc.BRepAlgoAPI_Section(face.wrapped, tool.wrapped, false);
-            try { op.Build(new oc.Message_ProgressRange()); if (!op.HasErrors()) edges.push(...R.cast(op.Shape()).edges); } catch (e) { if (isFatal(e)) throw e; } finally { op.delete(); }
-          }
-          if (!edges.length) throw new Error(f.type === 'projCurve' ? 'The sketch does not project onto the faces' : 'The tool does not cross the faces');
-          if (f.type === 'projCurve') {
-            const chains = chainEdges(edges);
-            const wire = chains.length === 1 ? chains[0].wire : null;
-            if (wire) curves.set(f.id, { wire, route: true });
-            res.curves[f.id] = chains.map((c) => c.pts);
-            res.notes[f.id] = `${edges.length} edge${edges.length === 1 ? '' : 's'}${chains.length > 1 ? ` in ${chains.length} separate curves (one connected curve can be a sweep path)` : ''}`;
-          } else {
-            // split the faces along the edges (the body stays one body, with more faces)
-            const byRec = new Map();
-            for (const h of hits) { if (!byRec.has(h.body)) byRec.set(h.body, []); }
-            for (const rec of byRec.keys()) {
-              const sp = new oc.BRepAlgoAPI_Splitter(), A = ocList([rec.shape]), T = ocList(edges);
-              sp.SetArguments(A); sp.SetTools(T); sp.Build(new oc.Message_ProgressRange());
-              const bad = sp.HasErrors(), out = bad ? null : R.cast(sp.Shape());
-              sp.delete(); A.delete(); T.delete();
-              if (!out) throw new Error('The faces could not be split');
-              if (solids.includes(rec)) {
-                const sol = solidsOf(out);
-                if (sol.length !== 1) throw new Error('Splitting the faces broke the body');
-                solids = solids.map((r) => (r === rec ? bodyRec(rec.id, sol[0], f.id) : r));
-              } else surfaces = surfaces.map((r) => (r === rec ? bodyRec(rec.id, out, f.id) : r));
+          const all=[...solids,...surfaces],hits=(f.faces||[]).map(ref=>findFaceAny(all,ref));
+          if(!hits.length)throw new Error('Select the faces to split');
+          if(hits.some(hit=>!hit))throw new Error('A selected face to split is missing');
+          if(!['auto','projection','intersection'].includes(f.splitType||'auto'))throw new Error('Select Projection or Intersection as the split type');
+          const owners=[...new Set(hits.map(hit=>hit.body))],tool=splittingTool(f,owners.map(rec=>rec.shape)),built=[],oc=R.getOC();
+          try{
+            for(const rec of owners){
+              const selected=hits.filter(hit=>hit.body===rec).map(hit=>hit.face),edges=[];
+              try{
+                for(const face of selected){
+                  const section=new oc.BRepAlgoAPI_Section(face.wrapped,tool.shape.wrapped,false);
+                  try{section.Build(new oc.Message_ProgressRange());if(section.HasErrors())throw new Error('The splitting tool could not be intersected with a selected face');const result=R.cast(section.Shape());try{edges.push(...result.edges);}finally{result.delete();}}
+                  finally{section.delete();}
+                }
+                if(!edges.length)continue;
+                const splitter=new oc.BRepAlgoAPI_Splitter(),args=ocList([rec.shape]),tools=ocList(edges);let out;
+                try{splitter.SetArguments(args);splitter.SetTools(tools);splitter.Build(new oc.Message_ProgressRange());if(splitter.HasErrors())throw new Error('The selected faces could not be split');out=R.cast(splitter.Shape());}
+                finally{splitter.delete();args.delete();tools.delete();}
+                if(out.faces.length<=rec.shape.faces.length){out.delete();continue;}
+                if(solids.includes(rec)){
+                  const pieces=solidsOf(out);
+                  if(pieces.length!==1){out.delete();throw new Error('Split Face must preserve one solid body; use Split Body to separate it');}
+                  out.delete();out=pieces[0];
+                }
+                built.push({rec,out});
+              }finally{edges.forEach(edge=>edge.delete());}
             }
-            body = compoundOf(solids);
-            res.notes[f.id] = `${hits.length} face${hits.length === 1 ? '' : 's'} split`;
-          }
+            if(!built.length)throw new Error('The splitting tool does not divide the selected faces; an open sketch must cross the face boundary');
+            for(const {rec,out} of built){
+              const replacement=bodyRec(rec.id,out,f.id,[rec]);
+              if(solids.includes(rec))solids=solids.map(r=>r===rec?replacement:r);
+              else surfaces=surfaces.map(r=>r===rec?replacement:r);
+            }
+            body=compoundOf(solids);res.notes[f.id]=`Faces split on ${built.length} bodies · body count unchanged`;
+          }finally{tool.dispose();}
+          break;
+        }
+        case 'projCurve': {
+          const all=[...solids,...surfaces],hits=(f.faces||[]).map(ref=>findFaceAny(all,ref));
+          if(hits.some(hit=>!hit))throw new Error('A selected face could not be found in the model');
+          const sk=sketches.get(f.sketch);
+          if(!sk)throw new Error('Select the sketch to project');
+          const L=(all.length?bboxOfAll(all.map(r=>r.shape)).diag:100)*2+10,ws=sketchWires(sk.sk,sk.frame),oc=R.getOC();
+          if(!ws.length)throw new Error('The sketch has no curves to project');
+          const walls=[];let tool;
+          try{
+            for(const w of ws){
+              const moved=w.clone().translate(mul(sk.frame.n,-L)),v=new R.Vector(mul(sk.frame.n,2*L));let maker;
+              try{maker=new oc.BRepPrimAPI_MakePrism(moved.wrapped,v.wrapped,false,true);walls.push(R.cast(maker.Shape()));}
+              finally{maker?.delete();v.delete();moved.delete();}
+            }
+            tool=asShape(walls);
+            const targets=hits.length?hits.map(hit=>hit.face):all.flatMap(rec=>rec.shape.faces),edges=[];
+            for(const face of targets){
+              const section=new oc.BRepAlgoAPI_Section(face.wrapped,tool.wrapped,false);
+              try{section.Build(new oc.Message_ProgressRange());if(!section.HasErrors())edges.push(...R.cast(section.Shape()).edges);}
+              catch(e){if(isFatal(e))throw e;}finally{section.delete();}
+            }
+            if(!edges.length)throw new Error('The sketch does not project onto the faces');
+            const chains=chainEdges(edges),wire=chains.length===1?chains[0].wire:null;
+            if(wire)curves.set(f.id,{wire,route:true});
+            res.curves[f.id]=chains.map(c=>c.pts);
+            res.notes[f.id]=`${edges.length} edge${edges.length===1?'':'s'}${chains.length>1?` in ${chains.length} separate curves (one connected curve can be a sweep path)`:''}`;
+          }finally{tool?.delete();walls.forEach(w=>w.delete());ws.forEach(w=>w.delete());}
           break;
         }
         case 'compCurve': {
@@ -7626,26 +7708,35 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'split': {
-          let tool, plane = null;
-          if (f.tool && (STD[f.tool] || planes.has(f.tool))) { const fr = resolveFrame(f.tool); plane = { p: fr.o, n: fr.n }; tool = planeFace(fr.o, fr.n); }
-          else if (f.tool) { const sb = needBody(f.tool, 'surface'); if (!surfaces.includes(sb)) throw new Error('Choose a plane or a surface body to split with'); tool = sb.shape; }
-          else if (f.toolFace) { const hit = findFace(body, f.toolFace); if (!hit) throw new Error('The selected face could not be found'); plane = hit; tool = planeFace(hit.p, hit.n); }
-          else throw new Error('Choose a plane, a flat face or a surface body to split with');
-          const targets = f.bodies?.length ? f.bodies.map((id) => needBody(id)).filter((b) => solids.includes(b)) : [...solids];
-          if (!targets.length) throw new Error('There is no solid body to split');
-          let splitAny = false;
-          for (const rec of targets) {
-            let pieces = splitBy(rec.shape, tool);
-            if (pieces.length > 1) splitAny = true;
-            if (plane && f.keep !== 'all') {
-              const side = (sh) => Math.sign(dot(sub(bbox(sh).center, plane.p), plane.n));
-              const want = f.keep === 'negative' ? -1 : 1;
-              const kept = pieces.filter((sh) => side(sh) === want);
-              if (kept.length) pieces = kept;
+          const all=[...solids,...surfaces],legacy=f.allBodies===undefined;
+          const targets=f.allBodies?all.filter(r=>r.id!==f.tool):f.bodies?.length?[...new Set(f.bodies)].map(id=>needBody(id)):legacy?[...solids]:[];
+          if(!targets.length)throw new Error('Select the solid or surface bodies to split');
+          if(targets.some(r=>r.id===f.tool))throw new Error('A body cannot split itself');
+          const tool=splittingTool(f,targets.map(r=>r.shape)),built=[];
+          try{
+            for(const rec of targets){
+              let pieces=solids.includes(rec)?splitBy(rec.shape,tool.shape):splitSurfacePieces(rec.shape,tool.shape);
+              const changed=pieces.length>1;
+              if(changed&&f.keep&&f.keep!=='all'){
+                if(!tool.plane)throw new Error('Keeping one side requires a plane or a planar splitting tool');
+                const want=f.keep==='negative'?-1:1;
+                pieces=pieces.filter(sh=>Math.sign(dot(sub(bbox(sh).center,tool.plane.p),tool.plane.n))===want);
+              }
+              built.push({rec,pieces,changed});
             }
-            replaceSolid(rec, compoundOf(pieces.map((shape) => ({ shape }))), f.id);
-          }
-          if (!splitAny) throw new Error('The tool does not cut through the selected bodies');
+            if(!built.some(x=>x.changed))throw new Error('The splitting tool does not divide the selected bodies; extend the tool or choose one that cuts through them');
+            for(const {rec,pieces,changed} of built){
+              if(!changed)continue;
+              if(solids.includes(rec))replaceSolid(rec,asShape(pieces),f.id);
+              else{
+                pieces.sort((a,b)=>R.measureArea(b)-R.measureArea(a));
+                const recs=pieces.map((shape,i)=>bodyRec(i?newId(`${rec.id}~${i+1}`):rec.id,shape,f.id,[rec]));
+                surfaces.splice(surfaces.indexOf(rec),1,...recs);
+              }
+            }
+            body=compoundOf(solids);
+            res.notes[f.id]=`${built.filter(x=>x.changed).length} bodies split · ${built.reduce((n,x)=>n+x.pieces.length,0)} resulting bodies`;
+          }finally{tool.dispose();}
           break;
         }
         case 'moveBody': {
@@ -12141,6 +12232,33 @@ function splitBy(shape, tool) {
   const res = R.cast(sp.Shape());
   sp.delete(); A.delete(); T.delete();
   return solidsOf(res);
+}
+
+// Separate a surface quilt at the cutting edges, retaining existing connections
+// elsewhere. A shell containing two split faces is not yet two surface bodies.
+function splitSurfacePieces(shape, tool) {
+  const oc=R.getOC(),splitter=new oc.BRepAlgoAPI_Splitter(),args=ocList([shape]),tools=ocList([tool]);
+  let result;
+  try{
+    splitter.SetArguments(args);splitter.SetTools(tools);splitter.Build(new oc.Message_ProgressRange());
+    if(splitter.HasErrors())throw new Error('The surface body could not be split');
+    result=R.cast(splitter.Shape());
+  }finally{splitter.delete();args.delete();tools.delete();}
+  const faces=result.faces,parent=faces.map((_,i)=>i),root=i=>parent[i]===i?i:(parent[i]=root(parent[i]));
+  const tol=Math.max(1e-7,bbox(shape).diag*1e-8);
+  const onTool=e=>{
+    const vertex=R.makeVertex(vec(e.pointAt(.5))),query=new R.DistanceQuery(vertex);
+    try{return query.distanceTo(tool)<tol;}finally{query.delete?.();vertex.delete();}
+  };
+  try{
+    for(let i=0;i<faces.length;i++)for(let j=i+1;j<faces.length;j++){
+      const a=faces[i].edges,b=faces[j].edges;
+      try{if(a.some(e=>b.some(other=>other.isSame(e))&&!onTool(e)))parent[root(i)]=root(j);}
+      finally{a.forEach(e=>e.delete());b.forEach(e=>e.delete());}
+    }
+    const groups=new Map();faces.forEach((face,i)=>{const key=root(i);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(face);});
+    return [...groups.values()].map(group=>group.length===1?group[0].clone():sewShapes(group,1e-7));
+  }finally{faces.forEach(face=>face.delete());result.delete();}
 }
 
 // Edges sorted into connected chains: [{ wire, pts }] (each chain joined end to end; pts for showing it).

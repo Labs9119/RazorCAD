@@ -977,3 +977,19 @@ Left
 Right
 Bottom
 Trimetric
+Split Body
+Split Face
+Bodies to Split
+Faces to Split
+Splitting Tool
+Select bodies
+Select faces
+Select splitting tool
+All intersected bodies
+Extend Splitting Tool
+Split Type
+Projection Direction
+Sketch normal
+Along Vector
+Positive side
+Negative side

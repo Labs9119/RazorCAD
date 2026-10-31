@@ -5866,6 +5866,31 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: out.join('; ') };
   },
 
+  async 'split-body-face'() {
+    const {run,fixture}=await import('/tests/split-cases.js'),native=await run({threads:threadsPerKernel()});
+    if(!native.ok)return {ok:false,detail:native.results.filter(r=>!r.ok)};
+    const a=window.app,d=fixture('plane'),clean=JSON.parse(JSON.stringify(d.doc));await a.setDoc(d.doc);closeModals();
+    const commands=a.ui.commandList();
+    if(!commands.find(c=>c.k==='split body')?.aliases.includes('split')||!commands.find(c=>c.k==='split face')?.aliases.includes('split line'))return {ok:false,detail:'Legacy command aliases missing'};
+    a.startFeature('split');await wait(120);
+    if(a.pickMode()!=='body')return {ok:false,detail:'Split Body must start by picking bodies'};
+    a.pmPickBody(d.source.id);
+    if(!a.pm.feature.bodies.includes(d.source.id)||a.pm.feature.tool)return {ok:false,detail:'Surface target was mistaken for a tool'};
+    document.querySelector('[data-split-slot="tool"]').click();
+    if(a.pickMode()!=='anyface')return {ok:false,detail:'Tool slot did not change picking mode'};
+    a.pmPick('plane','front');
+    if(a.pm.feature.tool!=='front'||!a.pm.feature.bodies.includes(d.source.id))return {ok:false,detail:'Tool pick changed the targets'};
+    await a.okPM();await until(()=>!a.kernel.pending);
+    if(a.result.errors.size||a.result.bodies.length!==2)return {ok:false,detail:'Split Body was not committed as two surface bodies'};
+    await a.setDoc(clean);
+    a.startFeature('splitLine');await wait(120);
+    if(a.pickMode()!=='faces')return {ok:false,detail:'Split Face must start by picking faces'};
+    document.querySelector('[data-split-slot="tool"]').click();a.pmPick('sketch',d.sk.id);
+    if(a.pm.feature.tool!==d.sk.id||a.pm.feature.faces.length)return {ok:false,detail:'Sketch tool was not assigned separately from target faces'};
+    await a.cancelPM();
+    return {ok:true,detail:`${native.results.length} CAD checks; separate target/tool slots, surface targets, tree selection and cancel`};
+  },
+
   async 'exact-spline-surfaces'() {
     const { run } = await import('/tests/exact-spline-surfaces-cases.js');
     const result = await run({ threads: threadsPerKernel() });

@@ -1161,9 +1161,16 @@ A part with two or more bodies can have exploded views: **Insert ▸ Exploded Vi
 
 **Combine** joins bodies with **Add**, **Subtract** or **Common**; the first body clicked is the main body. **Subtract Bodies** picks a cutting body and target body; **Consume cutting body** (on by default) removes the cutting body afterwards. {idx:combine}{idx:Subtract Bodies}
 
-## Split
+## Split Body
 
-Cuts bodies into separate bodies with a plane, a flat face or a surface body. With a plane or face you can keep all the pieces or just the piece on one side. {idx:split}
+**Split Body** separates solid or surface bodies into independent bodies. First select **Bodies to Split**, then activate **Select splitting tool** and choose a sketch, construction plane, model face or surface body. A surface body selected as a target stays a target; it is not automatically treated as the tool. The tool is kept. {idx:split}{idx:Split Body}
+
+- **All intersected bodies** is optional; otherwise only the selected bodies are divided.
+- **Extend Splitting Tool** uses the underlying surface of a trimmed face and extends open sketch ends along their endpoint tangents. Construction planes already extend through the model. A bounded spline surface retains its natural parameter limits.
+- With a planar tool, **Keep** retains all resulting bodies or only those on its positive or negative side.
+- If the tool does not divide any target, the operation reports an error instead of creating an unchanged result.
+
+Both the Features and Surfaces toolbars provide **Split Body** and **Split Face**. **Split Face** keeps the body count unchanged; use it when you only need an extra boundary on a face.
 
 ## Move/Copy Bodies
 
@@ -1264,7 +1271,7 @@ The resulting CAD face is checked for validity and sampled at 33 positions on ea
 | **Replace Face** | Moves flat faces of a solid onto a surface body, so the body grows or shrinks to meet it (for example a curved top). The surface must reach past the faces all round. |
 | **Freeform** | Reshapes one face of a solid or surface by handles you push in or out (see below) |
 | **Flatten Surface** | Unrolls faces of a surface or solid flat beside the model as a surface body (see below) |
-| **Split (with a surface)** | Splits solid bodies with a surface body |
+| **Split Body** | Splits solid or surface bodies into independent bodies |
 | **Move/Copy Surfaces** | As Move/Copy Bodies, for surfaces |
 | **Delete Surface** | Removes a surface body |
 
@@ -1276,19 +1283,19 @@ The resulting CAD face is checked for validity and sampled at 33 positions on ea
 
 **Keep at the edges** says what the face keeps where it meets the faces round it: **Contact (G0)** (only the edges stay where they are), **Tangent (G1)** (the tangent plane along them too, so a face that ran smoothly into its neighbours still does; the default) or **Curvature (G2)** (the curvature as well). The more is kept, the closer to the middle the shape changes and the less it bulges. The face is made an exact B-spline surface and its control points are moved (the outer one, two or three rows of them held); the note gives how closely the handles are met and, measured on the CAD faces, how closely the tangent plane and curvature along the edges are kept. A face that would run through another face cannot be closed into the solid: use smaller heights.
 
-## Curves and split lines
+## Curves and Split Face
 
 | Feature | What it does |
 |---|---|
-| **Split Line** | Splits faces along a sketch's projection, or where a plane or surface crosses them. The body stays one body with its faces split, for example for a parting line, a draft or a colour. |
+| **Split Face** | Select the faces first, then a splitting tool. Projection uses a sketch, along its normal or an explicit vector; Intersection uses a plane, model face or surface body. Automatic chooses from the tool. Extend Splitting Tool controls the tool extent. The body count stays unchanged; only selected faces gain boundaries. |
 | **Projected Curve** | Projects a sketch along its normal onto faces, as a 3D curve |
 | **Composite Curve** | Joins model edges end to end into one curve |
 
-Projected and composite curves can be used as sweep paths, lofted surface profiles, curve-driven pattern paths and boundary surface curves. {idx:Split Line}{idx:Projected Curve}{idx:Composite Curve}
+Projected and composite curves can be used as sweep paths, lofted surface profiles, curve-driven pattern paths and boundary surface curves. {idx:Split Face}{idx:Split Line}{idx:Projected Curve}{idx:Composite Curve}
 
 ## Flatten Surface
 
-Click the faces to unroll. Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (for example a dome) can't lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the size, the area change and how much the edge lengths changed. **Relaxing passes** sets how hard it tries. A closed tube needs a seam (Split Line) to open out. {idx:Flatten Surface}
+Click the faces to unroll. Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (for example a dome) can't lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the size, the area change and how much the edge lengths changed. **Relaxing passes** sets how hard it tries. A closed tube needs a seam (Split Face) to open out. {idx:Flatten Surface}
 
 ## Meshes and closing surfaces
 

@@ -977,3 +977,19 @@
 977|Derecha
 978|Inferior
 979|Trimétrica
+980|Dividir cuerpo
+981|Dividir cara
+982|Cuerpos que dividir
+983|Caras que dividir
+984|Herramienta de división
+985|Seleccionar cuerpos
+986|Seleccionar caras
+987|Seleccionar herramienta de división
+988|Todos los cuerpos intersectados
+989|Extender herramienta de división
+990|Tipo de división
+991|Dirección de proyección
+992|Normal al boceto
+993|A lo largo del vector
+994|Lado positivo
+995|Lado negativo
