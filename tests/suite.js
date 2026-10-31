@@ -1600,7 +1600,8 @@ const UI = {
     const p = S.addPoint(f, 100, 0), line = S.addLine(f, 'O', p);
     S.addRel(f, 'horizontal', [line]);
     const dim = S.addRel(f, 'dim', ['O', p], { kind: 'hdist', value: 100, s: 1 });
-    doc.features.push(f); await a.setDoc(doc); closeModals(); await a.enterSketch(f, false);
+    // (a part of its own in front: an earlier test may leave a drawing there)
+    doc.features.push(f); await a.newDocument?.(); closeModals(); await a.setDoc(doc); closeModals(); await a.enterSketch(f, false);
     const sk = a.sketcher;
     const key = (input, k) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
     const type = (input, text, caret = text.length) => { input.focus(); input.value = text; input.setSelectionRange(caret, caret); input.dispatchEvent(new Event('input', { bubbles: true })); };
