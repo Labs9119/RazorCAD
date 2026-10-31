@@ -3002,7 +3002,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
       // (a revolve's axis line, when it is in the sketch, is not part of the surface)
       const axisLine = revolve ? (f.axis === 'sketchLine' ? (f.axisSketch?.sketch === LR.sourceId(ref) ? f.axisSketch.curve : null) : f.axis) : null;
       const curvesOf = axisLine ? { ...subset, curves: subset.curves.filter((c) => c.id !== axisLine) } : subset;
-      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame);
+      const chains = S.curveChains(curvesOf), wires = sketchWires(curvesOf, source.frame, true);
       out.push({ ...source, sk: subset, sourceSketch: source.sk, id: LR.sourceId(ref), planar: true, chains, wires: wires.map((wire, i) => ({ wire, closed: !!chains[i]?.closed })) });
     }
     if (f.edges?.length) out.push(edgeSection(f));
@@ -5346,10 +5346,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const sk=sketches.get(LR.sourceId(ref));if(!sk)throw new Error('A planar surface sketch is missing, suppressed or has errors');
               const selected=typeof ref==='string'?null:LR.resolveContour(sk.sk,ref);
               if(selected?.chain&&!selected.chain.closed)throw new Error('Planar Surface requires a closed contour');
-              const regions=selected?.region?[selected.region]:S.profileRegions(selected?.sketch||sk.sk);
+              const regions=selected?.region?[selected.region]:S.profileRegions(selected?.sketch||sk.sk,true);
               if(!regions.length)throw new Error('The selected entities do not form a closed profile');
               for(const region of regions){
-                const outer=loopWire(sk.frame,region.outer.segs),holes=region.holes.map(h=>loopWire(sk.frame,h.segs));
+                const outer=exactLoopWire(sk.sk,sk.frame,region.outer.segs),holes=region.holes.map(h=>exactLoopWire(sk.sk,sk.frame,h.segs));
                 try{let face=R.makeFace(outer);if(holes.length){const original=face;try{face=R.addHolesInFace(original,holes);}finally{original.delete();}}parts.push(face);owned.push(face);}finally{outer.delete();holes.forEach(w=>w.delete());}
               }
             }
@@ -5435,7 +5435,15 @@ async function rebuild(doc, previewId = null, opts = {}) {
                   }
                   return shape;
                 };
-                if(!drafted){parts.push(trim(sweep(wire)));continue;}
+                if(!drafted){
+                  if(s.sk?.curves.some(c=>c.type==='spline'&&c.ctrl&&!c.closed)){
+                    // A ruled loft of translated exact wires is the same extrusion, with
+                    // native B-spline patches whose knot spans are retained for integration.
+                    const ends=[wire.clone().translate(mul(a,h0)),wire.clone().translate(mul(a,h1))];
+                    try{parts.push(trim(R.loft(ends,{ruled:true},true)));}finally{ends.forEach(w=>w.delete());}
+                  }else parts.push(trim(sweep(wire)));
+                  continue;
+                }
                 if(!closed){
                   // (an open contour, lines and arcs of a sketch: leaning to its left as drawn (Draft outward: its right)
                   // away from where it starts; the contour offset in its plane by the height times the angle's tangent,
@@ -5528,14 +5536,22 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const ids = (f.profiles || []).filter(Boolean);
           if (ids.length < 2) throw new Error('Select at least two profiles (in order)');
           const connectorControls=loftConnectionControls(f,ids);
+          // Simple surface lofts can use the original spline edges. The guided / end-condition
+          // builders still require their cubic section representation for correspondence.
+          const exactProfiles = !connectorControls && !(f.guides || []).filter(Boolean).length && !hasLoftEnds(f) && ids.some(id => {
+            const source = sketches.get(LR.sourceId(id));
+            if (!source) return false;
+            const subset = typeof id === 'string' ? source.sk : LR.resolveContour(source.sk, id).sketch;
+            return subset.curves.some(c => !c.construction && c.type === 'spline' && c.ctrl && !c.closed);
+          });
           const wires = ids.map((id) => {
             if (curves.has(id)) return curves.get(id).wire;
             const sk = sketches.get(LR.sourceId(id));
             if (!sk) throw new Error('A profile is missing, suppressed or has errors');
             const resolved = typeof id === 'string' ? { sketch: sk.sk } : LR.resolveContour(sk.sk, id);
-            if (resolved.region) return sectionWire(loftSection(sk.frame, resolved.region.outer.segs));
+            if (resolved.region) return exactProfiles ? exactLoopWire(sk.sk, sk.frame, resolved.region.outer.segs) : sectionWire(loftSection(sk.frame, resolved.region.outer.segs));
             const subset = resolved.sketch;
-            const ws = sketchWires(subset, sk.frame);
+            const ws = sketchWires(subset, sk.frame, exactProfiles);
             if (ws.length !== 1) throw new Error(`${sk.sk.name} must be one connected chain of curves (it has ${ws.length})`);
             return ws[0];
           });
@@ -5554,7 +5570,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
             throw new Error(`The profiles must all be open, or all closed: ${nm(ic)} is closed but ${nm(io)} is open (its ends are ${ends[io] < 0.01 ? ends[io].toExponential(1) : ends[io].toFixed(2)} mm apart)`);
           }
           let list = wires, closedSecs = null;
-          if (closed[0]) {
+          if (closed[0] && !exactProfiles) {
             // closed profiles: matched like a solid loft (same start points, same way round)
             const secs = ids.map((id, i) => {
               if (curves.has(id)) return null;
@@ -5575,7 +5591,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               list = closedSecs.map(sectionWire);
               if(connectorControls)loftConnectionInfo(f,ids,closedSecs,true);
             }
-          } else {
+          } else if (!closed[0]) {
             // open profiles: each one runs the same way as the one before it
             list = [wires[0]];
             for (let i = 1; i < wires.length; i++) {
@@ -11994,10 +12010,86 @@ function bodyAt(bodies, p) {
   return best && bd < Math.max(1e-3, bbox(best.shape).diag * 1e-4) ? best : null;
 }
 
+// Keep an open control spline as one exact (possibly rational) B-spline edge, rather
+// than the display/region builder's approximation by many cubic Bezier edges.
+function controlSplineEdge(sk, c, fr) {
+  const oc = R.getOC(), owned = [], own = (x) => (owned.push(x), x);
+  try {
+    const count = c.pts.length, degree = Math.max(1, Math.min(c.degree ?? 3, count - 1)), spans = count - degree;
+    const poles = own(new oc.NCollection_Array1_gp_Pnt(1, count));
+    c.pts.forEach((id, i) => {
+      const p = S.getPoint(sk, id), q = new oc.gp_Pnt(...S.fromFrame2D(fr, p.x, p.y));
+      try { poles.SetValue(i + 1, q); } finally { q.delete(); }
+    });
+    const knots = own(new oc.NCollection_Array1_double(1, spans + 1));
+    const mults = own(new oc.NCollection_Array1_int(1, spans + 1));
+    for (let i = 0; i <= spans; i++) {
+      knots.SetValue(i + 1, i); mults.SetValue(i + 1, i === 0 || i === spans ? degree + 1 : 1);
+    }
+    let curve;
+    if (c.weights) {
+      const weights = own(new oc.NCollection_Array1_double(1, count));
+      c.weights.forEach((w, i) => weights.SetValue(i + 1, w));
+      curve = own(new oc.Geom_BSplineCurve(poles, weights, knots, mults, degree, false, true));
+    } else curve = own(new oc.Geom_BSplineCurve(poles, knots, mults, degree, false));
+    const builder = own(new oc.BRepBuilderAPI_MakeEdge(curve));
+    return new R.Edge(builder.Edge());
+  } finally { owned.reverse().forEach((x) => x.delete()); }
+}
+
+// Region boundaries may contain only a trimmed portion of a source curve. Replace
+// a run only when it spans the complete spline; retain the selected boundary otherwise.
+function exactLoopWire(sk, fr, segs) {
+  const edges = [];
+  try {
+    for (let i = 0; i < segs.length;) {
+      let end = i + 1;
+      const g = segs[i], c = S.getCurve(sk, g.sourceCurve);
+      while (g.sourceCurve && end < segs.length && segs[end].sourceCurve === g.sourceCurve && segs[end].sourceDirection === g.sourceDirection) end++;
+      let exact = false;
+      if (c?.type === 'spline' && c.ctrl && !c.closed) {
+        const edge = controlSplineEdge(sk, c, fr), a = S.fromFrame2D(fr, ...g.a), b = S.fromFrame2D(fr, ...segs[end - 1].b);
+        const start = vec(edge.startPoint), finish = vec(edge.endPoint);
+        const forward = len(sub(a, start)) < 1e-7 && len(sub(b, finish)) < 1e-7;
+        const backward = len(sub(a, finish)) < 1e-7 && len(sub(b, start)) < 1e-7;
+        if (forward) { edges.push(edge); exact = true; }
+        else {
+          try { if (backward) { edges.push(R.cast(edge.wrapped.Reversed())); exact = true; } }
+          finally { edge.delete(); }
+        }
+      }
+      if (!exact) {
+        const wire = loopWire(fr, segs.slice(i, end));
+        try { edges.push(...wire.edges); } finally { wire.delete(); }
+      }
+      i = end;
+    }
+    return R.assembleWire(edges);
+  } finally { edges.forEach(e => e.delete()); }
+}
+
 // Wires of a sketch's (non-construction) chains, on the sketch plane.
-function sketchWires(sk, fr) {
+function sketchWires(sk, fr, exactSplines = false) {
   const wires = [];
   for (const ch of S.curveChains(sk)) {
+    if (exactSplines && ch.items.some(({ c }) => c.type === 'spline' && c.ctrl && !c.closed)) {
+      const edges = [];
+      try {
+        for (const item of ch.items) {
+          const { c, rev } = item;
+          if (c.type === 'spline' && c.ctrl && !c.closed) {
+            const edge = controlSplineEdge(sk, c, fr);
+            if (rev) { try { edges.push(R.cast(edge.wrapped.Reversed())); } finally { edge.delete(); } }
+            else edges.push(edge);
+          } else {
+            const section = loftSection(fr, S.chainSegs(sk, { items: [item] })), wire = sectionWire(section);
+            try { edges.push(...wire.edges); } finally { wire.delete(); }
+          }
+        }
+        wires.push(R.assembleWire(edges));
+      } finally { edges.forEach((e) => e.delete()); }
+      continue;
+    }
     const segs = S.chainSegs(sk, ch);
     if (segs.length === 1 && segs[0].type === 'circle') {
       wires.push(R.drawSingleCircle(segs[0].r).translate(segs[0].c[0], segs[0].c[1]).sketchOnPlane(rPlane(fr)).wire);

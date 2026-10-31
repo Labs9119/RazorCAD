@@ -5866,6 +5866,12 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: out.join('; ') };
   },
 
+  async 'exact-spline-surfaces'() {
+    const { run } = await import('/tests/exact-spline-surfaces-cases.js');
+    const result = await run({ threads: threadsPerKernel() });
+    return { ok: result.ok, detail: result.ok ? `${result.results.length} exact spline surface checks: degrees 2–7, weights, reversed contours, planar borders and lofts with different span counts` : result.results.filter(r => !r.ok) };
+  },
+
   // a control-point spline: the B-spline of its control points for degree 2 to 5 (against a plain de Boor
   // evaluation, to a hundred-thousandth of a mm); its control polygon is construction lines that take relations
   // (the first leg made horizontal); deleting the spline takes its polygon; a profile closed by a line extrudes to
