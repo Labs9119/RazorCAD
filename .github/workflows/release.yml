@@ -1,7 +1,9 @@
 # A release, when a version is tagged (git tag v0.14.0-beta, pushed): the regression tests, then RazorCAD.exe and
 # RazorCAD-Setup-<version>.exe built (installer/build_installer.bat), and a draft release made on GitHub with the
-# setup, its read-me and checksums, and notes from CHANGELOG.md. Nothing is published: the draft waits for review.
-# It runs only for a version tag (never on ordinary pushes), and the tag must match version.txt. A tag that has a
+# setup, the user manual (the PDF in git, Manual/RazorCAD User Manual.pdf, as RazorCAD-User-Manual-<version>.pdf),
+# its read-me and checksums, and notes from CHANGELOG.md. Nothing is published: the draft waits for review.
+# It runs only for a version tag (never on ordinary pushes), the tag must match version.txt, and the manual PDF must
+# have been rebuilt (Manual/build_manual.py) since manual_source.md last changed. A tag that has a
 # release already (one published by hand, with a setup built and signed on a PC) is left alone.
 #
 # The tests are tests.yml's (called here): split over 6 machines side by side, some 15 minutes; the build waits for
@@ -29,7 +31,9 @@ jobs:
       version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v5
-      - name: Check for a release, and the tag against version.txt
+        with:
+          fetch-depth: 0   # (the history: when the manual and its PDF last changed)
+      - name: Check for a release, the tag against version.txt, and the manual PDF
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -44,6 +48,13 @@ jobs:
           ver=$(tr -d '\r\n ' < version.txt)
           if [ "v$ver" != "$TAG" ]; then
             echo "::error::The tag $TAG does not match version.txt ($ver): set version.txt and tag again."
+            exit 1
+          fi
+          # (the PDF committed no earlier than its source: else it is out of date)
+          src=$(git log -1 --format=%ct -- Manual/manual_source.md)
+          pdf=$(git log -1 --format=%ct -- 'Manual/RazorCAD User Manual.pdf')
+          if [ -z "$pdf" ] || [ "$pdf" -lt "$src" ]; then
+            echo "::error::Manual/RazorCAD User Manual.pdf is older than Manual/manual_source.md: run python Manual/build_manual.py, commit, and tag again."
             exit 1
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
@@ -98,6 +109,7 @@ jobs:
           New-Item -ItemType Directory -Force $dist | Out-Null
           Copy-Item (Join-Path $out "RazorCAD-Setup-$env:VERSION.exe") $dist
           Copy-Item (Join-Path $out 'Read me first.txt') (Join-Path $dist 'Read-me-first.txt')
+          Copy-Item 'Manual/RazorCAD User Manual.pdf' (Join-Path $dist "RazorCAD-User-Manual-$env:VERSION.pdf")
           Get-ChildItem $dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content -Encoding utf8 (Join-Path $dist 'SHA256SUMS.txt')
           python tools/release_notes.py $env:VERSION --out (Join-Path $env:RUNNER_TEMP 'notes.md')
           "DIST=$dist" >> $env:GITHUB_ENV

@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-10-31 23:05 — The release attaches the user manual
+
+- The release workflow attaches the user manual PDF to the draft as `RazorCAD-User-Manual-<version>.pdf` (the PDF
+  in git, in the checksums too), as the website's manual link expects. Before the tests start it refuses a tag whose
+  manual PDF is older than `Manual/manual_source.md`, so a stale manual can't go out. `installer/RELEASING.md` says
+  to rebuild and commit the PDF with the version.
+
 ## 2026-10-31 22:30 — Version 0.21.1-beta
 
 - Installer, user manual (122 pages) and website for 0.21.1-beta.
