@@ -96,7 +96,7 @@ export const TYPE_INFO = {
   import: { base: 'Imported', icon: 'import' },
   shell: { base: 'Shell', icon: 'shell' },
   combine: { base: 'Combine', icon: 'combine' },
-  split: { base: 'Split', icon: 'split' },
+  split: { base: 'Split Body', icon: 'split' },
   moveBody: { base: 'Move Body', icon: 'moveBody' },
   deleteBody: { base: 'Delete Body', icon: 'deleteBody' },
   sweep: { base: 'Sweep', cutBase: 'Sweep Cut', icon: 'sweep', cutIcon: 'cutSweep' },
@@ -156,7 +156,7 @@ export const TYPE_INFO = {
   ruledSurface: { base: 'Ruled-Surface', icon: 'ruledSurface' },
   untrim: { base: 'Untrim-Surface', icon: 'untrim' },
   projCurve: { base: 'Projected-Curve', icon: 'projCurve' },
-  splitLine: { base: 'Split-Line', icon: 'splitLine' },
+  splitLine: { base: 'Split Face', icon: 'splitLine' },
   compCurve: { base: 'Composite-Curve', icon: 'compCurve' },
   boundarySurf: { base: 'Boundary-Surface', icon: 'boundarySurf' },
   flattenSurf: { base: 'Surface-Flatten', icon: 'flattenSurf' },
@@ -291,8 +291,8 @@ export function createFeature(doc, type, props = {}) {
     shell: { thickFaces: [], faces: [], thickness: 2, outward: false },
     // consume: the tool bodies are used up (off: they are kept)
     combine: { op: 'add', main: null, bodies: [], consume: true },
-    // tool: a plane id or a surface body id ('' + toolFace: a picked flat face); keep: all | positive | negative
-    split: { tool: 'front', toolFace: null, bodies: [], keep: 'all' },
+    // tool: sketch, plane or surface body id; toolFace: a picked model face. Targets may be solids or surfaces.
+    split: { tool: '', toolFace: null, bodies: [], allBodies: false, extendTool: true, keep: 'all' },
     // mode 'translate': rotate about rotAxis by angle (about the origin or the bodies' center), then move dx/dy/dz;
     // mode 'mates': mates [{ type, a, b, value, flip }] between the moving bodies and fixed geometry
     moveBody: { bodies: [], copy: false, copies: 1, mode: 'translate', dx: 0, dy: 0, dz: 0, rotAxis: 'none', angle: 0, rotCenter: 'origin', mates: [] },
@@ -324,7 +324,7 @@ export function createFeature(doc, type, props = {}) {
     // a sketch projected along its normal onto faces (none picked: every face)
     projCurve: { sketch: null, faces: [] },
     // faces split along a sketch's projection, or by a plane / surface body (tool)
-    splitLine: { tool: '', faces: [] },
+    splitLine: { tool: '', toolFace: null, faces: [], splitType: 'auto', projection: 'normal', direction: 'z', extendTool: true },
     compCurve: { edges: [] },
     // curves in two directions (sketches, 3D sketches, composite / projected curves)
     // continuity: 'G0' | 'G1' | 'G2' to supportFaces, along the bounding curves that run on their edges
@@ -498,11 +498,12 @@ export function referencesOf(doc, f) {
   if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface')addId(f.startPlane);
   if (f.type === 'surfExtrude' && f.direction && f.direction !== 'none') addId(f.direction);
   for (const ref of [f.profile,f.path,f.guide,...(f.profiles || []), ...(f.guides || [])]) addId(typeof ref === 'string' ? ref : ref?.sketch);
+  for (const ref of [...(f.profiles||[]),...(f.guides||[])]) if(ref?.kind==='modelEdgeChain')for(const edge of ref.edges||[]){addBody(edge.body);addId(edge.feature);}
   if (f.type === 'surfFill') for (const id of [...(f.throughCurves || []), ...(f.throughPoints || [])]) addId(id);
   for (const id of expandFeatureRefs(doc, f.features)) addId(id);
   if (f.type !== 'sketch' && typeof f.plane === 'string') addId(f.plane);
   if (f.plane?.ref) addId(f.plane.ref);
-  if (f.type === 'split') { addId(f.tool); addBody(f.tool); }
+  if (['split','splitLine'].includes(f.type)) { addId(f.tool); addBody(f.tool); addBody(f.toolFace?.body); addId(f.direction); for (const r of f.faces || []) addBody(r.body); }
   if (f.axis === 'sketchLine' && f.axisSketch?.sketch) addId(f.axisSketch.sketch);
   if (f.sketchLine) addId(String(f.sketchLine).split(':')[0]);
   for (const r of [...(f.startFaces || []), ...(f.endFaces || []), ...(f.supportFaces || [])]) addBody(r.body);

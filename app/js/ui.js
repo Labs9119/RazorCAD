@@ -1433,8 +1433,17 @@ const PM_SCHEMAS = {
     { title: 'Surfaces to Delete', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['surface'], hint: 'Click surface bodies on the model or tick them here. Delete or suppress this feature to bring them back.' }] },
   ],
   split: [
-    { title: 'Trim Tool', fields: [{ key: 'tool', type: 'splitTool', label: 'Split with' }, { key: 'keep', type: 'select', label: 'Keep', options: [['all', 'All pieces'], ['positive', 'The piece on the normal side'], ['negative', 'The piece on the other side']], show: (f) => !window.app?.bodyById(f.tool) }] },
-    { title: 'Target Bodies', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['solid'], hint: 'Leave empty to split every solid body the tool crosses.' }] },
+    { title: 'Bodies to Split', fields: [
+      { type: 'splitPick', slot: 'targets', label: 'Select bodies' },
+      { key: 'bodies', type: 'bodyList', kinds: ['solid','surface'], hint: 'Select solid or surface bodies. The splitting tool is kept.' },
+      { key: 'allBodies', type: 'check', label: 'All intersected bodies' },
+    ] },
+    { title: 'Splitting Tool', fields: [
+      { type: 'splitPick', slot: 'tool', label: 'Select splitting tool' },
+      { key: 'tool', type: 'splitTool', label: 'Splitting Tool' },
+      { key: 'extendTool', type: 'check', label: 'Extend Splitting Tool' },
+    ] },
+    { title: 'Result', fields: [{ key: 'keep', type: 'select', label: 'Keep', options: [['all','All bodies'],['positive','Positive side'],['negative','Negative side']], show: f => !f.tool || !!STD_PLANES[f.tool] || window.app?.doc.features.find(x=>x.id===f.tool)?.type==='plane' }] },
   ],
   moveBody: [
     { title: 'Bodies to Move/Copy', fields: [{ key: 'bodies', type: 'bodyList', kinds: ['solid', 'surface'] }, { key: 'copy', type: 'check', label: 'Copy (keep the original bodies)' }, { key: 'copies', type: 'expr', label: 'Copies', unit: '#', show: (f) => f.copy && f.mode !== 'mates' }] },
@@ -1479,7 +1488,7 @@ const PM_SCHEMAS = {
     { title: 'Model Boundary Edges', fields: [{ key: 'edges', type: 'edges' }] },
   ],
   surfLoft: [
-    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true }] },
+    { title: 'Profiles', fields: [{ key: 'profiles', type: 'loftSelection', with3d: true },{key:'modelEdgeHint',type:'hint',show:f=>(f.profiles||[]).some(LR.isModelEdgeChain),text:'Model-edge profiles currently use Free end conditions, Automatic correspondence and no guide curves.'}] },
     {title:'Profile Correspondence',fields:[{key:'loftCorrespondence',type:'loftCorrespondence'}]},
     ...LOFT_END_GROUPS,
     { title: 'Guide Curves', fields: [
@@ -1660,7 +1669,7 @@ const PM_SCHEMAS = {
     { title: 'Faces to Flatten', fields: [
       { key: 'faces', type: 'faceList', hint: 'Click the faces (of a surface or a solid) to unroll. They are laid flat beside the model as a surface body.' },
       { key: 'iterations', type: 'expr', label: 'Relaxing passes (doubly curved faces)', unit: '#' },
-      { key: 'flHint', type: 'hint', text: 'Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (e.g. a dome) cannot lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the area change. A closed tube needs a seam (Split Line) to open out.' },
+      { key: 'flHint', type: 'hint', text: 'Faces that unroll (cylinders, cones, bent sheets) come out exact. A doubly curved face (e.g. a dome) cannot lie flat without stretching: it is spread out keeping its edge lengths as well as possible, and the note gives the area change. A closed tube needs a seam (Split Face) to open out.' },
     ] },
   ],
   projCurve: [
@@ -1670,9 +1679,17 @@ const PM_SCHEMAS = {
     ] },
   ],
   splitLine: [
-    { title: 'Split With', fields: [
-      { key: 'tool', type: 'trimTool', label: 'Split with' },
-      { key: 'faces', type: 'faceList', hint: 'Click the faces to split. A sketch is projected onto them along its normal; a plane or surface splits them where it crosses them. The body stays one body, with the faces split (e.g. for a part line, a draft, or a face to colour).' },
+    { title: 'Faces to Split', fields: [
+      { type: 'splitPick', slot: 'targets', label: 'Select faces' },
+      { key: 'faces', type: 'faceList', hint: 'Select faces on solid or surface bodies. Split Face keeps each body as one body.' },
+    ] },
+    { title: 'Splitting Tool', fields: [
+      { type: 'splitPick', slot: 'tool', label: 'Select splitting tool' },
+      { key: 'tool', type: 'splitTool', label: 'Splitting Tool' },
+      { key: 'splitType', type: 'select', label: 'Split Type', options: [['auto','Automatic'],['projection','Projection'],['intersection','Intersection']] },
+      { key: 'projection', type: 'select', label: 'Projection Direction', options: [['normal','Sketch normal'],['vector','Along Vector']], show: f => f.splitType!=='intersection' && window.app?.doc.features.find(x=>x.id===f.tool)?.type==='sketch' },
+      { key: 'direction', type: 'direction', label: 'Direction', show: f => f.projection==='vector' && f.splitType!=='intersection' && window.app?.doc.features.find(x=>x.id===f.tool)?.type==='sketch' },
+      { key: 'extendTool', type: 'check', label: 'Extend Splitting Tool' },
     ] },
   ],
   compCurve: [
@@ -2045,7 +2062,8 @@ export class UI {
         { label: 'Features ▸ Combine…', icon: 'combine', action: () => a.startFeature('combine') },
         { label: 'Features ▸ Subtract Bodies…', icon: 'subtract', action: () => a.startFeature('combine', 'subtract') },
         { label: 'Features ▸ Delete Body…', icon: 'deleteBody', action: () => a.startFeature('deleteBody') },
-        { label: 'Features ▸ Split…', icon: 'split', action: () => a.startFeature('split') },
+        { label: 'Features ▸ Split Body…', icon: 'split', action: () => a.startFeature('split') },
+        { label: 'Features ▸ Split Face…', icon: 'splitLine', action: () => a.startFeature('splitLine') },
         { label: 'Features ▸ Move/Copy Bodies…', icon: 'moveBody', action: () => a.startFeature('moveBody') },
         { label: 'Features ▸ Imported Body (STEP / STL)…', icon: 'import', action: () => a.importFile() },
         'sep',
@@ -2230,7 +2248,8 @@ export class UI {
         'sep',
         { icon: 'combine', label: 'Combine', action: () => a.startFeature('combine') },
         { icon: 'subtract', label: 'Subtract Bodies', action: () => a.startFeature('combine', 'subtract') },
-        { icon: 'split', label: 'Split', action: () => a.startFeature('split') },
+        { icon: 'split', label: 'Split Body', action: () => a.startFeature('split') },
+        { icon: 'splitLine', label: 'Split Face', action: () => a.startFeature('splitLine') },
         { icon: 'moveBody', label: 'Move/Copy Bodies', action: () => a.startFeature('moveBody') },
         { icon: 'deleteBody', label: 'Delete Body', action: () => a.startFeature('deleteBody') },
         'sep',
@@ -2310,7 +2329,7 @@ export class UI {
         { icon: 'surfTrim', label: 'Trim Surface', action: () => a.startFeature('surfTrim') },
         { icon: 'surfExtend', label: 'Extend Surface', action: () => a.startFeature('surfExtend') },
         { icon: 'untrim', label: 'Untrim Surface', action: () => a.startFeature('untrim') },
-        { icon: 'splitLine', label: 'Split Line', action: () => a.startFeature('splitLine') },
+        { icon: 'splitLine', label: 'Split Face', action: () => a.startFeature('splitLine') },
         { icon: 'projCurve', label: 'Projected Curve', action: () => a.startFeature('projCurve') },
         { icon: 'compCurve', label: 'Composite Curve', action: () => a.startFeature('compCurve') },
         { icon: 'ruledSurface', label: 'Ruled Surface', action: () => a.startFeature('ruledSurface') },
@@ -2326,7 +2345,7 @@ export class UI {
         { icon: 'thicken', label: 'Thicken', action: () => a.startFeature('thicken') },
         { icon: 'flattenSurf', label: 'Flatten Surface', action: () => a.startFeature('flattenSurf') },
         'sep',
-        { icon: 'split', label: 'Split (with a surface)', action: () => a.startFeature('split') },
+        { icon: 'split', label: 'Split Body', action: () => a.startFeature('split') },
         { icon: 'moveBody', label: 'Move/Copy Surfaces', action: () => a.startFeature('moveBody', null, { surfaces: true }) },
         { icon: 'deleteSurface', label: 'Delete Surface', action: () => a.startFeature('deleteSurface') },
       ],
@@ -4692,6 +4711,9 @@ export class UI {
               body.appendChild(this.row(label, inp));
             }
           }
+        } else if (fd.type === 'splitPick') {
+          const active = (pm.splitSlot || 'targets') === fd.slot;
+          body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'data-split-slot': fd.slot, 'aria-pressed': String(active), onclick: () => { pm.splitSlot = fd.slot; this.renderPM(); a.updateEdgeHighlights(); } }, (active ? '● ' : '') + fd.label));
         } else if (fd.type === 'trimTool') {
           const opts = [['', '— choose the trim tool —'], ...Object.entries(STD_PLANES).map(([k, p]) => [k, 'Plane: ' + p.name]),
             ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, 'Plane: ' + x.name]),
@@ -6466,6 +6488,8 @@ export class UI {
     const a = this.app, pm = a.pm, key = fd.key, guide = key === 'guides';
     const extrude = f.type === 'extrude', planar = f.type === 'surfPlanar', common=['revolve','surfExtrude','surfRevolve'].includes(f.type), surface=['surfExtrude','surfRevolve'].includes(f.type);
     pm.loftSlot ||= 'profiles'; f[key] ||= [];
+    if(f.type==='surfLoft'&&!guide&&pm.loftModelEdges===undefined)pm.loftModelEdges=f.profiles.some(LR.isModelEdgeChain);
+    const modelEdges=f.type==='surfLoft'&&!guide&&!!pm.loftModelEdges;
     const active = !pm.loftEndSlot && pm.loftSlot === key && (!extrude || pm.extrudePick !== false) && (!planar || !pm.planarEdges) && (!common || pm.profilePick!==false && !pm.planarEdges);
     body.appendChild(el('button', { class: 'pm-btn' + (active ? ' on' : ''), 'aria-pressed': String(active), disabled: guide && f.ruled, 'data-loft-slot': key, onclick: () => {
       pm.loftEndSlot = null; pm.loftEndAxis = null; pm.loftConnector=null; pm.scopePick=false; pm.loftSlot = key; pm.loftDraft = null; pm.loftHover = null;
@@ -6474,13 +6498,20 @@ export class UI {
       if (common) { pm.profilePick=!active; pm.revolveEndPick=false; pm.planarEdges=false; pm.extrudeSurfaceSlot=null; }
       this.renderPM(); a.updateSketchDisplay(); a.status(guide ? 'Click the guide curves in the canvas.' : 'Click the section contours or inside closed profiles in the canvas.');
     } }, guide ? 'Select guides in canvas' : 'Select profiles in canvas'));
-    if (!guide) {
+    if(f.type==='surfLoft'&&!guide){
+      const source=el('select',{'data-loft-profile-source':''});
+      for(const [value,label] of [['sketch','Sketch contours'],['edges','Model edges']])source.appendChild(el('option',{value},label));
+      source.value=modelEdges?'edges':'sketch';
+      source.onchange=()=>{pm.loftModelEdges=source.value==='edges';pm.loftSlot='profiles';pm.loftEndSlot=null;pm.loftDraft=null;pm.loftModelDraft=null;pm.loftHover=null;this.renderPM();a.updateSketchDisplay();a.updateEdgeHighlights();};
+      body.appendChild(this.row('Profile Source',source));
+    }
+    if (!guide && !modelEdges) {
       const cb = el('input', { type: 'checkbox', 'data-loft-chain': '' }); cb.checked = pm.loftChain !== false;
       cb.onchange = () => { pm.loftChain = cb.checked; pm.loftDraft = null; pm.loftHover = null; this.renderPM(); a.updateSketchDisplay(); };
       const label = el('label'); label.append(cb, document.createTextNode(' Chain selection'));
       body.appendChild(this.row(null, label, 'check'));
     }
-    body.appendChild(el('div', { class: 'pm-hint' }, common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
+    body.appendChild(el('div', { class: 'pm-hint' }, modelEdges?'Click only the model edges of the split portion, then add them as one profile. Repeat for the next section. Edges in each profile must form one connected chain.':common ? (surface?'Select open or closed contours, regions or individual sketch entities. Closed contours stay uncapped. For Revolve, select the axis separately.':f.type==='revolve'?'Select closed profiles or flat faces of the model, or enable Thin Feature for open contours. Select the revolution axis separately (for a model face: a reference axis, a model edge or face, or a sketch line).':'Select closed profiles or enable Thin Feature for open contours. Select the revolution axis separately.') : planar ? 'Click inside closed regions or select sketch contours. Turn off Chain selection to pick individual entities, then add the closed contour. Select model edges in the section below.' : extrude ? 'Click inside closed regions or select contours, or click a flat face of the model. Click again to remove a profile. Profiles must be coplanar; open contours enable Thin Feature. Turn off canvas profile selection to pick end references or bodies.' : guide ? f.ruled ? 'Guide curves require a smooth loft. Remove the guides or untick straight (ruled) sides.' : 'Pick guide curves or connected chains, including construction curves. Guides must meet every section.' : f.type === 'loft' ? 'Pick closed contours or click inside regions. Each selection adds one section.' : 'Pick open or closed contours. All sections must be open, or all closed.'));
     const ul = el('div', { class: 'pm-list', 'data-loft-list': key });
     if (!f[key].length) ul.appendChild(el('div', { class: 'li pm-hint' }, guide ? 'No guides selected' : 'No profiles selected'));
     f[key].forEach((ref, i) => {
@@ -6500,7 +6531,13 @@ export class UI {
       ul.appendChild(li);
     });
     body.appendChild(ul);
-    if (active && pm.loftChain === false) {
+    if(active&&modelEdges){
+      const count=pm.loftModelDraft?.edges.length||0;
+      body.appendChild(el('div',{class:'pm-hint'},`${count} model edges selected for this profile`));
+      body.appendChild(el('button',{class:'pm-btn','data-loft-model-finish':'',disabled:!count,onclick:()=>a.finishLoftModelSelection()},'Add selected edges as profile'));
+      if(count)body.appendChild(el('button',{class:'pm-btn',onclick:()=>{pm.loftModelDraft=null;this.renderPM();a.updateEdgeHighlights();}},'Clear selected edges'));
+    }
+    if (active && !modelEdges && pm.loftChain === false) {
       const count = pm.loftDraft?.curves.length || 0;
       body.appendChild(el('div', { class: 'pm-hint' }, `Manual selection: ${count} curves. Click segments to add/remove them, then confirm this contour.`));
       body.appendChild(el('button', { class: 'pm-btn', 'data-loft-finish': '', disabled: !count, onclick: () => a.finishLoftSelection() }, 'Add selected contour'));
@@ -6553,6 +6590,7 @@ export class UI {
       const on = f[fd.key].includes(b.id);
       const li = el('div', { class: 'li' + (on ? ' sel' : '') }, `<input type="checkbox" ${on ? 'checked' : ''} style="margin:0 4px 0 0">${icon(b.kind === 'surface' ? 'surfBody' : 'body')}<span>${esc(b.name)}</span>`);
       li.onclick = () => {
+        if(f.type==='split')a.pm.splitSlot='targets';
         const i = f[fd.key].indexOf(b.id);
         if (i >= 0) f[fd.key].splice(i, 1); else f[fd.key].push(b.id);
         this.renderPM(); a.updateEdgeHighlights(); a.preview();
@@ -6577,16 +6615,20 @@ export class UI {
 
   renderSplitTool(body, f, before) {
     const a = this.app;
-    const opts = [['', f.toolFace ? '✔ Flat face picked on the model' : '— click a flat face on the model —'],
+    const opts = [['', f.toolFace ? '✔ Face picked on the model' : '— select a splitting tool —'],
       ...Object.entries(STD_PLANES).map(([k, p]) => [k, p.name]),
       ...before.filter((x) => x.type === 'plane' && !x.suppressed).map((x) => [x.id, x.name]),
-      ...(a.result?.bodies || []).filter((b) => b.kind === 'surface').map((b) => [b.id, 'Surface: ' + b.name])];
+      ...(a.result?.bodies || []).filter((b) => b.kind === 'surface' && !f.bodies?.includes(b.id)).map((b) => [b.id, 'Surface: ' + b.name]),
+      ...(['split','splitLine'].includes(f.type) ? before.filter(x=>x.type==='sketch'&&!x.suppressed).map(x=>[x.id,'Sketch: '+x.name]) : [])];
     const s = el('select');
     for (const [v, l] of opts) { const o = el('option', { value: v }, esc(l)); if ((f.tool || '') === v) o.selected = true; s.appendChild(o); }
+    s.dataset.splitTool = '';
+    s.onfocus = () => { if(['split','splitLine'].includes(f.type)) a.pm.splitSlot = 'tool'; };
     s.onchange = () => { f.tool = s.value || ''; if (f.tool) f.toolFace = null; this.renderPM(); a.updateEdgeHighlights(); a.preview(); };
     const w = el('div', { class: 'pm-input' }); w.appendChild(s);
-    body.appendChild(this.row('Split with', w));
-    body.appendChild(el('div', { class: 'pm-hint' }, 'A plane, a flat face of the model or a surface body that cuts through the bodies.'));
+    body.appendChild(this.row(f.type==='printSplit'?'Split with':'Splitting Tool', w));
+    body.appendChild(el('div', { class: 'pm-hint' }, f.type==='printSplit'?'A plane or a flat face.':'Select a sketch, construction plane, model face or surface body. Extend Splitting Tool uses the underlying surface and extends open sketch ends.'));
+    if(f.toolFace)body.appendChild(el('button',{class:'pm-btn',onclick:()=>{f.toolFace=null;a.preview(true);}},'Clear tool face'));
   }
 
   // Mates for Move/Copy Body: each ties an entity of the moving bodies to fixed geometry.
@@ -7066,8 +7108,9 @@ export class UI {
       const k = label.split('▸').pop().trim().toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
-      const own = Object.entries(this.shortcutPrefs()).find(([, v]) => v.k === k)?.[0];
-      out.push({ label, where, icon: d.icon || '', key: own || d.key || '', action: d.action, k });
+      const aliases = k==='split body'?['split','split (with a surface)']:k==='split face'?['split line','split-line']:[];
+      const own = Object.entries(this.shortcutPrefs()).find(([, v]) => v.k === k || aliases.includes(v.k))?.[0];
+      out.push({ label, where, aliases, icon: d.icon || '', key: own || d.key || '', action: d.action, k });
     };
     for (const [name, items] of Object.entries(this.menuDefs() || {})) for (const d of items || []) add(d, name + ' menu');
     let defs = {};
@@ -7103,7 +7146,7 @@ export class UI {
       if (!words.length) return [...recent.map((k) => all.find((c) => c.k === k)).filter(Boolean), ...all.filter((c) => !recent.includes(c.k))].slice(0, 12);
       const scored = [];
       for (const c of all) {
-        const name = tr(c.label).replace(/\u00ad/g, '').toLowerCase(), text = name + ' ' + c.label.toLowerCase() + ' ' + c.where.toLowerCase();
+        const name = tr(c.label).replace(/\u00ad/g, '').toLowerCase(), text = name + ' ' + c.label.toLowerCase() + ' ' + c.where.toLowerCase() + ' ' + (c.aliases||[]).join(' ');
         if (!words.every((w) => text.includes(w))) continue;
         const q0 = words.join(' '), last = c.k;
         let s = last.startsWith(q0) ? 0 : name.startsWith(q0) ? 1 : words.every((w) => new RegExp(`(^|[^a-z])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(name)) ? 2 : 3;
@@ -7151,7 +7194,7 @@ export class UI {
     if (!map || !Object.keys(map).length) return false;
     const combo = comboOf(e), b = combo && map[combo];
     if (!b) return false;
-    const c = this.commandList().find((x) => x.k === b.k);
+    const commands=this.commandList(), c = commands.find(x=>x.k===b.k)||commands.find(x=>x.aliases?.includes(b.k));
     if (!c) { this.app.status(`${combo}: "${b.label}" is not available here.`); return true; }
     this.app.macros?.note(c.label);
     c.action();
