@@ -60,28 +60,39 @@ export function newAssembly(name = 'Assembly1') {
   return { kind: 'assembly', version: 1, name, nextId: 1, parts: [], components: [], mates: [] };
 }
 
+// (group: where the Mate panel lists it, under Standard, Advanced or Mechanical)
 export const MATE_TYPES = {
-  coincident: { label: 'Coincident', icon: 'mateCoincident' },
-  concentric: { label: 'Concentric', icon: 'mateConcentric' },
-  parallel: { label: 'Parallel', icon: 'mateParallel' },
-  perpendicular: { label: 'Perpendicular', icon: 'matePerpendicular' },
-  tangent: { label: 'Tangent', icon: 'mateTangent' },
-  distance: { label: 'Distance', icon: 'mateDistance', value: 'mm' },
-  angle: { label: 'Angle', icon: 'mateAngle', value: '°' },
-  lock: { label: 'Lock', icon: 'mateLock' },
+  coincident: { label: 'Coincident', icon: 'mateCoincident', group: 'std' },
+  concentric: { label: 'Concentric', icon: 'mateConcentric', group: 'std' },
+  parallel: { label: 'Parallel', icon: 'mateParallel', group: 'std' },
+  perpendicular: { label: 'Perpendicular', icon: 'matePerpendicular', group: 'std' },
+  tangent: { label: 'Tangent', icon: 'mateTangent', group: 'std' },
+  distance: { label: 'Distance', icon: 'mateDistance', value: 'mm', group: 'std' },
+  angle: { label: 'Angle', icon: 'mateAngle', value: '°', group: 'std' },
+  lock: { label: 'Lock', icon: 'mateLock', group: 'std' },
   // mechanical: how one component turns (or slides) as another turns, from where they are now
-  gear: { label: 'Gear', icon: 'mateGear', value: 'ratio' },
-  rack: { label: 'Rack Pinion', icon: 'mateRack', value: 'mm/rev' },
-  screw: { label: 'Screw', icon: 'mateConcentric', value: 'mm/rev' },
+  gear: { label: 'Gear', icon: 'mateGear', value: 'ratio', group: 'mech' },
+  rack: { label: 'Rack Pinion', icon: 'mateRack', value: 'mm/rev', group: 'mech' },
+  screw: { label: 'Screw', icon: 'mateScrew', value: 'mm/rev', group: 'mech' },
+  // (hinge: concentric axes and touching faces in one, turning free or between two angles; universal joint: two
+  // shafts meeting at a point, their cross's arms square to each other, so the second turns unevenly as the first
+  // turns evenly; linear coupler: one component slides the set ratio of another's slide)
+  hinge: { label: 'Hinge', icon: 'mateHinge', extra: 2, group: 'mech' },
+  universal: { label: 'Universal Joint', icon: 'mateUniversal', group: 'mech' },
+  coupler: { label: 'Linear Coupler', icon: 'mateCoupler', value: 'ratio', group: 'adv' },
   // (with more entities: width, a second face on each component; symmetric, the plane between them)
-  width: { label: 'Width', icon: 'mateDistance', extra: 2 },
+  width: { label: 'Width', icon: 'mateDistance', extra: 2, group: 'adv' },
   // (slot: a pin or point the set distance from a straight edge, between its ends; path: a point on a curved edge)
-  slot: { label: 'Slot', icon: 'mateDistance', value: 'mm' },
-  path: { label: 'Path', icon: 'mateTangent' },
+  slot: { label: 'Slot', icon: 'mateSlot', value: 'mm', group: 'mech' },
+  path: { label: 'Path', icon: 'mateTangent', group: 'adv' },
   // (cam: a follower (a point, or a roller: an axis) kept its radius from a cam's curved edge, in the plane square to it)
-  cam: { label: 'Cam', icon: 'mateTangent', value: 'mm' },
-  symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1 },
+  cam: { label: 'Cam', icon: 'mateCam', value: 'mm', group: 'mech' },
+  symmetric: { label: 'Symmetric', icon: 'mateParallel', extra: 1, group: 'adv' },
 };
+export const MATE_GROUPS = [['std', 'Standard Mates'], ['adv', 'Advanced Mates'], ['mech', 'Mechanical Mates']];
+// the mates that relate one component's motion to another's through reference poses (m.ref, taken again after
+// every solve)
+export const MECH_MATES = new Set(['gear', 'rack', 'screw', 'coupler']);
 
 // A component's turn about a direction d since orientation q0 (radians, between −π and π).
 function twistOf(q, q0, d) {
@@ -102,10 +113,32 @@ export function mechRef(m, poseOf, worldRef) {
   }
   // (a screw: the second component's turn about the shared axis and its slide along it, both relative to the first's)
   if (m.type === 'screw') return { qa, qb, da: unit(A.d), pa: pa.p.slice(), pb: pb.p.slice() };
+  // (a linear coupler: each component's slide along its own direction, an axis's or a face's normal)
+  if (m.type === 'coupler') return { pa: pa.p.slice(), pb: pb.p.slice(), da: unit(A.d || A.n), db: unit(B.d || B.n) };
   const pin = A.kind === 'axis' && A.r > 0 ? 'a' : 'b', P = pin === 'a' ? A : B, Rk = pin === 'a' ? B : A;
   const dp = unit(P.d), dr = Rk.kind === 'plane' ? unit(cross(dp, Rk.n)) : unit(Rk.d);
   const rk = pin === 'a' ? pb : pa;
   return { pin, qp: pin === 'a' ? qa : qb, dp, dr, pr: rk.p.slice() };
+}
+
+// A hinge's zero arm (on both refs: the same direction, square to the axis, where they are now, so its turn starts
+// at 0°), or a universal joint's centre j (where the shafts' axes meet, or come nearest) and its cross's arms u (one
+// square to each shaft and to the other). In each component's own coordinates; pa / pb its poses, A / B its refs in
+// the world. Returns { a, b }: the refs with them.
+export function jointRefs(m, pa, pb, A, B) {
+  if (!pa || !pb || !A?.d || !B?.d) return {};
+  const inv = (ps) => ps.q.clone().invert();
+  const dirIn = (ps, v) => applyQ(inv(ps), v).map(r6), ptIn = (ps, p) => applyQ(inv(ps), sub(p, ps.p)).map(r6);
+  const da = unit(A.d), db = unit(B.d), c = cross(da, db), skew = len(c) > 1e-6;
+  const perp = (d) => unit(cross(d, Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+  if (m.type === 'hinge') { const u = perp(da); return { a: { ...m.a, u: dirIn(pa, u) }, b: { ...m.b, u: dirIn(pb, u) } }; }
+  let j = mul(add(A.p, B.p), 0.5);
+  if (skew) {
+    const w = sub(A.p, B.p), k = dot(da, db), den = 1 - k * k, d1 = dot(da, w), e1 = dot(db, w);
+    j = mul(add(add(A.p, mul(da, (k * e1 - d1) / den)), add(B.p, mul(db, (e1 - k * d1) / den))), 0.5);
+  }
+  const ua = skew ? unit(c) : perp(da), ub = unit(cross(db, ua));
+  return { a: { ...m.a, u: dirIn(pa, ua), j: ptIn(pa, j) }, b: { ...m.b, u: dirIn(pb, ub), j: ptIn(pb, j) } };
 }
 
 // ------------------------------------------------------------------ vectors
@@ -158,6 +191,22 @@ function mateEquations(m, A, B, C = null, D = null) {
     if (m._lim === 'hi') return x - hi;
     return x < lo ? x - lo : x > hi ? x - hi : 0;
   };
+  if (t === 'hinge') {
+    // (the axes concentric; the second faces touching (only their offset: the axes keep them parallel); with a limit,
+    // the turn of B's zero arm u from A's about A's axis between min and max)
+    const vecH = (f) => { for (const k of [0, 1, 2]) eqs.push(() => f()[k]); };
+    vecH(() => cross(A().d, B().d)); vecH(() => cross(sub(B().p, A().p), A().d));
+    if (C && D) eqs.push(() => dot(C().n, sub(D().p, C().p)));
+    if (m.limit) eqs.push(() => { const a = A(), b = B(); if (!a.u || !b.u) return 0; const d = unit(a.d); return lim(Math.atan2(dot(cross(a.u, b.u), d), dot(a.u, b.u)), Math.PI / 180); });
+    return eqs;
+  }
+  if (t === 'universal') {
+    // (the joint's centre j the same point on both shafts; the cross's arms u, one square to each shaft, square to
+    // each other)
+    for (const k of [0, 1, 2]) eqs.push(() => { const a = A(), b = B(); return a.j && b.j ? a.j[k] - b.j[k] : 0; });
+    eqs.push(() => { const a = A(), b = B(); return a.u && b.u ? dot(a.u, b.u) : 0; });
+    return eqs;
+  }
   if (t === 'slot') {
     // (the edge the one with a length, second picked first; the pin's closest point to it no further than its ends)
     const [P, L] = B().len ? [A, B] : [B, A];
@@ -284,9 +333,9 @@ export function mateChoices(A, B) {
   const k = [A.kind, B.kind].sort().join(',');
   const cyl = (o) => o.kind === 'axis' && o.r > 0;
   switch (k) {
-    case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'lock'];
-    case 'axis,axis': return [cyl(A) && cyl(B) && !A.circle && !B.circle ? 'concentric' : 'concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'lock'];
-    case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'lock'];
+    case 'plane,plane': return ['coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'width', 'symmetric', 'coupler', 'lock'];
+    case 'axis,axis': return ['concentric', 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', ...(cyl(A) && cyl(B) ? ['tangent', 'gear'] : []), 'screw', 'hinge', 'universal', 'symmetric', ...(A.len || B.len ? ['slot'] : []), ...(cyl(A) !== cyl(B) ? ['rack'] : []), 'coupler', 'lock'];
+    case 'axis,plane': return [...((A.kind === 'axis' ? cyl(A) : cyl(B)) ? ['tangent', 'rack'] : []), 'coincident', 'parallel', 'perpendicular', 'distance', 'angle', 'coupler', 'lock'];
     case 'axis,point': return ['coincident', 'distance', ...(A.len || B.len ? ['slot'] : []), ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
     case 'plane,point': return ['coincident', 'distance', ...((A.kind === 'point' ? A.r : B.r) ? ['tangent'] : []), 'lock'];
     case 'point,point': return ['coincident', 'distance', 'symmetric', ...(A.pts || B.pts ? ['path', 'cam'] : []), 'lock'];
@@ -356,13 +405,13 @@ export function compPatternTransforms(pt) {
 // Limited distance and angle mates by active sets: each held free inside its limits or exactly at the one it is
 // past, the assembly solved, then each checked again where it ended up (a free one now past a limit held there)
 export function solveAssembly(doc, opts = {}) {
-  const limited = (opts.only || doc.mates).filter((m) => (m.limit || m.type === 'slot') && !m.suppressed);
+  const limited = (opts.only || doc.mates).filter((m) => ((m.limit && ['distance', 'angle', 'hinge'].includes(m.type)) || m.type === 'slot') && !m.suppressed);
   if (!limited.length) return solveMates(doc, opts);
   const comps = new Map(doc.components.map((c) => [c.id, c]));
   const pose = (id) => (id === ORIGIN ? ORIGIN_POSE : comps.get(id) ? poseOf(comps.get(id)) : null);
   // (where a limit stands: the value equation's band residual with the poses as they are)
   const where = (m) => {
-    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r, len: r.len }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); if (r.pts) o.pts = r.pts.map((q) => toWorld(ps, q)); return o; };
+    const ref = (r) => () => { const ps = pose(r.comp); if (!ps) return null; const o = { kind: r.kind, p: toWorld(ps, r.p), r: r.r, len: r.len }; if (r.n) o.n = dirWorld(ps, r.n); if (r.d) o.d = dirWorld(ps, r.d); if (r.u) o.u = dirWorld(ps, r.u); if (r.j) o.j = toWorld(ps, r.j); if (r.pts) o.pts = r.pts.map((q) => toWorld(ps, q)); return o; };
     const eqs = mateEquations({ ...m, _lim: undefined }, ref(m.a), ref(m.b));
     const x = eqs.length ? eqs[eqs.length - 1]() : 0;
     return Math.abs(x) < 1e-12 ? 'free' : x < 0 ? 'lo' : 'hi';
@@ -403,6 +452,8 @@ function solveMates(doc, { pinned = new Set(), only = null } = {}) {
     const o = { kind: ref.kind, p: toWorld(ps, ref.p), r: ref.r, len: ref.len };
     if (ref.n) o.n = dirWorld(ps, ref.n);
     if (ref.d) o.d = dirWorld(ps, ref.d);
+    if (ref.u) o.u = dirWorld(ps, ref.u);
+    if (ref.j) o.j = toWorld(ps, ref.j);
     if (ref.pts) o.pts = ref.pts.map((q) => toWorld(ps, q));
     return o;
   };
@@ -430,6 +481,12 @@ function solveMates(doc, { pinned = new Set(), only = null } = {}) {
         const slide = dot(sub(pb.p, R.pb), R.da) - dot(sub(pa.p, R.pa), R.da), turn = twistOf(pb.q, R.qb, R.da) - twistOf(pa.q, R.qa, R.da);
         return slide - sgn * (v / (2 * Math.PI)) * turn;
       });
+      continue;
+    }
+    if (m.type === 'coupler' && m.ref) {
+      // (B's slide along its direction the ratio of A's along its own)
+      const R = m.ref, sgn = (m.side || 1) > 0 ? 1 : -1, v = Number(m.value) || 0;
+      eqs.push(() => dot(sub(poseAt(m.b.comp, cur).p, R.pb), R.db) - sgn * v * dot(sub(poseAt(m.a.comp, cur).p, R.pa), R.da));
       continue;
     }
     if ((m.type === 'gear' || m.type === 'rack') && m.ref) {
@@ -493,7 +550,7 @@ function solveMates(doc, { pinned = new Set(), only = null } = {}) {
   if (ok) {
     const poseNow = (id) => (id === ORIGIN ? ORIGIN_POSE : byId.get(id) ? poseOf(byId.get(id)) : null);
     const worldNow = (r) => { const ps = poseNow(r.comp); return ps && { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r }; };
-    for (const m of mates) if ((m.type === 'gear' || m.type === 'rack' || m.type === 'screw') && m.ref) { const r = mechRef(m, poseNow, worldNow); if (r) m.ref = r; }
+    for (const m of mates) if (MECH_MATES.has(m.type) && m.ref) { const r = mechRef(m, poseNow, worldNow); if (r) m.ref = r; }
   }
   // degrees of freedom left: per free component 6 less the rank of its columns (others held)
   const dofs = new Map();
@@ -636,14 +693,15 @@ export class AssemblyEditor {
         const c = effC(c0);
         if (c.suppressed) continue;
         const o = S.flex?.[c.id], pr = { p: (o?.pos || c.pos).slice(), q: new THREE.Quaternion(...(o?.rot || c.rot)).normalize() };
-        rel.set(c.id, pr);
+        rel.set(c.id, { p: c.pos.slice(), q: new THREE.Quaternion(...c.rot).normalize() });
         const q = PS.q.clone().multiply(pr.q);
         out.push({ ...c, id: `${S.id}/${c.id}`, name: `${S.name} ▸ ${c.name}`, pos: toWorld(PS, pr.p), rot: [q.x, q.y, q.z, q.w], fixed: !!(S.fixed && c.fixed), _flexOf: S.id, _inner: c.id });
       }
       for (const m of (sd.mates || []).map(effM)) if (!m.suppressed && rel.has(m.a.comp) && rel.has(m.b.comp)) outMates.push({ ...m, id: `${S.id}/${m.id}`, a: { ...m.a, comp: `${S.id}/${m.a.comp}` }, b: { ...m.b, comp: `${S.id}/${m.b.comp}` } });
       inner.set(S.id, rel);
     }
-    // (a reference on a part inside a flexible sub-assembly: given in the sub-assembly's frame, moved into its part's)
+    // (a reference on a part inside a flexible sub-assembly: given in the sub-assembly's frame with the part where the
+    // sub-assembly places it, moved into its part's)
     const remap = (r) => {
       const rel = inner.get(r.comp), pr = rel && r.sub?.length && rel.get(r.sub[0]);
       if (!pr) return r;
@@ -684,7 +742,9 @@ export class AssemblyEditor {
       return { config: 'config' in o ? o.config : (c.config ?? null), hidden: 'hidden' in o ? o.hidden : !!c.hidden, suppressed: 'suppressed' in o ? o.suppressed : !!c.suppressed };
     };
     const q = new THREE.Quaternion(), v = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
-    const walk = (doc, M, ci, top, chain, prefix, hidden, names, depth, over = null) => {
+    // (M: where the part is shown; M0: where its sub-assemblies place it, flexible ones too, which mate references
+    // are given by)
+    const walk = (doc, M, ci, top, chain, prefix, hidden, names, depth, over = null, M0 = M) => {
       if (depth > 16) return; // (an assembly inside itself)
       for (const c of doc.components) {
         const e = effIn(doc, doc.activeConfig, c);
@@ -693,8 +753,9 @@ export class AssemblyEditor {
         if (!p) continue;
         const o = over?.[c.id]; // (a flexible sub-assembly: where its component is in this assembly)
         const Mc = M.clone().multiply(new THREE.Matrix4().compose(v.set(...(o?.pos || c.pos)), q.set(...(o?.rot || c.rot)).normalize(), one));
-        if (this.isSub(p)) walk(this.subView(p.doc, e.config), Mc, ci, top, [...chain, c.id], `${prefix}${p.id}>`, hidden || e.hidden, [...names, c.name], depth + 1);
-        else out.push({ ci, comp: top, chain: [...chain, c.id], p, cfg: e.config, gk: `${prefix}${p.id}|${e.config || ''}`, M: Mc, hidden: hidden || e.hidden, names: [...names, c.name] });
+        const Mc0 = !o && M0 === M ? Mc : M0.clone().multiply(new THREE.Matrix4().compose(v.set(...c.pos), q.set(...c.rot).normalize(), one));
+        if (this.isSub(p)) walk(this.subView(p.doc, e.config), Mc, ci, top, [...chain, c.id], `${prefix}${p.id}>`, hidden || e.hidden, [...names, c.name], depth + 1, null, Mc0);
+        else out.push({ ci, comp: top, chain: [...chain, c.id], p, cfg: e.config, gk: `${prefix}${p.id}|${e.config || ''}`, M: Mc, M0: Mc0, hidden: hidden || e.hidden, names: [...names, c.name] });
       }
     };
     this.doc.components.forEach((c, ci) => {
@@ -1191,10 +1252,11 @@ export class AssemblyEditor {
     render();
     const dlg = ui.modal('Fix Mates', 'fix', body, [{ label: 'Close', primary: true }]);
   }
-  // a reference in a part's own coordinates → in its top component's (through the sub-assemblies it is in)
+  // a reference in a part's own coordinates → in its top component's (through the sub-assemblies it is in, as they
+  // place it: in a flexible one not moved with it, so the reference stays on its part wherever that goes)
   toTop(l, r) {
     if (!l.chain.length) return r;
-    const out = { ...r }, M = l.M;
+    const out = { ...r }, M = l.M0 || l.M;
     if (r.p) out.p = new THREE.Vector3(...r.p).applyMatrix4(M).toArray().map(r6);
     for (const k of ['n', 'd']) if (r[k]) out[k] = new THREE.Vector3(...r[k]).transformDirection(M).toArray().map(r6);
     return out;
@@ -1319,7 +1381,18 @@ export class AssemblyEditor {
   worldRef(r) {
     const ps = this.poseOfId(r.comp);
     if (!ps) return null;
+    r = this.flexShown(r);
     return { kind: r.kind, p: toWorld(ps, r.p), n: r.n && dirWorld(ps, r.n), d: r.d && dirWorld(ps, r.d), r: r.r, len: r.len, pts: r.pts && r.pts.map((q) => toWorld(ps, q)) };
+  }
+  // a reference on a part inside a flexible sub-assembly (given with the part where the sub-assembly places it)
+  // moved to where the part is in this assembly
+  flexShown(r) {
+    const S = r.sub?.length && this.comp(r.comp), o = S?.flexible && S.flex?.[r.sub[0]];
+    const c0 = o && this.part(S.part)?.doc?.components?.find((x) => x.id === r.sub[0]);
+    if (!c0) return r;
+    const q = new THREE.Quaternion(...o.rot).normalize().multiply(new THREE.Quaternion(...c0.rot).normalize().invert());
+    const pt = (x) => add(applyQ(q, sub(x, c0.pos)), o.pos), dir = (d) => applyQ(q, d);
+    return { ...r, p: r.p && pt(r.p), n: r.n && dir(r.n), d: r.d && dir(r.d), pts: r.pts && r.pts.map(pt) };
   }
 
   // ---------------------------------------------------------------- solving
@@ -1381,6 +1454,8 @@ export class AssemblyEditor {
     const ps = poseOf(ch.comp);
     const center = this.compCenter(ch.comp);
     this.drag = { comp: ch.comp, from: ch.hit.point.toArray(), n: dir, pose: ps, center, x: e.clientX, y: e.clientY, rotate: e.altKey, moved: false, before: this.snapshot() };
+    // (a flexible sub-assembly: its components are what is solved, so they are moved and held, not its frame)
+    if (ch.comp.flexible && this.isSub(this.part(ch.comp.part))) this.drag.inner = this.view().components.filter((x) => x._flexOf === ch.comp.id).map((x) => ({ id: x.id, p: x.pos.slice(), q: new THREE.Quaternion(...x.rot).normalize() }));
     // (collision detection: the poses at the start, the last poses without a collision, and the parts that overlap
     // already, which are left out)
     if (this.collideMode !== 'off') {
@@ -1396,21 +1471,29 @@ export class AssemblyEditor {
     if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4) return;
     d.moved = true;
     const c = d.comp;
+    // the move from where it was: turned by qd about the point o, then shifted by t
+    let qd = new THREE.Quaternion(), o = d.center, t = [0, 0, 0];
     if (d.rotate || e.altKey) {
       // turn it about its centre: across the screen about the view's up, up and down about its right
       const cam = this.vp.camera, up = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion), right = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
-      const qd = new THREE.Quaternion().setFromAxisAngle(up, (e.clientX - d.x) * 0.01).multiply(new THREE.Quaternion().setFromAxisAngle(right, (e.clientY - d.y) * 0.01));
-      const q = qd.clone().multiply(d.pose.q);
-      const p = add(applyQ(qd, sub(d.pose.p, d.center)), d.center);
-      c.pos = p; c.rot = [q.x, q.y, q.z, q.w];
+      qd = new THREE.Quaternion().setFromAxisAngle(up, (e.clientX - d.x) * 0.01).multiply(new THREE.Quaternion().setFromAxisAngle(right, (e.clientY - d.y) * 0.01));
     } else {
       const to = this.vp.rayPlane(e, { n: d.n, o: new THREE.Vector3(...d.from) }).toArray();
-      c.pos = add(d.pose.p, sub(to, d.from));
-      c.rot = [d.pose.q.x, d.pose.q.y, d.pose.q.z, d.pose.q.w];
+      t = sub(to, d.from);
+    }
+    const moveTo = (p, q) => ({ p: add(add(applyQ(qd, sub(p, o)), o), t), q: qd.clone().multiply(q) });
+    let pinned;
+    if (d.inner) {
+      for (const x of d.inner) { const m = moveTo(x.p, x.q); this.setFlexPose(x.id, m.p, [m.q.x, m.q.y, m.q.z, m.q.w]); }
+      pinned = new Set(d.inner.map((x) => x.id));
+    } else {
+      const m = moveTo(d.pose.p, d.pose.q);
+      c.pos = m.p; c.rot = [m.q.x, m.q.y, m.q.z, m.q.w];
+      pinned = new Set([c.id]);
     }
     // the mates: first with it held where the mouse put it, else it slides along what they allow
     const keep = JSON.stringify(this.doc.components);
-    let r = this.solve({ pinned: new Set([c.id]) });
+    let r = this.solve({ pinned });
     if (!r.ok) {
       const back = JSON.parse(keep);
       r = this.solve();
@@ -2498,9 +2581,9 @@ export class AssemblyEditor {
     // (a width or symmetric mate's further entities, after its first two)
     const extra = MATE_TYPES[pm.type]?.extra || 0;
     if (pm.picks.length === 2 && extra && (pm.extra ||= []).length < extra) {
-      if (pm.type === 'width') {
+      if (pm.type === 'width' || pm.type === 'hinge') {
         const want = pm.picks[pm.extra.length].comp;
-        if (r.comp !== want || r.kind !== 'plane') { this.app.toast(pm.extra.length ? 'Now the second component’s other face' : 'Now the first component’s other face (parallel to its first)'); return; }
+        if (r.comp !== want || r.kind !== 'plane') { this.app.toast(pm.type === 'hinge' ? (pm.extra.length ? 'Now the second component’s face that touches the first' : 'Now a flat face of the first component (square to the axis)') : pm.extra.length ? 'Now the second component’s other face' : 'Now the first component’s other face (parallel to its first)'); return; }
       } else if (r.kind !== 'plane') { this.app.toast('Pick the plane (or flat face) between them'); return; }
       pm.extra.push(r); this.previewMate(); this.renderPM(); this.highlight(); return;
     }
@@ -2542,8 +2625,9 @@ export class AssemblyEditor {
     if (pm.type === 'gear') pm.value ??= A.r > 0 && B.r > 0 ? r6(A.r / B.r) : 1;
     if (pm.type === 'rack') { const r = A.kind === 'axis' && A.r > 0 ? A.r : B.r; pm.value ??= r6(2 * Math.PI * (r || 10)); }
     if (pm.type === 'screw') pm.value ??= 1;
+    if (pm.type === 'coupler') pm.value ??= 1;
     if (pm.type === 'slot') { const [P, L] = B.len ? [A, B] : [A.len ? B : A, A.len ? A : B]; const r = sub(P.p, L.p); pm.value ??= r6(P.kind === 'axis' && len(cross(P.d, L.d)) > 1e-9 ? Math.abs(dot(r, unit(cross(P.d, L.d)))) : len(cross(r, unit(L.d)))); }
-    if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') pm.side ??= 1;
+    if (MECH_MATES.has(pm.type)) pm.side ??= 1;
     if (pm.type === 'tangent') {
       const plane = A.kind === 'plane' ? A : B.kind === 'plane' ? B : null, other = plane === A ? B : A;
       if (plane) pm.side = dot(plane.n, sub(other.p, plane.p)) >= 0 ? 1 : -1;
@@ -2553,11 +2637,15 @@ export class AssemblyEditor {
   pmMate() {
     const pm = this.pm;
     if (!pm || pm.picks.length < 2 || !pm.type) return null;
-    const m = { id: pm.edit || '__new', name: '', type: pm.type, a: pm.picks[0], b: pm.picks[1], align: pm.align, side: pm.side, value: pm.value, ...(pm.limit && ['distance', 'angle'].includes(pm.type) ? { limit: true, min: pm.min ?? '', max: pm.max ?? '' } : {}) };
+    // (a hinge's zero arms and a universal joint's centre and arms ride on its refs: kept while it is edited as it is)
+    const old = pm.edit && this.doc.mates.find((x) => x.id === pm.edit);
+    const same = old && old.type === pm.type && old.a === pm.picks[0] && old.b === pm.picks[1];
+    const bare = (r) => { if (same) return r; const { u, j, ...o } = r; void u; void j; return o; };
+    const m = { id: pm.edit || '__new', name: '', type: pm.type, a: bare(pm.picks[0]), b: bare(pm.picks[1]), align: pm.align, side: pm.side, value: pm.value, ...(pm.limit && ['distance', 'angle', 'hinge'].includes(pm.type) ? { limit: true, min: pm.min ?? '', max: pm.max ?? '' } : {}) };
     const extra = MATE_TYPES[pm.type]?.extra || 0;
     if (extra) {
       if ((pm.extra || []).length < extra) return null;
-      if (pm.type === 'width') { m.a2 = pm.extra[0]; m.b2 = pm.extra[1]; }
+      if (pm.type === 'width' || pm.type === 'hinge') { m.a2 = pm.extra[0]; m.b2 = pm.extra[1]; }
       else {
         m.s = pm.extra[0];
         // (aligned as the mirror image of the first faces the second now)
@@ -2565,11 +2653,12 @@ export class AssemblyEditor {
         if (d && e && S?.n && !pm.flipped) { const md = sub(d, mul(S.n, 2 * dot(d, S.n))); m.align = dot(md, e) >= 0 ? 1 : -1; }
       }
     }
-    if (pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw') {
+    if (MECH_MATES.has(pm.type) || (['hinge', 'universal'].includes(pm.type) && !same)) {
       // (the poses before this mate was shown applied)
       const now = JSON.stringify(this.doc.components);
       if (this.pmBefore) Object.assign(this.doc.components, JSON.parse(this.pmBefore).map((x, i) => Object.assign(this.doc.components[i], x)));
-      m.ref = mechRef(m, (id) => this.poseOfId(id), (r) => this.worldRef(r));
+      if (MECH_MATES.has(pm.type)) m.ref = mechRef(m, (id) => this.poseOfId(id), (r) => this.worldRef(r));
+      else Object.assign(m, jointRefs(m, this.poseOfId(m.a.comp), this.poseOfId(m.b.comp), this.worldRef(m.a), this.worldRef(m.b)));
       Object.assign(this.doc.components, JSON.parse(now).map((x, i) => Object.assign(this.doc.components[i], x)));
     }
     if (pm.type === 'lock') {
@@ -2582,7 +2671,8 @@ export class AssemblyEditor {
   // show the mate applied (components moved); an error when it can't be
   previewMate() {
     const m = this.pmMate();
-    if (!m) return;
+    // (not ready: a width or hinge waiting for its faces; shown as before it, the panel asking for them)
+    if (!m) { if (this.pm?.picks.length === 2) { this.pm.error = null; this.cancelPreview(); this.renderPM(); } return; }
     Object.assign(this.doc.components, JSON.parse(this.pmBefore).map((x, i) => Object.assign(this.doc.components[i], x)));
     const v = this.view(), others = v.mates.filter((x) => x.id !== m.id);
     let r = solveAssembly(v, { only: [...others, m] });
@@ -2603,7 +2693,7 @@ export class AssemblyEditor {
   }
   okMate() {
     const need = MATE_TYPES[this.pm?.type]?.extra || 0;
-    if (this.pm?.picks.length === 2 && need && (this.pm.extra || []).length < need) { this.app.toast(this.pm.type === 'width' ? 'A width mate needs the other face of each component too' : 'A symmetric mate needs the plane between them', true); return; }
+    if (this.pm?.picks.length === 2 && need && (this.pm.extra || []).length < need) { this.app.toast(this.pm.type === 'width' ? 'A width mate needs the other face of each component too' : this.pm.type === 'hinge' ? 'A hinge needs a face of each component that touch too' : 'A symmetric mate needs the plane between them', true); return; }
     const m = this.pmMate();
     if (!m) { this.cancelMate(); return; }
     if (this.pm.error) { this.app.toast(this.pm.error, true); return; }
@@ -2643,7 +2733,7 @@ export class AssemblyEditor {
     const m = this.doc.mates.find((x) => x.id === id);
     if (!m) return;
     this.begin();
-    if (m.type === 'distance' || m.type === 'tangent' || m.type === 'gear' || m.type === 'rack') m.side = -(m.side || 1); else m.align = -(m.align || -1);
+    if (m.type === 'distance' || m.type === 'tangent' || MECH_MATES.has(m.type)) m.side = -(m.side || 1); else m.align = -(m.align || -1);
     if (!this.solve().ok) { this.restore(this._before); this.app.toast('Flipped, the mates can\'t all be met: left as it was', true); return; }
     this.change();
   }
@@ -3185,7 +3275,7 @@ export class AssemblyEditor {
         onDbl: () => this.startMate(m.id),
         menu: () => [
           { label: 'Edit Mate', icon: 'edit', action: () => this.startMate(m.id) },
-          ...(['coincident', 'parallel', 'distance', 'tangent', 'gear', 'rack'].includes(m.type) ? [{ label: m.type === 'gear' || m.type === 'rack' ? 'Reverse Direction' : 'Flip Alignment', icon: 'flip', action: () => this.flipMate(m.id) }] : []),
+          ...(['coincident', 'parallel', 'distance', 'tangent', ...MECH_MATES].includes(m.type) ? [{ label: MECH_MATES.has(m.type) ? 'Reverse Direction' : 'Flip Alignment', icon: 'flip', action: () => this.flipMate(m.id) }] : []),
           { label: m.suppressed ? 'Unsuppress' : 'Suppress', icon: 'suppress', action: () => this.toggleMate(m.id) },
           'sep',
           { label: 'Delete', icon: 'trash', key: 'Del', action: () => this.deleteMate(m.id) },
@@ -3277,7 +3367,7 @@ export class AssemblyEditor {
       list.appendChild(li);
     });
     (MATE_TYPES[pm.type]?.extra ? pm.extra || [] : []).forEach((r, i) => {
-      const li = el('div', { class: 'li sel' }, `<span>${i + 3}. ${esc(this.refLabel(r))} (${pm.type === 'width' ? 'other face' : 'mirror plane'})</span><span class="x" title="Remove">✕</span>`);
+      const li = el('div', { class: 'li sel' }, `<span>${i + 3}. ${esc(this.refLabel(r))} (${pm.type === 'width' ? 'other face' : pm.type === 'hinge' ? 'touching face' : 'mirror plane'})</span><span class="x" title="Remove">✕</span>`);
       li.querySelector('.x').onclick = () => { pm.extra.splice(i); this.cancelPreview(); this.renderPM(); this.highlight(); };
       list.appendChild(li);
     });
@@ -3286,39 +3376,50 @@ export class AssemblyEditor {
     if (pm.picks.length === 2) {
       const [A, B] = pm.picks.map((x) => this.worldRef(x));
       const g2 = ui.pmGroup(root, 'Mate Type', 'asm:type');
-      const bar = el('div', { class: 's3-tools' });
-      for (const t of mateChoices(A, B)) {
-        const b = el('button', { class: 's3-tool' + (pm.type === t ? ' active' : '') }, `${icon(MATE_TYPES[t].icon)}<span>${MATE_TYPES[t].label}</span>`);
-        b.onclick = () => { pm.type = t; pm.value = null; pm.extra = []; this.setDefaultValue(); this.previewMate(); };
-        bar.appendChild(b);
+      // (the types these entities can take, under Standard, Advanced and Mechanical)
+      const choices = mateChoices(A, B);
+      for (const [gk, gl] of MATE_GROUPS) {
+        const ts = choices.filter((t) => MATE_TYPES[t].group === gk);
+        if (!ts.length) continue;
+        g2.appendChild(el('div', { class: 'mate-group', 'data-mate-group': gk }, esc(gl)));
+        const bar = el('div', { class: 's3-tools' });
+        for (const t of ts) {
+          const b = el('button', { class: 's3-tool' + (pm.type === t ? ' active' : ''), 'data-mate-type': t }, `${icon(MATE_TYPES[t].icon)}<span>${MATE_TYPES[t].label}</span>`);
+          b.onclick = () => { pm.type = t; pm.value = null; pm.extra = []; this.setDefaultValue(); this.previewMate(); };
+          bar.appendChild(b);
+        }
+        g2.appendChild(bar);
       }
-      g2.appendChild(bar);
       const info = MATE_TYPES[pm.type];
       if (info?.value) {
-        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)', slot: 'Distance from the edge (0: on it)' }[pm.type] || 'Distance'));
+        g2.appendChild(el('label', { class: 'pm-label' }, { angle: 'Angle', gear: 'Ratio (turns of entity 2 per turn of entity 1)', rack: 'Rack travel per pinion turn', screw: 'Advance per turn (pitch)', slot: 'Distance from the edge (0: on it)', coupler: 'Ratio (slide of entity 2 per mm of entity 1)' }[pm.type] || 'Distance'));
         const vu = info.value === '°' ? '°' : info.value === 'ratio' ? '' : 'mm';
         g2.appendChild(ui.exprInput(pm.value ?? 0, vu, (v) => { const x = Number(v); if (Number.isFinite(x) && x > 0 || (vu !== '' && Number.isFinite(x))) { pm.value = x; this.previewMate(); } }, { min: 0 }));
-        if (pm.type === 'gear') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two gears\' cylinders (their pitch circles): the ratio starts as their radii\'s. Turn one gear and the other follows. Use Reverse for an internal gear (both turn the same way).'));
+        if (pm.type === 'gear') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two gears\' cylinders (their pitch circles): the ratio starts as their radii\'s. Turn one gear and the other follows. Use Reverse for an internal gear, or pulleys on a belt or sprockets on a chain (both turn the same way).'));
+        if (pm.type === 'coupler') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick an axis, edge or flat face of each component (a face slides along its normal): as one slides, the other slides the ratio of it. Reverse makes it slide the other way.'));
         if (pm.type === 'rack') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the pinion\'s cylinder and a straight edge (or the flat face) of the rack along which it runs: the travel starts as the pinion\'s circumference (π × diameter).'));
       }
+      if (pm.type === 'universal') g2.appendChild(el('div', { class: 'pm-hint' }, 'Pick the two shafts (round faces or their axes): the joint is where their axes meet. Mate each shaft so it can only turn (Concentric or Hinge), then turn one: the other follows, unevenly when the shafts are at an angle, as a real universal joint does.'));
       if (info?.extra) {
         const n = (pm.extra || []).length;
-        g2.appendChild(el('div', { class: 'pm-hint', 'data-mate-extra': String(n) }, pm.type === 'width'
+        g2.appendChild(el('div', { class: 'pm-hint', 'data-mate-extra': String(n) }, pm.type === 'hinge'
+          ? (n === 0 ? 'Hinge: the axes are concentric. Now click a flat face of the first component (square to the axis), then the face of the second that sits on it.' : n === 1 ? 'Now click the second component’s face that sits on it.' : 'Concentric and touching: it turns about the axis only.')
+          : pm.type === 'width'
           ? (n === 0 ? 'Width: now click the first component’s other face (parallel to its first): the second component is centred between them.' : n === 1 ? 'Now click the second component’s other face.' : 'The second component’s two faces are centred between the first’s.')
           : (n === 0 ? 'Symmetric: now click the plane (or flat face) between them: the second entity is kept where the first one’s mirror image is.' : 'Mirrored about the plane.')));
       }
-      if (['distance', 'angle'].includes(pm.type)) {
+      if (['distance', 'angle', 'hinge'].includes(pm.type)) {
         const lb = el('label'), cb = el('input', { type: 'checkbox', 'data-mate-limit': '' }); cb.checked = !!pm.limit;
-        cb.onchange = () => { pm.limit = cb.checked; if (pm.limit) { pm.min ??= 0; pm.max ??= pm.value ?? 0; } this.previewMate(); this.renderPM(); };
-        lb.append(cb, document.createTextNode(' Limit (free between a minimum and a maximum)'));
+        cb.onchange = () => { pm.limit = cb.checked; if (pm.limit) { pm.min ??= pm.type === 'hinge' ? -90 : 0; pm.max ??= pm.type === 'hinge' ? 90 : pm.value ?? 0; } this.previewMate(); this.renderPM(); };
+        lb.append(cb, document.createTextNode(pm.type === 'hinge' ? ' Limit the turn (0° where it is now, between a minimum and a maximum)' : ' Limit (free between a minimum and a maximum)'));
         g2.appendChild(lb);
         if (pm.limit) for (const k of ['min', 'max']) {
           g2.appendChild(el('label', { class: 'pm-label' }, k === 'min' ? 'Minimum' : 'Maximum'));
-          const input = ui.exprInput(pm[k] ?? '', pm.type === 'angle' ? '°' : 'mm', (v) => { pm[k] = v === '' ? '' : Number(v); this.previewMate(); });
+          const input = ui.exprInput(pm[k] ?? '', pm.type === 'angle' || pm.type === 'hinge' ? '°' : 'mm', (v) => { pm[k] = v === '' ? '' : Number(v); this.previewMate(); });
           input.dataset.mateLimit = k; g2.appendChild(input);
         }
       }
-      const mech = pm.type === 'gear' || pm.type === 'rack' || pm.type === 'screw';
+      const mech = MECH_MATES.has(pm.type);
       const flippable = mech || ['coincident', 'parallel', 'distance', 'tangent'].includes(pm.type) && (pm.type === 'distance' || pm.type === 'tangent' || (A.n || A.d) && (B.n || B.d));
       if (flippable) {
         const fb = el('button', { class: 'pm-btn' }, mech ? ((pm.side || 1) > 0 ? 'Reverse the direction' : 'Reversed — click for the usual direction') : pm.type === 'distance' || pm.type === 'tangent' ? 'Flip Side' : pm.align > 0 ? 'Aligned — click for Anti-Aligned' : 'Anti-Aligned — click for Aligned');

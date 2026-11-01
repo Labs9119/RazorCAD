@@ -988,4 +988,12 @@ export default {
   "Model edges": "Aristas del modelo",
   "Add selected edges as profile": "Añadir aristas seleccionadas como perfil",
   "Clear selected edges": "Borrar aristas seleccionadas",
+  "Standard Mates": "Relaciones estándar",
+  "Advanced Mates": "Relaciones avanzadas",
+  "Mechanical Mates": "Relaciones mecánicas",
+  "Hinge": "Bisagra",
+  "Universal Joint": "Junta universal",
+  "Linear Coupler": "Acoplador lineal",
+  "More Drivers": "Más impulsores",
+  "+ Add a driver": "+ Añadir un impulsor",
 };

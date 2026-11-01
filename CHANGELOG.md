@@ -6,6 +6,37 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-02 07:35 — Version 0.21.3-beta
+
+- Installer, user manual and website for 0.21.3-beta.
+
+## 2026-11-02 07:30 — Flexible sub-assemblies: mates stay on their parts, dragging moves the parts; holes on cut floors
+
+- A mate on a part inside a flexible sub-assembly goes with the part wherever it moves (it went with the
+  sub-assembly's frame, so a part could leave its mates and creep further at each solve).
+- Dragging a flexible sub-assembly moves and holds its parts, not its frame.
+- A hole placed on clicked points finds its face in the body as it really is: a hole on the floor of a pocket cut
+  just before no longer fails or drills from another face.
+
+## 2026-11-01 12:54 — Mechanical mates: Hinge, Universal Joint and Linear Coupler; motion studies with more than one driver
+
+Assemblies move as the real machine does:
+- **Hinge:** concentric and touching in one mate (two round faces, then a flat face of each). It only turns about
+  the axis; **Limit the turn** keeps it between two angles (0° where it was made: a lid opening −10° to 110°), and
+  dragged past a limit it stops there.
+- **Universal Joint:** two shafts joined by a cross where their axes meet. Turn one and the other follows, unevenly
+  when the shafts are at an angle, as a real Cardan joint does (at 30°, about 4° ahead or behind at a quarter turn,
+  level again every half turn).
+- **Linear Coupler:** as one component slides, another slides the set ratio of it along its own axis, edge or face
+  normal; Reverse makes it go the other way.
+- **The Mate panel groups the types** under Standard Mates, Advanced Mates and Mechanical Mates (Gear, Rack Pinion,
+  Screw, Hinge, Universal Joint, Slot, Cam), with icons of their own for Screw, Slot and Cam too.
+- **Motion studies with more drivers:** More Drivers ▸ + Add a driver turns or slides further components at the
+  same time, each by its own amount (two motors, a crank and a slide).
+- A Width or Hinge mate picked from the type list now asks for its faces straight away (the panel did not show the
+  request until another click).
+- The Gear mate's hint says Reverse is also for pulleys on a belt and sprockets on a chain.
+
 ## 2026-11-01 22:00 — Version 0.21.2-beta
 
 - Installer, user manual and website for 0.21.2-beta.

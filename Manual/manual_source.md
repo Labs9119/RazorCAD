@@ -1859,6 +1859,8 @@ A hole that ends on a curved face (a cross hole in a round bar) gets a seat plan
 
 Click **Mate** ([[M]]), then two faces, edges or vertices on different components (or a standard plane), choose the type and click ✔. The panel stays open for the next mate; [[Esc]] closes it. {idx:mates, assembly}
 
+The panel lists the types the two entities can take under **Standard Mates**, **Advanced Mates** and **Mechanical Mates**. Mechanical mates make an assembly move as the real machine does: turn or drag one part and the others follow, and a motion study plays it. {idx:mechanical mates}
+
 | Mate | Holds |
 |---|---|
 | **Coincident** | Faces, edges or points together |
@@ -1870,6 +1872,9 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 | **Gear** | Two gears turning together: pick their cylinders (pitch circles) |
 | **Rack Pinion** | A pinion turning as a rack slides: pick the pinion's cylinder and a straight edge or the flat face of the rack |
 | **Screw** | On one axis, the second component advancing the **pitch** along it per turn it makes relative to the first (a nut on a lead screw) |
+| **Hinge** {idx:Hinge mate} | Concentric and touching in one mate: pick the two round faces (or circular edges), then a flat face of the first component and the face of the second that sits on it. It can only turn about the axis; **Limit the turn** keeps it between a minimum and a maximum angle (0° where it is when made: a lid that opens −10° to 110°) |
+| **Universal Joint** {idx:Universal joint mate} | Two shafts joined by a cross at the point where their axes meet: pick the two shafts (round faces or their axes). Mate each shaft so it can only turn (Concentric or Hinge); turn one and the other follows. With the shafts at an angle the second turns unevenly, as a real universal (Cardan) joint does: at 30°, about 4° ahead or behind at a quarter turn, level again every half turn |
+| **Linear Coupler** {idx:Linear coupler mate} | As one component slides, another slides the **Ratio** of it, along its own axis, edge or face normal (two slides linked by a lever or a cable). **Reverse** makes it slide the other way |
 | **Width** {idx:Width mate} | The second component centred between two faces of the first: pick a face of each, then the first component's other face, then the second's (two parallel faces each: a tongue in a slot) |
 | **Slot** {idx:Slot mate} | A pin (a cylinder's axis) or a point kept the set distance from a straight edge (0: on it; the slot's side edge with the pin's radius), free to slide between the edge's ends and stopped there |
 | **Path** {idx:Path mate} | A point (a vertex, an edge's middle, a sphere's centre) kept on a curved or circular edge of another component, free to move along it |
@@ -1878,7 +1883,7 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 
 - Flat faces count as planes; cylinders, cones and circular edges as axes; spheres and vertices as points.
 - Each mate is shown applied while you choose. **Flip** swaps Aligned / Anti-Aligned (or the side for Distance and Tangent). When the alignment chosen from how the faces sit can't be reached, the other one is used.
-- **Limit** (Distance and Angle) {idx:Limit mate}: free between a **Minimum** and a **Maximum** instead of one value (a slide with end stops, a door that opens 0 to 110°). Inside the limits the component moves freely; dragged past one, it stays there exactly.
+- **Limit** (Distance, Angle and Hinge) {idx:Limit mate}: free between a **Minimum** and a **Maximum** instead of one value (a slide with end stops, a door that opens 0 to 110°). Inside the limits the component moves freely; dragged past one, it stays there exactly.
 - A mate that conflicts with the others is refused with a message.
 - A mate keeps its faces and edges by their geometry, not only by their number in the part. When a part gets a new feature or a dimension moves a face, the mate stays on the same face. A mate whose face or edge is gone gets a red **!** in the tree ("1 mate lost a face"). **Tools ▸ Fix Mates…** lists them with Edit, Suppress and Delete. {idx:Fix Mates}
 
@@ -1886,7 +1891,7 @@ Click **Mate** ([[M]]), then two faces, edges or vertices on different component
 
 These relate one component's motion to another's, from where they are when the mate is made, so set the teeth in mesh first. Hold each gear on its axle with the usual mates (Concentric and Coincident); the gear mate then takes one more degree of freedom. {idx:gear mate}{idx:rack and pinion mate}
 
-- **Gear**: turn one gear and the other turns the other way, in the ratio of their radii. **Ratio** is how many turns entity 2 makes per turn of entity 1; change it to the teeth ratio if the cylinders are not the pitch circles. **Reverse the direction** is for an internal gear, where both turn the same way. The tree shows it as for example "Gear1 1:2".
+- **Gear**: turn one gear and the other turns the other way, in the ratio of their radii. **Ratio** is how many turns entity 2 makes per turn of entity 1; change it to the teeth ratio if the cylinders are not the pitch circles. **Reverse the direction** is for an internal gear, or pulleys on a belt and sprockets on a chain, where both turn the same way. The tree shows it as for example "Gear1 1:2".
 - **Rack Pinion**: turning the pinion slides the rack along the edge (or face) picked, and sliding the rack turns the pinion. **Rack travel per pinion turn** starts as the pinion's circumference (π × diameter). **Reverse** changes the direction.
 - They follow turns of any size made step by step, as when you drag a gear. One jump of more than half a turn can't be told from a turn the other way.
 
@@ -1978,7 +1983,9 @@ The tree's **Exploded Views** folder lists them. Double-click one to explode or 
 - **sliding a component** along one of its mates' axes or faces;
 - **changing a Distance or Angle mate's value** from where it is to a new one.
 
-The motion is worked out step by step and the mates carry the other components along, gear and rack-pinion mates included. **Play / Stop** ([[Space]]), back to the start, a slider to go through the steps, the number of steps, the duration and **Loop**. Where the mates can't follow, the panel says at which step.
+**More Drivers** ▸ **+ Add a driver** turns or slides further components at the same time, each by its own amount over the same steps (two motors, a crank and a slide). A component can have only one driver.
+
+The motion is worked out step by step and the mates carry the other components along, the mechanical mates (gear, rack-pinion, screw, hinge, universal joint, linear coupler, slot and cam) included. **Play / Stop** ([[Space]]), back to the start, a slider to go through the steps, the number of steps, the duration and **Loop**. Where the mates can't follow, the panel says at which step.
 
 **Detect collisions** (on for new studies) checks every step: parts that collide show in red as the motion plays, and the panel names the first collision and its step. **Stop at the first collision** ends the motion at the step before it. {idx:clearance} **Clearance** between two components (choose them in the panel) works out, at every step, the least distance between them from their display meshes, and the panel gives the least of all and its step (in red when they touch).
 
@@ -2520,6 +2527,7 @@ A body or part with no material uses 1.00 g/cm³ for mass calculations.
 
 | Date | Software version | Changes |
 |---|---|---|
+| 2026-11-02 | 0.21.3-beta | Mechanical mates grouped under Standard, Advanced and Mechanical Mates: Hinge (with a turn limit), Universal Joint and Linear Coupler, with icons for Screw, Slot and Cam. Motion studies with more than one driver. Flexible sub-assemblies: mates stay on their parts and dragging moves the parts. Holes placed on the floor of a cut. |
 | 2026-11-01 | 0.21.2-beta | Holes, bosses and snap hooks keep to their faces as the part changes; references found again as the nearest look-alike marked to check; curved faces followed when they move. Sizes typed while drawing arcs, ellipses, slots and polygons; the sketch's own undo history. Drawings: views and their projected views scaled together, detail views on their own scale, Break from Parent View, Move to Sheet, Break Lines (was Break View), views and tables placed clear of dimensions, a scale or sheet offered when a view doesn't fit. Bolts through stacked plates; flat patterns named after the part; body colours in STEP. Exact spline surfaces, Split Body and Split Face, lofted surfaces from model edges. |
 | 2026-10-31 | 0.21.1-beta | Appearances and Render tabs: more scenes and places, photographed scenes, spotlights, the perspective view. Transition / Reducer spigots (round ones rolled, flat-sided ones bent, in parts of their own) and slip-on flanges. End Flange: bolting flanges on the ends of any parts, several at once. Several bodies selected with Ctrl, Edit Material on the body right-click menu, and a right-click anywhere for the selection's menu. A Settings button with export settings; deleting a feature keeps its sketches; partial route paths; construction lines. |
 | 2026-10-30 | 0.21.0-beta | Dimension IDs: every dimension and feature value has an ID that other values can use, renameable, with a warning before deleting one that is used. Assemblies: Edit Part from the 3D view or the tree, parts and sub-assemblies expand to their features, references between parts, no circular references. Structural Member: segments picked in groups, each with its own profile and settings, and profiles that agree around a frame. Transition / Reducer and Lofted Bend with bolted flanges; a Transition on one line of a sketch or 3D sketch. Sketches on faces follow their face; references to edges follow by name. Features that fail are not added to the tree. 3D sketch dimensions shown while placed. More printers in the 3D Print list. |

@@ -952,4 +952,12 @@ export default {
   "Model edges": "Arêtes du modèle",
   "Add selected edges as profile": "Ajouter les arêtes sélectionnées comme profil",
   "Clear selected edges": "Effacer les arêtes sélectionnées",
+  "Standard Mates": "Contraintes standard",
+  "Advanced Mates": "Contraintes avancées",
+  "Mechanical Mates": "Contraintes mécaniques",
+  "Hinge": "Charnière",
+  "Universal Joint": "Joint de cardan",
+  "Linear Coupler": "Coupleur linéaire",
+  "More Drivers": "Autres moteurs",
+  "+ Add a driver": "+ Ajouter un moteur",
 };

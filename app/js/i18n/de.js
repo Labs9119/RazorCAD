@@ -977,4 +977,12 @@ export default {
   "Model edges": "Modellkanten",
   "Add selected edges as profile": "Ausgewählte Kanten als Profil hinzufügen",
   "Clear selected edges": "Ausgewählte Kanten löschen",
+  "Standard Mates": "Standardverknüpfungen",
+  "Advanced Mates": "Erweiterte Verknüpfungen",
+  "Mechanical Mates": "Mechanische Verknüpfungen",
+  "Hinge": "Scharnier",
+  "Universal Joint": "Kardangelenk",
+  "Linear Coupler": "Linearkoppler",
+  "More Drivers": "Weitere Antriebe",
+  "+ Add a driver": "+ Antrieb hinzufügen",
 };

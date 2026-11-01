@@ -4231,7 +4231,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
       if (f.type === 'revolve' && (f.axis === 'edge' || f.axis === 'face')) return false;
       return true;
     }
-    if (f.type === 'hole') return f.holeType !== 'tapped'; // (a tapped hole finds its thread's length in the body)
+    // (a tapped hole finds its thread's length in the body; holes on clicked points find their faces in it)
+    if (f.type === 'hole') return f.holeType !== 'tapped' && !f.faces?.length;
     if (['lpattern', 'cpattern', 'mirror', 'spattern'].includes(f.type)) {
       if (f.features?.length || f.faces?.length || f.bodies?.length) return false;
       const t = tools.get(f.feature); return !!t && t.op === 'cut' && !t.scope;

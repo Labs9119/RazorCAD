@@ -4207,9 +4207,15 @@ const UI = {
     asm.setFlexible(cs.id, true);
     const flex = asm.solveOk, z = cs.flex?.b?.pos?.[2];
     const leafB = asm.leaves().find((l) => l.comp === cs && l.chain[0] === 'b'), zl = leafB?.M.elements[14];
-    const ok = !rigid.ok && flex && Math.abs(z - 30) < 1e-6 && Math.abs(zl - 30) < 1e-6 && sub.components[1].pos[2] === 10;
+    // (solved again it stays: the mate's reference goes with b, not with the sub-assembly)
+    asm.solve();
+    const z2 = cs.flex?.b?.pos?.[2];
+    // (b moved off the plane in this assembly: the mate no longer met, and solving brings it back)
+    asm.setFlexPose(`${cs.id}/b`, [0, 0, 45], [0, 0, 0, 1]);
+    const r3 = asm.solve(), z3 = cs.flex?.b?.pos?.[2];
+    const ok = !rigid.ok && flex && Math.abs(z - 30) < 1e-6 && Math.abs(zl - 30) < 1e-6 && sub.components[1].pos[2] === 10 && Math.abs(z2 - 30) < 1e-6 && r3.ok && Math.abs(z3 - 30) < 1e-6;
     asm.setFlexible(cs.id, false);
-    return ok ? { ok: true, detail: 'rigid: the mate on a part inside the sub-assembly cannot be met; flexible: that part moves 20 to meet it (kept in this assembly, the sub-assembly unchanged); rigid again' } : { ok: false, detail: { rigid: rigid.ok, flex, z, zl } };
+    return ok ? { ok: true, detail: 'rigid: the mate on a part inside the sub-assembly cannot be met; flexible: that part moves 20 to meet it (kept in this assembly, the sub-assembly unchanged), stays there solved again and goes back there when moved off; rigid again' } : { ok: false, detail: { rigid: rigid.ok, flex, z, zl, z2, z3, r3: r3.ok } };
   },
 
   async 'assembly-fasten-all-holes'() {
@@ -4419,6 +4425,104 @@ ENDSEC;END-ISO-10303-21;`;
     const ok = !r.error && r.done === 72 && Math.abs((turnB * 180) / Math.PI + 360) < 0.01 && Math.abs(rackX - 2 * Math.PI * 10 * 2) < 0.01 && !r2.error && Math.abs(bx - 40) < 1e-4;
     return ok ? { ok: true, detail: `720° of gear A → B ${r6((turnB * 180) / Math.PI)}°, rack ${r6(rackX)} mm; Distance mate 10 → ${r6(bx)} mm; clearances 15 and ${r6(c2)} mm` }
       : { ok: false, detail: `error ${r.error}, done ${r.done}, B ${(turnB * 180) / Math.PI}°, rack ${rackX}; mate: ${r2.error} b ${bx}` };
+  },
+
+  // mechanical mates: a hinge (concentric + touching faces) turns free and stops at its limit; a universal joint at
+  // 30° turns the second shaft unevenly (≈4.1° ahead or behind at 45°, level again at 90° and after a whole turn); a
+  // linear coupler slides one block twice the other's (the other way when reversed); a motion study with two drivers
+  // moves both at once; each type has its group and icon
+  async 'mechanical-mates'() {
+    const A = await import('/js/assembly.js');
+    const { motionFrames } = await import('/js/motion.js');
+    const { ICONS } = await import('/js/icons.js');
+    const THREE = await import('three');
+    const ax = (p, d, r) => ({ kind: 'axis', p, d, r });
+    const pl = (p, n) => ({ kind: 'plane', p, n });
+    const comp = (id, fixed = false, pos = [0, 0, 0]) => ({ id, part: 'p', name: id, pos, rot: [0, 0, 0, 1], fixed });
+    const bad = [];
+    const tools = (doc) => {
+      const byId = (id) => doc.components.find((c) => c.id === id);
+      const poseOf = (id) => { const c = byId(id); return { p: c.pos.slice(), q: new THREE.Quaternion(...c.rot) }; };
+      const worldRef = (r) => { const ps = poseOf(r.comp); const v = (x) => new THREE.Vector3(...x).applyQuaternion(ps.q).toArray(); return { kind: r.kind, p: v(r.p).map((x, i) => x + ps.p[i]), n: r.n && v(r.n), d: r.d && v(r.d), r: r.r }; };
+      const turn = (id, axis, deg) => { const c = byId(id), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(...axis), (deg * Math.PI) / 180).multiply(new THREE.Quaternion(...c.rot)); c.rot = [q.x, q.y, q.z, q.w]; };
+      const angle = (id, axis) => { const q = byId(id).rot; return (2 * Math.atan2(q[0] * axis[0] + q[1] * axis[1] + q[2] * axis[2], q[3]) * 180) / Math.PI; };
+      return { byId, poseOf, worldRef, turn, angle };
+    };
+    // (a hinge: a lid on a base about Z, 5 mm up to start; then limited to ±45° and turned 80°)
+    {
+      const doc = { components: [comp('base', true), comp('lid', false, [0, 0, 5])], mates: [] };
+      const T = tools(doc);
+      const h = { id: 'h', name: 'Hinge1', type: 'hinge', a: { comp: 'base', ...ax([0, 0, 0], [0, 0, 1], 4) }, b: { comp: 'lid', ...ax([0, 0, 0], [0, 0, 1], 4) }, a2: { comp: 'base', ...pl([0, 0, 0], [0, 0, 1]) }, b2: { comp: 'lid', ...pl([0, 0, 0], [0, 0, -1]) } };
+      Object.assign(h, A.jointRefs(h, T.poseOf('base'), T.poseOf('lid'), T.worldRef(h.a), T.worldRef(h.b)));
+      doc.mates.push(h);
+      const r1 = A.solveAssembly(doc);
+      T.turn('lid', [0, 0, 1], 30);
+      const r2 = A.solveAssembly(doc), a2 = T.angle('lid', [0, 0, 1]);
+      Object.assign(h, { limit: true, min: -45, max: 45 });
+      T.turn('lid', [0, 0, 1], 50);
+      const r3 = A.solveAssembly(doc), a3 = T.angle('lid', [0, 0, 1]);
+      if (!r1.ok || Math.abs(T.byId('lid').pos[2]) > 1e-6 || !r2.ok || Math.abs(a2 - 30) > 1e-4 || r1.dofs.get('lid') !== 1 || !r3.ok || Math.abs(a3 - 45) > 1e-3) bad.push(`hinge: z ${T.byId('lid').pos[2]} (dofs ${r1.dofs.get('lid')}), turned 30 → ${a2}, 80 against ±45 → ${a3} (${r1.ok}/${r2.ok}/${r3.ok})`);
+    }
+    // (a universal joint: shaft A along X, shaft B 30° off it in XY, meeting at the origin; A turned a whole turn)
+    let uj = '';
+    {
+      const c30 = Math.cos(Math.PI / 6), s30 = Math.sin(Math.PI / 6), dB = [c30, s30, 0];
+      const doc = { components: [comp('base', true), comp('sa'), comp('sb')], mates: [
+        { id: 'c1', name: 'Concentric1', type: 'concentric', a: { comp: 'base', ...ax([0, 0, 0], [1, 0, 0]) }, b: { comp: 'sa', ...ax([0, 0, 0], [1, 0, 0], 5) } },
+        { id: 'p1', name: 'Coincident1', type: 'coincident', align: 1, a: { comp: 'base', ...pl([-50, 0, 0], [1, 0, 0]) }, b: { comp: 'sa', ...pl([-50, 0, 0], [1, 0, 0]) } },
+        { id: 'c2', name: 'Concentric2', type: 'concentric', a: { comp: 'base', ...ax([0, 0, 0], dB) }, b: { comp: 'sb', ...ax([0, 0, 0], dB, 5) } },
+        { id: 'p2', name: 'Coincident2', type: 'coincident', align: 1, a: { comp: 'base', ...pl(dB.map((x) => 50 * x), dB) }, b: { comp: 'sb', ...pl(dB.map((x) => 50 * x), dB) } },
+      ] };
+      const T = tools(doc);
+      const u = { id: 'u', name: 'Universal Joint1', type: 'universal', a: doc.mates[0].b, b: doc.mates[2].b };
+      Object.assign(u, A.jointRefs(u, T.poseOf('sa'), T.poseOf('sb'), T.worldRef(u.a), T.worldRef(u.b)));
+      doc.mates.push(u);
+      const r0 = A.solveAssembly(doc);
+      const r = motionFrames(doc, { driver: { kind: 'turn', comp: 'sa', mate: 'c1', side: 'b', amount: 360 }, steps: 72 }, (v, o) => A.solveAssembly(v, o));
+      const tw = (f, d) => 2 * Math.atan2(f.rot[0] * d[0] + f.rot[1] * d[1] + f.rot[2] * d[2], f.rot[3]);
+      let tb = 0;
+      const outAt = [];
+      for (let i = 1; i < r.frames.length; i++) {
+        let d = tw(r.frames[i].find((f) => f.id === 'sb'), dB) - tw(r.frames[i - 1].find((f) => f.id === 'sb'), dB);
+        while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+        tb += d; outAt[i] = (tb * 180) / Math.PI;
+      }
+      // (a Cardan joint at 30°: tan θ2 = tan θ1 · cos 30° or / cos 30°, so 40.9° or 49.1° at 45°)
+      const dev = Math.abs(Math.abs(outAt[9]) - 45);
+      uj = `at 45° → ${r6(Math.abs(outAt[9]))}°, 90° → ${r6(Math.abs(outAt[18]))}°, 360° → ${r6(Math.abs(outAt[72]))}°`;
+      if (!r0.ok || r.error || r.done !== 72 || Math.abs(dev - 4.1066) > 0.02 || Math.abs(Math.abs(outAt[18]) - 90) > 0.01 || Math.abs(Math.abs(outAt[72]) - 360) > 0.01) bad.push(`universal joint: ${r0.ok}, ${r.error}, done ${r.done}, ${uj}`);
+    }
+    // (a linear coupler: block a on a rail along X, b on one along Y, ratio 2; c on a rail along Z, driven too)
+    {
+      const rail = (id, n1, n2) => [
+        { id: id + '1', type: 'coincident', align: 1, a: { comp: 'base', ...pl([0, 0, 0], n1) }, b: { comp: id, ...pl([0, 0, 0], n1) } },
+        { id: id + '2', type: 'coincident', align: 1, a: { comp: 'base', ...pl([0, 0, 0], n2) }, b: { comp: id, ...pl([0, 0, 0], n2) } },
+        { id: id + '3', type: 'parallel', align: 1, a: { comp: 'base', ...pl([0, 0, 0], n1.map((x, i) => (i === 0 ? n2[1] * n1[2] - n2[2] * n1[1] : i === 1 ? n2[2] * n1[0] - n2[0] * n1[2] : n2[0] * n1[1] - n2[1] * n1[0]))) }, b: { comp: id, ...pl([0, 0, 0], n1.map((x, i) => (i === 0 ? n2[1] * n1[2] - n2[2] * n1[1] : i === 1 ? n2[2] * n1[0] - n2[0] * n1[2] : n2[0] * n1[1] - n2[1] * n1[0]))) } },
+      ];
+      const doc = { components: [comp('base', true), comp('a'), comp('b'), comp('c')], mates: [...rail('a', [0, 1, 0], [0, 0, 1]), ...rail('b', [1, 0, 0], [0, 0, 1]), ...rail('c', [1, 0, 0], [0, 1, 0])] };
+      const T = tools(doc);
+      const k = { id: 'k', name: 'Linear Coupler1', type: 'coupler', side: 1, value: 2, a: { comp: 'a', ...ax([0, 0, 0], [1, 0, 0]) }, b: { comp: 'b', ...ax([0, 0, 0], [0, 1, 0]) } };
+      k.ref = A.mechRef(k, T.poseOf, T.worldRef);
+      doc.mates.push(k);
+      const ch = A.mateChoices(T.worldRef(k.a), T.worldRef(k.b));
+      T.byId('a').pos[0] = 10;
+      const r1 = A.solveAssembly(doc, { pinned: new Set(['a']) }), y1 = T.byId('b').pos[1];
+      k.side = -1; k.ref = A.mechRef(k, T.poseOf, T.worldRef);
+      T.byId('a').pos[0] = 15;
+      const r2 = A.solveAssembly(doc, { pinned: new Set(['a']) }), y2 = T.byId('b').pos[1];
+      if (!ch.includes('coupler') || !r1.ok || Math.abs(y1 - 20) > 1e-5 || !r2.ok || Math.abs(y2 - 10) > 1e-5) bad.push(`coupler: choices ${ch}, a 10 → b ${y1}; reversed, a +5 → b ${y2}`);
+      // (two drivers: a slid 10 more (b follows, 10 back), c slid 15 up, at once)
+      const st = { driver: { kind: 'slide', comp: 'a', mate: 'k', side: 'a', amount: 10 }, more: [{ kind: 'slide', comp: 'c', mate: 'c3', side: 'b', amount: 15 }], steps: 5 };
+      const r = motionFrames(doc, st, (v, o) => A.solveAssembly(v, o)), last = r.frames[r.frames.length - 1], at = (id) => last.find((f) => f.id === id).pos;
+      if (r.error || r.done !== 5 || Math.abs(at('a')[0] - 25) > 1e-5 || Math.abs(at('b')[1] - (10 - 20)) > 1e-5 || Math.abs(Math.abs(at('c')[2]) - 15) > 1e-5) bad.push(`two drivers: ${r.error}, a ${at('a')}, b ${at('b')}, c ${at('c')}`);
+      st.more.push({ kind: 'slide', comp: 'a', mate: 'k', side: 'a', amount: 5 });
+      if (!/moved by another driver/.test(motionFrames(doc, st, (v, o) => A.solveAssembly(v, o)).error || '')) bad.push('a component driven twice is not refused');
+    }
+    // (every type in a group of the Mate panel, with an icon of its own)
+    const lost = Object.entries(A.MATE_TYPES).filter(([, t]) => !A.MATE_GROUPS.some(([g]) => g === t.group) || !ICONS[t.icon]).map(([k]) => k);
+    const axes = A.mateChoices(ax([0, 0, 0], [0, 0, 1], 5), ax([10, 0, 0], [0, 0, 1], 5));
+    if (lost.length || !['hinge', 'universal', 'gear', 'screw', 'coupler'].every((t) => axes.includes(t))) bad.push(`types without a group or icon: ${lost}; two cylinders offer ${axes}`);
+    return { ok: !bad.length, detail: bad.length ? bad.join('; ') : `hinge free and stopped at 45°; universal joint ${uj}; coupler 2:1 and reversed; two drivers at once` };
   },
 
   // more kernels at once: an assembly of six different (slow) parts built side by side, faster than in one kernel
@@ -5402,6 +5506,27 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       && together.timing.cutsMade >= 3 && madeByEdit === 1 && n(ff1) > 0 && n(ff1) === n(ff0) && n(sec1) > 0 && n(sec1) === n(sec0);
     return ok ? { ok: true, detail: `made together: ${made.join(' + ')}; same as one by one (${t1}); edit: only its own cut; faces ${n(ff1)}, section ${n(sec1)}` }
       : { ok: false, detail: `together ${t1} | one by one ${t0}; made ${made}; oneByOne clean ${noneOneByOne}; edit same ${same2}, cuts made ${together.timing.cutsMade} then ${madeByEdit}; faces ${n(ff1)}/${n(ff0)}; section ${n(sec1)}/${n(sec0)} ${JSON.stringify(sec1).slice(0, 80)}; errors ${JSON.stringify(together.errors)}` };
+  },
+
+  // a hole clicked on the floor of a pocket that an earlier cut made: the cut is made before the hole looks for its face
+  // (the hole would otherwise wait with it, and not find the floor)
+  async 'hole-on-cut-floor'() {
+    const d = M.newDoc(); d.name = 'Pocket hole';
+    const rect = (x0, y0, x1, y1) => {
+      const sk = M.createFeature(d, 'sketch', { plane: { ref: 'top' } }), pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+      Object.assign(sk, { points: pts.map(([x, y], i) => ({ id: 'p' + i, x, y })), curves: pts.map((_, i) => ({ id: 'c' + i, type: 'line', p1: 'p' + i, p2: 'p' + ((i + 1) % 4), construction: false })), constraints: [] });
+      d.features.push(sk); return sk;
+    };
+    d.features.push(M.createFeature(d, 'extrude', { sketch: rect(-50, -30, 50, 30).id, depth: 20 }));
+    d.features.push(M.createFeature(d, 'extrude', { sketch: rect(-20, -15, 20, 15).id, op: 'cut', depth: 8 }));
+    // (counterbored: from the floor the counterbore is in the material, from the plate's underside in the pocket)
+    const hole = M.createFeature(d, 'hole', { holeType: 'cbore', size: 'custom', diameter: 5, cboreD: 9, cboreDepth: 3, end: 'through', faces: [{ p: [0, 8, 0], n: [0, -1, 0] }] });
+    d.features.push(hole);
+    const r = await window.app.kernel.rebuild(d, null, null);
+    const m = await window.app.kernel.request('measure', { refs: [{ kind: 'body', id: r.body.bodies[0].id }] });
+    const vol = (m.items?.[0] || m).volume, want = 100 * 60 * 20 - 40 * 30 * 8 - Math.PI * (4.5 * 4.5 * 3 + 2.5 * 2.5 * 9);
+    const ok = !r.errors.length && Math.abs(vol - want) < 0.5;
+    return ok ? { ok: true, detail: `the hole on the pocket floor: volume ${vol.toFixed(1)} (${want.toFixed(1)} wanted)` } : { ok: false, detail: { errors: r.errors, vol, want } };
   },
 
   // previews of cuts: a pattern of overlapping holes previewed, the material it removes (one intersection with all

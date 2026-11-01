@@ -8,6 +8,8 @@
 //   driver: { kind: 'turn', comp, mate, side, amount (°) }   turns comp about the axis of one of its mates' references
 //           { kind: 'slide', comp, mate, side, amount (mm) } slides comp along that reference (an axis, or a face's normal)
 //           { kind: 'mate', mate, to }                      a Distance or Angle mate's value from its own to `to`
+//   more: further drivers, turning or sliding other components at the same time ([{ kind, comp, mate, side, amount }]:
+//   two motors, a crank and a slide)
 //
 // motionFrames(view, study, solve) works the motion out: view = { components, mates } (as the assembly shows them;
 // they are moved), solve(view, opts) the assembly solver. Returns { frames: [[{ id, pos, rot }]], done, error }.
@@ -56,37 +58,53 @@ export function motionFrames(view, study, solve) {
   const comps = view.components, byId = new Map(comps.map((c) => [c.id, c]));
   const snap = () => comps.map((c) => ({ id: c.id, pos: c.pos.slice(), rot: c.rot.slice() }));
   const frames = [snap()];
-  let mate = null, ref = null, comp = null, v0 = 0;
+  const fail = (error) => ({ frames, done: 0, error });
+  // (a driver that turns or slides a component: { comp, ref, kind, amount }, or { error })
+  const mover = (X, which) => {
+    const comp = byId.get(X.comp);
+    if (!comp) return { error: `Choose the component ${which} moves` };
+    if (comp.fixed) return { error: `${comp.name} is fixed: float it, or drive another component` };
+    const ref = (view.mates || []).find((x) => x.id === X.mate)?.[X.side];
+    if (!ref || ref.comp !== comp.id) return { error: `Choose the axis (or face) ${which} moves ${comp.name} by` };
+    if (X.kind === 'turn' && ref.kind !== 'axis') return { error: 'Turning needs an axis (a round face or edge of one of its mates)' };
+    return { comp, ref, kind: X.kind, amount: Number(X.amount) || 0 };
+  };
+  let mate = null, v0 = 0;
+  const movers = [];
   if (D.kind === 'mate') {
     mate = (view.mates || []).find((m) => m.id === D.mate);
-    if (!mate) return { frames, done: 0, error: 'Choose the mate to drive' };
+    if (!mate) return fail('Choose the mate to drive');
     v0 = Number(mate.value) || 0;
   } else {
-    comp = byId.get(D.comp);
-    if (!comp) return { frames, done: 0, error: 'Choose the component to move' };
-    if (comp.fixed) return { frames, done: 0, error: `${comp.name} is fixed: float it, or drive another component` };
-    const m = (view.mates || []).find((x) => x.id === D.mate);
-    ref = m?.[D.side];
-    if (!ref || ref.comp !== comp.id) return { frames, done: 0, error: 'Choose the axis (or face) to move it by' };
-    if (D.kind === 'turn' && ref.kind !== 'axis') return { frames, done: 0, error: 'Turning needs an axis (a round face or edge of one of its mates)' };
+    const mv = mover(D, 'the driver');
+    if (mv.error) return fail(mv.error);
+    movers.push(mv);
   }
-  const amount = Number(D.kind === 'mate' ? D.to : D.amount) || 0;
+  for (const [i, X] of (study.more || []).entries()) {
+    const mv = mover(X, `driver ${i + 2}`);
+    if (mv.error) return fail(`Driver ${i + 2}: ${mv.error}`);
+    if (movers.some((o) => o.comp === mv.comp)) return fail(`Driver ${i + 2}: ${mv.comp.name} is moved by another driver already`);
+    movers.push(mv);
+  }
+  const amount = Number(D.to) || 0, pinned = new Set(movers.map((o) => o.comp.id));
+  // (how far the first driver had gone at step k, for a message)
+  const sofar = (k) => (mate ? fmt(v0 + ((amount - v0) * k) / n, 3) : `${fmt((k * movers[0].amount) / n, 3)}${movers[0].kind === 'turn' ? '°' : ' mm'}`);
   for (let k = 1; k <= n; k++) {
-    if (D.kind === 'mate') {
-      mate.value = v0 + ((amount - v0) * k) / n;
-      const r = solve(view, {});
-      if (!r.ok) { mate.value = v0 + ((amount - v0) * (k - 1)) / n; return { frames, done: k - 1, error: `The mates can't follow past step ${k - 1} of ${n} (${fmt(mate.value, 3)})` }; }
-    } else {
-      // the driven component moved by one step (about / along its reference as it is now), the rest solved with it held
+    if (mate) mate.value = v0 + ((amount - v0) * k) / n;
+    // each driven component moved by one step (about / along its reference as it is now), the rest solved with them held
+    for (const { comp, ref, kind, amount: a } of movers) {
       const { p, d } = worldRef(comp, ref);
-      if (D.kind === 'turn') {
-        const dq = new THREE.Quaternion().setFromAxisAngle(d, ((amount / n) * Math.PI) / 180);
+      if (kind === 'turn') {
+        const dq = new THREE.Quaternion().setFromAxisAngle(d, ((a / n) * Math.PI) / 180);
         const pos = new THREE.Vector3(...comp.pos).sub(p).applyQuaternion(dq).add(p);
         const q = dq.multiply(new THREE.Quaternion(...comp.rot));
         comp.pos = pos.toArray(); comp.rot = [q.x, q.y, q.z, q.w];
-      } else comp.pos = comp.pos.map((x, i) => x + d.getComponent(i) * (amount / n));
-      const r = solve(view, { pinned: new Set([comp.id]) });
-      if (!r.ok) return { frames, done: k - 1, error: `The mates can't follow past step ${k - 1} of ${n} (${fmt(((k - 1) * amount) / n, 3)}${D.kind === 'turn' ? '°' : ' mm'})` };
+      } else comp.pos = comp.pos.map((x, i) => x + d.getComponent(i) * (a / n));
+    }
+    const r = solve(view, movers.length ? { pinned } : {});
+    if (!r.ok) {
+      if (mate) mate.value = v0 + ((amount - v0) * (k - 1)) / n;
+      return { frames, done: k - 1, error: `The mates can't follow past step ${k - 1} of ${n} (${sofar(k - 1)})` };
     }
     frames.push(snap());
   }
@@ -252,6 +270,19 @@ export class MotionTool {
     act.appendChild(el('button', { title: 'Close (Esc)', onclick: () => this.close(false) }, icon('cancel')));
     root.appendChild(act);
     const sel = (opts, value, onchange) => { const s = el('select'); for (const [v, l] of opts) { const o = el('option', { value: v }, esc(l)); if (String(v) === String(value ?? '')) o.selected = true; s.appendChild(o); } s.onchange = () => onchange(s.value); return s; };
+    // (a driver that turns or slides a component: which, about / along what, how far)
+    const compRows = (g, X) => {
+      const comps = this.host.doc.components.filter((c) => !c.fixed && !this.host.eff(c).suppressed);
+      g.appendChild(ui.row('Component', sel(comps.length ? comps.map((c) => [c.id, c.name]) : [['', '— every component is fixed —']], X.comp, (v) => {
+        X.comp = v;
+        const refs = driverRefs(view, v).filter((r) => X.kind === 'slide' || r.kind === 'axis');
+        X.mate = refs[0]?.mate || null; X.side = refs[0]?.side || null;
+        this.changed();
+      })));
+      const refs = driverRefs(view, X.comp).filter((r) => X.kind === 'slide' || r.kind === 'axis');
+      g.appendChild(ui.row(X.kind === 'turn' ? 'About' : 'Along', sel(refs.length ? refs.map((r) => [`${r.mate}|${r.side}`, r.label]) : [['', X.kind === 'turn' ? '— mate it on an axis first (Concentric) —' : '— mate it first —']], X.mate ? `${X.mate}|${X.side}` : '', (v) => { [X.mate, X.side] = v.split('|'); this.changed(); })));
+      g.appendChild(ui.row(X.kind === 'turn' ? 'Angle' : 'Distance', ui.exprInput(X.amount ?? 0, X.kind === 'turn' ? '°' : 'mm', (v) => { X.amount = Number(v); this.changed(); })));
+    };
 
     const g1 = ui.pmGroup(root, 'Driver', 'mo:drv');
     g1.appendChild(ui.row('Name', (() => { const i = el('input', { type: 'text', value: st.name }); i.onchange = () => { st.name = i.value.trim() || st.name; }; return i; })()));
@@ -266,18 +297,37 @@ export class MotionTool {
       g1.appendChild(ui.row('Mate', sel(ms.length ? ms.map((m) => [m.id, `${m.name} (now ${fmt(Number(m.value) || 0, 3)}${m.type === 'angle' ? '°' : ''})`]) : [['', '— no Distance or Angle mate —']], D.mate, (v) => { D.mate = v; this.changed(); })));
       const m = ms.find((x) => x.id === D.mate);
       g1.appendChild(ui.row('To', ui.exprInput(D.to ?? 0, m?.type === 'angle' ? '°' : 'mm', (v) => { D.to = Number(v); this.changed(); })));
-    } else {
-      const comps = this.host.doc.components.filter((c) => !c.fixed && !this.host.eff(c).suppressed);
-      g1.appendChild(ui.row('Component', sel(comps.length ? comps.map((c) => [c.id, c.name]) : [['', '— every component is fixed —']], D.comp, (v) => {
-        D.comp = v;
-        const refs = driverRefs(view, v).filter((r) => D.kind === 'slide' || r.kind === 'axis');
-        D.mate = refs[0]?.mate || null; D.side = refs[0]?.side || null;
+    } else compRows(g1, D);
+    // (further drivers: other components turned or slid at the same time)
+    const g3 = ui.pmGroup(root, 'More Drivers', 'mo:more');
+    (st.more ||= []).forEach((X, i) => {
+      const box = el('div', { class: 'mo-driver', 'data-mo-driver': String(i + 2) });
+      const head = el('div', { class: 'mo-driver-head' }, `<span>Driver ${i + 2}</span>`);
+      const x = el('button', { class: 'pm-btn', title: 'Remove this driver' }, '✕');
+      x.onclick = () => { st.more.splice(i, 1); this.changed(); };
+      head.appendChild(x);
+      box.appendChild(head);
+      box.appendChild(ui.row('Drive by', sel([['turn', 'Turning a component'], ['slide', 'Sliding a component']], X.kind, (v) => {
+        X.kind = v;
+        const refs = driverRefs(view, X.comp).filter((r) => v === 'slide' || r.kind === 'axis');
+        X.mate = refs[0]?.mate || null; X.side = refs[0]?.side || null; X.amount = v === 'turn' ? 360 : 50;
         this.changed();
       })));
-      const refs = driverRefs(view, D.comp).filter((r) => D.kind === 'slide' || r.kind === 'axis');
-      g1.appendChild(ui.row(D.kind === 'turn' ? 'About' : 'Along', sel(refs.length ? refs.map((r) => [`${r.mate}|${r.side}`, r.label]) : [['', D.kind === 'turn' ? '— mate it on an axis first (Concentric) —' : '— mate it first —']], D.mate ? `${D.mate}|${D.side}` : '', (v) => { [D.mate, D.side] = v.split('|'); this.changed(); })));
-      g1.appendChild(ui.row(D.kind === 'turn' ? 'Angle' : 'Distance', ui.exprInput(D.amount ?? 0, D.kind === 'turn' ? '°' : 'mm', (v) => { D.amount = Number(v); this.changed(); })));
-    }
+      compRows(box, X);
+      g3.appendChild(box);
+    });
+    const add = el('button', { class: 'pm-btn', 'data-mo-add': '' }, '+ Add a driver');
+    add.onclick = () => {
+      const used = new Set([D.kind === 'mate' ? null : D.comp, ...st.more.map((o) => o.comp)]);
+      const c = this.host.doc.components.find((y) => !y.fixed && !this.host.eff(y).suppressed && !used.has(y.id) && driverRefs(view, y.id).some((r) => r.kind === 'axis'))
+        || this.host.doc.components.find((y) => !y.fixed && !this.host.eff(y).suppressed && !used.has(y.id));
+      if (!c) { this.app.toast('Every component that can move has a driver already'); return; }
+      const r = driverRefs(view, c.id).find((q) => q.kind === 'axis') || driverRefs(view, c.id)[0];
+      st.more.push({ kind: r?.kind === 'axis' ? 'turn' : 'slide', comp: c.id, mate: r?.mate || null, side: r?.side || null, amount: r?.kind === 'axis' ? 360 : 50 });
+      this.changed();
+    };
+    g3.appendChild(add);
+    g3.appendChild(el('div', { class: 'pm-hint' }, 'Each driver turns or slides its component by its own amount over the same steps, all at once (two motors, a crank and a slide).'));
     const g2 = ui.pmGroup(root, 'Playback', 'mo:play');
     g2.appendChild(ui.row('Steps', ui.exprInput(st.steps, '', (v) => { st.steps = Math.max(1, Math.min(2000, Math.round(Number(v) || 1))); this.changed(); }, { min: 1 })));
     g2.appendChild(ui.row('Duration', ui.exprInput(st.duration, 's', (v) => { st.duration = Math.max(0.2, Number(v) || 4); this.stop(); this.renderPM(); }, { min: 0.2 })));
@@ -314,6 +364,6 @@ export class MotionTool {
     if (this.clearance && Number.isFinite(this.clearance.min)) g2.appendChild(el('div', { class: this.clearance.min < 1e-6 ? 'pm-msg err' : 'pm-hint' }, esc(`Least clearance ${fmt(this.clearance.min, 3)} mm, at step ${this.clearance.step} (from the display meshes).`)));
     if (this.error) g2.appendChild(el('div', { class: 'pm-msg err' }, esc(this.error)));
     else if (this.frames) g2.appendChild(el('div', { class: 'pm-hint' }, `${this.frames.length - 1} steps worked out. Drag the slider to go through them; Space plays and stops.`));
-    root.appendChild(el('div', { class: 'pm-hint', style: 'padding:6px 10px' }, 'The motion is worked out step by step: the mates (gear and rack-pinion mates too) carry the other components along. The assembly goes back as it was when the panel closes.'));
+    root.appendChild(el('div', { class: 'pm-hint', style: 'padding:6px 10px' }, 'The motion is worked out step by step: the mates (gear, rack-pinion, screw, hinge, universal joint, cam and slot mates too) carry the other components along. The assembly goes back as it was when the panel closes.'));
   }
 }
