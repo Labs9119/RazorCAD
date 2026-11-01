@@ -9,6 +9,8 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 ## 2026-11-02 07:35 — Version 0.21.3-beta
 
 - Installer, user manual and website for 0.21.3-beta.
+- A test that did not wait for the app's rebuild after cancelling a feature edit made the next test (sheet-metal etch)
+  fail on GitHub's machines; it now waits.
 
 ## 2026-11-02 07:30 — Flexible sub-assemblies: mates stay on their parts, dragging moves the parts; holes on cut floors
 

@@ -3602,7 +3602,7 @@ const UI = {
     const list=a.ductPatternList();if(list.length!==2||list.reduce((s,p)=>s+p.qty,0)!==5)return {ok:false,detail:'The patterns of the elbow',list};
     const DX=await import('/js/dxf.js'),DU=await import('/js/ducts.js'),dxf=DX.buildDXF(DU.patternEnts(list),{OUTLINE:{color:7,ltype:'CONTINUOUS'},NOTES:{color:7,ltype:'CONTINUOUS'}});
     if(!dxf.includes('Elbow end gore x2'))return {ok:false,detail:'The DXF lacks the gore names'};
-    a.editFeature(d.feature.id);await settle();if(!(document.querySelector('#pm')?.textContent||'').includes('Gores'))return {ok:false,detail:'No panel'};a.cancelPM?.();
+    a.editFeature(d.feature.id);await settle();if(!(document.querySelector('#pm')?.textContent||'').includes('Gores'))return {ok:false,detail:'No panel'};a.cancelPM?.();await settle(); // (the rebuild cancelling starts is done before the next test)
     return {ok:true,detail:`${native.results.length} cases (an elbow's and a cone's exact volumes, transition / offset / lateral solids; gore heights, the cone's sector, unfolded lengths of a transition and an offset, a lateral's branch and main); the patterns to DXF`};
   },
 
