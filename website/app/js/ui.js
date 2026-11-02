@@ -4551,7 +4551,9 @@ export class UI {
   // Edit Feature opens its panel. Closed with Esc, ✕ or a click elsewhere.
   showQuickDims(f, x, y) {
     const a = this.app;
-    document.querySelector('.quick-dims')?.remove();
+    // (a box already open closed properly: its key and click handlers go with it)
+    const open = document.querySelector('.quick-dims');
+    if (open) (open._close || (() => open.remove()))();
     const sketches = new Set(sketchesUsedBy(f));
     const labelOf = (key) => { for (const g of PM_SCHEMAS[f.type] || []) for (const fd of g.fields || []) if (fd.key === key) { try { return typeof fd.label === 'function' ? fd.label(f, a) : fd.label; } catch { return key; } } return key; };
     const KIND = { hdist: 'horizontal', vdist: 'vertical', dist: 'distance', radius: 'radius', diameter: 'diameter', angle: 'angle', pointLine: 'distance' };
@@ -4584,10 +4586,14 @@ export class UI {
       box.appendChild(el('div', { class: 'qd-row' }, `<span class="qd-id">${esc(d.did || '')}</span><span class="qd-l">${esc(tr(what))}</span>`)).appendChild(inp);
     }
     box.appendChild(el('div', { class: 'pm-hint' }, esc(tr('Type a size and press Enter. Esc closes.'))));
-    const close = () => { box.remove(); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', onKey, true); };
+    // (closed before its handlers are added, they never are: none is left behind to swallow a later Esc)
+    let closed = false;
+    const close = () => { closed = true; box.remove(); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', onKey, true); };
+    box._close = close;
     const outside = (e) => { if (!box.contains(e.target)) close(); };
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+      // (Esc in a field showing its suggestions closes only them)
+      if (e.key === 'Escape' && !e.target.closest?.('[data-own-escape]')) { e.stopPropagation(); close(); return; }
       // (Ctrl+Z / Ctrl+Y here undo and redo the model, not the typing; the box shows the sizes again)
       const k = e.key.toLowerCase();
       if ((e.ctrlKey || e.metaKey) && (k === 'z' || k === 'y') && box.contains(e.target)) {
@@ -4604,7 +4610,7 @@ export class UI {
     const w = box.offsetWidth, h = box.offsetHeight;
     box.style.left = Math.max(4, Math.min(x + 12, innerWidth - w - 4)) + 'px';
     box.style.top = Math.max(4, Math.min(y + 12, innerHeight - h - 4)) + 'px';
-    setTimeout(() => { document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', onKey, true); box.querySelector('input')?.focus(); box.querySelector('input')?.select(); }, 0);
+    setTimeout(() => { if (closed) return; document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', onKey, true); box.querySelector('input')?.focus(); box.querySelector('input')?.select(); }, 0);
   }
 
   // A dimension's ID as a small tag before a field's label (drawn from its data-dim-id, so the label's text stays the

@@ -2085,7 +2085,10 @@ const UI = {
     S.addRel(f, 'horizontal', [line]);
     const dim = S.addRel(f, 'dim', ['O', p], { kind: 'hdist', value: 100, s: 1 });
     // (a part of its own in front: an earlier test may leave a drawing there)
-    doc.features.push(f); await a.newDocument?.(); closeModals(); await a.setDoc(doc); closeModals(); await a.enterSketch(f, false);
+    doc.features.push(f); await a.newDocument?.(); closeModals(); await a.setDoc(doc); closeModals();
+    // (a quick-sizes box closed before its key handler was added left it behind, swallowing the Escape below)
+    a.ui.showQuickDims(f, 20, 20); document.querySelector('.quick-dims .x').click(); await wait(20);
+    await a.enterSketch(f, false);
     const sk = a.sketcher;
     const key = (input, k) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
     const type = (input, text, caret = text.length) => { input.focus(); input.value = text; input.setSelectionRange(caret, caret); input.dispatchEvent(new Event('input', { bubbles: true })); };
@@ -2096,8 +2099,10 @@ const UI = {
     if (options.length !== 2 || !options[0].textContent.includes('120')) return { ok: false, detail: 'Missing parameter names or evaluated values' };
     key(input, 'ArrowDown'); key(input, 'Tab');
     if (input.value !== 'neck_width' || !sk.modifyEl || document.querySelector('.expr-complete') || S.getPoint(f, p).x !== 100) return { ok: false, detail: 'Tab failed to complete or prematurely applied the dimension' };
-    type(input, 'neck_l'); key(input, 'Escape');
-    if (!sk.modifyEl || document.querySelector('.expr-complete') || input.value !== 'neck_l') return { ok: false, detail: 'Escape cancelled the dimension instead of only the suggestions' };
+    type(input, 'neck_l');
+    const shown = !!document.querySelector('.expr-complete'), focus = document.activeElement === input ? 'field' : document.activeElement?.tagName;
+    key(input, 'Escape');
+    if (!sk.modifyEl || document.querySelector('.expr-complete') || input.value !== 'neck_l') return { ok: false, detail: `Escape cancelled the dimension instead of only the suggestions (suggestions shown: ${shown}, focus: ${focus})` };
     type(input, '(neck_l+4)/2', 7); key(input, 'Enter');
     if (input.value !== '(neck_length+4)/2' || !sk.modifyEl) return { ok: false, detail: 'Completion damaged the surrounding formula or confirmed the dialog' };
     key(input, 'Enter');

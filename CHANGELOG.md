@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-02 13:40 — Esc no longer lost after the quick-sizes box
+
+- **Quick sizes (double-click on the model):** a box closed or replaced at once left its Esc handler behind, which then
+  swallowed the next Esc anywhere, for example the one closing a formula's suggestions closed the whole dimension box.
+  The handlers now go with the box, and Esc in one of its fields showing suggestions closes only them.
+- Tests: expression-parameter-completion closes a quick-sizes box at once first (it failed on CI after usability-fixes).
+
 ## 2026-11-02 11:55 — Angled flange corners: the bends meet at the base's corner point
 
 - **Edge-Flange and Closed Corner at other angles than 90°:** both bends' cut lines now start at the base's corner
