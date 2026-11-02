@@ -1499,7 +1499,7 @@ Click straight edges on the top or bottom face. Where the top and bottom edges o
 | Position | Material inside, material outside, bend outside, plus an offset; flip |
 | Bend radius | Its own radius, or the default |
 | Auto relief | Rectangular, obround or tear relief where a bend ends next to material |
-| Corners | Flanges picked together that meet at a corner: **Corner to corner** (the default: each runs on up to the other's inside face and ends square, their inside edges the gap apart; the outside corner is left open and the bends end in a V cutout), **Mitred** (they meet on the diagonal), **Overlap** (one runs on to cover the other's end) or **Open**. Closed corners keep a gap (default 0.5 mm). For Overlap, **Swap** reverses which covers, and the Bend region is a V cutout or Closed. |
+| Corners | Flanges picked together that meet at a corner: **Corner to corner** (the default: each runs on up to the other's inside face and ends square, their inside edges the gap apart; the outside corner is left open and the bends end in a V cutout), **Mitred** (they meet on the diagonal), **Overlap** (one runs on to cover the other's end) or **Open**. Closed corners keep a gap (default 0.5 mm). Flanges bent to other angles than 90° (walls leaning in or out, as on a hopper) and edges that meet at other angles than 90° close the same way: each wall is cut back, or run on, so the walls meet as folded instead of passing through each other, and each bend is cut along a curved line in the flat: the two bends start from the base's corner point and meet there, and the gap opens from it, so the seam carries on down the bends with the same gap. Every edge is cut square to the sheet, as a laser cuts it: none is bevelled onto the mitre. For Overlap, **Swap** reverses which covers, and the Bend region is a V cutout or Closed. |
 
 ## Miter Flange
 
@@ -1560,7 +1560,7 @@ Adds a rectangular, circular or tear relief at every corner where two bends meet
 
 ## Closed Corner
 
-Closes the corners between 90° flanges: one flange covers the other's end, with a gap. {idx:Closed Corner}
+Closes the corners between flanges: one flange covers the other's end, with a gap. Flanges at other angles than 90° have their walls cut back or run on to meet, and their bends cut in the flat to keep the gap; every edge is cut square to the sheet. {idx:Closed Corner}
 
 - **Corner type**: Overlap, Underlap, Butt (square ends: each flange runs on up to the other's inside face, the gap between their inside edges, the bends in a V cutout) or Mitre (the gap across the mitre, bends included).
 - **Which corners**: click a face of a flange next to a corner and the matching flange is found automatically; the clicked flange is the one that overlaps or tucks under. With no corners picked, every corner of the body is closed.

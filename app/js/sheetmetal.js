@@ -442,8 +442,8 @@ function bendSolidMade(b, t, piece, vcuts = null) {
   const cuts = [];
   if (vcuts && !partial) {
     for (const v of vcuts) {
-      if (!(v.top > 1e-6)) continue;
-      const len = v.top + 2 * t;
+      if (!(v.top > 1e-6) && !v.line) continue;
+      const len = (v.line ? Math.max(0, ...v.line) : v.top) + 2 * t;
       if (d2(s2(v.X, b.p0), b.e) > b.w / 2) x1 = b.w + len; else x0 = -len;
       cuts.push(v);
     }
@@ -458,7 +458,7 @@ function bendSolidMade(b, t, piece, vcuts = null) {
     free(sf, missing);
   }
   for (const v of cuts) {
-    try { sol = swap(sol, sol.cut(vcutTool(b, t, v.X, v.top, v.mid ?? v.top, v.relief || 0))); } catch { /* keep */ }
+    try { sol = swap(sol, sol.cut(vcutTool(b, t, v.X, v.top, v.mid ?? v.top, v.relief || 0, v.line))); } catch { /* keep */ }
   }
   return sol;
 }
@@ -593,10 +593,11 @@ function cornerReliefRound(A, B, t, r) {
   const Q = at(0, 0);
   return R.basicFaceExtrusion(circleFace([Q[0], Q[1]], r), new R.Vector([0, 0, 3 * t])).translate([0, 0, -t]);
 }
-function vcutRunOn(b, t, X, top, mid = top, relief = 0) {
+function vcutRunOn(b, t, X, top, mid = top, relief = 0, line = null) {
+  if (line) top = Math.max(0, ...line);
   if (!(top > 1e-6)) return null;
   const len = top + 2 * t;
-  try { return bendRunOn(b, t, X, len).cut(vcutTool(b, t, X, top, mid, relief)); } catch { return null; }
+  try { return bendRunOn(b, t, X, len).cut(vcutTool(b, t, X, top, mid, relief, line)); } catch { return null; }
 }
 // What lies beyond the V cutout line (flat: from the corner point at the bend line to `top` at the wall).
 // mid: the line's slope at the corner point (as a top reached in a straight line). Both bends of a corner
@@ -604,9 +605,16 @@ function vcutRunOn(b, t, X, top, mid = top, relief = 0) {
 // curves on to its own wall's end. relief: the set-back at the bend line (see above).
 // The V line in the flat: pt(xp, s) is the flat point `xp` past the bend's end at the corner and `s` up
 // the bend; f(s) the line's xp at s. The folded tool and the flat pattern both use it.
-function vcutLine(b, t, X, top, mid = top, relief = 0) {
+// line: the line given instead, as its xp at N + 1 points evenly up the bend (an angled corner's, wallsToPlanes;
+// below 0 where it cuts the bend back)
+function vcutLine(b, t, X, top, mid = top, relief = 0, line = null) {
   const atEnd = d2(s2(X, b.p0), b.e) > b.w / 2;
   const pt = (xp, s) => a2(a2(b.p0, m2(b.e, atEnd ? b.w + xp : -xp)), m2(b.d, s));
+  if (line) {
+    const n = line.length - 1;
+    const f = (s) => { const q = Math.min(Math.max((s / b.ba) * n, 0), n), i = Math.min(Math.floor(q), n - 1); return line[i] + (line[i + 1] - line[i]) * (q - i); };
+    return { pt, f, far: Math.max(0, ...line) + 3 * t };
+  }
   // set-back (1 + a·q)(1 − q)² over q = s / fade: `relief` at the bend line with a slope that cancels the
   // V line's there (so the edge leaves the bend line square to it), gone with zero slope at q = 1
   const fade = RELIEF_FADE * b.ba;
@@ -636,13 +644,13 @@ const vcutLoop = (b, pt, f, far, relief) => {
   loop.push(pt(f(b.ba) + d1 * (s1 - b.ba), s1), pt(far, s1), pt(far, s0));
   return { loop, start: 1 };
 };
-function vcutTool(b, t, X, top, mid = top, relief = 0) {
-  const { pt, f, far } = vcutLine(b, t, X, top, mid, relief), { loop, start } = vcutLoop(b, pt, f, far, relief);
+function vcutTool(b, t, X, top, mid = top, relief = 0, line = null) {
+  const { pt, f, far } = vcutLine(b, t, X, top, mid, relief, line), { loop, start } = vcutLoop(b, pt, f, far, relief);
   return wrapLoopTool(b, t, loop, VCUT_N + 1, start);
 }
 // The same in the flat: what lies beyond the V line, as a face.
-function vcutFlatBeyond(b, t, X, top, mid, relief) {
-  const { pt, f, far } = vcutLine(b, t, X, top, mid, relief);
+function vcutFlatBeyond(b, t, X, top, mid, relief, line = null) {
+  const { pt, f, far } = vcutLine(b, t, X, top, mid, relief, line);
   const { loop: lp, start } = vcutLoop(b, pt, f, far, relief), loop = lp.map((p) => P3(p));
   const pts = loop.slice(start, start + VCUT_N + 1), rest = [...loop.slice(start + VCUT_N), ...loop.slice(0, start + 1)];
   const wire = R.assembleWire([
@@ -814,6 +822,16 @@ function toSolidMade(sheet) {
     if (!la || !lb) continue;
     const pair = cornerPairs({ bends: [la.b, lb.b], t })[0];
     if (!pair) continue;
+    // (an angled corner: each bend cut along its own line, from wallsToPlanes)
+    if (c.type === 'any') {
+      for (const bd of [la.b, lb.b]) {
+        const line = c.lines?.[bd.id];
+        if (!line) continue;
+        if (!vcuts.has(bd.id)) vcuts.set(bd.id, []);
+        vcuts.get(bd.id).push({ X: pair.X, top: 0, line });
+      }
+      continue;
+    }
     for (const [bd, top] of [[la.b, c.ea ?? 0], [lb.b, c.eb ?? 0]]) {
       if (!vcuts.has(bd.id)) vcuts.set(bd.id, []);
       // the V line runs from the start of the bend at the corner point (set back by the relief) up to the wall
@@ -831,6 +849,17 @@ function toSolidMade(sheet) {
   for (const c of sheet.corners || []) {
     const la = links.find((lk) => lk.b.id === c.a), lb = links.find((lk) => lk.b.id === c.b && lk.A === la?.A);
     if (!la || !lb) continue; // the bends no longer start from the same panel
+    // (walls at other angles than 90°: the bends cut along their lines in the flat, as the V cutout's; only bends cut
+    // into pieces by slots get their run-on as a separate solid)
+    if (c.type === 'any') {
+      const pair = cornerPairs({ bends: [la.b, lb.b], t })[0];
+      for (const bd of [la.b, lb.b].filter((x) => pair && c.lines?.[x.id] && !doneV.has(x.id))) {
+        let p = null;
+        try { p = vcutRunOn(bd, t, pair.X, 0, 0, 0, c.lines[bd.id]); } catch { p = null; }
+        if (p) parts.push(applyM(p, la.A.M));
+      }
+      continue;
+    }
     // the bends always meet on the mitre; the walls too for a butt corner (overlap / underlap: the flat
     // pattern already ends them, one covering the other)
     const butt = c.type === 'butt';
@@ -1192,7 +1221,7 @@ export function cornerRelief(sheet, { type = 'rect', size }) {
   return { ...sheet, region, cornerCount: pairs.length };
 }
 
-// Close the open corners between 90° flanges: one flange runs on to the other's outer face (covering
+// Close the open corners between flanges (90° walls meeting square here; others in wallsToPlanes): one flange runs on to the other's outer face (covering
 // its end), the other runs on to the first one's inner face, less the gap. swap: the other way round.
 // only: a Set of bend ids (only corners between two of these); quiet: no error when there is nothing to close.
 // type: 'overlap' (the first flange covers the other's end) | 'underlap' (the other way) | 'butt' (mitred) |
@@ -1231,8 +1260,20 @@ export function closedCorner(sheet, { gap = 0, swap = false, only = null, quiet 
   const butt = type === 'butt', square = type === 'square';
   for (const pr of pairs) {
     const [A, B] = type === 'underlap' ? [pr.B, pr.A] : [pr.A, pr.B];
-    if (Math.abs(A.ang - Math.PI / 2) > 1e-3 || Math.abs(B.ang - Math.PI / 2) > 1e-3) continue;
-    if (Math.abs(d2(A.e, B.d)) < 0.999 || Math.abs(d2(B.e, A.d)) < 0.999) continue; // the walls must meet square
+    // (flanges bent to other angles, or edges meeting at another angle: the walls cut back or run on to where they
+    // meet as folded)
+    const right = Math.abs(A.ang - Math.PI / 2) <= 1e-3 && Math.abs(B.ang - Math.PI / 2) <= 1e-3 && Math.abs(d2(A.e, B.d)) >= 0.999 && Math.abs(d2(B.e, A.d)) >= 0.999;
+    if (!right) {
+      const r = wallsToPlanes({ ...sheet, region }, A, B, pr.X, butt ? 'butt' : square ? 'square' : 'overlap', gap);
+      if (r) {
+        region = r.region; n++;
+        // (the bends cut along their lines in the flat: toSolid, flatRegion)
+        const k = corners.findIndex((c) => (c.a === A.id && c.b === B.id) || (c.a === B.id && c.b === A.id));
+        if (k >= 0) corners.splice(k, 1);
+        corners.push(r.corner);
+      }
+      continue;
+    }
     const ea = end(A, pr.X), eb = end(B, pr.X);
     // A to B's outer face (B.R + t from B's bend line), B to A's inner face (A.R from A's) less the gap
     let extA = (B.R + t - d2(s2(ea.Pe, B.p0), B.d)) / d2(ea.dir, B.d);
@@ -1257,9 +1298,108 @@ export function closedCorner(sheet, { gap = 0, swap = false, only = null, quiet 
   }
   if (!n) {
     if (quiet) return { ...sheet, cornerCount: 0 };
-    throw new Error('No corner between two 90° flanges was found to close');
+    throw new Error('No corner between two flange walls was found to close');
   }
   return { ...sheet, region, corners, cornerCount: n };
+}
+// A corner that is not two 90° walls meeting square: each wall's end is cut back, or run on, in the flat to the plane
+// it stops at in the folded part, so the walls meet there instead of passing through each other or standing apart.
+// type 'butt': both the gap / 2 from the mitre (the plane halfway between the walls, through the line where they
+// meet); 'square': both the gap's share short of the other's inside face; 'overlap': A to B's outside face, B the gap
+// short of A's inside face. Neither face of a wall's thickness passes its plane. Every edge is a plain cut through the
+// sheet, square to it (as a laser cuts it: no edge is bevelled onto the mitre). The bends are cut in the flat too, each
+// along a line from the base up to its wall's end (as a V cutout's, see vcutLine): one keeping both its faces the gap / 2
+// off the mitre, so the seam carries on from the walls down the bends; for 'square' and 'overlap' bent over, as it
+// goes up, to the wall's own end. { region, corner (the record for sheet.corners, with the bends' lines) }, or null
+// when the corner can't be worked out.
+function wallsToPlanes(sheet, A, B, X, type, gap) {
+  const { region, t } = sheet;
+  let panelNear, links;
+  try { ({ panelNear, links } = fold(sheet)); } catch { return null; }
+  const wall = (W) => {
+    const atEnd = d2(s2(X, W.p0), W.e) > W.w / 2;
+    const Pe = a2(W.p0, m2(W.e, atEnd ? W.w : 0)), dir = m2(W.e, atEnd ? 1 : -1), h = wallHeight(region, W);
+    if (!(h > 1e-6)) return null;
+    // a flat point of the wall: u along the bend line toward the corner (0 at the wall's end), v from the bend line
+    const at = (u, v) => a2(a2(Pe, m2(dir, u)), m2(W.d, v));
+    const P = panelNear(at(-W.w / 2, W.ba + h / 2));
+    if (!P) return null;
+    const n = unit3(apMdir(P.M, [0, 0, 1])), c = apM(P.M, [...at(-W.w / 2, W.ba + h / 2), t / 2]);
+    return { W, h, at, M: P.M, c, plane: { n, k: dot3(n, c) } };
+  };
+  const wa = wall(A), wb = wall(B);
+  if (!wa || !wb) return null;
+  const dist = (p, x) => dot3(p.n, x) - p.k;
+  let mitre = null;
+  for (const sg of [1, -1]) {
+    const n = add3(wa.plane.n, mul3(wb.plane.n, sg)), l = len3(n);
+    if (l < 1e-9) continue;
+    const m = { n: mul3(n, 1 / l), k: (wa.plane.k + sg * wb.plane.k) / l };
+    if (dist(m, wa.c) * dist(m, wb.c) < 0) { mitre = m; break; }
+  }
+  const sq = t / 2 + gap / Math.SQRT2;
+  const stops = type === 'butt' ? [[wa, mitre, gap / 2], [wb, mitre, gap / 2]]
+    : type === 'square' ? [[wa, wb.plane, sq], [wb, wa.plane, sq]] : [[wa, wb.plane, -t / 2], [wb, wa.plane, t / 2 + gap]];
+  const ends = [];
+  for (const [w, p, keep] of stops) {
+    if (!p) return null;
+    // how far a flat point of the wall is from the plane, on the wall's own side, its thickness's nearer face counted
+    const sg = Math.sign(dist(p, w.c)) || 1, half = (Math.abs(dot3(p.n, apMdir(w.M, [0, 0, 1]))) * t) / 2;
+    const s = (u, v) => sg * dist(p, apM(w.M, [...w.at(u, v), t / 2])) - half;
+    const v0 = w.W.ba, v1 = w.W.ba + w.h, s0 = s(0, v0), su = s(1, v0) - s0, sv = (s(0, v1) - s0) / w.h;
+    if (!(su < -1e-9)) return null; // (the plane doesn't cross the wall's end)
+    const uAt = (v) => (keep - s0 - sv * (v - v0)) / su;
+    const u0 = uAt(v0), u1 = uAt(v1);
+    if (Math.min(u0, u1) <= -w.W.w + 1e-6) return null; // (it would take the whole wall)
+    ends.push({ w, v0, v1, u0, u1, uAt });
+  }
+  // the bends' lines: xp (past the bend's end, as the wall's u) at N + 1 points up the bend, where the nearer of the
+  // bend's two faces is `keep` off the plane (the faces lie at radii R and R + t; the cut is square to them, so
+  // straight out from the bend's axis, and the nearer face is the nearer end of it)
+  const N = VCUT_N;
+  const bendLine = (w, p, keep) => {
+    const W = w.W, lk = links.find((l) => l.b.id === W.id);
+    if (!p || !lk?.A?.M) return null;
+    const sg = Math.sign(dist(p, w.c)) || 1, out = [];
+    for (let k = 0; k <= N; k++) {
+      const s = (W.ba * k) / N;
+      let u = Infinity;
+      for (const r of [W.R, W.R + t]) {
+        const g = (x) => sg * dist(p, apM(lk.A.M, wrapPoint(W, t, w.at(x, s), r))), g0 = g(0), gu = g(1) - g0;
+        if (gu < -1e-9) u = Math.min(u, (keep - g0) / gu);
+      }
+      if (!Number.isFinite(u)) return null;
+      out.push(u);
+    }
+    return out;
+  };
+  const lines = {};
+  for (const { w, u0 } of ends) {
+    // (on the mitre; or, for 'square' and 'overlap', from the mitre at the base bent over, as q², to the wall's end)
+    // (from the base's corner point: both bends start there and meet at it, so no corner of the base is left between
+    // them; the gap opens from it smoothly, its full width by RELIEF_FADE up the bend, never past the mitre itself)
+    let m = bendLine(w, mitre, gap / 2);
+    const m0 = m && bendLine(w, mitre, 0);
+    if (m && m0) m = m.map((x, k) => { const q = Math.min(1, k / (N * RELIEF_FADE)); return Math.min(m0[k], x - m[0] * (1 - q) ** 2); });
+    const line = type === 'butt' && m ? m : Array.from({ length: N + 1 }, (_, k) => (m ? m[k] + (u0 - m[N]) * (k / N) ** 2 : u0 * (k / N) ** 2));
+    lines[w.W.id] = line.map((x) => Math.round(x * 1e9) / 1e9);
+  }
+  const corner = { a: A.id, b: B.id, gap, type: 'any', kind: type, lines };
+  let out = region;
+  for (const { w, v0, v1, u0, u1, uAt } of ends) {
+    // cut back where the wall passes its plane (a little past its top, so no sliver is left on its edge)
+    if (Math.min(u0, u1) < -1e-7) {
+      const top = v1 + 1e-3, hi = Math.max(0, u0, uAt(top)) + t;
+      out = bop('cut', out, polyFace([w.at(u0, v0), w.at(hi, v0), w.at(hi, top), w.at(uAt(top), top)]));
+    }
+    // run on where it stops short of it
+    if (Math.max(u0, u1) > 1e-7) {
+      const vx = v0 + ((v1 - v0) * u0) / (u0 - u1);
+      const pts = u0 > 1e-7 && u1 > 1e-7 ? [[0, v0], [u0, v0], [u1, v1], [0, v1]] : u0 > 1e-7 ? [[0, v0], [u0, v0], [0, vx]] : [[0, vx], [u1, v1], [0, v1]];
+      out = bop('fuse', out, polyFace(pts.map(([u, v]) => w.at(u, v))));
+    }
+  }
+  return { region: out, corner };
 }
 // how far the flat wall reaches beyond a bend zone (measured along the middle of the bend)
 function wallHeight(region, b) {
@@ -1624,6 +1764,20 @@ export function flatRegion(sheet) {
     if (!pair || !at) continue;
     const mid = Math.min(c.ea ?? 0, c.eb ?? 0), h = cornerRelief0(c, t);
     let next = region;
+    // an angled corner: each bend's run-on up to its line, and where the line is before the bend's end, cut back
+    if (c.type === 'any') {
+      try {
+        for (const bd of [A, B]) {
+          const line = c.lines?.[bd.id];
+          if (!line) continue;
+          const { face: beyond, pt, far } = vcutFlatBeyond(bd, t, pair.X, 0, 0, 0, line), lo = Math.min(0, ...line) - t;
+          next = bop('fuse', next, bop('cut', polyFace([pt(0, 0), pt(far, 0), pt(far, bd.ba), pt(0, bd.ba)]), beyond));
+          if (lo < -t) next = bop('cut', next, bop('common', beyond, polyFace([pt(lo, 0), pt(0, 0), pt(0, bd.ba), pt(lo, bd.ba)])));
+        }
+        if (next) region = next;
+      } catch { /* keep the region without this corner */ }
+      continue;
+    }
     try {
       for (const [bd, top] of [[A, c.ea ?? 0], [B, c.eb ?? 0]]) {
         if (!(top > 1e-6)) continue;

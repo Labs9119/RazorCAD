@@ -7086,6 +7086,51 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       return { ok, detail: `default corner '${def.f.corner}', ${def.note || JSON.stringify(def.r.errors)}; wall end square at z ${zEnd.toFixed(4)}: ${end ? 'yes' : 'no'}; faces ${nf(def)}, 3 thick ${nf(thick)}; volume ${def.v.toFixed(3)} (square ${sq.v.toFixed(3)}, mitred ${butt.v.toFixed(3)}, overlap ${over.v.toFixed(3)})` };
     } finally { k.dispose(); }
   },
+
+  // Edge-Flange corners at other angles than 90° (the walls of a tray's 120° flanges passed through each other at its
+  // corners): leaning in (120°) or out (60°), mitred, each wall is cut back or run on to the mitre (|x| − |z| = 20 at
+  // the tray's corners, by symmetry): no wall face across it, the nearest the gap / 2 from it, and the flat pattern
+  // still made; corner to corner and overlap close the four corners too
+  async 'flange-corner-angled'() {
+    const { KernelClient } = await import('/js/kernelclient.js'), k = new KernelClient({ threads: threadsPerKernel() });
+    try {
+      const tray = JSON.parse(await (await fetch('/tests/parts/sheet-metal-tray.rcad')).text());
+      const edges = tray.features[2].edges, gap = 0.5;
+      const build = async (props) => {
+        const d = JSON.parse(JSON.stringify(tray)); d.features = d.features.slice(0, 2);
+        const f = M.createFeature(d, 'smFlange', { edges, length: 20, cornerGap: gap, ...props });
+        d.features.push(f);
+        const r = await k.rebuild(d, null, null);
+        // the walls' plane faces (clear of the bends): how many lie across the mitre, and the nearest to it
+        const V = r.body?.vertices, T = r.body?.triangles;
+        // (and the bends: none across it, and they meet at the base's corner point, the gap opening from there; nothing
+        // of the walls in the gap)
+        let across = 0, near = Infinity, bendsAcross = 0, inGap = 0, bendsNear = Infinity;
+        // (and every plane face either a face of the sheet or a cut square to it, as a laser cuts: none bevelled)
+        const nrm = (g) => { const [i, j, l] = [0, 1, 2].map((o) => 3 * T[g.start + o]); const u = [0, 1, 2].map((c) => V[j + c] - V[i + c]), v = [0, 1, 2].map((c) => V[l + c] - V[i + c]); const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]], m = Math.hypot(...n); return { n: n.map((c) => c / m), a: m / 2 }; };
+        const planes = (r.body?.faceGroups || []).filter((g) => g.surf?.t === 'PLANE' && g.count >= 3).map((g) => ({ g, n: nrm(g).n, area: (() => { let a = 0; for (let q = g.start; q < g.start + g.count; q += 3) a += nrm({ start: q }).a; return a; })() }));
+        const sheetNs = planes.filter((x) => x.area > 100).map((x) => x.n), dt = (a, b) => Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+        const bevelled = planes.filter((x) => !sheetNs.some((n) => dt(n, x.n) > 1 - 1e-4 || dt(n, x.n) < 1e-4)).length;
+        for (const g of r.body?.faceGroups || []) {
+          const ds = [], ys = [];
+          for (let q = g.start; q < g.start + g.count; q++) { const i = 3 * T[q]; ys.push(Math.abs(V[i + 1])); ds.push((20 - (Math.abs(V[i]) - Math.abs(V[i + 2]))) / Math.SQRT2); }
+          if (g.surf?.t !== 'PLANE') { if (Math.min(...ds) < -1e-6 && Math.max(...ds) > 1e-6) bendsAcross++; bendsNear = Math.min(bendsNear, ...ds.map(Math.abs)); continue; }
+          for (const [k, dd] of ds.entries()) if (Math.abs(dd) < gap / 2 - 1e-3 && ys[k] > 1.5 + 1e-6) inGap++;
+          if (Math.max(...ys) < 8) continue;
+          if (Math.min(...ds) < -1e-6 && Math.max(...ds) > 1e-6) across++;
+          near = Math.min(near, ...ds.map(Math.abs));
+        }
+        const flat = r.body?.bodies?.[0] && !r.errors?.length ? await k.request('sheetFlat', { bodyId: r.body.bodies[0].id, flip: false }).then(() => true, () => false) : false;
+        return { r, note: r.notes?.[f.id] || '', across, near, bendsAcross, bendsNear, inGap, flat, bevelled, txt: `${props.angle}° ${props.corner}${props.offset ? ` offset ${props.offset}` : ''}: ${r.notes?.[f.id] || JSON.stringify(r.errors)}, ${across} across, nearest ${near.toFixed(4)}, bends across ${bendsAcross}, bends to the mitre ${bendsNear.toFixed(4)}, in the gap ${inGap}, bevelled ${bevelled}, flat ${flat}` };
+      };
+      const lean = await build({ angle: 120, corner: 'butt' }), out = await build({ angle: 60, corner: 'butt' });
+      const off = await build({ angle: 120, corner: 'butt', position: 'inside', offset: 2, length: 30, sameSide: true });
+      const sq = await build({ angle: 120, corner: 'square' }), over = await build({ angle: 120, corner: 'closed' });
+      const mitred = (x) => !x.r.errors?.length && /4 corners closed/.test(x.note) && x.across === 0 && Math.abs(x.near - gap / 2) < 1e-3 && x.bendsAcross === 0 && x.bendsNear < 1e-3 && x.inGap === 0 && x.bevelled === 0 && x.flat;
+      const ok = mitred(lean) && mitred(out) && mitred(off) && !sq.r.errors?.length && /4 corners closed/.test(sq.note) && sq.across === 0 && sq.bendsAcross === 0 && sq.bevelled === 0 && sq.flat && !over.r.errors?.length && /4 corners closed/.test(over.note) && over.bevelled === 0 && over.flat;
+      return { ok, detail: [lean, out, off, sq, over].map((x) => x.txt).join('; ') };
+    } finally { k.dispose(); }
+  },
   async 'loft-guides'() {
     const { KernelClient } = await import('/js/kernelclient.js'), k = new KernelClient({ threads: threadsPerKernel() });
     try {
@@ -8467,7 +8512,9 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       a.selection = { kind: 'face', face: side };
       a.startSection();
       const s = a.sectionState;
-      const started = a.pm?.kind === 'section' && s.plane === 'custom' && s.custom.n.x > 0.999 && Math.abs(vp.section.constant - side.d) < 1e-6 && !!vp._secArrow;
+      let started = a.pm?.kind === 'section' && s.plane === 'custom' && s.custom.n.x > 0.999 && Math.abs(vp.section.constant - side.d) < 1e-6 && !!vp._secArrow;
+      // (a rebuild with the panel open: its edge highlights once read the panel's feature, which it has none of)
+      try { await a.refresh(); } catch (e) { started = false; console.error('rebuild with Section View open: ' + e.message); }
       // drag the arrow 150 px back into the part, seen from the front
       vp.setStandardView('front', false); vp.zoomToFit(null, false); vp.camera.updateMatrixWorld(); vp._secArrow.place();
       const n = a.sectionFrame().n, wpp = vp.worldPerPixel(), g = vp._secArrow.group;

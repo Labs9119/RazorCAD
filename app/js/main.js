@@ -3460,6 +3460,7 @@ class App {
     if (mode !== 'edge') vp.setEdgeHighlights(null);
     if (mode !== 'vertex') vp.setVertexMarkers(null);
     const f = this.pm.feature;
+    if (!f) return; // (the Section view panel picks too, with no feature)
     if (f.type === 'freeform') {
       const hs = this.freeformHandles(f);
       vp.setVertexMarkers(hs?.length ? { selected: hs.filter((x) => !x.off).map((x) => x.p), hover: this._ffDrag ? hs[this._ffDrag.i]?.p ?? null : null } : null);

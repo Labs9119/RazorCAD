@@ -702,7 +702,7 @@ const PM_SCHEMAS = {
         { key: 'cornerGap', type: 'expr', label: 'Gap', unit: 'mm', show: (f) => f.corner !== 'open' },
         { key: 'cornerBend', type: 'select', label: 'Bend region', options: [['vcut', 'V cutout (as formed from the flat; lens-shaped opening)'], ['mitre', 'Closed (the bends meet on the diagonal)']], show: (f) => f.corner === 'closed' },
         { key: 'cornerSwap', type: 'check', label: 'Swap which flange covers the other', show: (f) => f.corner === 'closed' },
-        { key: 'cHint', type: 'hint', show: (f) => f.corner !== 'open', text: 'For 90° flanges picked in this feature that meet at a corner. Corner to corner: each runs square up to the other\'s inside face, their inside edges the gap apart, the outside corner left open; the bends end in a V cutout. Mitred: the two meet on the diagonal, the gap apart. Overlap: one runs on to cover the other\'s end (bends included), the other runs up to it, leaving the gap.' },
+        { key: 'cHint', type: 'hint', show: (f) => f.corner !== 'open', text: 'For flanges picked in this feature that meet at a corner. Corner to corner: each runs square up to the other\'s inside face, their inside edges the gap apart, the outside corner left open; the bends end in a V cutout. Mitred: the two meet on the diagonal, the gap apart. Overlap: one runs on to cover the other\'s end (bends included), the other runs up to it, leaving the gap. Flanges at other angles than 90° (leaning in or out) or edges meeting at another angle: the walls are cut back or run on to meet in the same way, and the bends are cut along a line in the flat that keeps them the gap apart, every edge cut square to the sheet (as a laser cuts it).' },
       ],
     },
     {
@@ -737,7 +737,7 @@ const PM_SCHEMAS = {
         { key: 'gap', type: 'expr', label: 'Gap', unit: 'mm' },
         { key: 'bendCorner', type: 'select', label: 'Bend region', options: [['vcut', 'V cutout (as formed from the flat; lens-shaped opening)'], ['mitre', 'Closed (the bends meet on the diagonal)']], show: (f) => f.cornerType === 'overlap' || f.cornerType === 'underlap' },
         { key: 'swap', type: 'check', label: 'Swap which flange covers the other', show: (f) => !f.faces?.length && (f.cornerType === 'overlap' || f.cornerType === 'underlap') },
-        { key: 'ccHint', type: 'hint', text: 'For corners between 90° flanges. Bend region: V cutout runs each bend on as it would form from the flat (a lens-shaped opening is left between them); Closed meets them on the diagonal with the gap.' },
+        { key: 'ccHint', type: 'hint', text: 'For corners between flanges (at other angles than 90°, the walls are cut back or run on to meet and the bends are cut in the flat to keep the gap, every edge square to the sheet). Bend region: V cutout runs each bend on as it would form from the flat (a lens-shaped opening is left between them); Closed meets them on the diagonal with the gap.' },
       ],
     },
   ],

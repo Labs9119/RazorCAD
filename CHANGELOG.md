@@ -6,6 +6,37 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-02 11:55 — Angled flange corners: the bends meet at the base's corner point
+
+- **Edge-Flange and Closed Corner at other angles than 90°:** both bends' cut lines now start at the base's corner
+  point, so the bends meet there and the gap opens smoothly from it (its full width half way up the bend). Before,
+  each bend stopped half the gap short of the corner, leaving a small triangle of the base standing between them.
+- Tests: flange-corner-angled checks that the bends reach the corner point.
+
+## 2026-11-02 10:40 — Angled flange corners cut square to the sheet, as a laser cuts them
+
+- **Edge-Flange and Closed Corner at other angles than 90°:** every edge at the corner is now a plain cut square to the
+  sheet, as a laser cutter makes it. The walls' ends and the bends' ends had been bevelled onto the mitre in the
+  folded part, which no flat pattern can give. The walls stop where neither face comes nearer the mitre than half the
+  gap; each bend is cut in the flat along a curved line that does the same, from the base's corner point up to its
+  wall's end. Folded, the seam runs down the walls and bends with the gap and nothing standing out, and the flat
+  pattern holds the bends' cut lines.
+- Tests: flange-corner-angled also checks that no plane face is bevelled.
+
+## 2026-11-02 08:25 — Edge-Flange corners at any angle; no error from Section View during a rebuild (GitHub issues 12 and 13)
+
+- **Edge-Flange and Closed Corner at other angles than 90°:** flanges bent to another angle (walls leaning in or out,
+  as on a hopper) or on edges that meet at another angle now close their corners as chosen (Mitred, Corner to corner
+  or Overlap). Each wall is cut back, or run on, so the walls meet as folded instead of passing through each other
+  (or standing apart). Before, only two 90° flanges meeting square were
+  closed, and the walls of a 120° tray crossed at its corners.
+- **Their bends meet on the mitre too:** each bend is cut on the mitre and run on up to it, so the seam carries on
+  from the walls down the bends with the same gap (the bends' square ends stood out past the seam at each corner).
+- **Section View:** a rebuild while the Section View panel was open (after editing a feature) stopped with an error
+  ("Cannot read properties of undefined"); the panel's edge highlights read a feature it doesn't have.
+- Tests: flange-corner-angled (120° and 60° mitred, corner to corner, overlap); section-from-face rebuilds with the
+  panel open.
+
 ## 2026-11-02 07:35 — Version 0.21.3-beta
 
 - Installer, user manual and website for 0.21.3-beta.
