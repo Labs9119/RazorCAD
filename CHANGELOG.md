@@ -6,6 +6,12 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-02 14:30 — Version 0.21.4-beta
+
+- Version 0.21.4-beta (0.21.3-beta was never published; its changes ship here): angled Edge-Flange and Closed Corner
+  corners cut square to the sheet, Section View during a rebuild, Esc after the quick-sizes box. User manual PDF, the
+  manual in the app and online, the browser version.
+
 ## 2026-11-02 13:40 — Esc no longer lost after the quick-sizes box
 
 - **Quick sizes (double-click on the model):** a box closed or replaced at once left its Esc handler behind, which then
