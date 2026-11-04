@@ -290,7 +290,8 @@ table.bom th { background: #f1f5f9; font-weight: 600; }
 #tree .tn.tree-muted .tl { color: var(--muted, #6b7280); }
 #cm-tabs .cm-tab-claude { display: inline-flex; align-items: center; gap: 4px; }
 #cm-tabs .cm-tab-claude svg { width: 14px; height: 14px; }
-.tn.tree-same .tsub { color: #1f6fd6; font-weight: 600; }
+.tn.tree-same .tsub { color: #1f6fd6; font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 3em; flex-shrink: 1; }
+.tn.tree-same .tl { flex-shrink: 0; max-width: 62%; }
 
 /* ---------- Viewport ---------- */
 #viewport {

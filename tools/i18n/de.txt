@@ -1034,3 +1034,4 @@
 1034|In verknüpften Teilen veröffentlichen
 1035|Nicht mehr veröffentlichen
 1036|Neu verknüpfen…
+1037|Um eine andere Achse zu verwenden, zum Beispiel für einen Lochkreis auf einem Zylinder, erstellen Sie zuerst eine Referenzachse: ein Klick auf den Zylinder. Sie erscheint dann in dieser Liste.

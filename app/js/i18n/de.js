@@ -1009,4 +1009,5 @@ export default {
   "Publish to Linked Parts": "In verknüpften Teilen veröffentlichen",
   "Stop Publishing": "Nicht mehr veröffentlichen",
   "Relink…": "Neu verknüpfen…",
+  "To turn about anything else, a bolt circle on a cylinder for example, make a Reference Axis first: one click on the cylinder. It then appears in this list.": "Um eine andere Achse zu verwenden, zum Beispiel für einen Lochkreis auf einem Zylinder, erstellen Sie zuerst eine Referenzachse: ein Klick auf den Zylinder. Sie erscheint dann in dieser Liste.",
 };

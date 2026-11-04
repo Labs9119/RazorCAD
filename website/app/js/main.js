@@ -6544,6 +6544,7 @@ class App {
       if (recovered) this.dirty = true;
       this.updateTitle();
       this.status(recovered ? `Recovered the auto-saved version of ${file.name} — save to keep it.` : `Opened ${file.name}`);
+      this.b2p.refreshStatus();
       breadcrumb(`Opened: ${file.path || file.name}${recovered ? ' (auto-save recovered)' : ''}`);
       rememberPart(this, true);
       return opened('part');
@@ -6674,6 +6675,7 @@ class App {
         this.ui.commandSearch();
         return;
       }
+      if (e.key === 'Escape' && document.getElementById('ctxmenu')?.offsetParent) { this.ui.closeContext(); return; }
       if (this.mode === 'drawing') {
         if (this.drawing.handleKey(e)) return;
         if (ctrl && !typing) {

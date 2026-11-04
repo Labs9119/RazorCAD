@@ -1215,15 +1215,16 @@ Removes a body from the model from that point in the history. Deleting the Delet
 
 **Bodies to Parts** {idx:Bodies to Parts}{idx:top-down design}{idx:skeleton modelling}{idx:master part} turns a multi-body part into a set of linked parts and, if you ask, an assembly of them. Model the whole design in one part, the **master**, then let RazorCAD make the files. This needs the desktop app, because the links are between real files.
 
-Choose **Features ▸ Bodies to Parts…**, or right-click **Solid Bodies**. Save the master first. In the dialog:
+Choose **Bodies to Parts** on the Features tab, or right-click **Solid Bodies**, or right-click a body to start with just that one ticked. Save the master first. In the dialog:
 
 - **Folder**: where the new files go. A file is never written over: if a name is taken, the new one gets the next number.
-- **File names** and **Part numbers**: templates, where `{part}` is the master, `{body}` the body and `{n}` its number. Change any name in the list as well. Part numbers are left out when that box is empty.
+- **File names** and **Part numbers**: templates, where `{part}` is the master, `{body}` the body and `{n}` its number. File names start as the body's name; change any of them in the list as well. Part numbers are left out when that box is empty.
 - The list of bodies: untick any you don't want. Give several bodies the same file name to put them in one part.
 - **One part, N places** or **A part for each**: for identical bodies. One part goes in the assembly at each body's position, so a change to it changes them all. A mirrored body counts as a different part.
 - **Make Assembly**: makes an assembly with every part fixed where its body is. Its components stay fixed until you float or mate them.
 - **Add this part as an envelope**: see below.
-- **Body folders become sub-assemblies**: appears when the master has body folders. Each folder becomes a sub-assembly.
+- **Body folders become sub-assemblies**: appears when the master has body folders. Each folder becomes a sub-assembly, in a file of its own.
+- **Planes and sketches for the parts**: see Published planes and sketches. Sketches a feature has used aren't listed.
 
 A **Bodies to Parts** feature appears at the end of the master's tree and stays there, however features are added or moved. Open it to see each part and whether it's up to date. Double-click it, or right-click ▸ **Add Parts…**, for bodies you haven't linked yet; they join the same assembly.
 
@@ -1241,7 +1242,7 @@ They appear under **Imported from Master**, in the same place as in the master. 
 
 ### When the master changes
 
-Saving the master updates its linked parts and the assembly. RazorCAD lists what will change first; tick **Update them without asking** to skip that. Nothing is updated while the master is rolled back or has rebuild errors. A link follows the configuration that was active when it was made.
+Saving the master updates its linked parts and the assembly. RazorCAD lists what will change first, only the parts whose shape or properties really changed; tick **Update them without asking** to skip that. A part open in a tab updates as well; if it has unsaved edits, they stay yours to save. Nothing is updated while the master is rolled back or has rebuild errors. A link follows the configuration that was active when it was made.
 
 Features you added in a part stay on top of the new shape. If a master edit removes something one of them used, it shows the usual rebuild error in the part.
 
@@ -1267,7 +1268,7 @@ A body has an identity in the master. If an edit replaces it, for example by del
 
 ### Make Independent
 
-When identical bodies share one part, right-click one of its components in the assembly ▸ **Make Independent…**. It gets a part file of its own, a copy of the shared one with everything added to it, to change separately. It stays where it is and stays linked to its own body in the master.
+When identical bodies share one part, right-click one of its components in the assembly it belongs to (open the sub-assembly if it's in one) ▸ **Make Independent…**. It gets a part file of its own, a copy of the shared one with everything added to it, to change separately. It stays where it is and stays linked to its own body in the master.
 
 ### The master as an envelope
 

@@ -1034,3 +1034,4 @@
 1034|Publicar en piezas vinculadas
 1035|Dejar de publicar
 1036|Volver a vincular…
+1037|Para girar alrededor de otro eje, por ejemplo un círculo de pernos en un cilindro, crea antes un eje de referencia: un clic en el cilindro. Aparecerá en esta lista.

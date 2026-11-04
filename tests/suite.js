@@ -2297,6 +2297,24 @@ const UI = {
       // bodies added later join the same assembly, under the envelope; the envelope isn't added twice
       const again = await b2p.makeAssembly({ name: 'Frame Assembly', envelope: true, folders: false }, [], 'C:\\job\\Frame.rcad', 'C:\\job', f.assembly);
       if (key(again.path) !== key(f.assembly.path) || read('Frame Assembly.rasm').components.filter((c) => c.envelope).length !== 1) return fail('A second run did not use the same assembly');
+      // body folders become sub-assemblies, each a file of its own
+      a.doc.bodyFolders = [{ id: 'g1', name: 'Plates', kind: 'solid', bodies: [e1.id] }];
+      await b2p.built();
+      await b2p.makeAssembly({ name: 'Foldered', envelope: false, folders: true }, [{ link: f.links[0], doc: read('Frame-01.rcad') }], 'C:\\job\\Frame.rcad', 'C:\\job');
+      const top = read('Foldered.rasm'), sub = read('Plates.rasm');
+      if (top.parts[0]?.path !== 'C:\\job\\Plates.rasm' || sub.components.length !== 2) return fail(`Sub-assembly: ${top.parts[0]?.path}, ${sub.components?.length} components`);
+      delete a.doc.bodyFolders;
+      // one body changed: only its part is told, the others hold the same shape whatever has been meshed since
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      const none = await b2p.changes();
+      if (none.length) return fail(`Nothing changed, yet ${none.map((x) => x.link.name)} would update`);
+      const keepDepth = e3.depth;
+      a.doc.features.find((x) => x.id === e3.id).depth = 9;
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      const one = await b2p.changes();
+      if (one.length !== 1 || one[0].link !== f.links[1]) return fail(`One body changed, ${one.map((x) => x.link.name)} would update`);
+      a.doc.features.find((x) => x.id === e3.id).depth = keepDepth;
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
       // the master changed: deeper, and a colour on the body; saved
       const stamp = f.links[0].stamp;
       a.doc.features.find((x) => x.id === e1.id).depth = 7;
@@ -2336,6 +2354,7 @@ const UI = {
       Object.assign(a.tabs[a.tabIndex], { filePath: a.filePath, doc: a.doc });
       const made = await b2p.makeIndependent(ed, c3);
       if (!made || !read(made.split('\\').pop())) return fail(`Make Independent: ${made}`);
+      if (read(made.split('\\').pop()).customProps.find((x) => x.name === 'Part Number').value !== 'P-01-2') return fail('The independent part kept the shared part number');
       if (c3.part === asm2.components[1].part || JSON.stringify(c3.pos) !== JSON.stringify(was.pos)) return fail('The component did not stay, on a part of its own');
       if (f.links.length !== 3 || f.links[0].places.length !== 1 || !f.links[2].frame) return fail(`Links: ${JSON.stringify(f.links.map((l) => l.places))}`);
       const v4 = await volumeOf(read(made.split('\\').pop()));
@@ -2355,6 +2374,8 @@ const UI = {
       b2p.files = keep.files;
       a.ui.prefs.b2pAuto = keep.auto;
       a.filePath = keep.path;
+      if (a.tabs[a.tabIndex]) a.tabs[a.tabIndex].filePath = keep.path;
+      a.dirty = false;
       closeModals();
     }
   },
@@ -2440,6 +2461,8 @@ const UI = {
       b2p.files = keep.files;
       a.ui.prefs.b2pAuto = keep.auto;
       a.filePath = keep.path;
+      if (a.tabs[a.tabIndex]) a.tabs[a.tabIndex].filePath = keep.path;
+      a.dirty = false;
       closeModals();
     }
   },
@@ -2475,6 +2498,26 @@ const UI = {
     if (doc.components[0].id !== 'c1' || !doc.components[0].fixed) return fail('Make Envelope does not put it first, fixed');
     ed.setEnvelope('c1', false);
     if (doc.components.find((c) => c.id === 'c1').envelope) return fail('Stop Being an Envelope');
+    // a part inside a sub-assembly: its file newer than the copy the sub-assembly holds reaches the top assembly
+    {
+      const part = box('Deep', 10), newer = JSON.parse(JSON.stringify(part));
+      newer.customProps = [{ name: 'Part Number', value: 'NEW-1' }];
+      const sub = newAssembly('Sub');
+      sub.parts.push({ id: 'pt1', name: 'Deep', path: 'C:\\t\\Deep.rcad', doc: part });
+      sub.components.push({ id: 'c1', part: 'pt1', name: 'Deep<1>', config: null, pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true, hidden: false });
+      doc.parts.push({ id: 'pt3', name: 'Sub', path: null, doc: sub });
+      // (the newer part, as an open tab has it)
+      const tab = { filePath: 'C:\\t\\Deep.rcad', doc: newer };
+      a.tabs.push(tab);
+      try {
+        await ed.refreshParts();
+        const held = doc.parts.find((p) => p.id === 'pt3').doc.parts[0].doc.customProps?.[0]?.value;
+        if (held !== 'NEW-1') return fail(`A part inside a sub-assembly stayed old: ${held}`);
+      } finally { a.tabs = a.tabs.filter((t) => t !== tab); doc.parts = doc.parts.filter((p) => p.id !== 'pt3'); }
+    }
+    // (the assembly's tab closed: the tests after this one run in this page)
+    ed.dirty = false;
+    await a.closeTab(a.tabs.findIndex((t) => t.drawing === ed));
     // the dialog: one row for identical bodies, the assembly options, cancelling makes nothing
     await a.newDocument?.(); closeModals();
     const part = box('Master', 30);
@@ -2487,7 +2530,7 @@ const UI = {
       await until(() => document.querySelector('.modal-back .b2p'), 5000);
       const t = document.querySelector('.modal-back .b2p').textContent;
       for (const w of ['Folder', 'Make Assembly', 'File names', 'Part numbers']) if (!t.includes(w)) return fail(`The dialog has no ${w}: ${t}`);
-      if (document.querySelector('.modal-back .b2p .b2p-name')?.value !== 'Master-Extrude1') return fail(`The name: ${document.querySelector('.modal-back .b2p .b2p-name')?.value}`);
+      if (document.querySelector('.modal-back .b2p .b2p-name')?.value !== 'Extrude1') return fail(`The name: ${document.querySelector('.modal-back .b2p .b2p-name')?.value}`);
       [...document.querySelectorAll('.modal-back button')].find((b) => b.textContent.trim() === 'Cancel').click();
       await open;
       if (a.doc.features.some((f) => f.type === 'bodiesToParts')) return fail('Cancel left a feature');
@@ -9789,6 +9832,9 @@ export async function run(parts, only = null, share = {}) {
   for (const [name, fn] of Object.entries(UI)) {
     if (only && !only.includes(name)) continue;
     if (share.ui && !share.ui.includes(name)) continue;
+    // (a test that ended on a drawing or assembly tab leaves the 3D view hidden, and a part set over that has no view:
+    // which test follows which depends on how the tests are shared out)
+    if (window.app?.mode === 'drawing') { await window.app.newDocument?.(); closeModals(); await until(() => !window.app.kernel.pending, 30000, 20); await wait(150); await until(() => !window.app.kernel.pending, 30000, 20); }
     // (no marks on the model left by the test before: each test sees only its own)
     for (const k of [...(window.app?.viewport?._marks?.keys() || [])]) window.app.viewport.setPointMarks(k, null);
     const t0 = performance.now();

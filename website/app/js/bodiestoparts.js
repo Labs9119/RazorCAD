@@ -144,7 +144,8 @@ export function partFrom(master, name, link, payload, paths) {
 }
 
 // ---- planes and sketches the parts take as well
-export const publishable = (doc) => (doc?.features || []).filter((f) => (f.type === 'plane' || f.type === 'sketch') && !f.published);
+// (reference planes, and the sketches no feature has used: layouts. What is published stays listed. publishedIds: those)
+export const publishable = (doc, publishedIds = []) => (doc?.features || []).filter((f) => !f.published && (publishedIds.includes(f.id) || f.type === 'plane' || (f.type === 'sketch' && !M.consumersOf(doc, f.id).length)));
 // (a published sketch is its geometry where it is solved: no relations, no dimensions)
 const NOT_A_COPY = new Set(['id', 'type', 'name', 'plane', 'rev', 'suppressed', 'parent', 'pictures', 'patterns', 'gearTrains', 'constraints']);
 function sketchCopy(f, data) {
@@ -291,7 +292,14 @@ export class BodiesToParts {
         place(into, id, `${doc.name}<${i + 1}>`, { master: { link: link.id, body }, ...(at ? { pos: at.pos, rot: at.rot } : {}) });
       }
     }
-    for (const sub of subs.values()) place(asm, (() => { const id = 'pt' + asm.nextId++; asm.parts.push({ id, name: sub.name, path: null, doc: sub }); return id; })(), sub.name);
+    for (const sub of subs.values()) {
+      const old = asm.parts.find((p) => p.name === sub.name && p.doc?.kind === 'assembly');
+      if (old) { old.doc.components.push(...sub.components); old.doc.parts.push(...sub.parts); old.doc.nextId = Math.max(old.doc.nextId, sub.nextId); if (old.path) await this.files.write(old.path, JSON.stringify(old.doc, null, 2)); continue; }
+      const path = await this.freePath(folder, sub.name, '.rasm'), id = 'pt' + asm.nextId++;
+      await this.files.create(path, JSON.stringify(sub, null, 2));
+      asm.parts.push({ id, name: sub.name, path, doc: sub });
+      place(asm, id, sub.name);
+    }
     const path = oldPath || (await this.freePath(folder, plan.name, '.rasm'));
     await (oldPath ? this.files.write(path, JSON.stringify(asm, null, 2)) : this.files.create(path, JSON.stringify(asm, null, 2)));
     return { path, rel: relPath(dirOf(masterPath), path), envelope: !!plan.envelope, folders: !!plan.folders };
@@ -311,6 +319,7 @@ export class BodiesToParts {
   }
   async afterSave() {
     const a = this.app, f = masterFeature(this.doc);
+    if (!this.pushing && masterImports(this.doc).length) await this.refreshStatus(); // (a part: its overrides, as saved)
     if (this.pushing || !f?.links.length || !this.files.desktop()) return;
     const why = this.notPublishable();
     if (why) { a.status(`Linked parts not updated: ${why}`); return; }
@@ -368,22 +377,42 @@ export class BodiesToParts {
       pullRefs(doc, f, payload.refs, payload.stamp);
       return true;
     };
-    if (tab) { const ok = take(tab.doc); if (ok) { tab.dirty = true; tab.model = null; } return ok; }
+    if (tab) {
+      if (!take(tab.doc)) return false;
+      tab.model = null;
+      if (tab.dirty) return true; // (its unsaved edits are the user's to save, with this in)
+      await this.files.write(path, JSON.stringify(tab.doc, null, 2));
+      return true;
+    }
     const doc = JSON.parse(await this.files.read(path));
     if (!take(doc)) return false;
     await this.files.write(path, JSON.stringify(doc, null, 2));
     return true;
   }
-  // The assembly's components of these parts go where their bodies now are, unless mated or moved by hand there.
-  async updateAssembly(f) {
-    const a = this.app, path = (f.assembly.rel && fromRel(dirOf(a.filePath), f.assembly.rel)) || f.assembly.path;
-    const tab = a.tabs.find((t) => t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' && sameFile(t.drawing.filePath, path));
+  // Goes through an assembly and the sub-assemblies in it, in files or inside it: fn(doc) → changed
+  async eachAssembly(path, fn) {
+    const tab = this.app.tabs.find((t) => t.kind === 'drawing' && t.drawing?.doc?.kind === 'assembly' && sameFile(t.drawing.filePath, path));
     const text = tab ? null : await this.files.read(path).catch(() => null);
     if (!tab && text == null) return;
-    const asm = tab ? tab.drawing.doc : JSON.parse(text);
-    let moved = false;
-    const walk = async (doc) => {
+    const doc = tab ? tab.drawing.doc : JSON.parse(text);
+    const walk = async (d) => {
+      let changed = await fn(d);
+      for (const p of d.parts || []) {
+        if (p.doc?.kind !== 'assembly') continue;
+        if (p.path) { await this.eachAssembly(p.path, fn); const t = await this.files.read(p.path).catch(() => null); if (t != null) { const fresh = JSON.parse(t); if (!same(fresh, p.doc)) { p.doc = fresh; changed = true; } } } else if (await walk(p.doc)) changed = true;
+      }
+      return changed;
+    };
+    const changed = await walk(doc);
+    if (tab) { tab.drawing.dirty = tab.drawing.dirty || changed; await tab.drawing.refreshParts?.(); } else if (changed) await this.files.write(path, JSON.stringify(doc, null, 2));
+  }
+  assemblyPath(f) { return (f.assembly.rel && fromRel(dirOf(this.app.filePath), f.assembly.rel)) || f.assembly.path; }
+  // The assembly's components of these parts go where their bodies now are, unless mated or moved by hand there.
+  async updateAssembly(f) {
+    const a = this.app;
+    await this.eachAssembly(this.assemblyPath(f), async (doc) => {
       const mated = new Set((doc.mates || []).flatMap((m) => [m.a?.comp, m.b?.comp]));
+      let moved = false;
       for (const c of doc.components) {
         const link = c.master && f.links.find((l) => l.id === c.master.link);
         if (!link || mated.has(c.id) || !c.fixed || c.master.body === link.places[0]) continue;
@@ -391,10 +420,8 @@ export class BodiesToParts {
         const pose = at && inFrame(link.frame, at);
         if (pose && !same(pose.pos, c.pos)) { c.pos = pose.pos; c.rot = pose.rot; moved = true; }
       }
-      for (const p of doc.parts || []) if (p.doc?.kind === 'assembly' && !p.path) await walk(p.doc);
-    };
-    await walk(asm);
-    if (tab) { tab.drawing.dirty = tab.drawing.dirty || moved; await tab.drawing.refreshParts?.(); } else if (moved) await this.files.write(path, JSON.stringify(asm, null, 2));
+      return moved;
+    });
   }
 
   // Make Independent: a component of a part shared by identical bodies gets a part file of its own, a copy of the
@@ -411,7 +438,12 @@ export class BodiesToParts {
     const path = await this.freePath(dirOf(p.path), `${stemOf(p.path)}-${link.places.indexOf(c.master.body) + 1}`, M.PART_EXT);
     const n = (f.nextLink = (f.nextLink || 0) + 1), id = `l${n}`;
     const isFirst = c.master.body === link.places[0], moved = !same(c.pos, [0, 0, 0]) || !same(c.rot, [0, 0, 0, 1]);
-    const own = { id, name: stemOf(path), bodies: [c.master.body], places: [c.master.body], config: link.config ?? null, partNumber: '', path, rel: relPath(dirOf(masterPath), path), stamp: g.stamp, ...(moved ? { frame: { pos: c.pos.slice(), rot: c.rot.slice() } } : {}) };
+    // (a part of its own has a number of its own)
+    const number = link.partNumber ? `${link.partNumber}-${link.places.indexOf(c.master.body) + 1}` : '';
+    if (number) {
+      for (const list of [doc.customProps, g.inherited?.props]) { const row = list?.find((x) => x.name === 'Part Number'); if (row) row.value = number; }
+    }
+    const own = { id, name: stemOf(path), bodies: [c.master.body], places: [c.master.body], config: link.config ?? null, partNumber: number, path, rel: relPath(dirOf(masterPath), path), stamp: g.stamp, ...(moved ? { frame: { pos: c.pos.slice(), rot: c.rot.slice() } } : {}) };
     link.places = link.places.filter((b) => b !== c.master.body);
     // (the one that was modelled in place goes: the shared part stays as it is, now following the next body)
     if (isFirst && link.places.length) {
@@ -444,7 +476,8 @@ export class BodiesToParts {
       if (a.result?.bodies && link.bodies.some((id) => !bodies.has(id))) { this.status.set(link.id, { state: 'gone', text: 'its body is gone from this part' }); continue; }
       const path = await this.linkedPath(link);
       if (!path) { this.status.set(link.id, { state: 'missing', text: 'its file was not found' }); continue; }
-      const doc = JSON.parse(await this.files.read(path)), g = masterImports(doc).find((x) => x.master?.link === link.id);
+      const tab = a.tabs.find((t) => t.kind !== 'drawing' && t.filePath && sameFile(t.filePath, path));
+      const doc = tab ? tab.doc : JSON.parse(await this.files.read(path)), g = masterImports(doc).find((x) => x.master?.link === link.id);
       this.status.set(link.id, !g ? { state: 'broken', text: 'its link was broken' } : g.stamp === link.stamp ? { state: 'ok', text: 'up to date' } : { state: 'stale', text: 'out of date' });
     }
     for (const g of imports) {
@@ -506,16 +539,11 @@ export class BodiesToParts {
   // (the assembly knows its components by body too)
   async swapComponents(f, link, swap) {
     if (!f.assembly) return;
-    const path = (f.assembly.rel && fromRel(dirOf(this.app.filePath), f.assembly.rel)) || f.assembly.path;
-    const text = await this.files.read(path).catch(() => null);
-    if (text == null) return;
-    const asm = JSON.parse(text);
-    const walk = (doc) => {
-      for (const c of doc.components) if (c.master?.link === link.id) c.master.body = swap(c.master.body);
-      for (const p of doc.parts || []) if (p.doc?.kind === 'assembly' && !p.path) walk(p.doc);
-    };
-    walk(asm);
-    await this.files.write(path, JSON.stringify(asm, null, 2));
+    await this.eachAssembly(this.assemblyPath(f), async (doc) => {
+      let changed = false;
+      for (const c of doc.components) if (c.master?.link === link.id && swap(c.master.body) !== c.master.body) { c.master.body = swap(c.master.body); changed = true; }
+      return changed;
+    });
   }
   async relinkFile(link) {
     const a = this.app, got = await this.files.pickFile();
@@ -568,7 +596,8 @@ export class BodiesToParts {
   }
 
   // ---- the dialog
-  async start() {
+  // only: the ids of the bodies to tick (the body the command was started from), the rest left for the user to tick
+  async start(only = null) {
     const a = this.app;
     if (!this.files.desktop()) { a.toast('Bodies to Parts needs real files: it is part of the desktop app', true); return; }
     if (a.mode === 'drawing') return;
@@ -578,7 +607,7 @@ export class BodiesToParts {
     const linked = new Set((masterFeature(a.doc)?.links || []).flatMap((l) => [...l.bodies, ...(l.places || [])]));
     const free = (a.result?.bodies || []).filter((b) => !linked.has(b.id));
     if (!free.length) { a.toast('Every body of this part is linked to a part already'); return; }
-    const rows = groupBodies(free).map((g, i) => ({ on: true, each: false, members: g.members, name: g.rep.name, n: i + 1 }));
+    const rows = groupBodies(free).map((g, i) => ({ on: !only || g.members.some((b) => only.includes(b.id)), each: false, members: g.members, name: g.rep.name, n: i + 1 }));
     const plan = await this.dialog(rows, free);
     if (plan) await a.withProgress('Making the parts…', () => this.make(plan));
     if (plan?.assembly && masterFeature(a.doc)?.assembly) await this.files.open(masterFeature(a.doc).assembly.path);
@@ -603,7 +632,7 @@ export class BodiesToParts {
   dialog(rows, free) {
     const a = this.app, master = a.doc.name, ui = a.ui;
     return new Promise((resolve) => {
-      let folder = dirOf(a.filePath), template = '{part}-{body}', numbers = '';
+      let folder = dirOf(a.filePath), template = '{body}', numbers = '';
       const body = document.createElement('div');
       body.className = 'b2p';
       const multi = free.length > 1;
@@ -633,18 +662,6 @@ export class BodiesToParts {
           if (sel) { sel.value = r.each ? 'each' : 'one'; sel.onchange = () => { r.each = sel.value === 'each'; }; }
           list.appendChild(row);
         });
-        const refs = publishable(a.doc);
-        if (refs.length) {
-          const pub = put('<p class="pm-hint">Planes and sketches every part takes as well, read-only, to model against:</p>');
-          for (const f of refs) {
-            const row = document.createElement('label');
-            row.style.display = 'block';
-            row.innerHTML = `<input type="checkbox" ${opts.publish.has(f.id) ? 'checked' : ''}> `;
-            row.appendChild(document.createTextNode(f.name));
-            row.querySelector('input').onchange = (e) => { if (e.target.checked) opts.publish.add(f.id); else opts.publish.delete(f.id); };
-            pub.appendChild(row);
-          }
-        }
         const asm = put(`<label><input type="checkbox" data-asm ${opts.asm ? 'checked' : ''}> Make Assembly</label>
           <div class="pm-field" ${opts.asm ? '' : 'hidden'}><label>Name</label><input data-asmname style="width:100%"></div>
           <div ${opts.asm ? '' : 'hidden'}><label><input type="checkbox" data-env ${opts.envelope ? 'checked' : ''}> Add this part as an envelope (at the top, kept out of the BOM and mass)</label></div>
@@ -656,6 +673,19 @@ export class BodiesToParts {
         nm.onchange = () => { opts.name = nm.value.trim() || opts.name; };
         const fb = asm.querySelector('[data-folders]');
         if (fb) fb.onchange = (e) => { opts.folders = e.target.checked; };
+        const refs = publishable(a.doc, [...opts.publish]);
+        if (refs.length) {
+          const box = put(`<details ${opts.publish.size ? 'open' : ''}><summary>Planes and sketches for the parts (${refs.length})</summary><p class="pm-hint" style="margin:4px 0">Every part takes the ones you tick, read-only, to model against. Sketches a feature has used aren't listed.</p></details>`);
+          const pub = box.querySelector('details');
+          for (const f of refs) {
+            const row = document.createElement('label');
+            row.style.display = 'block';
+            row.innerHTML = `<input type="checkbox" ${opts.publish.has(f.id) ? 'checked' : ''}> `;
+            row.appendChild(document.createTextNode(f.name));
+            row.querySelector('input').onchange = (e) => { if (e.target.checked) opts.publish.add(f.id); else opts.publish.delete(f.id); };
+            pub.appendChild(row);
+          }
+        }
       };
       const opts = { asm: multi, envelope: multi, folders: false, name: `${master} Assembly`, publish: new Set(masterFeature(a.doc)?.publish || []) };
       render();

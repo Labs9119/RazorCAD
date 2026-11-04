@@ -2713,7 +2713,7 @@ function publishBodies(ids, frame = null) {
     if (!r) return { id, missing: true };
     const shape = back ? moveShape(r.shape, back.r, back.t) : r.shape, sheet = back && r.sheet ? SM.moveSheet(r.sheet, back.I) : r.sheet;
     const shapes = [], graph = encodeGraph({ shape, sheet: sheet || null, look: r.look || null }, shapes);
-    return { id, kind: lastSolids.includes(r) ? 'solid' : 'surface', ...writeShapes(shapes), ...graph };
+    return { id, kind: lastSolids.includes(r) ? 'solid' : 'surface', ...writeShapes(shapes, true), ...graph };
   });
 }
 // Where a body identical to another sits: the turn and move that take the first onto the second, { pos, rot }, or null.
@@ -8044,9 +8044,12 @@ async function rebuild(doc, previewId = null, opts = {}) {
             } else {
               // copy k: the motion applied k times (only translations/rotations repeat; mates copy once)
               let shape = rec.shape, smCur = rec.sheet;
+              // (each copy is called after the body it is a copy of, numbered on: "Blade (2)", "Blade (3)"…)
+              const src = String(doc.bodies?.[rec.id]?.name || rec.name || doc.features.find((y) => y.id === String(rec.id).split('.')[0])?.name || 'Body').replace(/ \(\d+\)$/, '');
               for (let k = 1; k <= (f.mode === 'mates' ? 1 : copies); k++) {
                 shape = moveShape(shape, r, t);
                 const nr = bodyRec(newId(f.id), shape, f.id);
+                nr.name = `${src} (${[...solids, ...surfaces].filter((x) => x.name === src || String(x.name).startsWith(`${src} (`)).length + 2})`;
                 if (smCur) { smCur = SM.moveSheet(smCur, smM); nr.sheet = smCur; }
                 if (list === 'solids') solids.push(nr); else surfaces.push(nr);
                 applied.push({ op: 'add', tool: shape });
@@ -13491,7 +13494,9 @@ function exportSnaps(ids) {
   try { return { v: SNAP_VERSION, eqKey: c.eqKey, ...writeShapes(shapes), ...graph }; } catch (e) { if (isFatal(e)) throw e; return { v: 0, error: e.message }; }
 }
 // Shapes written out as one compound, each shape found again by its place in it, so what they share stays shared.
-function writeShapes(shapes) {
+// (plain: without their display meshes: the same shape then writes the same text, meshed or not, and takes less room.
+// Taken off a copy read back, as the live shapes' meshes are in use)
+function writeShapes(shapes, plain = false) {
   const oc = R.getOC(), builder = new oc.TopoDS_Builder(), comp = new oc.TopoDS_Compound();
   const temp = [];
   try {
@@ -13517,7 +13522,12 @@ function writeShapes(shapes) {
       const leaves = compoundLeaves(raw);
       try { return { c: leaves.map(place) }; } finally { leaves.forEach((x) => x.delete()); }
     });
-    return { n: shapes.length, places, brep: oc.BRepToolsWrapper.Write(comp) };
+    let brep = oc.BRepToolsWrapper.Write(comp);
+    if (plain) {
+      const copy = oc.BRepToolsWrapper.Read(brep);
+      try { oc.BRepTools.Clean(copy, true); brep = oc.BRepToolsWrapper.Write(copy); } finally { copy.delete(); }
+    }
+    return { n: shapes.length, places, brep };
   } finally { temp.forEach((l) => l.forEach((x) => x.delete())); comp.delete(); builder.delete(); }
 }
 // (null: they could not be read back)

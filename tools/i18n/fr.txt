@@ -1034,3 +1034,4 @@
 1034|Publier vers les pièces liées
 1035|Ne plus publier
 1036|Relier à nouveau…
+1037|Pour tourner autour d’autre chose, par exemple un cercle de boulons sur un cylindre, créez d’abord un axe de référence : un clic sur le cylindre. Il apparaît ensuite dans cette liste.

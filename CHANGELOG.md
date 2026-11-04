@@ -6,6 +6,34 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-04 23:38 — Bodies to Parts and multi-body parts, put right by drawing a whole robot arm in the app
+
+- A six-axis arm was drawn by hand in the desktop app as one 31-body master, then made into 16 parts and 5 assemblies with
+  real files. What that showed:
+- **Saving a master no longer updates parts that didn't change.** A body's display mesh went out with its shape, so a
+  body that had been shown counted as changed. Linked parts now hold the shape alone, about a quarter of the size.
+- **Sub-assemblies from body folders are files of their own,** as the BOM shows, and open and save like any other.
+- **An assembly brings up to date the parts inside its sub-assemblies too.** A sub-assembly holds copies of its parts, and
+  a part changed since stayed old at the top, in the view and the BOM, until that sub-assembly was saved again. This
+  was so for any assembly, not only linked parts.
+- **A linked part open in a tab** now has its file updated too, unless it has unsaved edits, and shows its status as soon
+  as it opens, and its overrides as soon as it is saved.
+- **The Bodies to Parts dialog:** the assembly options come straight after the bodies; only reference planes and sketches
+  no feature has used are offered to publish, in a closed section (a big part had pushed Make Assembly out of the
+  window). File names start as the body's name. Right-click a body ▸ Bodies to Parts… starts with that body ticked.
+- **Copies from Move/Copy Bodies are called after the body they copy,** "Gripper Jaw (2)", not "Move Body1".
+- **Make Independent** gives the new part a number of its own, from the shared part's ("RC6-07-2"), not the same one.
+- **A tree row of identical bodies (×2):** Add to New Folder, Move to, Remove from Folder and Edit Material now act on all
+  of them, not just the first (a material on one had split them apart). Its name no longer collapses to a letter when
+  a material is shown beside it.
+- **Circular Pattern** says how to turn about a cylinder: make a Reference Axis first, one click on it.
+- **Esc closes a right-click menu** in an assembly or drawing too.
+- Tests: bodies-to-parts checks that changing one body lists only its part, and that sub-assemblies are written as files.
+  envelope-component checks that a part inside a sub-assembly reaches the top assembly. The test run leaves any drawing or
+  assembly tab before each test: a test that ended on one left the next without a 3D view, depending on the order.
+
+---
+
 ## 2026-11-04 22:33 — Bodies to Parts: published planes and sketches, and Relink
 
 - **Published planes and sketches:** tick them in Bodies to Parts, or right-click one ▸ Publish to Linked Parts. Every

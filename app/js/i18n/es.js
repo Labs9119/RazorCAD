@@ -1020,4 +1020,5 @@ export default {
   "Publish to Linked Parts": "Publicar en piezas vinculadas",
   "Stop Publishing": "Dejar de publicar",
   "Relink…": "Volver a vincular…",
+  "To turn about anything else, a bolt circle on a cylinder for example, make a Reference Axis first: one click on the cylinder. It then appears in this list.": "Para girar alrededor de otro eje, por ejemplo un círculo de pernos en un cilindro, crea antes un eje de referencia: un clic en el cilindro. Aparecerá en esta lista.",
 };

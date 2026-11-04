@@ -1225,6 +1225,7 @@ const PM_SCHEMAS = {
     {
       title: 'Parameters', fields: [
         { key: 'axis', type: 'direction', label: 'Axis' },
+        { key: 'axisHint', type: 'hint', text: 'To turn about anything else, a bolt circle on a cylinder for example, make a Reference Axis first: one click on the cylinder. It then appears in this list.' },
         { key: 'angle', type: 'expr', label: 'Angle', unit: '°' },
         { key: 'count', type: 'expr', label: 'Instances', unit: '#' },
         { key: 'equal', type: 'check', label: 'Equal spacing (angle is total)' },
@@ -3428,7 +3429,7 @@ export class UI {
                 : { label: `Hide All ${g.members.length}`, icon: 'hide', action: () => ids.forEach((id) => a.setBodyHidden(id, true)) },
               a.transparencyItem(ids),
               'sep',
-              ...this.bodyMenu(b),
+              ...this.bodyMenu(b, ids),
             ],
           });
           n.dataset.body = b.id;
@@ -3764,13 +3765,14 @@ export class UI {
     return dof;
   }
 
-  bodyMenu(b) {
+  // (group: the bodies a row stands for, all the identical ones of a ×N row)
+  bodyMenu(b, group = [b.id]) {
     const a = this.app, sel = a.selectedBodyIds();
     if (sel.length > 1 && sel.includes(b.id)) return a.bodiesMenuItems(sel);
     return [
       { label: 'Body Properties…', icon: 'body', action: () => this.showBodyProps(b.id) },
       { label: 'Rename', icon: 'rename', action: () => this.renameBody(b.id) },
-      ...(b.kind === 'surface' ? [] : [{ label: 'Edit Material…', icon: 'material', action: () => this.showMaterial([b.id]) }]),
+      ...(b.kind === 'surface' ? [] : [{ label: 'Edit Material…', icon: 'material', action: () => this.showMaterial(group) }]),
       'sep',
       a.isBodyHidden(b.id) ? { label: 'Show', icon: 'show', action: () => a.setBodyHidden(b.id, false) } : { label: 'Hide', icon: 'hide', action: () => a.setBodyHidden(b.id, true) },
       a.transparencyItem([b.id]),
@@ -3781,11 +3783,12 @@ export class UI {
         { label: 'Export Flat Pattern as DXF…', icon: 'dxf', action: () => a.exportSheetDXF(b.id) },
       ] : []),
       'sep',
-      { label: 'Add to New Folder', icon: 'folder', action: () => a.newBodyFolder(b.sheet ? 'sheet' : b.kind || 'solid', null, [b.id]) },
+      { label: 'Add to New Folder', icon: 'folder', action: () => a.newBodyFolder(b.sheet ? 'sheet' : b.kind || 'solid', null, group) },
       ...(a.doc.bodyFolders || []).filter((g) => (g.kind || 'solid') === (b.kind || 'solid') && !g.bodies.includes(b.id))
-        .map((g) => ({ label: `Move to ${g.name}`, icon: 'folder', action: () => a.moveBodyToFolder(b.id, g.id) })),
-      ...(folderOfBody(a.doc, b.id) ? [{ label: 'Remove from Folder', icon: 'folder', action: () => a.moveBodyToFolder(b.id, null) }] : []),
+        .map((g) => ({ label: `Move to ${g.name}`, icon: 'folder', action: () => group.forEach((id) => a.moveBodyToFolder(id, g.id)) })),
+      ...(folderOfBody(a.doc, b.id) ? [{ label: 'Remove from Folder', icon: 'folder', action: () => group.forEach((id) => a.moveBodyToFolder(id, null)) }] : []),
       'sep',
+      { label: 'Bodies to Parts…', icon: 'part', action: () => a.b2p.start(group) },
       { label: 'Export as STEP…', icon: 'step', action: () => a.exportBodySTEP(b.id) },
     ];
   }

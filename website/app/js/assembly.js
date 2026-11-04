@@ -1039,15 +1039,28 @@ export class AssemblyEditor {
   // ---------------------------------------------------------------- parts and their geometry
   // bring the part (and sub-assembly) copies up to date from the open tabs, else from their files
   async refreshParts() {
-    let changed = false;
+    // (masses are worked out again as the parts load: no change to the assembly)
+    const content = () => JSON.stringify(this.doc.parts, (k, v) => (k === 'mass' ? undefined : v));
+    const before = content();
     const docOf = (t) => (t.kind === 'drawing' ? (t.drawing instanceof AssemblyEditor && t.drawing !== this ? t.drawing.doc : null) : t.doc);
-    for (const p of this.doc.parts) {
-      let doc = null;
-      const tab = this.live.get(p.id) || this.app.tabs.find((t) => docOf(t) && p.path && sameFile(t.filePath, p.path));
-      if (tab && this.app.tabs.includes(tab)) doc = tab.kind === 'drawing' ? docOf(tab) : this.app.tabs.indexOf(tab) === this.app.tabIndex ? this.app.doc : tab.doc;
-      else if (p.path && platform.desktop) { try { const text = await platform.readText(p.path); if (text) doc = stripThumbnail(JSON.parse(text)); } catch { /* keep the copy */ } }
-      if (doc && JSON.stringify(doc) !== JSON.stringify(p.doc)) { p.doc = JSON.parse(JSON.stringify(doc)); p.name = (p.path && isDefaultName(doc.name) ? fileStem(p.path) : doc.name) || p.name; changed = true; }
-    }
+    // (live: this assembly's own parts, by id: a sub-assembly's ids are its own)
+    const latest = async (p, depth) => {
+      const tab = (depth === 0 && this.live.get(p.id)) || this.app.tabs.find((t) => docOf(t) && p.path && sameFile(t.filePath, p.path));
+      if (tab && this.app.tabs.includes(tab)) return tab.kind === 'drawing' ? docOf(tab) : this.app.tabs.indexOf(tab) === this.app.tabIndex ? this.app.doc : tab.doc;
+      if (p.path && platform.desktop) { try { const text = await platform.readText(p.path); if (text) return stripThumbnail(JSON.parse(text)); } catch { /* keep the copy */ } }
+      return null;
+    };
+    // (a sub-assembly holds copies of its parts: their files can be newer than it, however deep)
+    const refresh = async (doc, depth = 0) => {
+      for (const p of doc.parts || []) {
+        const fresh = await latest(p, depth);
+        if (fresh && JSON.stringify(fresh) !== JSON.stringify(p.doc)) { p.doc = JSON.parse(JSON.stringify(fresh)); p.name = (p.path && isDefaultName(fresh.name) ? fileStem(p.path) : fresh.name) || p.name; }
+        if (isAssembly(p.doc) && depth < 16) await refresh(p.doc, depth + 1);
+      }
+    };
+    await refresh(this.doc);
+    // (what counts is how it ends: a sub-assembly's older file and then its newer parts can come to what it was)
+    const changed = content() !== before;
     if (changed) { this.dirty = true; this.app.updateTitle(); }
     return changed;
   }
