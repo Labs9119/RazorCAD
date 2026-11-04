@@ -9,6 +9,9 @@ import { materialById } from './model.js';
 import { propsOf } from './custprops.js';
 
 const isAsm = (doc) => doc?.kind === 'assembly';
+// An envelope: a component that is a reference for modelling, shown see-through and always first in the tree, in no
+// BOM, mass, drawing, export or interference check.
+export const withoutEnvelope = (doc) => (doc.components?.some((c) => c.envelope) ? { ...doc, components: doc.components.filter((c) => !c.envelope) } : doc);
 const configName = (p, id) => (id ? (p?.doc?.configs || []).find((c) => c.id === id)?.name || '?' : 'Default');
 // a component as the document's active configuration shows it
 function effIn(doc, c) {
@@ -47,7 +50,7 @@ export function bomRows(asm) {
       const by = new Map();
       for (const c of doc.components || []) {
         const e = effIn(doc, c);
-        if (c.part !== p.id || e.suppressed) continue;
+        if (c.part !== p.id || e.suppressed || c.envelope) continue;
         by.set(e.config, (by.get(e.config) || 0) + 1);
       }
       for (const [cfgId, n] of by) {

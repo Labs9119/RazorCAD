@@ -2208,6 +2208,324 @@ const UI = {
   // Plug-ins (plugins.js), as the browser version keeps them: one with two modules (a relative import), a form, a
   // part command and an assembly command on a tab of its own, its settings and the rebuilt event; one that fails in
   // activate() (shown, the other unharmed); the New Plug-in template's generator; turned off, its tab goes
+  // Bodies to Parts, the whole way: a master with two identical bodies (one turned) and another; parts, an assembly with
+  // the master as an envelope; the master changed and saved: shapes and properties follow, what was changed in a part
+  // stays, the identical bodies share one part in two places, and the envelope stays out of the BOM
+  async 'bodies-to-parts'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), { platform } = await import('/js/platform.js');
+    const { BodiesToParts, masterFeature, masterImports, overridesOf, resetToMaster, relPath, fromRel, fromTemplate } = await import('/js/bodiestoparts.js');
+    const { groupBodies } = await import('/js/bodygroups.js'), { bomRows, withoutEnvelope } = await import('/js/bom.js'), { matchBodies } = await import('/js/bodymatch.js');
+    const b2p = a.b2p, files = new Map(), key = (p) => String(p).replace(/\//g, '\\').toLowerCase();
+    const keep = { files: b2p.files, saveText: platform.saveText, auto: a.ui.prefs.b2pAuto, path: a.filePath };
+    const fail = (detail) => ({ ok: false, detail });
+    if (relPath('C:\\job\\frame', 'C:\\job\\frame\\parts\\a.rcad') !== 'parts\\a.rcad' || relPath('C:\\job\\a', 'C:\\job\\b\\c.rcad') !== '..\\b\\c.rcad' || relPath('C:\\a', 'D:\\b.rcad') !== null) return fail('relPath');
+    if (fromRel('C:\\job\\a', '..\\b\\c.rcad') !== 'C:\\job\\b\\c.rcad') return fail('fromRel');
+    if (fromTemplate('{part}-{n} {body}', 'Frame', 'Side[2]', 3) !== 'Frame-03 Side-2') return fail(fromTemplate('{part}-{n} {body}', 'Frame', 'Side[2]', 3));
+    // (a mirror image is no match)
+    const P = [[0, 0, 0], [10, 0, 0], [10, 5, 0], [0, 5, 0], [0, 0, 2], [3, 0, 2]], cp = [3, 2, 1];
+    if (matchBodies(P, cp, P.map((p) => [-p[0], p[1], p[2]]), [-3, 2, 1])) return fail('A mirror image was taken for the same body');
+    if (!matchBodies(P, cp, P.map((p) => [-p[1] + 7, p[0], p[2]]), [-2 + 7, 3, 1])) return fail('A turned copy was not found');
+    try {
+      Object.assign(platform, { saveText: async (name, text, path) => { files.set(key(path), text); return path; } });
+      b2p.files = { desktop: () => true, read: async (p) => files.get(key(p)) ?? null, write: async (p, t) => { files.set(key(p), t); return p; },
+        create: async (p, t) => { if (files.has(key(p))) throw new Error('written over ' + p); files.set(key(p), t); return p; }, open: async () => true, pick: async () => null };
+      a.ui.prefs.b2pAuto = true;
+      await a.newDocument?.(); closeModals();
+      const doc = M.newDoc(); doc.name = 'Frame';
+      const plate = (pts, hole, r) => {
+        const s = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }), ids = pts.map((q) => S.addPoint(s, ...q));
+        ids.forEach((id, i) => S.addLine(s, id, ids[(i + 1) % ids.length]));
+        S.addCircle(s, S.addPoint(s, ...hole), r);
+        return s;
+      };
+      const s1 = plate([[0, 0], [60, 0], [60, 40], [0, 40]], [15, 10], 4), s2 = plate([[140, 0], [140, 60], [100, 60], [100, 0]], [130, 15], 4), s3 = plate([[200, 0], [230, 0], [230, 30], [200, 30]], [215, 15], 6);
+      const e1 = M.createFeature(doc, 'extrude', { sketch: s1.id, depth: 5, merge: false }), e2 = M.createFeature(doc, 'extrude', { sketch: s2.id, depth: 5, merge: false }), e3 = M.createFeature(doc, 'extrude', { sketch: s3.id, depth: 8, merge: false });
+      doc.features.push(s1, e1, s2, e2, s3, e3);
+      doc.material = null;
+      doc.customProps = [{ name: 'Part Number', value: 'M-1' }, { name: 'Project', value: 'J100' }];
+      await a.setDoc(doc); await until(() => !a.kernel.pending && a.result?.bodies?.length === 3, 60000, 100);
+      a.filePath = 'C:\\job\\Frame.rcad';
+      files.set(key(a.filePath), '{}');
+      const groups = groupBodies(a.result.bodies);
+      if (groups.length !== 2 || groups[0].members.length !== 2) return fail(`Identical bodies: ${groups.map((g) => g.members.length)}`);
+      const rows = groups.map((g, i) => ({ on: true, each: false, members: g.members, name: g.rep.name, n: i + 1 }));
+      const list = BodiesToParts.planRows(rows, 'Frame', '{part}-{n}', 'P-{n}');
+      if (list.length !== 2 || list[0].places.length !== 2 || list[0].file !== 'Frame-01' || list[0].partNumber !== 'P-01') return fail(`Plan: ${JSON.stringify(list)}`);
+      try { const at = await a.kernel.request('bodyPlacement', { from: list[0].places[0], to: list[0].places[1] }); if (!at) return fail('No placement of the turned copy'); } catch (e) { return fail('bodyPlacement: ' + e.message); }
+      await b2p.make({ folder: 'C:\\job', rows: list, assembly: { name: 'Frame Assembly', envelope: true, folders: false } });
+      const f = masterFeature(a.doc);
+      if (!f || a.doc.features.at(-1) !== f || f.links.length !== 2) return fail(`The feature is not last, with two links: ${a.doc.features.map((x) => x.type)} ${f?.links.map((l) => l.name)}`);
+      // the feature stays last
+      const added = M.createFeature(a.doc, 'plane', {});
+      M.insertFeature(a.doc, added);
+      if (a.doc.features.at(-1) !== f || a.doc.features.at(-2) !== added) return fail('A new feature went below Bodies to Parts');
+      M.moveFeatures(a.doc, [f.id], e1.id);
+      if (a.doc.features.at(-1) !== f) return fail('Bodies to Parts was moved up');
+      M.moveFeatures(a.doc, [added.id], null);
+      if (a.doc.features.at(-1) !== f) return fail('A feature was moved below Bodies to Parts');
+      a.doc.features = a.doc.features.filter((x) => x !== added);
+      const read = (name) => JSON.parse(files.get(key(`C:\\job\\${name}`)));
+      const p1 = read('Frame-01.rcad'), g1 = masterImports(p1)[0];
+      if (p1.features[0] !== g1 || g1.name !== 'Imported from Master' || g1.master.rel !== 'Frame.rcad' || g1.master.link !== f.links[0].id) return fail('The part does not start with its import');
+      const props = Object.fromEntries((p1.customProps || []).map((x) => [x.name, x.value]));
+      if (props['Part Number'] !== 'P-01' || props.Project !== 'J100') return fail(`Properties: ${JSON.stringify(props)}`);
+      const volumeOf = async (d) => { const r = await a.kernel.rebuild(d, null, null); if (r.errors?.length) throw new Error(`rebuild: ${r.errors}`); const m = await a.kernel.request('measure', { refs: [{ kind: 'body', id: r.body.bodies[0].id }] }); return (m.items?.[0] || m).volume; };
+      const v1 = await volumeOf(p1);
+      if (Math.abs(v1 - (60 * 40 - Math.PI * 16) * 5) > 1e-3) return fail(`Part volume ${v1}`);
+      // a feature added in the part, which the master knows nothing of, stays through an update
+      const cut = M.createFeature(p1, 'sketch', { plane: { ref: 'front' } }); S.addCircle(cut, S.addPoint(cut, 45, 25), 5);
+      p1.features.push(cut, M.createFeature(p1, 'extrude', { sketch: cut.id, op: 'cut', end: 'through' }));
+      const v2 = await volumeOf(p1);
+      if (!(v2 < v1 - 100)) return fail(`The part's own cut: ${v1} to ${v2}`);
+      // an override in the part: its own material; it must stay
+      p1.material = 'steel';
+      files.set(key('C:\\job\\Frame-01.rcad'), JSON.stringify(p1));
+      if (overridesOf(p1, masterImports(p1)[0]).join() !== 'material') return fail(`Overrides: ${overridesOf(p1, masterImports(p1)[0])}`);
+      // the assembly: envelope first, one part in two places, the turned one where its body is
+      const asm = read('Frame Assembly.rasm');
+      if (!asm.components[0].envelope || asm.components.length !== 4) return fail(`Components: ${asm.components.map((c) => c.name)}`);
+      if (asm.parts.length !== 3) return fail(`${asm.parts.length} parts`);
+      const [, c1, c2] = asm.components;
+      if (c1.part !== c2.part) return fail('The identical bodies are not one part');
+      const THREE = await import('three');
+      const corner = new THREE.Vector3(0, 0, 0).applyQuaternion(new THREE.Quaternion(...c2.rot)).add(new THREE.Vector3(...c2.pos));
+      if (Math.hypot(corner.x - 140, corner.y) > 1e-6) return fail(`The turned copy's corner is at ${corner.toArray()} (rot ${c2.rot}, pos ${c2.pos})`);
+      for (const p of asm.parts) p.mass = { '': 1 };
+      const bom = bomRows(asm);
+      if (bom.length !== 2 || bom.some((r) => r.name === 'Frame') || bom[0].qty !== 2) return fail(`BOM: ${bom.map((r) => `${r.name} x${r.qty}`)}`);
+      if (withoutEnvelope(asm).components.length !== 3) return fail('withoutEnvelope');
+      // bodies added later join the same assembly, under the envelope; the envelope isn't added twice
+      const again = await b2p.makeAssembly({ name: 'Frame Assembly', envelope: true, folders: false }, [], 'C:\\job\\Frame.rcad', 'C:\\job', f.assembly);
+      if (key(again.path) !== key(f.assembly.path) || read('Frame Assembly.rasm').components.filter((c) => c.envelope).length !== 1) return fail('A second run did not use the same assembly');
+      // the master changed: deeper, and a colour on the body; saved
+      const stamp = f.links[0].stamp;
+      a.doc.features.find((x) => x.id === e1.id).depth = 7;
+      a.doc.features.find((x) => x.id === e2.id).depth = 7;
+      M.ensureBodySettings(a.doc, e1.id).color = '#ff0000';
+      a.doc.customProps.find((x) => x.name === 'Project').value = 'J200';
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      await a.saveFile();
+      if (f.links[0].stamp === stamp) return fail('The save changed nothing');
+      const p2 = read('Frame-01.rcad'), g2 = masterImports(p2)[0];
+      const v3 = await volumeOf(p2);
+      if (Math.abs(v3 - (v2 / 5) * 7) > 1) return fail(`After the master changed: ${v3}, expected ${(v2 / 5) * 7}: the part's own cut must stay`);
+      if (p2.material !== 'steel') return fail(`The override went: ${p2.material}`);
+      if (p2.bodies?.[g2.id]?.color !== '#ff0000') return fail('The colour did not come through');
+      if (p2.customProps.find((x) => x.name === 'Project').value !== 'J200') return fail('The property did not come through');
+      if (g2.stamp !== f.links[0].stamp) return fail('The stamps differ after the update');
+      resetToMaster(p2, g2);
+      if ((p2.material ?? null) !== (g2.inherited.material ?? null)) return fail('Reset to Master left the material');
+      // nothing changed: nothing written; a rolled-back master gives nothing
+      const before = files.get(key('C:\\job\\Frame-02.rcad'));
+      await a.saveFile();
+      if (files.get(key('C:\\job\\Frame-02.rcad')) !== before) return fail('A save with no change wrote the part');
+      await b2p.refreshStatus();
+      if (b2p.statusOf(f.links[0].id)?.state !== 'ok') return fail(`Status: ${JSON.stringify(b2p.statusOf(f.links[0].id))}`);
+      files.delete(key('C:\\job\\Frame-02.rcad'));
+      await b2p.refreshStatus();
+      if (b2p.statusOf(f.links[1].id)?.state !== 'missing') return fail(`Missing file: ${JSON.stringify(b2p.statusOf(f.links[1].id))}`);
+      a.doc.rollbackAt = e2.id;
+      if (!b2p.notPublishable()) return fail('A rolled-back master would publish');
+      a.doc.rollbackAt = null;
+      // Make Independent: the turned copy gets a file of its own, stays where it is, and follows its body from there
+      files.set(key('C:\\job\\Frame-02.rcad'), JSON.stringify(p2));
+      const shared = read('Frame-01.rcad'), asm2 = read('Frame Assembly.rasm'), c3 = asm2.components[2];
+      const ed = { doc: asm2, part: (id) => asm2.parts.find((x) => x.id === id), begin() {}, change() {}, addPart(d, path) { const id = `pt${asm2.nextId++}`; asm2.parts.push({ id, name: d.name, path, doc: d }); return id; } };
+      asm2.parts.find((x) => x.id === c3.part).doc = shared;
+      const was = { pos: [...c3.pos], rot: [...c3.rot] };
+      Object.assign(a.tabs[a.tabIndex], { filePath: a.filePath, doc: a.doc });
+      const made = await b2p.makeIndependent(ed, c3);
+      if (!made || !read(made.split('\\').pop())) return fail(`Make Independent: ${made}`);
+      if (c3.part === asm2.components[1].part || JSON.stringify(c3.pos) !== JSON.stringify(was.pos)) return fail('The component did not stay, on a part of its own');
+      if (f.links.length !== 3 || f.links[0].places.length !== 1 || !f.links[2].frame) return fail(`Links: ${JSON.stringify(f.links.map((l) => l.places))}`);
+      const v4 = await volumeOf(read(made.split('\\').pop()));
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      // its body deeper in the master: the independent part follows, in its own place, its added cut still through it
+      a.doc.features.find((x) => x.id === e2.id).depth = 9;
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      await b2p.push((await b2p.changes()).filter((x) => x.link === f.links[2]));
+      const v5 = await volumeOf(read(made.split('\\').pop()));
+      if (Math.abs(v5 - (v4 / 7) * 9) > 1) return fail(`The independent part: ${v4} to ${v5}, expected ${(v4 / 7) * 9}`);
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      // a file is never written over
+      if (await b2p.freePath('C:\\job', 'Frame-02', M.PART_EXT) !== 'C:\\job\\Frame-02-2.rcad') return fail('freePath');
+      return { ok: true, detail: 'parts, assembly, envelope, updates, overrides and status all right' };
+    } finally {
+      Object.assign(platform, { saveText: keep.saveText });
+      b2p.files = keep.files;
+      a.ui.prefs.b2pAuto = keep.auto;
+      a.filePath = keep.path;
+      closeModals();
+    }
+  },
+
+  // Published planes and sketches: a part takes them read-only, models on them, and follows when the master moves them;
+  // Relink: a body replaced in the master, and files that moved
+  async 'bodies-to-parts-refs'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), { platform } = await import('/js/platform.js');
+    const { BodiesToParts, masterFeature, masterImports, publishable } = await import('/js/bodiestoparts.js');
+    const b2p = a.b2p, files = new Map(), key = (p) => String(p).replace(/\//g, '\\').toLowerCase();
+    const keep = { files: b2p.files, saveText: platform.saveText, auto: a.ui.prefs.b2pAuto, path: a.filePath, prompt: a.ui.promptFields };
+    const fail = (detail) => ({ ok: false, detail });
+    try {
+      Object.assign(platform, { saveText: async (name, text, path) => { files.set(key(path), text); return path; } });
+      let picked = null;
+      b2p.files = { desktop: () => true, read: async (p) => files.get(key(p)) ?? null, write: async (p, t) => { files.set(key(p), t); return p; },
+        create: async (p, t) => { files.set(key(p), t); return p; }, open: async () => true, pick: async () => null, pickFile: async () => picked };
+      a.ui.prefs.b2pAuto = true;
+      await a.newDocument?.(); closeModals();
+      const doc = M.newDoc(); doc.name = 'Skeleton';
+      const box = (x, w) => { const s = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } }), P = [[x, 0], [x + w, 0], [x + w, w], [x, w]].map((q) => S.addPoint(s, ...q)); P.forEach((id, i) => S.addLine(s, id, P[(i + 1) % 4])); return s; };
+      const s1 = box(0, 40), s2 = box(100, 30), e1 = M.createFeature(doc, 'extrude', { sketch: s1.id, depth: 10, merge: false }), e2 = M.createFeature(doc, 'extrude', { sketch: s2.id, depth: 10, merge: false });
+      const plane = M.createFeature(doc, 'plane', { refs: [{ kind: 'plane', id: 'front' }], offset: 30, name: 'Top of Frame' });
+      const lay = M.createFeature(doc, 'sketch', { plane: { ref: plane.id }, name: 'Layout' });
+      const c = S.addPoint(lay, 20, 20); S.addCircle(lay, c, 6);
+      doc.features.push(s1, e1, s2, e2, plane, lay);
+      await a.setDoc(doc); await until(() => !a.kernel.pending && a.result?.bodies?.length === 2, 60000, 100);
+      a.filePath = 'C:\\job\\Skeleton.rcad'; files.set(key(a.filePath), '{}');
+      Object.assign(a.tabs[a.tabIndex], { filePath: a.filePath, doc: a.doc });
+      if (!publishable(a.doc).some((f) => f.id === plane.id)) return fail('The plane cannot be published');
+      await b2p.make({ folder: 'C:\\job', publish: [plane.id, lay.id], rows: [{ name: 'Leg', file: 'Leg', bodies: [e1.id], places: [e1.id] }], assembly: null });
+      const f = masterFeature(a.doc), read = (n) => JSON.parse(files.get(key(`C:\\job\\${n}`)));
+      const p = read('Leg.rcad'), g = masterImports(p)[0];
+      const pl = p.features.find((x) => x.type === 'plane'), sk = p.features.find((x) => x.type === 'sketch');
+      if (!pl?.published || !sk?.published || pl.parent !== g.id || sk.parent !== g.id) return fail(`Published: ${p.features.map((x) => x.type + ':' + x.parent)}`);
+      if (p.features.indexOf(pl) !== 1 || sk.constraints.length) return fail('They should follow the import, without relations');
+      const planeZ = (r, id) => r.planes[id]?.o?.[2], sketchZ = (r, id) => r.sketches[id]?.frame?.o?.[2];
+      // the part models on them: a sketch on the published plane, and an extrude of the published sketch
+      const own = M.createFeature(p, 'sketch', { plane: { ref: pl.id } }); S.addCircle(own, S.addPoint(own, 5, 5), 2);
+      const ex = M.createFeature(p, 'extrude', { sketch: sk.id, depth: 4, merge: false }), ex2 = M.createFeature(p, 'extrude', { sketch: own.id, depth: 4, merge: false });
+      p.features.push(ex, own, ex2);
+      files.set(key('C:\\job\\Leg.rcad'), JSON.stringify(p));
+      const r1 = await a.kernel.rebuild(p, null, null);
+      if (r1.errors?.length) return fail(`Building on them: ${r1.errors}`);
+      if (Math.abs(planeZ(r1, pl.id) - 30) > 1e-6 || Math.abs(sketchZ(r1, sk.id) - 30) > 1e-6 || Math.abs(sketchZ(r1, own.id) - 30) > 1e-6) return fail(`Where they are: ${planeZ(r1, pl.id)}, ${sketchZ(r1, sk.id)}, ${sketchZ(r1, own.id)}`);
+      if (r1.body.bodies.length !== 3) return fail(`${r1.body.bodies.length} bodies`);
+      // the master moves the plane and changes the sketch: the part's own features follow, ids kept
+      a.doc.features.find((x) => x.id === plane.id).offset = 50;
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      await a.saveFile();
+      const p2 = read('Leg.rcad');
+      const r2 = await a.kernel.rebuild(p2, null, null);
+      if (r2.errors?.length) return fail(`After the move: ${r2.errors}`);
+      if (Math.abs(sketchZ(r2, own.id) - 50) > 1e-6 || Math.abs(planeZ(r2, pl.id) - 50) > 1e-6) return fail(`After the move: ${sketchZ(r2, own.id)}`);
+      if (p2.features.filter((x) => x.published).length !== 2) return fail('Published features were added twice');
+      // read-only in the part
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      // Relink: the body replaced in the master, so its id is gone; another takes its place
+      a.doc.features = a.doc.features.filter((x) => x.id !== e1.id && x.id !== s1.id);
+      await a.rebuild(); await until(() => !a.kernel.pending && a.result?.bodies?.length === 1, 60000, 100);
+      await b2p.refreshStatus();
+      const link = f.links[0];
+      if (b2p.statusOf(link.id)?.state !== 'gone') return fail(`Status: ${JSON.stringify(b2p.statusOf(link.id))}`);
+      a.ui.promptFields = async (t, ic, fields) => ({ [fields[0].key]: fields[0].options[0][0] });
+      if (!(await b2p.relink(link)) || link.bodies[0] !== e2.id || link.places[0] !== e2.id) return fail(`Relink: ${JSON.stringify(link)}`);
+      await a.saveFile();
+      const v = await (async () => { const r = await a.kernel.rebuild(read('Leg.rcad'), null, null); const m = await a.kernel.request('measure', { refs: [{ kind: 'body', id: r.body.bodies[0].id }] }); return (m.items?.[0] || m).volume; })();
+      if (Math.abs(v - 30 * 30 * 10) > 1e-3) return fail(`After Relink the part holds ${v}`);
+      await a.rebuild(); await until(() => !a.kernel.pending, 60000, 100);
+      // a part that moved is found again; a wrong file is refused
+      files.set(key('C:\\other\\Leg.rcad'), files.get(key('C:\\job\\Leg.rcad')));
+      files.delete(key('C:\\job\\Leg.rcad'));
+      await b2p.refreshStatus();
+      if (b2p.statusOf(link.id)?.state !== 'missing') return fail(`Moved: ${JSON.stringify(b2p.statusOf(link.id))}`);
+      picked = { path: 'C:\\other\\Wrong.rcad', content: JSON.stringify(M.newDoc()) };
+      if (await b2p.relink(link)) return fail('A wrong file was taken');
+      picked = { path: 'C:\\other\\Leg.rcad', content: files.get(key('C:\\other\\Leg.rcad')) };
+      if (!(await b2p.relink(link)) || b2p.statusOf(link.id)?.state !== 'ok') return fail(`Found again: ${JSON.stringify(b2p.statusOf(link.id))}`);
+      return { ok: true, detail: 'published planes and sketches followed; Relink of bodies and files works' };
+    } finally {
+      Object.assign(platform, { saveText: keep.saveText });
+      Object.assign(a.ui, { promptFields: keep.prompt });
+      b2p.files = keep.files;
+      a.ui.prefs.b2pAuto = keep.auto;
+      a.filePath = keep.path;
+      closeModals();
+    }
+  },
+
+  // An envelope: first in the tree wherever it is in the list, see-through, in no BOM; and the Bodies to Parts dialog
+  async 'envelope-component'() {
+    const a = window.app, S = await import('/js/sketchmodel.js'), { newAssembly } = await import('/js/assembly.js'), { bomRows } = await import('/js/bom.js');
+    const fail = (detail) => ({ ok: false, detail });
+    await a.newDocument?.(); closeModals();
+    const box = (name, w) => {
+      const d = M.newDoc(); d.name = name;
+      const s = M.createFeature(d, 'sketch', { plane: { ref: 'front' } }), P = [[0, 0], [w, 0], [w, w], [0, w]].map((q) => S.addPoint(s, ...q));
+      P.forEach((id, i) => S.addLine(s, id, P[(i + 1) % 4]));
+      d.features.push(s, M.createFeature(d, 'extrude', { sketch: s.id, depth: 10 }));
+      return d;
+    };
+    const doc = newAssembly('Top Down');
+    doc.parts.push({ id: 'pt1', name: 'Plate', path: null, doc: box('Plate', 20) }, { id: 'pt2', name: 'Skeleton', path: null, doc: box('Skeleton', 40) });
+    doc.components.push({ id: 'c1', part: 'pt1', name: 'Plate<1>', config: null, pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true, hidden: false },
+      { id: 'c2', part: 'pt2', name: 'Skeleton<1>', config: null, pos: [0, 0, 0], rot: [0, 0, 0, 1], fixed: true, hidden: false, envelope: true });
+    doc.nextId = 3;
+    const ed = a.openAssemblyTab(doc, null);
+    await until(() => ed.geo(doc.components[0])?.mesh && ed.geo(doc.components[1])?.mesh, 60000, 100);
+    ed.renderTree();
+    const rows = [...document.querySelectorAll('#tree .tn')].filter((n) => /Plate<1>|Skeleton<1>/.test(n.textContent)).map((n) => n.textContent);
+    if (!/Skeleton/.test(rows[0]) || !/envelope/.test(rows[0])) return fail(`Tree: ${rows}`);
+    if (ed.geo(doc.components[1]).mesh.bodies.some((b) => b.transparency !== 0.8)) return fail('The envelope is not see-through');
+    if (ed.geo(doc.components[0]).mesh.bodies.some((b) => b.transparency)) return fail('The part is see-through');
+    if (bomRows(doc).map((r) => r.name).join() !== 'Plate') return fail(`BOM: ${bomRows(doc).map((r) => r.name)}`);
+    if (ed.items().map((x) => x.id).join() !== 'c1') return fail('The envelope can be exploded');
+    if (!ed.compMenu(doc.components[1]).some((x) => x.label === 'Stop Being an Envelope')) return fail('No way to stop it being an envelope');
+    ed.setEnvelope('c1', true);
+    if (doc.components[0].id !== 'c1' || !doc.components[0].fixed) return fail('Make Envelope does not put it first, fixed');
+    ed.setEnvelope('c1', false);
+    if (doc.components.find((c) => c.id === 'c1').envelope) return fail('Stop Being an Envelope');
+    // the dialog: one row for identical bodies, the assembly options, cancelling makes nothing
+    await a.newDocument?.(); closeModals();
+    const part = box('Master', 30);
+    await a.setDoc(part); await until(() => !a.kernel.pending && a.result?.bodies?.length, 60000, 100);
+    const keep = { files: a.b2p.files, path: a.filePath };
+    try {
+      a.filePath = 'C:\\job\\Master.rcad';
+      a.b2p.files = { desktop: () => true, read: async () => null, write: async () => null, create: async () => null, open: async () => true, pick: async () => null };
+      const open = a.b2p.start();
+      await until(() => document.querySelector('.modal-back .b2p'), 5000);
+      const t = document.querySelector('.modal-back .b2p').textContent;
+      for (const w of ['Folder', 'Make Assembly', 'File names', 'Part numbers']) if (!t.includes(w)) return fail(`The dialog has no ${w}: ${t}`);
+      if (document.querySelector('.modal-back .b2p .b2p-name')?.value !== 'Master-Extrude1') return fail(`The name: ${document.querySelector('.modal-back .b2p .b2p-name')?.value}`);
+      [...document.querySelectorAll('.modal-back button')].find((b) => b.textContent.trim() === 'Cancel').click();
+      await open;
+      if (a.doc.features.some((f) => f.type === 'bodiesToParts')) return fail('Cancel left a feature');
+    } finally { a.b2p.files = keep.files; a.filePath = keep.path; closeModals(); }
+    return { ok: true, detail: 'envelope first, see-through, out of the BOM; the dialog opens and cancels' };
+  },
+
+  // Bodies to Parts: a sheet metal body taken out of its master stays the same solid, with the same flat pattern
+  async 'bodies-to-parts-sheet'() {
+    const k = window.app.kernel, bad = [];
+    for (const file of ['sheet-metal.rcad', 'sheet-metal-tray.rcad']) {
+      const master = await (await fetch('/tests/parts/' + file)).json();
+      const r = await k.rebuild(master, null, null);
+      const bodies = (r.body?.bodies || []).filter((b) => b.sheet);
+      if (!bodies.length) { bad.push(`${file}: no sheet metal body`); continue; }
+      const sizes = {};
+      for (const b of bodies) {
+        const flat = await k.request('sheetFlat', { bodyId: b.id, flip: false }), m = await k.request('measure', { refs: [{ kind: 'body', id: b.id }] });
+        sizes[b.id] = { size: flat.size.map(r6), bends: flat.bends.length, volume: r6((m.items?.[0] || m).volume) };
+      }
+      const published = await k.request('publishBodies', { ids: bodies.map((b) => b.id) });
+      for (const body of published) {
+        const d = M.newDoc();
+        d.features.push(M.createFeature(d, 'masterImport', { data: JSON.stringify({ bodies: [JSON.parse(JSON.stringify(body))] }) }));
+        const c = await k.rebuild(d, null, null);
+        if (c.errors?.length) { bad.push(`${file} ${body.id}: ${c.errors}`); continue; }
+        const b = c.body?.bodies?.[0];
+        if (!b?.sheet) { bad.push(`${file} ${body.id}: no longer sheet metal`); continue; }
+        const flat = await k.request('sheetFlat', { bodyId: b.id, flip: false }), m = await k.request('measure', { refs: [{ kind: 'body', id: b.id }] });
+        const now = { size: flat.size.map(r6), bends: flat.bends.length, volume: r6((m.items?.[0] || m).volume) };
+        if (JSON.stringify(now) !== JSON.stringify(sizes[body.id])) bad.push(`${file} ${body.id}: ${JSON.stringify(sizes[body.id])} became ${JSON.stringify(now)}`);
+        const tooBig = JSON.stringify(body).length;
+        if (tooBig > 2e7) bad.push(`${file} ${body.id}: ${tooBig} bytes`);
+      }
+    }
+    return { ok: !bad.length, detail: bad.join(' · ') || 'solid and flat pattern the same after the trip' };
+  },
+
   // an Update Now that did not get through says so at the next start and offers the setup (the release page when
   // that can't run); nothing is shown when there is nothing to tell
   async 'update-outcome'() {

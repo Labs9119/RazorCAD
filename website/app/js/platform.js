@@ -245,6 +245,8 @@ export const platform = {
   // Update now (desktop, installed with the setup): { ok } once the setup is downloaded and started, else { error }
   async startUpdate(setup) { return desktop ? api().start_update(setup.url, setup.size, setup.digest) : { error: 'The browser version updates by itself' }; },
   async updateResult() { return desktop ? api().update_result() : null; },
+  // Bodies to Parts: a linked part or assembly written in place (create: a new file, never over one). The file's path, or null.
+  async writeLinked(path, text, create = false) { if (!desktop) throw new Error('Only in the Windows app'); return api().write_linked(path, text, create); },
   async runSetup() { return desktop ? api().run_setup() : false; },
   // a RazorCAD page (on GitHub) in the web browser
   // crash reports as GitHub issues (desktop): the reports kept, and one (or none: a plain problem report) as

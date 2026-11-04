@@ -27,6 +27,7 @@ import { HelpPanel, loadManual, searchManual } from './help.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
 import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
+import { overridesOf, masterFeature } from './bodiestoparts.js';
 import { PIPE_SIZES, pipeLabel } from './routing.js';
 import { stackUp } from './stackup.js';
 import { revisionsDialog } from './revisions.js';
@@ -2067,6 +2068,7 @@ export class UI {
         { label: 'Features ▸ Combine…', icon: 'combine', action: () => a.startFeature('combine') },
         { label: 'Features ▸ Subtract Bodies…', icon: 'subtract', action: () => a.startFeature('combine', 'subtract') },
         { label: 'Features ▸ Delete Body…', icon: 'deleteBody', action: () => a.startFeature('deleteBody') },
+        { label: 'Features ▸ Bodies to Parts…', icon: 'part', action: () => a.b2p.start() },
         { label: 'Features ▸ Split Body…', icon: 'split', action: () => a.startFeature('split') },
         { label: 'Features ▸ Split Face…', icon: 'splitLine', action: () => a.startFeature('splitLine') },
         { label: 'Features ▸ Move/Copy Bodies…', icon: 'moveBody', action: () => a.startFeature('moveBody') },
@@ -2268,6 +2270,7 @@ export class UI {
         { icon: 'splitLine', label: 'Split Face', action: () => a.startFeature('splitLine') },
         { icon: 'moveBody', label: 'Move/Copy Bodies', action: () => a.startFeature('moveBody') },
         { icon: 'deleteBody', label: 'Delete Body', action: () => a.startFeature('deleteBody') },
+        { icon: 'part', label: 'Bodies to Parts', action: () => a.b2p.start() },
         'sep',
         { icon: 'refplane', label: 'Reference Plane', action: () => a.startFeature('plane') },
         { icon: 'axis', label: 'Reference Axis', action: () => a.startFeature('axis') },
@@ -3380,6 +3383,7 @@ export class UI {
             'sep',
           ] : []),
           { label: 'Export All Bodies as STEP…', icon: 'step', action: () => a.exportFile('step') },
+          { label: 'Bodies to Parts…', icon: 'part', action: () => a.b2p.start() },
           ...(kind === 'solid' && bodies.length > 1 ? [{ label: 'Exploded View…', icon: 'explode', action: () => a.startExplode() }] : []),
           { label: 'New Folder', icon: 'folder', action: () => a.newBodyFolder(kind) },
         ],
@@ -3534,11 +3538,13 @@ export class UI {
 
     const featureNode = (f, depth) => {
       const kids = doc.features.filter((s) => (s.type === 'sketch' && consumedBy.get(s.id) === f.id) || (s.parent === f.id && findFeature(doc, f.id)));
+      const pubs = f.type === 'bodiesToParts' ? (f.publish || []).map((id) => findFeature(doc, id)).filter(Boolean) : [];
+      const links = f.type === 'bodiesToParts' ? [...f.links, ...pubs] : [], linkInfo = f.type === 'masterImport' ? a.b2p.statusOf(f.id) : null;
       const collapsed = this.collapsed.has(f.id);
       const rolled = !active(f);
       const err = rolled ? null : res?.errors.get(f.id);
       // (-) marks an under-defined sketch
-      const dof = f.type === 'sketch' && !err && !rolled ? this.sketchFreedom(f) : 0;
+      const dof = f.type === 'sketch' && !f.published && !err && !rolled ? this.sketchFreedom(f) : 0;
       // (⚠ a sketch's note, e.g. the face it is on no longer in the model: a sketch has no Property panel to show it)
       const note = f.type === 'sketch' && !err && !rolled ? res?.notes?.get(f.id) : null;
       // (? references found again as the nearest of look-alikes, after the model changed: to be checked)
@@ -3546,7 +3552,7 @@ export class UI {
       const shown = a.featureVisible(f);
       const hidden = shown === false;
       const n = node({
-        icon: iconFor(f), label: (note ? '⚠ ' : '') + (dof > 0 ? '(-) ' : '') + f.name, depth, error: err, fid: f.id,
+        icon: iconFor(f), label: (note ? '⚠ ' : '') + (dof > 0 ? '(-) ' : '') + f.name + (linkInfo ? ` (${linkInfo.text})` : ''), depth, error: err, fid: f.id,
         warn: guessed ? `${guessed} reference${guessed > 1 ? 's were' : ' was'} found again after the model changed by taking the nearest of faces or edges that look the same: check ${guessed > 1 ? 'they are' : 'it is'} still the right one${guessed > 1 ? 's' : ''}. Right-click ▸ Accept Found References, or edit the feature and click ✔.` : null,
         title: rolled ? 'Rolled back (below the rollback bar)' : err || (note ? note + '\n' : '') + (dof > 0 ? `Under defined: ${dof} degree${dof > 1 ? 's' : ''} of freedom` : '') + (hidden ? (dof > 0 ? '\n' : '') + 'Hidden (click the eye, or right-click ▸ Show)' : ''),
         cls: (hidden ? 'hidden-item' : '') + (rolled ? ' rolled' : ''),
@@ -3554,8 +3560,8 @@ export class UI {
         suppressed: a.isSuppressed(f),
         selected: sel?.kind === 'feature' && sel.id === f.id,
         editing: editingId === f.id,
-        twisty: kids.length ? (collapsed ? '▶' : '▼') : '',
-        onTwisty: kids.length ? () => { collapsed ? this.collapsed.delete(f.id) : this.collapsed.add(f.id); this.renderTree(); } : null,
+        twisty: kids.length || links.length ? (collapsed ? '▶' : '▼') : '',
+        onTwisty: kids.length || links.length ? () => { collapsed ? this.collapsed.delete(f.id) : this.collapsed.add(f.id); this.renderTree(); } : null,
         onClick: () => a.treePickFeature(f.id),
         onDbl: () => (f.type === 'sketch' ? a.editSketch(f.id) : a.editFeature(f.id)),
         onHover: (on) => a.hoverFeature(on ? f.id : null),
@@ -3563,6 +3569,14 @@ export class UI {
       });
       if (depth === 1) { n.dataset.top = '1'; this.makeDraggable(n, { kind: 'feature', id: f.id }); }
       if (!collapsed) for (const k of kids) featureNode(k, depth + 1);
+      if (!collapsed && f.type === 'bodiesToParts') {
+        for (const l of f.links) {
+          const st = a.b2p.statusOf(l.id), lost = st?.state === 'gone' || st?.state === 'missing';
+          node({ icon: 'part', label: l.name + (st ? ` (${st.text})` : ''), depth: depth + 1, title: l.path, onDbl: () => a.b2p.openPart(l),
+            menu: () => [{ label: 'Open Part', icon: 'part', action: () => a.b2p.openPart(l) }, ...(lost ? [{ label: 'Relink…', icon: 'part', action: () => a.b2p.relink(l) }] : []), { label: 'Remove Link (keeps the part file)', icon: 'trash', action: () => a.b2p.removeLink(l) }] });
+        }
+        for (const p of pubs) node({ icon: iconFor(p), label: `Published: ${p.name}`, depth: depth + 1, menu: () => [{ label: 'Stop Publishing', icon: 'trash', action: () => a.b2p.togglePublish(p.id) }] });
+      }
     };
     const barNode = () => {
       const bar = el('div', { class: 'rollback-bar', title: 'Rollback bar: drag it up to roll the part back and insert features there; drag it to the bottom to roll forward', draggable: 'true' });
@@ -4310,6 +4324,14 @@ export class UI {
     // (feature folders)
     const inFolder = folderOfFeature(a.doc, f.id);
     if (f.type === 'import' && f.context?.host) items.push({ label: 'Update Context', icon: 'part', action: () => a.updateContext(true) });
+    if (f.type === 'bodiesToParts') items.push({ label: 'Add Parts…', icon: 'part', action: () => a.b2p.start() });
+    if ((f.type === 'plane' || f.type === 'sketch') && !f.published && masterFeature(a.doc)) items.push({ label: (masterFeature(a.doc).publish || []).includes(f.id) ? 'Stop Publishing' : 'Publish to Linked Parts', icon: 'part', action: () => a.b2p.togglePublish(f.id) });
+    if (f.type === 'masterImport' && f.master) {
+      items.push({ label: 'Open Master', icon: 'part', action: () => a.b2p.openMaster(f) });
+      if (a.b2p.statusOf(f.id)?.state === 'missing') items.push({ label: 'Relink…', icon: 'part', action: () => a.b2p.relinkMaster(f) });
+      if (overridesOf(a.doc, f).length) items.push({ label: 'Reset to Master', icon: 'rebuild', action: () => a.b2p.reset(f) });
+      items.push({ label: 'Break Link…', icon: 'part', action: () => a.b2p.breakLink(f) });
+    }
     if (f.type !== 'sketch3d') items.push({ label: 'Save as Library Feature…', icon: 'folder', action: () => a.saveLibraryFeature([f.id], f.name) });
     items.push({ label: 'Add to New Folder…', icon: 'folder', action: () => this.promptText('New Folder', 'folder', 'Name', 'Folder').then((v) => { if (v?.trim()) { newFeatureFolder(a.doc, v.trim(), [f.id]); a.commit(); this.renderTree(); } }) });
     for (const g of (a.doc.featureFolders || []).filter((x) => x !== inFolder)) items.push({ label: `Move to ${g.name}`, icon: 'folder', action: () => { putFeatureInFolder(a.doc, f.id, g.id); a.commit(); this.renderTree(); } });

@@ -16,7 +16,7 @@ Main capabilities:
 - Constraint-driven 2D sketches with relations, dimensions and equations, plus gear and airfoil generators
 - 3D sketches for frames, pipe and duct routes and sweep paths
 - Solid features: extrude, revolve, sweep, loft, hole, helix, threads, wrap, draft, rib, dome, patterns, mirror, fillet, chamfer, shell
-- Multi-body parts with combine, subtract, split, move/copy, per-body materials and appearances
+- Multi-body parts with combine, subtract, split, move/copy, per-body materials and appearances, and **Bodies to Parts** for top-down design: linked parts and an assembly made from a master part
 - Surface modelling: extruded, revolved, planar, lofted, swept, filled, boundary and ruled surfaces, trim, extend, knit, thicken and more
 - Sheet metal: flanges, hems, miter flanges, sketched bends, jogs, forming tools, tab and slot, lofted bends, transitions, flat patterns and DXF export
 - **Fast Structure** (weldments): structural members from standard profiles, end caps, gussets, weld beads and a cut list
@@ -1210,6 +1210,70 @@ Moves or copies solid and surface bodies. {idx:Move/Copy Bodies}{idx:mates}
 ## Delete Body
 
 Removes a body from the model from that point in the history. Deleting the Delete Body feature brings the body back. {idx:Delete Body}
+
+## Bodies to Parts
+
+**Bodies to Parts** {idx:Bodies to Parts}{idx:top-down design}{idx:skeleton modelling}{idx:master part} turns a multi-body part into a set of linked parts and, if you ask, an assembly of them. Model the whole design in one part, the **master**, then let RazorCAD make the files. This needs the desktop app, because the links are between real files.
+
+Choose **Features ▸ Bodies to Parts…**, or right-click **Solid Bodies**. Save the master first. In the dialog:
+
+- **Folder**: where the new files go. A file is never written over: if a name is taken, the new one gets the next number.
+- **File names** and **Part numbers**: templates, where `{part}` is the master, `{body}` the body and `{n}` its number. Change any name in the list as well. Part numbers are left out when that box is empty.
+- The list of bodies: untick any you don't want. Give several bodies the same file name to put them in one part.
+- **One part, N places** or **A part for each**: for identical bodies. One part goes in the assembly at each body's position, so a change to it changes them all. A mirrored body counts as a different part.
+- **Make Assembly**: makes an assembly with every part fixed where its body is. Its components stay fixed until you float or mate them.
+- **Add this part as an envelope**: see below.
+- **Body folders become sub-assemblies**: appears when the master has body folders. Each folder becomes a sub-assembly.
+
+A **Bodies to Parts** feature appears at the end of the master's tree and stays there, however features are added or moved. Open it to see each part and whether it's up to date. Double-click it, or right-click ▸ **Add Parts…**, for bodies you haven't linked yet; they join the same assembly.
+
+### What a linked part holds
+
+A part's first feature is **Imported from Master**. It holds the body in the master's coordinates, so its origin and planes are where they are in the master. A sheet metal body stays sheet metal, with its flat pattern and DXF export. Add anything you like after it: those features stay in the part and never go back to the master.
+
+Sheet metal settings such as thickness belong to the master. Cuts and flanges can be added in the part.
+
+### Published planes and sketches
+
+A skeleton is more than bodies. Tick planes and sketches in the Bodies to Parts dialog, or right-click one in the master ▸ **Publish to Linked Parts**, and every linked part takes them. {idx:published sketch}{idx:published plane}
+
+They appear under **Imported from Master**, in the same place as in the master. A published sketch is its solved geometry, without relations or dimensions. They are read-only in the part: change them in the master. Sketch on a published plane, extrude a published sketch, or convert its entities, and those features move when the master moves them. **Stop Publishing** leaves the parts with what they have, as it was.
+
+### When the master changes
+
+Saving the master updates its linked parts and the assembly. RazorCAD lists what will change first; tick **Update them without asking** to skip that. Nothing is updated while the master is rolled back or has rebuild errors. A link follows the configuration that was active when it was made.
+
+Features you added in a part stay on top of the new shape. If a master edit removes something one of them used, it shows the usual rebuild error in the part.
+
+### Properties and appearances
+
+A part takes its name, material, colours, appearances and custom properties from the master. The master's own Part Number isn't passed on. A value follows the master until you change it in the part. It then stays as you set it, field by field, and everything else keeps following. The tree shows how many overrides a part has, and right-click **Imported from Master** ▸ **Reset to Master** takes them all back.
+
+### Links in the trees
+
+| In | Right-click | What it does |
+|---|---|---|
+| The master, on a part | **Open Part** | Opens the part |
+| The master, on a part | **Relink…** | When its body is gone or its file moved: choose the body, or find the file |
+| The master, on a part | **Remove Link** | Stops updating it; the file stays |
+| The part, on Imported from Master | **Open Master** | Opens the master |
+| The part, on Imported from Master | **Relink…** | When the master moved: find its file |
+| The part, on Imported from Master | **Reset to Master** | Takes back every override |
+| The part, on Imported from Master | **Break Link…** | Keeps the shape and stops following the master, for good |
+
+Keep the files together and you can move the folder: links look beside the file first, then at the path they had. A status of *out of date*, *its file was not found*, *its body is gone from this part* or *master not found* tells you what needs attention.
+
+A body has an identity in the master. If an edit replaces it, for example by deleting the feature that made it and modelling it again, the part keeps its last shape and shows *its body is gone from this part*. Use **Relink…** to choose the body it follows now.
+
+### Make Independent
+
+When identical bodies share one part, right-click one of its components in the assembly ▸ **Make Independent…**. It gets a part file of its own, a copy of the shared one with everything added to it, to change separately. It stays where it is and stays linked to its own body in the master.
+
+### The master as an envelope
+
+An **envelope** {idx:envelope} is the master, or any part, in the assembly as a reference. It stays at the top of the assembly's tree and shows see-through. It can take mates, so parts can be placed against the skeleton. It's left out of the bill of materials and masses, drawings, STEP export, exploded views and interference checks.
+
+Tick the option in Bodies to Parts, or right-click any component ▸ **Make Envelope**. **Stop Being an Envelope** turns it back into a component.
 
 # Surfaces
 

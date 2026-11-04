@@ -1013,3 +1013,24 @@
 1013|Acoplador lineal
 1014|Más impulsores
 1015|+ Añadir un impulsor
+1016|Cuerpos a piezas
+1017|Cuerpos a piezas…
+1018|Operaciones ▸ Cuerpos a piezas…
+1019|Añadir piezas…
+1020|Abrir maestro
+1021|Restablecer al maestro
+1022|Romper vínculo…
+1023|Romper vínculo
+1024|Quitar vínculo (conserva el archivo)
+1025|Hacer independiente…
+1026|Convertir en envolvente
+1027|Dejar de ser envolvente
+1028|Crear ensamblaje
+1029|Crear piezas
+1030|Actualizar piezas vinculadas
+1031|Importado del maestro
+1032|Nombres de archivo
+1033|Números de pieza
+1034|Publicar en piezas vinculadas
+1035|Dejar de publicar
+1036|Volver a vincular…

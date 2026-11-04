@@ -1013,3 +1013,24 @@
 1013|Coupleur linéaire
 1014|Autres moteurs
 1015|+ Ajouter un moteur
+1016|Corps en pièces
+1017|Corps en pièces…
+1018|Fonctions ▸ Corps en pièces…
+1019|Ajouter des pièces…
+1020|Ouvrir le maître
+1021|Rétablir depuis le maître
+1022|Rompre le lien…
+1023|Rompre le lien
+1024|Retirer le lien (garde le fichier)
+1025|Rendre indépendante…
+1026|Faire une enveloppe
+1027|Ne plus être une enveloppe
+1028|Créer l’assemblage
+1029|Créer les pièces
+1030|Mettre à jour les pièces liées
+1031|Importé du maître
+1032|Noms de fichier
+1033|Numéros de pièce
+1034|Publier vers les pièces liées
+1035|Ne plus publier
+1036|Relier à nouveau…

@@ -900,6 +900,15 @@ class Api:
         self._picked_folder = os.path.abspath(folder)
         return folder
 
+    def write_linked(self, path, content, create=False):
+        """A part or assembly linked by Bodies to Parts, written where the link says: not a recent file, and a new
+        one never over a file that is there."""
+        path = str(path or '')
+        if not path.lower().endswith(OWN_EXTS) or os.path.isfile(path) == bool(create) or not os.path.isdir(os.path.dirname(path) or '.'):
+            return None
+        write_atomic(path, content)
+        return path
+
     def save_into(self, folder, name, b64):
         # only into the folder the user just picked, and only a plain file name (no paths)
         picked = getattr(self, '_picked_folder', None)

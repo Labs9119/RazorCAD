@@ -16,6 +16,7 @@ import {locateAlongPath,sketchPath,cadPath} from './pathlocation.js';
 import * as LC from './loftcorrespondence.js';
 import { threadList, minorDiameter, nearestThread } from './threads.js';
 import * as SM from './sheetmetal.js';
+import { matchBodies } from './bodymatch.js';
 import { holeSpec, holeProfile } from './holes.js';
 import * as P3 from './print3d.js';
 import { asmPartFeatures } from './asmcuts.js';
@@ -2694,6 +2695,60 @@ function takeBlobs(doc, sent) {
   for (const id of named) if (!BLOBS.has(id)) throw new Error(`Missing feature data (${id})`);
   for (const id of [...BLOBS.keys()]) if (!named.has(id)) BLOBS.delete(id);
 }
+// Bodies to Parts: bodies of the last rebuild as a part of their own takes them, as plain data: each one's exact shape,
+// sheet metal data (its flat outline is shapes too) and look. An Imported from Master feature holds them.
+// frame: { pos, rot }, where the part they go to has them in the master: they are given as the part holds them
+// (a part made independent stays modelled where the shared one was; its component sits at the frame).
+function publishBodies(ids, frame = null) {
+  const back = frame && (() => {
+    const [x, y, z, w] = frame.rot, half = Math.hypot(x, y, z), angle = 2 * Math.atan2(half, w);
+    const r = half > 1e-14 ? [(-x / half) * angle, (-y / half) * angle, (-z / half) * angle] : [0, 0, 0];
+    // (the frame as a matrix, then its inverse)
+    const M = [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), frame.pos[0], 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w), frame.pos[1], 2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y), frame.pos[2]];
+    const I = SM.invM(M);
+    return { r, t: [I[3], I[7], I[11]], I };
+  })();
+  return ids.map((id) => {
+    const r = lastSolids.find((x) => x.id === id) || lastSurfaces.find((x) => x.id === id);
+    if (!r) return { id, missing: true };
+    const shape = back ? moveShape(r.shape, back.r, back.t) : r.shape, sheet = back && r.sheet ? SM.moveSheet(r.sheet, back.I) : r.sheet;
+    const shapes = [], graph = encodeGraph({ shape, sheet: sheet || null, look: r.look || null }, shapes);
+    return { id, kind: lastSolids.includes(r) ? 'solid' : 'surface', ...writeShapes(shapes), ...graph };
+  });
+}
+// Where a body identical to another sits: the turn and move that take the first onto the second, { pos, rot }, or null.
+function bodyPlacement(from, to) {
+  const rec = (id) => { const r = lastSolids.find((x) => x.id === id); if (!r) throw new Error(`Body ${id} is not in the part`); return r; };
+  const middle = (P) => [0, 1, 2].map((i) => P.reduce((t, p) => t + p[i], 0) / (P.length || 1));
+  // (the points a body is known by: its corners and the centres of its circles. Not a circle's own vertex: where that
+  // lies on the circle says nothing about the body, and differs between identical bodies)
+  const vertices = (r) => {
+    const out = [], at = (list, p) => list.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 1e-6), add = (p) => { if (!at(out, p)) out.push(p); };
+    const ends = r.shape.edges.map((e) => ({ e, a: vec(e.startPoint), b: vec(e.endPoint) }));
+    const seams = ends.filter(({ a, b }) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 1e-6).map(({ a }) => a);
+    for (const { e, a, b } of ends) {
+      const c = e.geomType === 'CIRCLE' ? circleOf(e) : null;
+      if (c) add(c.c);
+      for (const p of [a, b]) if (!at(seams, p)) add(p);
+    }
+    return out;
+  };
+  const pa = vertices(rec(from)), pb = vertices(rec(to));
+  return matchBodies(pa, middle(pa), pb, middle(pb));
+}
+// (read once: the shapes of an Imported from Master feature, for as long as its text is the same)
+const masterCache = new Map();
+function masterBodies(f) {
+  const text = featureData(f), hit = masterCache.get(f.id);
+  if (hit?.text === text) return hit.bodies;
+  const bodies = JSON.parse(text).bodies.map((b) => {
+    const shapes = readShapes(b);
+    if (!shapes) throw new Error('The imported body could not be read');
+    return { kind: b.kind, ...decodeGraph(b.nodes, b.root, shapes) };
+  });
+  masterCache.set(f.id, { text, bodies });
+  return bodies;
+}
 async function importShape(f, timing = null) {
   const data = featureData(f);
   f = { ...f, data };
@@ -4705,6 +4760,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
           break;
         }
         case 'plane': {
+          // (published by a master part: it is where the master has it)
+          if (f.fixedFrame) { planes.set(f.id, f.fixedFrame); res.planes[f.id] = f.fixedFrame; break; }
           const refs = planeRefs(f);
           const type = inferPlaneType(refs, !!f.through);
           if (!type&&!f.referenceDefinition) throw new Error('These references do not define a plane — pick a face/plane, an edge/axis or points');
@@ -5407,6 +5464,17 @@ async function rebuild(doc, previewId = null, opts = {}) {
           blendChain.partId = whole ? null : rec?.id ?? null;
           blendStep = { type: f.type, item };
           if (missing) throw new Error(`${missing} selected edge${missing > 1 ? 's' : ''} could not be found and ${missing > 1 ? 'were' : 'was'} skipped`);
+          break;
+        }
+        case 'bodiesToParts': break; // (no geometry: it lists the parts made from this part's bodies)
+        case 'masterImport': {
+          for (const b of masterBodies(f)) {
+            const shape = b.shape.clone();
+            if (b.kind === 'surface') { surfaces.push(bodyRec(newId(f.id), shape, f.id)); applied.push({ op: 'add', tool: shape }); } else apply('add', shape, false);
+            const rec = (b.kind === 'surface' ? surfaces : solids).at(-1);
+            if (b.sheet) rec.sheet = b.sheet;
+            if (b.look) rec.look = b.look;
+          }
           break;
         }
         case 'import': {
@@ -13420,6 +13488,10 @@ function exportSnaps(ids) {
     if (m) meshes.push([sh, m]);
   }
   try { graph = encodeGraph({ entries: c.entries.map((e) => ({ id: e.id, json: e.json, snap: e.snap })), meshes }, shapes); } catch (e) { if (isFatal(e)) throw e; return { v: 0, error: e.message }; }
+  try { return { v: SNAP_VERSION, eqKey: c.eqKey, ...writeShapes(shapes), ...graph }; } catch (e) { if (isFatal(e)) throw e; return { v: 0, error: e.message }; }
+}
+// Shapes written out as one compound, each shape found again by its place in it, so what they share stays shared.
+function writeShapes(shapes) {
   const oc = R.getOC(), builder = new oc.TopoDS_Builder(), comp = new oc.TopoDS_Compound();
   const temp = [];
   try {
@@ -13445,20 +13517,17 @@ function exportSnaps(ids) {
       const leaves = compoundLeaves(raw);
       try { return { c: leaves.map(place) }; } finally { leaves.forEach((x) => x.delete()); }
     });
-    return { v: SNAP_VERSION, eqKey: c.eqKey, n: shapes.length, places, ...graph, brep: oc.BRepToolsWrapper.Write(comp) };
-  } catch (e) { if (isFatal(e)) throw e; return { v: 0, error: e.message }; } finally { temp.forEach((l) => l.forEach((x) => x.delete())); comp.delete(); builder.delete(); }
+    return { n: shapes.length, places, brep: oc.BRepToolsWrapper.Write(comp) };
+  } finally { temp.forEach((l) => l.forEach((x) => x.delete())); comp.delete(); builder.delete(); }
 }
-// Put a written-out rebuild cache back. The next rebuild uses each state only while the features up to it
-// are exactly as they were (as with the cache in memory).
-function importSnaps(data) {
-  if (data?.v !== SNAP_VERSION || typeof data.brep !== 'string' || data.places?.length !== data.n) return false;
+// (null: they could not be read back)
+function readShapes(data) {
   const oc = R.getOC();
   const whole = oc.BRepToolsWrapper.Read(data.brep);
   const lists = {};
   const at = ([t, i]) => (lists[t] ||= exploreAll(whole, t))[i];
-  let shapes;
   try {
-    shapes = data.places.map((pl) => {
+    return data.places.map((pl) => {
       if (!pl.c) { const raw = at(pl); if (!raw) throw new Error('missing'); return R.cast(raw); }
       const builder = new oc.TopoDS_Builder(), comp = new oc.TopoDS_Compound();
       try {
@@ -13467,7 +13536,14 @@ function importSnaps(data) {
         return R.cast(comp);
       } finally { comp.delete(); builder.delete(); }
     });
-  } catch (e) { if (isFatal(e)) throw e; return false; } finally { for (const l of Object.values(lists)) l.forEach((x) => x.delete()); whole.delete(); }
+  } catch (e) { if (isFatal(e)) throw e; return null; } finally { for (const l of Object.values(lists)) l.forEach((x) => x.delete()); whole.delete(); }
+}
+// Put a written-out rebuild cache back. The next rebuild uses each state only while the features up to it
+// are exactly as they were (as with the cache in memory).
+function importSnaps(data) {
+  if (data?.v !== SNAP_VERSION || typeof data.brep !== 'string' || data.places?.length !== data.n) return false;
+  const shapes = readShapes(data);
+  if (!shapes) return false;
   const { entries, meshes } = decodeGraph(data.nodes, data.root, shapes) || {};
   if (!Array.isArray(entries) || !entries.length) return false;
   rebuildCache = { eqKey: data.eqKey, entries };
@@ -13506,6 +13582,10 @@ async function handleMessage(e) {
     } else if (type === 'export') {
       result = await exportBody(data.format, data.bodyId || null, data.info || {}, data.opts || {});
       transfer = [result.buffer];
+    } else if (type === 'publishBodies') {
+      result = publishBodies(data.ids || [], data.frame || null);
+    } else if (type === 'bodyPlacement') {
+      result = bodyPlacement(data.from, data.to);
     } else if (type === 'exportFaceDXF') {
       result = exportFaceDXF(data.ref);
       transfer = [result.buffer];

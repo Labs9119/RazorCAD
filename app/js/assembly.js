@@ -27,7 +27,7 @@ import { hashText, packResult, unpackResult } from './modelcache.js';
 import { packMesh, unpackMesh, MESH_CACHE } from './partmeshes.js';
 import { AssemblyView } from './asmview.js';
 import { revisionsDialog } from './revisions.js';
-import { bomRows, bomPropNames, bomCell, bomTotals, bomSources, bomColumnMenu, meshVolume, massOf } from './bom.js';
+import { bomRows, bomPropNames, bomCell, bomTotals, bomSources, bomColumnMenu, meshVolume, massOf, withoutEnvelope } from './bom.js';
 import { editCustomProps } from './custprops.js';
 import { MotionTool } from './motion.js';
 import { findCollisions } from './collide.js';
@@ -156,7 +156,8 @@ const r6 = (x) => Math.round(x * 1e6) / 1e6;
 // A part's mesh with the appearances set in the part (a body's colour, made transparent; the colours of its
 // Appearances tab on faces and bodies) over those it was imported with (the mesh bodies' color / transparency), as
 // the assembly shows them.
-function withPartLooks(mesh, doc) {
+function withPartLooks(mesh, doc, envelope = false) {
+  if (envelope) mesh = { ...mesh, bodies: mesh.bodies?.map((b) => ({ ...b, transparency: 0.8 })) };
   const own = doc.bodies || {};
   mesh = meshWithAppearances(mesh, doc.appearances);
   if (!mesh.bodies?.some((b) => own[b.id]?.color || own[b.id]?.transparent !== undefined)) return mesh;
@@ -606,7 +607,7 @@ export class AssemblyEditor {
     return ex ? explodeOffsets(ex, null, this._explodeT ?? 1) : new Map();
   }
   // (the explode tool's host)
-  items() { return this.doc.components.filter((c) => !this.eff(c).suppressed).map((c) => ({ id: c.id, name: c.name })); }
+  items() { return this.doc.components.filter((c) => !this.eff(c).suppressed && !c.envelope).map((c) => ({ id: c.id, name: c.name })); }
   itemAt(e) { return this.compAt(e)?.comp.id || null; }
   itemCenter(id) { const c = this.comp(id); return c ? this.compCenter(c) : [0, 0, 0]; }
   itemSize(id) { const c = this.comp(id), b = c && this.geo(c)?.box; return b ? Math.max(...b.max.map((x, i) => x - b.min[i])) * 1.2 : 50; }
@@ -1075,7 +1076,7 @@ export class AssemblyEditor {
     }
     // (colour: the part's material's, for bodies without one of their own; p.color: an older STEP import's part colour)
     const done = (j, mesh, error = null) => {
-      this.parts.set(j.gk, error ? { key: j.key, from: j.p.doc, mesh: null, error, coarse: j.coarse } : { key: j.key, from: j.p.doc, coarse: j.coarse, mesh: mesh && withPartLooks(mesh, j.p.doc), color: materialById(j.p.doc.material)?.color ?? j.p.color ?? DEFAULT_BODY_COLOR, box: mesh ? meshBox(mesh) : null });
+      this.parts.set(j.gk, error ? { key: j.key, from: j.p.doc, mesh: null, error, coarse: j.coarse } : { key: j.key, from: j.p.doc, coarse: j.coarse, mesh: mesh && withPartLooks(mesh, j.p.doc, this.doc.components.some((c) => c.envelope && c.part === j.p.id)), color: materialById(j.p.doc.material)?.color ?? j.p.color ?? DEFAULT_BODY_COLOR, box: mesh ? meshBox(mesh) : null });
       // (its mass, for the bill of materials: the mesh's volume and the part's material)
       if (mesh && !isAssembly(j.p.doc) && !j.cut) {
         const kg = massOf(Number.isFinite(mesh.volume) ? mesh.volume : meshVolume(mesh), j.p.doc.material), k = j.cfgId ?? ''; // (Kernel Lab: the kernel's volume)
@@ -2409,6 +2410,8 @@ export class AssemblyEditor {
       this.eff(c).hidden ? { label: 'Show', icon: 'show', action: () => this.setHidden(c.id, false) } : { label: 'Hide', icon: 'hide', action: () => this.setHidden(c.id, true) },
       this.eff(c).suppressed ? { label: 'Unsuppress', icon: 'suppress', action: () => this.setSuppressed(c.id, false) } : { label: 'Suppress', icon: 'suppress', action: () => this.setSuppressed(c.id, true) },
       ...(this.partConfigs(this.part(c.part)).length > 1 ? ['sep', ...this.partConfigs(this.part(c.part)).map(([id, name]) => ({ label: `${(this.eff(c).config || null) === id ? '● ' : '　'}Configuration: ${name}`, icon: '', action: () => this.setCompConfig(c.id, id) }))] : []),
+      ...(c.master && this.doc.components.filter((x) => x.part === c.part).length > 1 ? [{ label: 'Make Independent…', icon: 'part', action: () => this.app.b2p.makeIndependent(this, c) }] : []),
+      { label: c.envelope ? 'Stop Being an Envelope' : 'Make Envelope', icon: 'part', action: () => this.setEnvelope(c.id, !c.envelope) },
       { label: 'Insert Another Instance', icon: 'insertComponent', action: () => this.addComponent(c.part) },
       'sep',
       { label: 'Rename', icon: 'rename', action: () => this.renameComponent(c.id) },
@@ -2766,6 +2769,15 @@ export class AssemblyEditor {
     this.solve();
     this.change('Mate deleted.');
   }
+  setEnvelope(id, on) {
+    const c = this.comp(id);
+    if (!c) return;
+    this.begin();
+    if (on) { c.envelope = true; c.fixed = true; this.doc.components = [c, ...this.doc.components.filter((x) => x !== c)]; } else delete c.envelope;
+    this.parts.clear();
+    this.change(on ? `${c.name} is an envelope: a reference, kept out of the BOM and mass.` : `${c.name} is an ordinary component again.`);
+    this.loadParts();
+  }
   toggleMate(id) { const m = this.doc.mates.find((x) => x.id === id); if (!m) return; this.begin(); this.setMate(m, 'suppressed', !this.effMate(m).suppressed); this.solve(); this.change(); }
   flipMate(id) {
     const m = this.doc.mates.find((x) => x.id === id);
@@ -2780,11 +2792,11 @@ export class AssemblyEditor {
   // Interference Check: where components overlap (in red), with the overlap volume of each pair. Parts that
   // only touch (mated faces) do not count. Done with the components where the mates put them (not exploded).
   async checkInterference() {
-    const shown = this.doc.components.filter((c) => !this.eff(c).suppressed);
+    const shown = this.doc.components.filter((c) => !this.eff(c).suppressed && !c.envelope);
     if (shown.length < 2) { this.app.toast('Interference Check needs two or more components', true); return; }
     if (this.doc.exploded) this.setExploded(null, false);
     let r;
-    try { r = await this.app.withProgress('Checking for interference…', () => (this.app.kernelPool || this.app.kernel).request('asmInterference', { doc: JSON.stringify(this.doc) }, 'asm-parts')); } catch (e) { this.app.toast('Interference Check failed: ' + e.message, true); return; }
+    try { r = await this.app.withProgress('Checking for interference…', () => (this.app.kernelPool || this.app.kernel).request('asmInterference', { doc: JSON.stringify(withoutEnvelope(this.doc)) }, 'asm-parts')); } catch (e) { this.app.toast('Interference Check failed: ' + e.message, true); return; }
     this.vp.setPreview(r.mesh ? { remove: r.mesh } : null);
     this.vp.requestRender?.();
     // a body's path → "Component" (inside a sub-assembly: "Sub-assembly ▸ Component")
@@ -2879,7 +2891,7 @@ export class AssemblyEditor {
     if (!this.doc.components.length) return;
     try {
       const o = exportOptions(this.app.ui.prefs);
-      const r = await this.app.withProgress('Exporting STEP…', () => (this.app.kernelPool || this.app.kernel).request('exportAssemblySTEP', { doc: JSON.stringify(this.exportDoc()), opts: kernelExportOpts(o).step }, 'asm-parts'));
+      const r = await this.app.withProgress('Exporting STEP…', () => (this.app.kernelPool || this.app.kernel).request('exportAssemblySTEP', { doc: JSON.stringify(withoutEnvelope(this.exportDoc())), opts: kernelExportOpts(o).step }, 'asm-parts'));
       const bytes = new TextEncoder().encode(stepHeader(new TextDecoder().decode(r.bytes), o, `${this.safeName()}.step`));
       const path = await platform.saveBinary(`${this.safeName()}.step`, bytes, 'step');
       if (path !== null) this.app.status(`STEP saved: ${r.parts} part${r.parts === 1 ? '' : 's'}, ${r.components} component${r.components === 1 ? '' : 's'}${r.assemblies > 1 ? `, ${r.assemblies - 1} sub-assembl${r.assemblies === 2 ? 'y' : 'ies'}` : ''}.`);
@@ -3277,7 +3289,7 @@ export class AssemblyEditor {
       }
     };
     const viewMates = this.view().mates;
-    for (const c of this.doc.components) {
+    for (const c of [...this.doc.components].sort((x, y) => !!y.envelope - !!x.envelope)) {
       const e = this.eff(c), p = this.part(c.part);
       // (a flexible sub-assembly is solved as its components, "sub/inner": its freedoms are theirs)
       const ofC = (id) => id === c.id || (c.flexible && String(id).startsWith(c.id + '/'));
@@ -3288,8 +3300,8 @@ export class AssemblyEditor {
       row({
         ic: isSub ? 'assembly' : 'component', label: prefix + c.name, depth: 1, cls: (e.hidden ? 'hidden-item' : '') + (e.suppressed ? ' suppressed' : ''),
         twisty: has ? (open ? '▼' : '▶') : '', onTwisty: has ? () => { if (open) this._openSubs.delete(c.id); else this._openSubs.add(c.id); this.renderTree(); } : null,
-        sub: this.partConfigs(p).length > 1 ? `(${this.configName(p, e.config)})` : '',
-        title: c.fixed ? 'Fixed in place' : dof > 0 || !mated ? `Under defined: it can still move (${mated ? dof : 6} degree${(mated ? dof : 6) === 1 ? '' : 's'} of freedom) — drag it, or add mates` : 'Fully defined by its mates',
+        sub: c.envelope ? '(envelope)' : this.partConfigs(p).length > 1 ? `(${this.configName(p, e.config)})` : '',
+        title: c.envelope ? 'Envelope: a reference for modelling, not in the BOM, mass, drawings, exports or interference checks' : c.fixed ? 'Fixed in place' : dof > 0 || !mated ? `Under defined: it can still move (${mated ? dof : 6} degree${(mated ? dof : 6) === 1 ? '' : 's'} of freedom) — drag it, or add mates` : 'Fully defined by its mates',
         selected: this.sel?.kind === 'comp' && this.sel.id === c.id,
         onClick: () => this.select({ kind: 'comp', id: c.id }),
         onDbl: () => this.openPart(c.id),

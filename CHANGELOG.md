@@ -6,6 +6,39 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-04 22:33 — Bodies to Parts: published planes and sketches, and Relink
+
+- **Published planes and sketches:** tick them in Bodies to Parts, or right-click one ▸ Publish to Linked Parts. Every
+  linked part takes them, under Imported from Master, read-only and where the master has them. Features built on them
+  in a part move when the master moves them. A part made independent keeps them where it is modelled.
+- **Relink:** when a body is replaced in the master, choose the body the part follows now (its assembly components go
+  with it). When a part or the master has moved, find its file; a file that isn't the linked one is refused.
+- Tests: bodies-to-parts-refs.
+
+---
+
+## 2026-11-04 22:22 — Bodies to Parts: linked parts and an assembly from a multi-body master, and the master as an envelope
+
+- **Top-down design (suggested in GitHub Discussion 4).** Model the whole design as one multi-body part, then Features ▸
+  Bodies to Parts… makes a part file of each body, linked to it. A Bodies to Parts feature, always last in the master's
+  tree, lists them and says whether each is up to date.
+- **The parts:** each starts with Imported from Master, in the master's coordinates, so origin and planes match. Sheet
+  metal stays sheet metal, with its flat pattern. What you add in a part stays there and never goes back.
+- **Saving the master** updates the parts and the assembly, after listing what will change. Nothing is passed on while
+  it is rolled back or has rebuild errors.
+- **Properties and appearances** follow the master until changed in the part, field by field; Reset to Master takes
+  them back.
+- **Identical bodies** can share one part, placed at each body's position (turned copies too; a mirrored body is a
+  different part), or have a part each. **Make Independent** gives one component its own file, still linked to its body.
+- **Make Assembly:** every part fixed where its body is, and body folders can become sub-assemblies.
+- **Envelope:** the master, or any part, at the top of the assembly as a reference: see-through, able to take mates, and
+  left out of the BOM and masses, drawings, STEP export, exploded views and interference checks.
+- Also: Open Master, Open Part, Break Link, Remove Link; file names and part numbers from templates; a file is never
+  written over; a folder of linked files can be moved whole. Desktop app only.
+- Tests: bodies-to-parts (the whole way), bodies-to-parts-sheet, envelope-component, and the file checks in test_updater.py.
+
+---
+
 ## 2026-11-04 21:50 — Version 0.21.6-beta
 
 - Version 0.21.6-beta: Update Now in a window of its own, and a failed update always says so; sheet metal aerofoil

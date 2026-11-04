@@ -177,6 +177,35 @@ class AppSideTests(unittest.TestCase):
         self.assertFalse(self.ns['run_setup'](self.api))
 
 
+class LinkedFileTests(unittest.TestCase):
+    """Bodies to Parts writes files where a link says: only RazorCAD's own kinds, and a new one never over a file."""
+    def setUp(self):
+        source = ast.parse((ROOT / 'razorcad.py').read_text(encoding='utf-8'))
+        api = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'Api')
+        method = next(n for n in api.body if isinstance(n, ast.FunctionDef) and n.name == 'write_linked')
+        self.written = []
+        self.ns = dict(os=os, OWN_EXTS=('.rcad', '.rasm', '.rdrw', '.rdrt'), write_atomic=lambda path, text: Path(path).write_text(text))
+        exec(compile(ast.Module(body=[method], type_ignores=[]), 'razorcad.py', 'exec'), self.ns)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def write(self, name, create):
+        return self.ns['write_linked'](None, str(Path(self.temp.name) / name), 'text', create)
+
+    def test_a_new_file_is_never_written_over(self):
+        self.assertTrue(self.write('a.rcad', True))
+        self.assertIsNone(self.write('a.rcad', True))
+
+    def test_an_update_needs_the_file_to_be_there(self):
+        self.assertIsNone(self.write('a.rcad', False))
+        self.write('a.rcad', True)
+        self.assertTrue(self.write('a.rcad', False))
+
+    def test_only_razorcads_own_kinds_of_file(self):
+        self.assertIsNone(self.write('a.exe', True))
+        self.assertIsNone(self.write('missing/a.rcad', True))
+
+
 class SetupSideTests(unittest.TestCase):
     def setUp(self):
         self.setup = setup_module()

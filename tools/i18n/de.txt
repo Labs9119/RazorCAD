@@ -1013,3 +1013,24 @@
 1013|Linearkoppler
 1014|Weitere Antriebe
 1015|+ Antrieb hinzufügen
+1016|Körper zu Teilen
+1017|Körper zu Teilen…
+1018|Features ▸ Körper zu Teilen…
+1019|Teile hinzufügen…
+1020|Master öffnen
+1021|Auf Master zurücksetzen
+1022|Verknüpfung lösen…
+1023|Verknüpfung lösen
+1024|Verknüpfung entfernen (Datei bleibt)
+1025|Unabhängig machen…
+1026|Zur Hülle machen
+1027|Keine Hülle mehr
+1028|Baugruppe erstellen
+1029|Teile erstellen
+1030|Verknüpfte Teile aktualisieren
+1031|Aus Master importiert
+1032|Dateinamen
+1033|Teilenummern
+1034|In verknüpften Teilen veröffentlichen
+1035|Nicht mehr veröffentlichen
+1036|Neu verknüpfen…

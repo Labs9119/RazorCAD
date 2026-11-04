@@ -1013,3 +1013,24 @@ Universal Joint
 Linear Coupler
 More Drivers
 + Add a driver
+Bodies to Parts
+Bodies to Parts…
+Features ▸ Bodies to Parts…
+Add Parts…
+Open Master
+Reset to Master
+Break Link…
+Break Link
+Remove Link (keeps the part file)
+Make Independent…
+Make Envelope
+Stop Being an Envelope
+Make Assembly
+Make Parts
+Update Linked Parts
+Imported from Master
+File names
+Part numbers
+Publish to Linked Parts
+Stop Publishing
+Relink…

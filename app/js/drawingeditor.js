@@ -14,7 +14,7 @@ import { cutListRows } from './weldments.js';
 import { bodyMaterialId, docJSON, stripThumbnail, fileStem, isDefaultName } from './model.js';
 import { TEMPLATE_EXT, templateFromDrawing, applyTemplate } from './drawtemplates.js';
 import { partMesh, assemblyParts } from './partmeshes.js';
-import { bomRows, bomItemOf, BOM_FIELDS, bomPropNames, bomCell, bomSources, bomColumnMenu } from './bom.js';
+import { bomRows, bomItemOf, BOM_FIELDS, bomPropNames, bomCell, bomSources, bomColumnMenu, withoutEnvelope } from './bom.js';
 import { propOf } from './custprops.js';
 import { explodeOffsets } from './explode.js';
 import { autoDims, AUTO_DIM_DEFAULTS } from './autodim.js';
@@ -302,9 +302,10 @@ export class DrawingEditor {
     const m = this.doc.models.find((x) => x.id === v.model);
     const exId = m?.doc?.kind === 'assembly' ? this.explodeOf(v) : null;
     const ex = exId && (m.doc.explodes || []).find((x) => x.id === exId);
-    if (!ex) return m;
+    const shown = m?.doc?.kind === 'assembly' ? withoutEnvelope(m.doc) : m?.doc;
+    if (!ex) return shown === m?.doc ? m : { ...m, doc: shown };
     const offs = explodeOffsets(ex);
-    return { ...m, doc: { ...m.doc, exploded: null, components: m.doc.components.map((c) => { const o = offs.get(c.id); return o ? { ...c, pos: c.pos.map((x, i) => x + o[i]) } : c; }) } };
+    return { ...m, doc: { ...shown, exploded: null, components: shown.components.map((c) => { const o = offs.get(c.id); return o ? { ...c, pos: c.pos.map((x, i) => x + o[i]) } : c; }) } };
   }
 
   async updateGeometry() {

@@ -31,6 +31,7 @@ import { hashText, packResult, unpackResult } from './modelcache.js';
 import { unitOf, UNIT_SYSTEM } from './units.js';
 import { isTemplate, drawingFromTemplate } from './drawtemplates.js';
 import { bodySignature, groupBodies, sameBody } from './bodygroups.js';
+import { BodiesToParts, masterImports } from './bodiestoparts.js';
 import * as D from './drawing.js';
 import { Macros } from './macros.js';
 import { Plugins } from './plugins.js';
@@ -114,6 +115,7 @@ class App {
     this.tabKernelMax = 1;
     this.sizeKernels();
     this.macros = new Macros(this); // (Tools ▸ Macros: recording and running them)
+    this.b2p = new BodiesToParts(this); // (linked parts made from this part's bodies, or this part's master)
     this.plugins = new Plugins(this); // (Tools ▸ Plug-ins: tools of the user's own, each with a ribbon tab; started once the preferences are read)
     // the theme changed: the 3D view's and the sketch's lines in its colours
     window.addEventListener('razorcad-theme', () => {
@@ -2456,11 +2458,12 @@ class App {
     this.ui.renderPM();
     this.ui.refreshCommandStates();
     this.updateTitle();
-    if (this.showTabModel(t)) { this.restoreSection(t.section); this.updateContext(); return; }
+    if (this.showTabModel(t)) { this.restoreSection(t.section); this.updateContext(); this.b2p.refreshStatus(); return; }
     await this.rebuild();
     if (t.view) this.viewport.restoreView(t.view);
     this.restoreSection(t.section);
     this.updateContext();
+    this.b2p.refreshStatus();
   }
 
   // A part edited in context: its context bodies brought up to date from the open assembly they came from (the other
@@ -5047,6 +5050,7 @@ class App {
   editSketch(id) {
     const f = M.findFeature(this.doc, id);
     if (!f || f.type !== 'sketch') return;
+    if (f.published) { this.status(`${f.name} comes from the master part: change it there (right-click Imported from Master to open it)`); return; }
     if (M.isRolledBack(this.doc, f)) { this.toast(`${f.name} is below the rollback bar — drag the bar below it (or right-click ▸ Roll to End) to edit it`, true); return; }
     if (this.mode === 'sketch') { if (this.sketcher.f === f) return; this.exitSketch(true); }
     if (this.pm) this.cancelPM();
@@ -5361,6 +5365,8 @@ class App {
   editFeature(id, settled = false) {
     const f = M.findFeature(this.doc, id);
     if (!f) return;
+    if (f.type === 'bodiesToParts') { this.b2p.start(); return; }
+    if (f.type === 'masterImport' || f.published) { this.status(`${f.name} comes from the master part: change it there (right-click Imported from Master to open it)`); return; }
     if (this.pm?.kind === 'feature' && this.pm.feature !== f && !settled) { this.settleOpenFeature().then((go) => go && this.editFeature(id, true)); return; }
     if (this.pm?.kind === 'feature' && this.pm.feature === f) return;
     if (f.type === 'sketch') return this.editSketch(id);
@@ -5546,6 +5552,7 @@ class App {
     if (this.pm) this.cancelPM();
     const doc = this.doc, f = M.findFeature(doc, id);
     if (!f) return;
+    if (f.published) { this.toast(`${f.name} comes from the master part: stop publishing it there`, true); return; }
     // (only the feature: the sketches and features it was made from stay, shown on their own in the tree again)
     const toDelete = new Set([f.id]);
     const deps = doc.features.filter((x) => !toDelete.has(x.id) && [...toDelete].some((d) => M.dependentsOf(doc, d).includes(x)));
@@ -6601,6 +6608,7 @@ class App {
       this.updateTitle();
       this.status('Saved ' + String(path).split(/[\\/]/).pop());
       this.plugins?.emit('saved', { path, kind: 'part' });
+      await this.b2p.afterSave();
     } catch (err) {
       this.toast('Save failed: ' + err.message, true);
     }

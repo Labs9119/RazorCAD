@@ -94,6 +94,8 @@ export const TYPE_INFO = {
   fillet: { base: 'Fillet', icon: 'fillet' },
   chamfer: { base: 'Chamfer', icon: 'chamfer' },
   import: { base: 'Imported', icon: 'import' },
+  masterImport: { base: 'Imported from Master', icon: 'import' },
+  bodiesToParts: { base: 'Bodies to Parts', icon: 'part' },
   shell: { base: 'Shell', icon: 'shell' },
   combine: { base: 'Combine', icon: 'combine' },
   split: { base: 'Split Body', icon: 'split' },
@@ -305,6 +307,13 @@ export function createFeature(doc, type, props = {}) {
     // imported bodies stay separate (mergeBodies: fuse touching ones into one body)
     // maxTris: meshes (STL / OBJ / 3MF) with more triangles are simplified to that many (0: never)
     import: { format: 'step', fileName: '', data: '', mergeBodies: false, maxTris: 80000 },
+    // the bodies of a master part, as Bodies to Parts writes them. data: their shapes and sheet metal data as text;
+    // master: { path, rel, link, config }: where they come from (none: the link was broken); stamp: what they are the
+    // state of; inherited: the properties and appearances last taken from the master
+    masterImport: { data: '', master: null, stamp: '', inherited: null },
+    // always the last feature, building nothing. links: the parts made from this part's bodies, [{ id, bodies, path,
+    // rel, config, stamp }]; assembly: { path, rel, envelope, folders } when one was made
+    bodiesToParts: { links: [], assembly: null },
     // faces: picked face references { p, n }; bodies / main / body: body ids
     shell: { thickFaces: [], faces: [], thickness: 2, outward: false },
     // consume: the tool bodies are used up (off: they are kept)
@@ -546,10 +555,15 @@ export function rollbackIndex(doc) {
 
 export const isRolledBack = (doc, f) => doc.features.indexOf(f) >= rollbackIndex(doc);
 
-// New features go just above the rollback bar.
+// New features go just above the rollback bar (and above Bodies to Parts, always the last in the tree).
 export function insertFeature(doc, f) {
-  doc.features.splice(rollbackIndex(doc), 0, f);
+  const last = doc.features.at(-1)?.type === 'bodiesToParts' ? doc.features.length - 1 : doc.features.length;
+  doc.features.splice(Math.min(rollbackIndex(doc), last), 0, f);
   return f;
+}
+export function pinLast(doc) {
+  const f = doc.features.find((x) => x.type === 'bodiesToParts');
+  if (f) doc.features = [...doc.features.filter((x) => x !== f), f];
 }
 
 // Sketches absorbed by feature f (they move with it).
@@ -586,6 +600,7 @@ export function moveFeatures(doc, ids, beforeId) {
   let at = beforeId ? rest.findIndex((f) => f.id === beforeId) : rest.length;
   if (at < 0) at = rest.length;
   doc.features = [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+  pinLast(doc);
 }
 
 // ---------------------------------------------------------------- feature folders
