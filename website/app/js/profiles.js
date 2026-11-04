@@ -1,4 +1,4 @@
-// Weldment profiles: standard structural sections (AS/NZS and EN/ISO) and their cross sections as 2D loops
+// Weldment profiles: standard structural sections (AS/NZS and EN/ISO), timber, and their cross sections as 2D loops
 // (line / arc segments) for the kernel. Dimensions in mm. Root radii are the standard ones; tapered
 // flanges (e.g. UPN) are drawn parallel.
 
@@ -23,6 +23,7 @@ export const PROFILE_TYPES = {
   channel: { label: 'Channel (PFC / UPN)', kind: 'channel', dims: [['d', 'Depth'], ['bf', 'Flange width'], ['tf', 'Flange thickness'], ['tw', 'Web thickness'], ['r', 'Root radius']] },
   ibeam: { label: 'I-beam (UB / UC / IPE / HEA)', kind: 'ibeam', dims: [['d', 'Depth'], ['bf', 'Flange width'], ['tf', 'Flange thickness'], ['tw', 'Web thickness'], ['r', 'Root radius']] },
   flat: { label: 'Flat bar', kind: 'flat', dims: [['b', 'Width'], ['t', 'Thickness']] },
+  timber: { label: 'Timber (rectangular)', kind: 'flat', dims: [['b', 'Width'], ['t', 'Thickness']] },
   round: { label: 'Round bar', kind: 'round', dims: [['D', 'Diameter']] },
 };
 
@@ -30,6 +31,8 @@ export const PROFILE_TYPES = {
 const named = (list, fmt) => list.map((x) => ({ ...x, name: fmt(x) }));
 const n = (v) => String(+(+v).toFixed(2));
 const tubeName = (x) => `${n(x.d || x.b)}x${n(x.b)}x${n(x.t)}`;
+// (timber: [width, thickness] of the finished section; a size sold by a nominal name keeps it, with what it really is)
+const boards = (list) => list.map(([b, t, nominal]) => ({ name: nominal ? `${nominal} (${b}x${t})` : `${b}x${t}`, b, t }));
 export const LIBRARY = {
   'AS/NZS': {
     shs: named(tubes('20:1.6,2; 25:1.6,2,2.5,3; 30:1.6,2; 35:2,2.5,3; 40:2,2.5,3,4; 50:2,2.5,3,4,5,6; 65:2.5,3,4,5,6; 75:2.5,3,3.5,4,5,6; 89:3.5,5,6; 100:3,4,5,6,9; 125:4,5,6,9; 150:5,6,9,10; 200:5,6,9,10'), (x) => `${n(x.b)}x${n(x.b)}x${n(x.t)} SHS`),
@@ -60,6 +63,11 @@ export const LIBRARY = {
     ],
     flat: named(rows('20 3; 20 5; 25 5; 30 5; 40 5; 40 8; 50 5; 50 8; 50 10; 60 6; 80 8; 100 10; 120 10; 150 12', ['b', 't']), (x) => `FL ${n(x.b)}x${n(x.t)}`),
     round: named(rows('6; 8; 10; 12; 16; 20; 25; 30; 40; 50; 60', ['D']), (x) => `RD ${n(x.D)}`),
+  },
+  Timber: {
+    timber: boards([[70, 35], [90, 35], [90, 45], [140, 35], [140, 45], [190, 45], [240, 45], [290, 45], [42, 19], [65, 19], [90, 19], [115, 19], [140, 19], [190, 19], [240, 19], [42, 42], [65, 42],
+      [38, 19, '1x2'], [64, 19, '1x3'], [89, 19, '1x4'], [140, 19, '1x6'], [184, 19, '1x8'], [235, 19, '1x10'], [286, 19, '1x12'], [38, 38, '2x2'], [64, 38, '2x3'], [89, 38, '2x4'], [140, 38, '2x6'], [184, 38, '2x8'], [235, 38, '2x10'], [286, 38, '2x12'], [89, 89, '4x4']]),
+    round: [6, 8, 10, 12, 16, 20, 25, 32].map((D) => ({ name: `${D} dowel`, D })),
   },
 };
 export const STANDARDS = Object.keys(LIBRARY);
@@ -128,7 +136,7 @@ export function profileSection(p) {
       break;
     }
     case 'round': w = h = p.D; outer = circle(p.D); break;
-    case 'flat': w = p.b; h = p.t; outer = rect(w, h); break;
+    case 'flat': case 'timber': w = p.b; h = p.t; outer = rect(w, h); break;
     case 'ea': case 'ua': {
       const a = p.a, b = p.type === 'ea' ? p.a : p.b, t = p.t, r = Math.min(p.r || 0, Math.min(a, b) - t - 1e-3);
       w = a; h = b;

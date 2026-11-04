@@ -10,6 +10,7 @@ import { evaluate, fmt, isNumeric, normalizeValue } from './expr.js';
 import { fmtLen, lenText, lenValue } from './units.js';
 import { parseDXF, dxfShapes, addShapes } from './dxfimport.js';
 import { platform } from './platform.js';
+import { LIBRARY } from './profiles.js';
 import { isDark, sketchDefined, sketchUnder } from './theme.js';
 
 const COL = {
@@ -114,6 +115,7 @@ export const SKETCH_TOOLS = {
   extend: { label: 'Extend', hint: 'Click a line or arc near the end to extend: it runs on to the first entity in its way (and stays on it).' },
   split: { label: 'Split', hint: 'Click a line or arc where it should be split into two joined pieces.' },
   block: { label: 'Insert Block', hint: 'Click where the block goes (its centre). Click again for more copies; Esc ends.' },
+  timber: { label: 'Timber Section', hint: 'Click where the middle of the section goes. Click again for more; Esc ends.' },
   offset: { label: 'Offset', hint: 'Click a line, arc, circle or spline, choose the distance and direction, then click to create the offset. Select one entity or its chain; Both sides shares one editable dimension. Linked offset keeps the parametric relation.' },
   intersect: { label: 'Intersection Curve', hint: 'Click curves of earlier sketches to intersect them with this sketch plane, or click a model section. References remain linked. Esc exits.' },
   convert: { label: 'Project Edges', hint: 'Click model edges, vertices or entities of other sketches to project them into this sketch. Projected geometry stays linked and updates when its source changes.' },
@@ -1090,6 +1092,11 @@ export class Sketcher {
       this.sel = new Set(ids);
       this.changed();
       this.app.status(`Block "${this.blockIns.name}" inserted${this.blockIns.linked === false ? ' (plain geometry)' : ': it moves as one, and follows the block when it is saved again (Explode Block makes it plain geometry)'}. Click for another copy; Esc ends.`);
+      return;
+    }
+    if (t === 'timber') {
+      if (!this.timberIns) { this.setTool('select'); return; }
+      this.placeTimber(this.snap(raw));
       return;
     }
     if (t === 'tarc') {
@@ -2335,6 +2342,45 @@ export class Sketcher {
     this.setTool('block');
   }
 
+  // Timber Section: a size from the timber list or your own saved ones, as a rectangle to click into place in this
+  // sketch, for extruding to length
+  async timberSection() {
+    const ui = this.app.ui, ev = (x) => +this.app.result.ev(x) || 0;
+    const sizes = [...LIBRARY.Timber.timber, ...(ui.prefs?.profileSizes || []).filter((x) => x.ptype === 'timber').map((x) => ({ name: x.name, b: ev(x.dims.b), t: ev(x.dims.t) }))];
+    const last = this.timberIns;
+    const v = await ui.promptFields('Timber Section', 'skTimber', [
+      { key: 'size', label: 'Size', type: 'select', options: sizes.map((x) => [x.name, x.name]), value: last?.name || '90x45' },
+      { key: 'lay', label: 'Laid', type: 'select', options: [['edge', 'On edge (wide side upright)'], ['flat', 'Flat (wide side across)']], value: last?.lay || 'edge' },
+    ]);
+    if (!v || !this.active) return;
+    const b = sizes.find((x) => x.name === v.size);
+    if (!b) return;
+    this.timberIns = { name: b.name, lay: v.lay, w: v.lay === 'flat' ? b.b : b.t, h: v.lay === 'flat' ? b.t : b.b };
+    this.setTool('timber');
+  }
+
+  // A timber section centred at s, sized by its two dimensions
+  placeTimber(s) {
+    const { w, h } = this.timberIns, h0 = this.hist.length, corner = { x: s.x + w / 2, y: s.y + h / 2, kind: 'grid' };
+    this.draw = { tool: 'crect', s0: s, p0: s, s1: corner, p1: corner };
+    this._built = null;
+    this.commit();
+    const b = this._built;
+    if (!b) return;
+    this.tryAddConstraints([['dim', [b.corners[0], b.corners[1]], { kind: 'hdist', value: w, s: 1 }]], { asDriven: true, quiet: true });
+    this.tryAddConstraints([['dim', [b.corners[1], b.corners[2]], { kind: 'vdist', value: h, s: 1 }]], { asDriven: true, quiet: true });
+    this.changed();
+    if (this.hist.length > h0 + 1) this.hist.splice(h0, this.hist.length - h0 - 1);
+    this.redraw();
+  }
+
+  timberPreview() {
+    const b = this.timberIns, c = this.cursor;
+    if (!b || !c) return [];
+    const { x, y } = c.p, w = b.w / 2, h = b.h / 2;
+    return [[[x - w, y - h], [x + w, y - h], [x + w, y + h], [x - w, y + h], [x - w, y - h]]];
+  }
+
   // Equation Curve: a new one, or the selected one set again
   async equationCurve() {
     const sk = this.f, selId = this.sel.size === 1 ? [...this.sel][0] : null;
@@ -3284,6 +3330,7 @@ export class Sketcher {
     if(this.cursor?.p?.inferGuide&&['line','centerline'].includes(this.tool))addSegs(COL.hover,true,this.cursor.p.inferGuide);
     if (d && d.tool !== 'dim' && d.tool !== 'offset') for (const pl of this.previewPolylines(d)) addSegs(COL.preview, d.tool === 'centerline' || this.constructionMode, pl);
     if (this.tool === 'block') for (const pl of this.blockPreview()) addSegs(COL.preview, false, pl);
+    if (this.tool === 'timber') for (const pl of this.timberPreview()) addSegs(COL.preview, false, pl);
     if (this.trimHover?.pts) addSegs(COL.trim, false, this.trimHover.pts);
     if (this.tool === 'offset') {
       const ch = d?.tool === 'offset' ? d.chain : this.offHover;

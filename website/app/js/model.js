@@ -13,6 +13,10 @@ export const MATERIALS = [
   { id: 'abs', name: 'ABS Plastic', density: 1.04, color: 0xe8e4da },
   { id: 'pla', name: 'PLA Plastic', density: 1.24, color: 0x6fa3d8 },
   { id: 'nylon', name: 'Nylon 6/6', density: 1.14, color: 0xf0eee6 },
+  { id: 'pine', name: 'Pine (radiata)', density: 0.5, color: 0xd9b27c },
+  { id: 'oak', name: 'Oak', density: 0.75, color: 0xb48a5a },
+  { id: 'plywood', name: 'Plywood', density: 0.6, color: 0xdcc49c },
+  { id: 'mdf', name: 'MDF', density: 0.75, color: 0xb59a78 },
 ];
 // RazorCAD's own file extension for parts (JSON inside)
 export const PART_EXT = '.rcad';

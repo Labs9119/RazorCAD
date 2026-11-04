@@ -4264,9 +4264,13 @@ class App {
     }
     if (!face) return null;
     const P = face.geometry.getAttribute('position'), w = new THREE.Vector3();
-    let minU = Infinity, minV = Infinity;
-    for (let k = 0; k < P.count; k++) { w.fromBufferAttribute(P, k).sub(p); minU = Math.min(minU, w.dot(fr.u)); minV = Math.min(minV, w.dot(fr.v)); }
-    const box = { fr, minU, minV, x: -minU, y: -minV };
+    let minU = Infinity, minV = Infinity, maxU = -Infinity, maxV = -Infinity;
+    for (let k = 0; k < P.count; k++) {
+      w.fromBufferAttribute(P, k).sub(p);
+      const x = w.dot(fr.u), y = w.dot(fr.v);
+      minU = Math.min(minU, x); minV = Math.min(minV, y); maxU = Math.max(maxU, x); maxV = Math.max(maxV, y);
+    }
+    const box = { fr, minU, minV, maxU, maxV, x: -minU, y: -minV };
     this._holeBoxes.set(r, box);
     return box;
   }
@@ -4275,6 +4279,18 @@ class App {
     box.x = x; box.y = y;
     const q = box.fr.o.clone().addScaledVector(box.fr.u, box.minU + x).addScaledVector(box.fr.v, box.minV + y);
     r.p = q.toArray().map((c) => +c.toFixed(9));
+  }
+  // Which of a hole's two distances Centre on the Face sets (across: the narrower way of the face; the kernel keeps
+  // the hole there), and the hole put there
+  holeCentred(box, mode) {
+    const w = box.maxU - box.minU, h = box.maxV - box.minV;
+    return { x: mode === 'both' || (mode === 'across' && w <= h), y: mode === 'both' || (mode === 'across' && h < w) };
+  }
+  centreHole(r, mode) {
+    const box = this.holeFaceBox(r);
+    if (!box || !mode || mode === 'off') return;
+    const c = this.holeCentred(box, mode);
+    this.setHolePos(r, box, c.x ? (box.maxU - box.minU) / 2 : box.x, c.y ? (box.maxV - box.minV) / 2 : box.y);
   }
 
   faceFrame(face) {
@@ -4517,6 +4533,7 @@ class App {
       if (i >= 0) f[key].splice(i, 1);
       else f[key].push({ p: fh.hit.point.toArray(), ...(face.planar ? { n: face.normal.toArray() } : {}), ...(['loft', 'surfLoft', 'surfFill','splitLine'].includes(f.type) ? { body: this.result.bodies[vp.faceBody[gi]]?.id } : {}), ...(key === 'thickFaces' ? { t: +(2 * (Number(f.thickness) || 1)).toFixed(3) } : {}) });
       if (f.type === 'freeform' && f.faces.length > 1) f.faces.splice(0, f.faces.length - 1); // (one face: the last clicked)
+      if (f.type === 'hole' && i < 0) this.centreHole(f[key][f[key].length - 1], f.centred);
       this.ui.renderPM();
       this.updateEdgeHighlights();
       this.preview();
@@ -5290,6 +5307,10 @@ class App {
       // the profile last used
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
       if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
+    }
+    if (type === 'hole') {
+      const last = [...doc.features].reverse().find((x) => x.type === 'hole');
+      if (last?.centred) props.centred = last.centred;
     }
     if (type === 'fitSurface') {
       const c = selF?.type === 'pointCloud' ? selF : [...doc.features].reverse().find((x) => x.type === 'pointCloud' && !x.suppressed);

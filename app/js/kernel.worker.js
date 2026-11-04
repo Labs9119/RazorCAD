@@ -1102,6 +1102,18 @@ function findFace(body, ref, facing = false) {
 }
 
 // A flat face's outline across and along two directions u, v of its plane: [min u, max u, min v, max v]
+function longestEdgeDir(face) {
+  const edges = face.edges;
+  let best = null, most = 1e-6;
+  try {
+    for (const e of edges) {
+      if (e.geomType !== 'LINE') continue;
+      const d = sub(vec(e.endPoint), vec(e.startPoint)), l = len(d);
+      if (l > most) { most = l; best = unit(d); }
+    }
+  } finally { edges.forEach((e) => e.delete?.()); }
+  return best;
+}
 function faceSpan(face, u, v) {
   const out = [Infinity, -Infinity, Infinity, -Infinity], edges = face.edges;
   try {
@@ -3600,7 +3612,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
   // where it is now (a thicker plate: on its new top), and as far from the face's edges as it was placed, from the
   // nearer edge across and the nearer along (fc.at: [side, distance] each way, the side -1 for the low edge, 1 the
   // high, and the point it gave). A point moved since (at.p not it: typed, or clicked again) is measured afresh.
-  const onFace = (fc) => {
+  // centred: 'across', the middle of the face's narrower way, 'both', its middle each way, measured square to the
+  // face's longest straight edge (a board at an angle) on the face as it is now, so it stays there as the face changes.
+  const onFace = (fc, centred = null) => {
     if (!body) return fc.p;
     const was = fc.p, hit = findFace(body, fc, true);
     if (!hit) throw new Error('The face a point was placed on could not be found in the model');
@@ -3612,6 +3626,11 @@ async function rebuild(doc, previewId = null, opts = {}) {
       y = at.v[0] < 0 ? v0 + at.v[1] : v1 - at.v[1];
       side = [at.u[0], at.v[0]];
     } else side = [x - u0 <= u1 - x ? -1 : 1, y - v0 <= v1 - y ? -1 : 1];
+    if (centred === 'across' || centred === 'both') {
+      const a = longestEdgeDir(hit.face) || u, b = cross(n, a), [a0, a1, b0, b1] = faceSpan(hit.face, a, b), q = add(mul(u, x), mul(v, y));
+      const m = add(mul(a, centred === 'both' || a1 - a0 <= b1 - b0 ? (a0 + a1) / 2 : dot(q, a)), mul(b, centred === 'both' || b1 - b0 < a1 - a0 ? (b0 + b1) / 2 : dot(q, b)));
+      x = dot(m, u); y = dot(m, v);
+    }
     const p = add(add(mul(u, x), mul(v, y)), mul(n, h)).map((c) => +c.toFixed(9));
     const next = { u: [side[0], side[0] < 0 ? x - u0 : u1 - x], v: [side[1], side[1] < 0 ? y - v0 : v1 - y], p };
     if (JSON.stringify(next) !== JSON.stringify(at) || len(sub(p, was)) > 1e-9) { fc.at = next; fc.p = p; if (refLog) refLog.moved = true; }
@@ -9000,7 +9019,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           const locs = [];
           if (f.sketch) for (const { p, n } of placementPoints(f.sketch)) locs.push({ p, dir: mul(n, f.reverse ? 1 : -1) });
           for (const fc of f.faces || []) {
-            if (fc.n) { const p = onFace(fc); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
+            if (fc.n) { const p = onFace(fc, f.centred); locs.push({ p, dir: mul(unit(fc.n), f.reverse ? 1 : -1) }); continue; }
             // (a point on a curved face: moved onto it, the hole square to it there)
             if (!body) break;
             const hit = findFaceAny(solids, fc);

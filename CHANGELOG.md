@@ -6,6 +6,17 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-05 08:30 — Timber: sizes in Structural Member, Timber Section in the sketcher, centred holes, timber materials
+
+- **Timber table in Structural Member.** Common metric framing and dressed boards, nominal sizes such as 2x4 with what they
+  really measure, and dowels. The Type list now only offers what the chosen table has.
+- **Saved sizes.** With Custom sizes, Save These Sizes… keeps your dimensions under a name in your settings, for any part.
+- **Timber Section in the sketcher.** Pick a size, on edge or flat, and click: a rectangle sized by its two dimensions,
+  ready to extrude. Click again for more; each one is a single undo.
+- **Holes centred on the face.** Hole has a new Centre on the Face option, Across its width or Each way. The hole stays
+  centred when the board changes, including a board cut narrower than where the hole was or one at an angle.
+- **Timber materials.** Pine, oak, plywood and MDF, so masses and BOMs of timber parts are right.
+
 ## 2026-11-04 23:38 — Bodies to Parts and multi-body parts, put right by drawing a whole robot arm in the app
 
 - A six-axis arm was drawn by hand in the desktop app as one 31-body master, then made into 16 parts and 5 assemblies with

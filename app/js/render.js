@@ -20,7 +20,7 @@ export const LOOKS = {
   glass: { name: 'Glass', metalness: 0, roughness: 0.02, transmission: 1, ior: 1.5, thickness: 4 },
 };
 // (a material's look when the body is left at 'From the material')
-const BY_MATERIAL = { steel: 'cast', stainless: 'brushed', al6061: 'brushed', brass: 'polished', copper: 'polished', titanium: 'brushed', abs: 'glossyPlastic', pla: 'plastic', nylon: 'plastic' };
+const BY_MATERIAL = { steel: 'cast', stainless: 'brushed', al6061: 'brushed', brass: 'polished', copper: 'polished', titanium: 'brushed', abs: 'glossyPlastic', pla: 'plastic', nylon: 'plastic', pine: 'plastic', oak: 'plastic', plywood: 'plastic', mdf: 'plastic' };
 export const lookFor = (look, materialId) => (look && look !== 'auto' && LOOKS[look] ? look : BY_MATERIAL[materialId] || 'powder');
 
 // The scenes a render can be set in: the environment that lights and reflects in the part, the background behind it

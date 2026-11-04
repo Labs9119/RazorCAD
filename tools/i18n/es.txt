@@ -1035,3 +1035,23 @@
 1035|Dejar de publicar
 1036|Volver a vincular…
 1037|Para girar alrededor de otro eje, por ejemplo un círculo de pernos en un cilindro, crea antes un eje de referencia: un clic en el cilindro. Aparecerá en esta lista.
+1038|Madera (rectangular)
+1039|Madera
+1040|Centrar en la cara
+1041|No
+1042|A lo ancho
+1043|En ambas direcciones
+1044|Centrado en la cara
+1045|Tamaños guardados
+1046|Guardar estos tamaños…
+1047|Guardar estos tamaños
+1048|Eliminar tamaño guardado
+1049|Sección de madera
+1050|Haga clic donde va el centro de la sección. Haga clic de nuevo para añadir más; Esc termina.
+1051|Colocación
+1052|De canto (lado ancho vertical)
+1053|Plano (lado ancho horizontal)
+1054|Pino (radiata)
+1055|Roble
+1056|Contrachapado
+1057|MDF

@@ -1035,3 +1035,23 @@ Publish to Linked Parts
 Stop Publishing
 Relink…
 To turn about anything else, a bolt circle on a cylinder for example, make a Reference Axis first: one click on the cylinder. It then appears in this list.
+Timber (rectangular)
+Timber
+Centre on the face
+Off
+Across its width
+Each way
+Centred on the face
+Saved sizes
+Save These Sizes…
+Save These Sizes
+Delete Saved Size
+Timber Section
+Click where the middle of the section goes. Click again for more; Esc ends.
+Laid
+On edge (wide side upright)
+Flat (wide side across)
+Pine (radiata)
+Oak
+Plywood
+MDF

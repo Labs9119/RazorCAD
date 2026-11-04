@@ -1035,3 +1035,23 @@
 1035|Nicht mehr veröffentlichen
 1036|Neu verknüpfen…
 1037|Um eine andere Achse zu verwenden, zum Beispiel für einen Lochkreis auf einem Zylinder, erstellen Sie zuerst eine Referenzachse: ein Klick auf den Zylinder. Sie erscheint dann in dieser Liste.
+1038|Holz (rechteckig)
+1039|Holz
+1040|Auf der Fläche zentrieren
+1041|Aus
+1042|Über die Breite
+1043|In beide Richtungen
+1044|Auf der Fläche zentriert
+1045|Gespeicherte Größen
+1046|Diese Größen speichern…
+1047|Diese Größen speichern
+1048|Gespeicherte Größe löschen
+1049|Holzquerschnitt
+1050|Klicken Sie dorthin, wo die Mitte des Querschnitts liegen soll. Erneut klicken für weitere; Esc beendet.
+1051|Lage
+1052|Hochkant (breite Seite senkrecht)
+1053|Flach (breite Seite waagerecht)
+1054|Kiefer (Radiata)
+1055|Eiche
+1056|Sperrholz
+1057|MDF

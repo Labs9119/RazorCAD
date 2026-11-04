@@ -1035,3 +1035,23 @@
 1035|Ne plus publier
 1036|Relier à nouveau…
 1037|Pour tourner autour d’autre chose, par exemple un cercle de boulons sur un cylindre, créez d’abord un axe de référence : un clic sur le cylindre. Il apparaît ensuite dans cette liste.
+1038|Bois (rectangulaire)
+1039|Bois
+1040|Centrer sur la face
+1041|Non
+1042|Sur la largeur
+1043|Dans les deux sens
+1044|Centré sur la face
+1045|Tailles enregistrées
+1046|Enregistrer ces tailles…
+1047|Enregistrer ces tailles
+1048|Supprimer la taille enregistrée
+1049|Section de bois
+1050|Cliquez à l’emplacement du milieu de la section. Cliquez à nouveau pour en ajouter ; Échap pour terminer.
+1051|Pose
+1052|Sur chant (grand côté vertical)
+1053|À plat (grand côté horizontal)
+1054|Pin (radiata)
+1055|Chêne
+1056|Contreplaqué
+1057|MDF

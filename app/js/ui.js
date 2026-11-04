@@ -947,6 +947,8 @@ const PM_SCHEMAS = {
       { key: 'eHint', type: 'hint', show: (f) => f.end === 'upToNext', text: 'Up To Next: each hole goes until its axis first comes out of the material (through the wall it starts in).' },
     ] },
     { title: 'Positions', fields: [
+      { key: 'centred', type: 'select', label: 'Centre on the face', options: [['off', 'Off'], ['across', 'Across its width'], ['both', 'Each way']],
+        onChange: (f, a) => { for (const r of f.faces || []) a.centreHole(r, f.centred); a.ui.renderPM(); } },
       { key: 'faces', type: 'faceList', hint: 'Click points on a face for the holes (flat or curved: a curved face is drilled square to it there), then type each one’s distances from the face’s left and bottom edges; or select a sketch on the face with points or circles: each point / circle centre gets a hole.', itemLabel: 'Hole', holePos: true },
       { key: 'sketch', type: 'sketch', label: 'Sketch or 3D sketch (points / circle centres)', with3d: true },
     ] },
@@ -2320,6 +2322,7 @@ export class UI {
         only2d({ icon: 'skLinPattern', label: 'Linear Sketch Pattern', action: () => (sk ? a.sketcher.linearPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skCirPattern', label: 'Circular Sketch Pattern', action: () => (sk ? a.sketcher.circularPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skBlock', label: 'Make Block', action: () => (sk ? a.sketcher.makeBlock() : a.startSketch()) }),
+        only2d({ id: 'tool-timber', icon: 'skTimber', label: 'Timber Section', action: () => (sk ? a.sketcher.timberSection() : a.startSketch()), active: sk && a.sketcher.tool === 'timber' }),
         only2d({ id: 'tool-block', icon: 'skInsertBlock', label: 'Insert Block', action: () => (sk ? a.sketcher.insertBlock() : a.startSketch()), active: sk && a.sketcher.tool === 'block' }),
         only2d({ icon: 'skBlock', label: 'Explode Block', action: () => (sk ? a.sketcher.explodeBlocks() : a.startSketch()) }),
         tool('text', 'text', 'Text'),
@@ -4846,17 +4849,36 @@ export class UI {
             body.appendChild(this.row(label, w));
           };
           const firstSize = () => LIBRARY[f.standard]?.[f.ptype]?.[0]?.name || '';
-          sel('Standard', [...STANDARDS.map((x) => [x, x]), ['custom', 'Custom sizes']], f.standard, (v) => { f.standard = v; if (v !== 'custom' && !(LIBRARY[v]?.[f.ptype] || []).some((x) => x.name === f.size)) f.size = firstSize(); });
-          sel('Type', Object.entries(PROFILE_TYPES).map(([k, t]) => [k, t.label]), f.ptype, (v) => { f.ptype = v; f.size = firstSize(); });
+          const typesOf = (std) => (std === 'custom' ? Object.keys(PROFILE_TYPES) : Object.keys(LIBRARY[std] || {}));
+          sel('Standard', [...STANDARDS.map((x) => [x, x]), ['custom', 'Custom sizes']], f.standard, (v) => {
+            f.standard = v;
+            if (!typesOf(v).includes(f.ptype)) f.ptype = typesOf(v)[0];
+            if (v !== 'custom' && !(LIBRARY[v]?.[f.ptype] || []).some((x) => x.name === f.size)) f.size = firstSize();
+          });
+          sel('Type', typesOf(f.standard).map((k) => [k, PROFILE_TYPES[k].label]), f.ptype, (v) => { f.ptype = v; f.size = firstSize(); });
           if (f.standard !== 'custom') {
             const list = LIBRARY[f.standard]?.[f.ptype] || [];
             sel('Size', list.map((x) => [x.name, x.name]), f.size, (v) => { f.size = v; });
           } else {
             f.dims ||= {};
+            // (sizes of your own, kept in your settings by type)
+            const keys = PROFILE_TYPES[f.ptype].dims.map(([k]) => k), mine = (this.prefs?.profileSizes || []).filter((x) => x.ptype === f.ptype);
+            const chosen = mine.find((x) => keys.every((k) => String(x.dims[k] ?? '') === String(f.dims[k] ?? '')));
+            if (mine.length) sel('Saved sizes', [['', '—'], ...mine.map((x) => [x.name, x.name])], chosen?.name || '', (v) => { const x = mine.find((m) => m.name === v); if (x) f.dims = { ...x.dims }; });
             for (const [k, label] of PROFILE_TYPES[f.ptype].dims) {
               const inp = this.exprInput(f.dims[k] ?? '', 'mm', (v) => { f.dims[k] = v; a.preview(); });
               body.appendChild(this.row(label, inp));
             }
+            body.appendChild(el('button', { class: 'pm-btn', 'data-profile-save': '', onclick: async () => {
+              const v = await this.promptFields('Save These Sizes', 'structMember', [{ key: 'name', label: 'Name', value: chosen?.name || '' }]);
+              const name = v?.name.trim();
+              if (!name) return;
+              this.prefs ||= {};
+              this.prefs.profileSizes = [...(this.prefs.profileSizes || []).filter((x) => x.ptype !== f.ptype || x.name !== name), { name, ptype: f.ptype, dims: Object.fromEntries(keys.map((k) => [k, f.dims[k] ?? ''])) }];
+              this.savePrefs();
+              this.renderPM();
+            } }, 'Save These Sizes…'));
+            if (chosen) body.appendChild(el('button', { class: 'pm-btn', 'data-profile-delete': '', onclick: () => { this.prefs.profileSizes = this.prefs.profileSizes.filter((x) => x !== chosen); this.savePrefs(); this.renderPM(); } }, 'Delete Saved Size'));
           }
         } else if (fd.type === 'splitPick') {
           const active = (pm.splitSlot || 'targets') === fd.slot;
@@ -4978,6 +5000,7 @@ export class UI {
             if (f.type === 'extrude' && (['pointRef', 'surfaceRef'].includes(fd.type) || (fd.key === 'end' && ['upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end)) || (fd.key === 'end2' && ['upToVertex', 'upToSurface', 'offsetSurface'].includes(f.end2)))) { pm.extrudePick = false; pm.loftHover = null; a.updateSketchDisplay(); }
             // an open sketch can only be extruded as a thin feature
             if (fd.type === 'sketch' && f.type === 'extrude' && SM.isOpenSketch(findFeature(doc, f.sketch))) f.thin = true;
+            fd.onChange?.(f, a);
             a.preview(true);
           };
           const wrap = el('div', { class: 'pm-input' });
@@ -6565,6 +6588,7 @@ export class UI {
             a.updateEdgeHighlights(); a.preview();
           });
           inp.dataset.holeAxis = k; inp.title = tip;
+          if (f.type === 'hole' && a.holeCentred(box, f.centred)[k]) { (inp.querySelector('input') || inp).disabled = true; inp.title = 'Centred on the face'; }
           row.append(el('span', { class: 'pm-hint' }, esc(tr(lab))), inp);
         }
         ul.appendChild(row);

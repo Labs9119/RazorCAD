@@ -9726,6 +9726,107 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
   // turning the view about the cursor: zoomed in off the part's centre, a middle-drag started on the part turns
   // about the point under the cursor (it stays there, and a dot shows it while dragging), one started over empty
   // space about that spot at the part's depth; the arrow keys still turn about the part's centre
+  // Woodworking: timber in Structural Member (the Type list holds what the standard has; your own sizes saved),
+  // Timber Section in a sketch (a click, a sized rectangle, one undo step), a hole centred on a board staying centred
+  // as the board changes (wider from one side, narrower than where it was, turned at an angle), timber materials
+  async 'woodworking-timber'() {
+    const a=window.app,S=await import('/js/sketchmodel.js'),{Vector3}=await import('three'),bad=[];
+    const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending,60000,20);};
+    const keep={prompt:a.ui.promptFields,sizes:a.ui.prefs?.profileSizes};
+    const volume=async()=>(await a.kernel.request('measure',{refs:[{kind:'body',id:a.result.bodies.at(-1).id}]})).items[0].volume;
+    const pick=(value)=>[...document.querySelectorAll('#pm select')].find((s)=>[...s.options].some((o)=>o.value===value));
+    const choose=async(s,v)=>{s.value=v;s.dispatchEvent(new Event('change'));await settle();};
+    const near=(x,y,e=1e-6)=>Math.abs(x-y)<e;
+    try {
+      {
+        const d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}}),p=[[0,0],[1000,0]].map((q)=>S.addPoint(sk,...q));
+        S.addLine(sk,p[0],p[1]);
+        const f=M.createFeature(d,'structMember',{standard:'Timber',ptype:'timber',size:'90x45',path:sk.id,paths:[sk.id]});d.features.push(sk,f);
+        await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();
+        if(a.result.errors.size||!near(await volume(),90*45*1000,1e-3))bad.push(`90x45 member: ${await volume()}, ${JSON.stringify([...a.result.errors])}`);
+        a.editFeature(f.id);await settle();
+        const types=[...pick('timber').options].map((o)=>o.value).join();
+        if(types!=='timber,round')bad.push(`Timber's types: ${types}`);
+        await choose(pick('AS/NZS'),'AS/NZS');
+        if(a.pm.feature.ptype!=='shs'||!a.pm.feature.size)bad.push(`To AS/NZS: ${a.pm.feature.ptype} ${a.pm.feature.size}`);
+        await choose(pick('Timber'),'Timber');
+        if(a.pm.feature.ptype!=='timber'||a.pm.feature.size!=='70x35')bad.push(`Back to Timber: ${a.pm.feature.ptype} ${a.pm.feature.size}`);
+        await choose(pick('2x4 (89x38)'),'2x4 (89x38)');
+        await a.okPM();await settle();
+        if(!near(await volume(),89*38*1000,1e-3))bad.push(`2x4: ${await volume()}`);
+        a.editFeature(f.id);await settle();
+        await choose(pick('custom'),'custom');
+        a.pm.feature.dims={b:'100',t:'30'};a.ui.renderPM();
+        a.ui.promptFields=async()=>({name:'Slab'});
+        document.querySelector('[data-profile-save]')?.click();await settle();
+        const held=a.ui.prefs.profileSizes?.find((x)=>x.name==='Slab');
+        if(held?.ptype!=='timber'||held.dims.b!=='100')bad.push(`Saved size: ${JSON.stringify(held)}`);
+        if(pick('Slab')?.value!=='Slab')bad.push('Saved size not shown as the one in use');
+        a.pm.feature.dims={b:'1',t:'1'};a.ui.renderPM();
+        await choose(pick('Slab'),'Slab');
+        if(a.pm.feature.dims.b!=='100'||a.pm.feature.dims.t!=='30')bad.push(`Saved size chosen: ${JSON.stringify(a.pm.feature.dims)}`);
+        a.cancelPM?.();await settle();
+      }
+      {
+        await a.newDocument?.();closeModals();await a.setDoc(M.newDoc());await settle();
+        a.select({kind:'plane',id:'front'});await a.startSketch();await until(()=>a.mode==='sketch',5000,50);
+        const sk=a.sketcher,cv=a.viewport.canvas.getBoundingClientRect(),at=(dx,dy)=>({button:0,clientX:cv.left+cv.width/2+dx,clientY:cv.top+cv.height/2+dy,ctrlKey:false,shiftKey:false,metaKey:false});
+        const click=(p)=>{sk.pointerMove(at(...p));sk.pointerDown(at(...p));sk.pointerUp(at(...p));};
+        const offered={};a.ui.promptFields=async(t,i,fields)=>{offered.sizes=fields[0].options.map((o)=>o[0]);return {size:'90x45',lay:'edge'};};
+        await sk.timberSection();
+        if(sk.tool!=='timber'||!offered.sizes.includes('2x4 (89x38)')||!offered.sizes.includes('Slab'))bad.push(`Timber Section: tool ${sk.tool}, ${offered.sizes?.length} sizes`);
+        sk.pointerMove(at(-120,0));const ghost=sk.timberPreview()[0],side=ghost&&Math.abs(ghost[1][0]-ghost[0][0]);
+        if(!(side>44.9&&side<45.1))bad.push(`Outline at the mouse: ${JSON.stringify(ghost)}`);
+        const h0=sk.hist.length;click([-120,0]);
+        if(sk.hist.length!==h0+1)bad.push(`Undo steps for one section: ${sk.hist.length-h0}`);
+        click([120,0]);await settle();
+        const lines=sk.f.curves.filter((c)=>c.type==='line'&&!c.construction),dims=sk.f.constraints.filter((c)=>c.type==='dim');
+        if(lines.length!==8||dims.length!==4)bad.push(`Two sections: ${lines.length} lines, ${dims.length} dims`);
+        const xs=sk.f.points.map((q)=>q.x),ys=sk.f.points.map((q)=>q.y),rc=lines.slice(0,4).flatMap((c)=>[c.p1,c.p2]).map((id)=>S.getPoint(sk.f,id));
+        const w=Math.max(...rc.map((q)=>q.x))-Math.min(...rc.map((q)=>q.x)),h=Math.max(...rc.map((q)=>q.y))-Math.min(...rc.map((q)=>q.y));
+        if(!near(w,45,1e-6)||!near(h,90,1e-6))bad.push(`Section on edge: ${w} x ${h} (${xs.length} points, ${ys.length})`);
+        sk.setTool('select');await a.exitSketch(true);await settle();
+      }
+      {
+        const corners=[[0,0],[300,0],[300,90],[0,90]],d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'front'}}),p=corners.map((q)=>S.addPoint(sk,...q));
+        p.forEach((id,i)=>S.addLine(sk,id,p[(i+1)%4]));
+        const ex=M.createFeature(d,'extrude',{sketch:sk.id,depth:45}),hole=M.createFeature(d,'hole',{faces:[{p:[100,20,45],n:[0,0,1]}],centred:'across',end:'through'});
+        d.features.push(sk,ex,hole);
+        await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();await settle();
+        const placed=()=>M.findFeature(a.doc,hole.id).faces[0].p,set=async(pts)=>{const s=M.findFeature(a.doc,sk.id);s.points.forEach((q,i)=>{q.x=pts[i][0];q.y=pts[i][1];});await a.rebuild();await settle();};
+        if(a.result.errors.size)bad.push(`Hole: ${JSON.stringify([...a.result.errors])}`);
+        if(!near(placed()[0],100)||!near(placed()[1],45))bad.push(`Across the width: ${placed()}`);
+        await set([[0,0],[300,0],[300,150],[0,150]]);
+        if(!near(placed()[0],100)||!near(placed()[1],75))bad.push(`Board widened: ${placed()}`);
+        await set([[0,0],[300,0],[300,40],[0,40]]);
+        if(a.result.errors.size||!near(placed()[0],100)||!near(placed()[1],20))bad.push(`Board narrowed past it: ${placed()}, ${JSON.stringify([...a.result.errors])}`);
+        const c=Math.cos(Math.PI/6),s=Math.sin(Math.PI/6);
+        await set([[0,0],[300,0],[300,90],[0,90]].map(([x,y])=>[x*c-y*s,x*s+y*c]));
+        const [x,y]=placed(),off=-x*s+y*c;
+        if(a.result.errors.size||!near(off,45,1e-3))bad.push(`Board at an angle: ${off} across it (${x}, ${y})`);
+        await set([[0,0],[300,0],[300,90],[0,90]]);
+        a.editFeature(hole.id);await settle();
+        await choose(pick('both'),'both');
+        const disabled=()=>[...document.querySelectorAll('#pm [data-hole-pos] input')].filter((i)=>i.disabled).length;
+        if(!near(a.pm.feature.faces[0].p[0],150)||!near(a.pm.feature.faces[0].p[1],45)||disabled()!==2)bad.push(`Each way: ${a.pm.feature.faces[0].p}, ${disabled()} fixed`);
+        await choose(pick('both'),'across');
+        if(disabled()!==1)bad.push(`Across: ${disabled()} fixed`);
+        const vp=a.viewport,rc=vp.canvas.getBoundingClientRect();vp.setStandardView('front',false);vp.zoomToFit(null,false);vp.camera.updateMatrixWorld(true);const q=vp.project(new Vector3(250,15,45));
+        a.handleClick({clientX:rc.left+q.x,clientY:rc.top+q.y,button:0,ctrlKey:false,shiftKey:false,altKey:false,preventDefault(){},stopPropagation(){}});await settle();
+        const added=a.pm.feature.faces[1]?.p;
+        if(!added||!near(added[0],250,5)||!near(added[1],45))bad.push(`Clicked hole: ${added}`);
+        await a.okPM();await settle();
+        const want=300*90*45-2*Math.PI*3.3*3.3*45;
+        if(!near(await volume(),want,1e-3))bad.push(`Volume: ${await volume()}, expected ${want}`);
+      }
+      for(const [id,rho] of [['pine',0.5],['oak',0.75],['plywood',0.6],['mdf',0.75]])if(M.materialById(id)?.density!==rho)bad.push(`Material ${id}: ${M.materialById(id)?.density}`);
+    } finally {
+      a.ui.promptFields=keep.prompt;
+      if(a.ui.prefs){if(keep.sizes)a.ui.prefs.profileSizes=keep.sizes;else delete a.ui.prefs.profileSizes;a.ui.savePrefs();}
+    }
+    return {ok:!bad.length,detail:bad.join('; ')||'timber members, saved sizes, Timber Section, holes that stay centred, timber materials'};
+  },
+
   async 'rotate-about-cursor'() {
     const a = window.app;
     const text = await (await fetch('/tests/parts/plate-features.rcad')).text();
