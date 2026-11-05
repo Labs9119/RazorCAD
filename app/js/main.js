@@ -3104,7 +3104,7 @@ class App {
   }
 
   pickLoftContour(e) {
-    const sweep=this.sweepPicking(),slot=sweep?(this.pm.sweepSlot||'profile'):(this.pm.loftSlot||'profiles'),guide=sweep?slot!=='profile':slot==='guides',chain=sweep?this.pm.feature.selectionChains?.[slot]!==false:this.pm.loftChain!==false;
+    const sweep=this.sweepPicking(),slot=sweep?(this.pm.sweepSlot||'profile'):(this.pm.loftSlot||'profiles'),guide=sweep?slot!=='profile':slot==='guides',chain=sweep?this.pm.feature.selectionChains?.[slot]!==false:this.pm[guide?'loftGuideChain':'loftChain']!==false;
     const candidates = this.loftCandidates(), vp = this.viewport, m = vp.screenPos(e);
     let edge = null, distance = 7;
     for (const [id, s] of candidates) for (const line of this.loftPickData(id, s).lines) {
@@ -3194,10 +3194,14 @@ class App {
 
   loftClick(e) {
     try {
+      if (['loft', 'surfLoft'].includes(this.pm.feature.type) && this.faceProfilePicking()) {
+        const fh = this.faceAt(e);
+        if (fh) return this.addFaceProfile(fh);
+      }
       const ref = this.pickLoftContour(e);
       if (!ref && this.faceProfilePicking()) { const fh = this.faceAt(e); if (fh) return this.addFaceProfile(fh); }
       if (!ref) { this.status('Click a sketch contour, or inside a closed profile.'); return; }
-      const chain=this.sweepPicking()?this.pm.feature.selectionChains?.[this.pm.sweepSlot||'profile']!==false:this.pm.loftChain!==false;
+      const chain=this.sweepPicking()?this.pm.feature.selectionChains?.[this.pm.sweepSlot||'profile']!==false:this.pm[this.pm.loftSlot==='guides'?'loftGuideChain':'loftChain']!==false;
       if (chain) return this.addLoftContour(ref);
       let draft = this.pm.loftDraft;
       if (draft && draft.sketch !== ref.sketch) throw new Error('Finish the current contour before selecting another sketch');
@@ -3234,16 +3238,16 @@ class App {
     } catch (e) { if (this.pm === pm) this.toast(e.message, true); }
   }
 
-  // Extrude and Revolve take flat model faces as profiles too (where no sketch profile is clicked)
+  // Model faces can supply the actual trimmed boundary, including faces made by Split Face.
   faceProfilePicking() {
     const f = this.pm?.feature;
-    return !!f && ['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
+    return !!f && ['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'loft', 'surfLoft'].includes(f.type) && (this.pm.loftSlot || 'profiles') === 'profiles' && this.pm.loftChain !== false;
   }
 
-  // A flat model face added as a profile, or removed when it is picked again
+  // A model face added as a profile, or removed when it is picked again.
   addFaceProfile(fh) {
     const f = this.pm.feature, vp = this.viewport, face = vp.faceInfo(fh.hit.face);
-    if (!face.planar) { this.toast('Click a flat face of the model, or a sketch profile', true); return; }
+    if (!face.planar && f.type !== 'surfLoft') { this.toast(f.type === 'loft' ? 'A solid loft needs flat profile faces. Use Surface Loft for curved face boundaries' : 'Click a flat face of the model, or a sketch profile', true); return; }
     const body = this.result.bodies?.[vp.faceBody[fh.hit.face]]?.id;
     f.profiles ||= [];
     const i = f.profiles.findIndex((q) => q?.kind === 'modelFace' && vp.faceIndexNear(q.p) === fh.hit.face);
@@ -3506,7 +3510,7 @@ class App {
     if (f) {
       if(['extrude','surfExtrude'].includes(f.type)&&f.startFrom==='surface'&&f.startFace){const i=vp.faceIndexNear(f.startFace.p);if(i>=0)infos.push(vp.faceInfo(i));}
       if(f.type==='extrude'&&f.side2&&['upToSurface','offsetSurface'].includes(f.end2)&&f.toFace2){const i=vp.faceIndexNear(f.toFace2.p);if(i>=0)infos.push(vp.faceInfo(i));}
-      const faceRefs = [...(f.faces || []), ...(['split','splitLine'].includes(f.type)&&f.toolFace?[f.toolFace]:[]), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
+      const faceRefs = [...(f.faces || []), ...(['split','splitLine'].includes(f.type)&&f.toolFace?[f.toolFace]:[]), ...(f.startFaces || []), ...(f.endFaces || []), ...(f.refs||[]).filter(r=>r.kind==='face'), ...(['extrude', 'revolve', 'surfExtrude', 'surfRevolve', 'loft', 'surfLoft'].includes(f.type) ? (f.profiles || []).filter((r) => r?.kind === 'modelFace') : []), ...(f.type === 'moveBody' ? (f.mates || []).flatMap((m) => [m.a, m.b]).filter((r) => r?.kind === 'face') : [])];
       if (((f.type === 'axis' && f.axisType === 'cylinder') || f.type === 'thread' || f.type === 'cosmeticThread' || f.type === 'wrap') && f.face) faceRefs.push(f.face);
       if (f.axis === 'face' && f.axisFace) faceRefs.push(f.axisFace);
       if (['revolve', 'surfRevolve'].includes(f.type) && f.extent === 'upToSurface' && f.toFace) faceRefs.push(f.toFace);
@@ -3727,6 +3731,10 @@ class App {
     const tags = [];
     if (loft || sweepFeature || this.modelLoftPicking()) {
       const show = (ref, color, label = '') => {
+        if (ref?.kind === 'modelFace') {
+          if (label) tags.push({ text: label, at: new THREE.Vector3(...ref.p), color });
+          return;
+        }
         if(LR.isModelEdgeChain(ref)){if(label&&ref.edges?.length)tags.push({text:label,at:new THREE.Vector3(...ref.edges[0].p),color});return;}
         const s = res.sketches.get(LR.sourceId(ref));
         if (!s) {
@@ -4564,9 +4572,12 @@ class App {
     if(mode==='loftConnector'){let target=null;try{target=this.loftConnectorTarget(e);}catch{}vp.canvas.style.cursor=target?'pointer':'default';vp.setPointMarks('loft-connection-target',target?[{p:target.p,text:'Attach',cls:'pick'}]:null);return;}
     if (mode === 'loftContour') {
       let ref = null;
-      try { ref = this.pickLoftContour(e); } catch { /* ambiguous edges need a region or manual selection */ }
+      let fh = this.faceProfilePicking() && ['loft','surfLoft'].includes(this.pm.feature.type) ? this.faceAt(e) : null;
+      if (!fh) try { ref = this.pickLoftContour(e); } catch { /* ambiguous edges need a region or manual selection */ }
+      if (!ref && !fh && this.faceProfilePicking()) fh = this.faceAt(e);
+      vp.setFaceHighlight('hover', fh ? vp.faceInfo(fh.hit.face) : null);
       if (LR.refKey(ref) !== LR.refKey(this.pm.loftHover)) { this.pm.loftHover = ref; this.updateSketchDisplay(); }
-      vp.canvas.style.cursor = ref ? 'pointer' : 'default'; return;
+      vp.canvas.style.cursor = ref || fh ? 'pointer' : 'default'; return;
     }
     if (mode === 'body') {
       const fh = this.faceAt(e);

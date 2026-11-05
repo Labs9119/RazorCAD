@@ -23,6 +23,30 @@ function orderedEdges(R,wire){
     out.push(edge);point=at(edge,1);
   }return out;}catch(e){[...out,...pool].forEach(x=>x.delete());throw e;}
 }
+// Match complete CAD boundaries before applying endpoint derivatives. Faces on
+// opposite ends of a body often expose their loops in opposite directions.
+export function alignLoftWires(R,wires){
+  const rows=[],made=[];
+  const center=pts=>mul(pts.reduce((a,p)=>add(a,p),[0,0,0]),1/pts.length);
+  try{
+    for(const wire of wires)rows.push(orderedEdges(R,wire));
+    if(rows.some(row=>row.length!==rows[0].length))throw new Error('Endpoint conditions require matching curve counts in all profiles');
+    const reference=rows[0].map(e=>at(e,0)),origin=center(reference),dirs=reference.map(p=>sub(p,origin));
+    for(const row of rows){
+      let best=null,cost=Infinity;
+      for(const reverse of [false,true]){
+        const list=reverse?row.slice().reverse():row,points=list.map(e=>at(e,reverse?1:0)),c=center(points);
+        for(let shift=0;shift<row.length;shift++){
+          const score=dirs.reduce((s,d,i)=>{const q=sub(points[(i+shift)%row.length],c);return s+length(sub(mul(d,1/(length(d)||1)),mul(q,1/(length(q)||1))))**2;},0);
+          if(score<cost){cost=score;best={list,reverse,shift};}
+        }
+      }
+      const edges=best.list.map((_,i)=>{const e=best.list[(i+best.shift)%row.length];return best.reverse?e.flipOrientation():e.clone();});
+      try{made.push(R.assembleWire(edges));}finally{edges.forEach(e=>e.delete());}
+    }
+    return made;
+  }catch(e){made.forEach(w=>w.delete());throw e;}finally{rows.flat().forEach(e=>e.delete());}
+}
 const derivative=(fn,t)=>{const h=1e-5;return t===0?mul(add(add(mul(fn(0),-3),mul(fn(h),4)),mul(fn(2*h),-1)),1/(2*h)):t===1?mul(add(add(mul(fn(1),3),mul(fn(1-h),-4)),fn(1-2*h)),1/(2*h)):mul(sub(fn(t+h),fn(t-h)),1/(2*h));};
 function cubicPoles(values,d0,d1){
   const n=values.length-1,h=1/n,p=Array(n+3);
@@ -215,11 +239,11 @@ export function checkLoftEndGuides(R,guides,wires,conditions,slack=0){
   const distance=(p,shape)=>{const v=R.makeVertex(p),q=new R.DistanceQuery(v);try{return q.distanceTo(shape);}finally{q.delete();v.delete();}};
   try{if(rows.some((row,i)=>row.length!==neighbors[i].length))throw new Error('Endpoint conditions require matching curve counts in all profiles');
   for(const guide of guides){
-    const ends=[read(guide.wire.pointAt(0)),read(guide.wire.pointAt(1))];
-    const reverse=distance(ends[1],wires[0])<distance(ends[0],wires[0]);
+    const ends=guide.contacts?guide.contacts.map(c=>c.p):[read(guide.wire.pointAt(0)),read(guide.wire.pointAt(1))];
+    const reverse=guide.contacts?false:distance(ends[1],wires[0])<distance(ends[0],wires[0]);
     for(const side of [0,1]){
       const c=conditions[side];if(c.mode==='none')continue;
-      const t=reverse?1-side:side,p=ends[t],tangent=mul(unit(read(guide.wire.tangentAt(t))),reverse?-1:1),candidates=rows[side].map((edge,index)=>({edge,index,gap:distance(p,edge)}));
+      const t=reverse?1-side:side,p=ends[t],tangent=guide.contacts?unit(guide.contacts[side].tangent):mul(unit(read(guide.wire.tangentAt(t))),reverse?-1:1),candidates=rows[side].map((edge,index)=>({edge,index,gap:distance(p,edge)}));
       const nearest=Math.min(...candidates.map(e=>e.gap));
       if(nearest>1e-4+slack)throw new Error(`The guide ${guide.name} must meet both endpoint profiles`);
       for(const {edge,index:edgeIndex} of candidates.filter(e=>e.gap<nearest+1e-5)){
