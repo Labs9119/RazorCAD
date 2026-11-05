@@ -1004,4 +1004,12 @@ export default {
   "Pine (radiata)": "Pin (radiata)",
   "Oak": "Chêne",
   "Plywood": "Contreplaqué",
+  "Timber Member": "Élément en bois",
+  "Market": "Marché",
+  "Australia": "Australie",
+  "New Zealand": "Nouvelle-Zélande",
+  "United States": "États-Unis",
+  "Part material": "Matériau de la pièce",
+  "The wide side stands upright (in a sketch on an upright plane, it lies in that plane). Rotate Profile by 90° turns it, for wall studs for example.": "Le grand côté reste vertical (dans une esquisse sur un plan vertical, il reste dans ce plan). Faire pivoter le profil de 90° le tourne, par exemple pour des montants de mur.",
+  "Timber Works": "Travaux bois",
 };

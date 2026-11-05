@@ -1029,4 +1029,12 @@ export default {
   "Pine (radiata)": "Kiefer (Radiata)",
   "Oak": "Eiche",
   "Plywood": "Sperrholz",
+  "Timber Member": "Holzbauteil",
+  "Market": "Markt",
+  "Australia": "Australien",
+  "New Zealand": "Neuseeland",
+  "United States": "USA",
+  "Part material": "Teilematerial",
+  "The wide side stands upright (in a sketch on an upright plane, it lies in that plane). Rotate Profile by 90° turns it, for wall studs for example.": "Die breite Seite steht senkrecht (in einer Skizze auf einer senkrechten Ebene liegt sie in dieser Ebene). Das Profil um 90° zu drehen dreht sie, zum Beispiel für Wandständer.",
+  "Timber Works": "Holzbau",
 };

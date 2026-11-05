@@ -6596,7 +6596,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
           // weld beads (round, the weld size across) along the lines where bodies meet; each joint its own body
           const sz = ev(f.size);
           if (!(sz > 0)) throw new Error('The weld size must be greater than zero');
-          const pool = (f.bodies || []).length ? f.bodies.map((id) => solids.find((r) => r.id === id)).filter(Boolean) : solids.filter((r) => r.member && r.member.type !== 'weld');
+          const pool = (f.bodies || []).length ? f.bodies.map((id) => solids.find((r) => r.id === id)).filter(Boolean) : solids.filter((r) => r.member && r.member.type !== 'weld' && !r.member.timber);
           if (pool.length < 2) throw new Error('Select two or more bodies that touch (none: every weldment member)');
           const oc = R.getOC();
           let n0 = 0, total = 0;
@@ -6869,7 +6869,10 @@ async function rebuild(doc, previewId = null, opts = {}) {
               // e.g. a table's corner: the two rails of one sketch (or group) make the corner, the leg is trimmed to both
               const bySrc = new Map(), keyOf = (E) => (E.m.g.grp != null ? 'grp' + E.m.g.grp : E.m.g.src);
               for (const E of gr.ends) { if (!bySrc.has(keyOf(E))) bySrc.set(keyOf(E), []); bySrc.get(keyOf(E)).push(E); }
-              const pair = [...bySrc.values()].find((l) => l.length === 2);
+              // (three lines of one sketch at a point: a line running on through, else the two most nearly square)
+              const across = (x, y) => Math.abs(dot(x.m.out[x.k], y.m.out[y.k]));
+              const pairs = gr.ends.flatMap((x, i) => gr.ends.slice(i + 1).filter((y) => x.m.line && y.m.line && keyOf(x) === keyOf(y)).map((y) => [x, y]));
+              const pair = [...bySrc.values()].find((l) => l.length === 2) || pairs.find(([x, y]) => dot(x.m.out[x.k], y.m.out[y.k]) < -0.9999) || pairs.sort((p, q) => across(...p) - across(...q))[0];
               if (pair) {
                 cornerPair(pair[0], pair[1], gr);
                 for (const E of gr.ends) if (!pair.includes(E) && E.m.line) E.m.trim[E.k] = { kind: 'cope', hosts: pair.map((x) => x.m), p: gr.p };
@@ -6938,7 +6941,8 @@ async function rebuild(doc, previewId = null, opts = {}) {
               const pieces = solidsOf(m.solid.cut(cutBy));
               const keep = pieces.sort((x, y) => new R.DistanceQuery(R.makeVertex(mid)).distanceTo(x) - new R.DistanceQuery(R.makeVertex(mid)).distanceTo(y))[0];
               if (keep) m.solid = keep;
-              m.cut[k] = null; // (a coped end)
+              // (a coped end; timber: one saw cut on the face it meets, at this angle)
+              m.cut[k] = prof.timber && tr.hosts.length === 1 ? +((Math.acos(Math.min(1, Math.max(Math.abs(dot(m.d, tr.hosts[0].fr.u)), Math.abs(dot(m.d, tr.hosts[0].fr.v))))) * 180) / Math.PI).toFixed(2) : null;
             }
           }
           // one body per member
@@ -6951,7 +6955,7 @@ async function rebuild(doc, previewId = null, opts = {}) {
               length = Math.max(...ts) - Math.min(...ts);
             }
             const rec = bodyRec(newId(f.id), sh, f.id);
-            rec.member = { label: prof.label, type: prof.type, length: +length.toFixed(3), angles: m.cut.map((x) => (x === null ? null : +x)), feature: f.id, ...(m.line ? { axis: { a: m.g.a, b: m.g.b } } : {}), size };
+            rec.member = { label: prof.label, type: prof.type, length: +length.toFixed(3), angles: m.cut.map((x) => (x === null ? null : +x)), feature: f.id, ...(m.line ? { axis: { a: m.g.a, b: m.g.b } } : {}), size, timber: !!prof.timber };
             solids.push(rec);
             applied.push({ op: 'add', tool: sh });
           }

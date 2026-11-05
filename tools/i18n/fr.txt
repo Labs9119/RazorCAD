@@ -1055,3 +1055,11 @@
 1055|Chêne
 1056|Contreplaqué
 1057|MDF
+1058|Élément en bois
+1059|Marché
+1060|Australie
+1061|Nouvelle-Zélande
+1062|États-Unis
+1063|Matériau de la pièce
+1064|Le grand côté reste vertical (dans une esquisse sur un plan vertical, il reste dans ce plan). Faire pivoter le profil de 90° le tourne, par exemple pour des montants de mur.
+1065|Travaux bois

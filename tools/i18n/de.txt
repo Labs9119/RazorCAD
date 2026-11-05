@@ -1055,3 +1055,11 @@
 1055|Eiche
 1056|Sperrholz
 1057|MDF
+1058|Holzbauteil
+1059|Markt
+1060|Australien
+1061|Neuseeland
+1062|USA
+1063|Teilematerial
+1064|Die breite Seite steht senkrecht (in einer Skizze auf einer senkrechten Ebene liegt sie in dieser Ebene). Das Profil um 90° zu drehen dreht sie, zum Beispiel für Wandständer.
+1065|Holzbau

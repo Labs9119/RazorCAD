@@ -1055,3 +1055,11 @@
 1055|Roble
 1056|Contrachapado
 1057|MDF
+1058|Miembro de madera
+1059|Mercado
+1060|Australia
+1061|Nueva Zelanda
+1062|Estados Unidos
+1063|Material de la pieza
+1064|El lado ancho queda vertical (en un croquis en un plano vertical, queda en ese plano). Girar el perfil 90° lo gira, por ejemplo para montantes de pared.
+1065|Trabajos en madera

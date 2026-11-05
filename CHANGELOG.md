@@ -6,6 +6,20 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-05 10:30 — Timber Works: a ribbon tab for timber frames, with the sizes of Australia, New Zealand and the United States
+
+- **Timber Works tab.** Sketch, 3D Sketch, Timber Member, Timber Section, Extrude, Hole, Trim/Extend and Cut List together.
+- **Timber Member.** Structural Member set up for timber, from a sketch, a 3D sketch or several.
+- **Market.** Choose Australia, New Zealand or the United States, and the Size list shows what merchants there commonly
+  stock, here too in Timber Section. US lumber goes by its nominal name with its real size in inches.
+- **Timber stands on edge,** wide side upright, and starts with butted corners and ends cut to the face they meet.
+- **The members' material.** Timber starts as Pine, in a part of its own or among other bodies. A steel part keeps its
+  material; a part of nothing but timber takes it for the BOM and title block.
+- **The Cut List gives the angle of a timber end cut to a face,** a brace for example.
+- **Three lines of one sketch meeting at a point are now joined** for steel as for timber: a line running on through, or
+  else the two most nearly square, with the third trimmed to them. They used to overlap.
+- Weld Bead leaves timber out unless you click it.
+
 ## 2026-11-05 08:30 — Timber: sizes in Structural Member, Timber Section in the sketcher, centred holes, timber materials
 
 - **Timber table in Structural Member.** Common metric framing and dressed boards, nominal sizes such as 2x4 with what they

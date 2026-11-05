@@ -7,7 +7,7 @@ import { editCustomProps } from './custprops.js';
 import { compareWith } from './compare.js';
 import { setThemePref, themePref, isDark } from './theme.js';
 import { t as tr, LANGUAGES, language, setLanguage } from './i18n.js';
-import { iconFor, MATERIALS, planeName, findFeature, TYPE_INFO, bodySettings, ensureBodySettings, materialById, rollbackIndex, referencesOf, dependentsOf, absorbedSketches, moveProblem, bodyOwner, folderOfBody, sketchesUsedBy } from './model.js';
+import { iconFor, MATERIALS, planeName, findFeature, TYPE_INFO, bodySettings, ensureBodySettings, materialById, memberMaterial, rollbackIndex, referencesOf, dependentsOf, absorbedSketches, moveProblem, bodyOwner, folderOfBody, sketchesUsedBy } from './model.js';
 import { STD_PLANES } from './geometry.js';
 import { evaluate, evalEquations, fmt, isNumeric, isValidName, normalizeValue } from './expr.js';
 import { SKETCH_TOOLS } from './sketcher.js';
@@ -26,7 +26,7 @@ import { platform } from './platform.js';
 import { HelpPanel, loadManual, searchManual } from './help.js';
 import { threadList } from './threads.js';
 import { HOLE_SIZES } from './holes.js';
-import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE } from './profiles.js';
+import { LIBRARY, STANDARDS, PROFILE_TYPES, PIERCE, TIMBER_MARKETS, isTimberStandard, timberMember } from './profiles.js';
 import { overridesOf, masterFeature } from './bodiestoparts.js';
 import { PIPE_SIZES, pipeLabel } from './routing.js';
 import { stackUp } from './stackup.js';
@@ -2216,6 +2216,8 @@ export class UI {
       : { id: 'tool-' + t, icon: ic, label, key: KEYS[t], action: () => a.sketchTool(t), active: sk && a.sketcher.tool === t });
     // (2D-only commands: off in a 3D sketch)
     const only2d = (d) => (s3 ? { ...d, disabled: true, active: false } : d);
+    // (on the Sketch and Timber Works tabs; outside a sketch it opens one first)
+    const timberSection = only2d({ id: 'tool-timber', icon: 'skTimber', label: 'Timber Section', action: () => { if (sk) a.sketcher.timberSection(); else { a.pendingTimber = true; a.startSketch(); } }, active: sk && a.sketcher.tool === 'timber' });
     return {
       features: [
         // (Sketch here too: a part starts with one)
@@ -2322,7 +2324,7 @@ export class UI {
         only2d({ icon: 'skLinPattern', label: 'Linear Sketch Pattern', action: () => (sk ? a.sketcher.linearPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skCirPattern', label: 'Circular Sketch Pattern', action: () => (sk ? a.sketcher.circularPatternSel() : a.startSketch()) }),
         only2d({ icon: 'skBlock', label: 'Make Block', action: () => (sk ? a.sketcher.makeBlock() : a.startSketch()) }),
-        only2d({ id: 'tool-timber', icon: 'skTimber', label: 'Timber Section', action: () => (sk ? a.sketcher.timberSection() : a.startSketch()), active: sk && a.sketcher.tool === 'timber' }),
+        timberSection,
         only2d({ id: 'tool-block', icon: 'skInsertBlock', label: 'Insert Block', action: () => (sk ? a.sketcher.insertBlock() : a.startSketch()), active: sk && a.sketcher.tool === 'block' }),
         only2d({ icon: 'skBlock', label: 'Explode Block', action: () => (sk ? a.sketcher.explodeBlocks() : a.startSketch()) }),
         tool('text', 'text', 'Text'),
@@ -2386,6 +2388,17 @@ export class UI {
         { icon: 'endCap', label: 'End Cap', action: () => a.startFeature('endCap') },
         { icon: 'weldGusset', label: 'Gusset', action: () => a.startFeature('weldGusset') },
         { icon: 'weldBead', label: 'Weld Bead', action: () => a.startFeature('weldBead') },
+        'sep',
+        { icon: 'cutList', label: 'Cut List', action: () => this.showCutList() },
+      ],
+      timber: [
+        sk ? { icon: 'exitSketch', label: 'Exit Sketch', action: () => a.exitSketch(true) } : { icon: 'sketch', label: 'Sketch', action: () => a.startSketch() },
+        { icon: 'sketch3d', label: '3D Sketch', action: () => a.startFeature('sketch3d') },
+        { icon: 'skTimber', label: 'Timber Member', action: () => a.startFeature('structMember', null, { timber: true }) },
+        timberSection,
+        { icon: 'extrude', label: 'Extrude', action: () => a.startFeature('extrude', 'add') },
+        { icon: 'hole', label: 'Hole', action: () => a.startFeature('hole') },
+        { icon: 'weldTrim', label: 'Trim/Extend', action: () => a.startFeature('weldTrim') },
         'sep',
         { icon: 'cutList', label: 'Cut List', action: () => this.showCutList() },
       ],
@@ -2627,7 +2640,7 @@ export class UI {
 
   savePrefs() { platform.setPrefs(this.prefs || {}).catch?.(() => {}); }
   toolbarTabs() {
-    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['print', '3D Print'], ['render', 'Render'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
+    const out = [['features', 'Features'], ['sketch', 'Sketch'], ['surfaces', 'Surfaces'], ['sheetmetal', 'Sheet Metal'], ['weldments', 'Fast Structure'], ['timber', 'Timber Works'], ['print', '3D Print'], ['render', 'Render'], ['evaluate', 'Evaluate']].map(([id, label]) => ({ id, label }));
     for (const c of this.tbPrefs().custom) out.push({ id: 'custom:' + c.id, label: c.name, custom: true });
     out.push(...(this.app.plugins?.tabs('part') || []));
     out.push({ id: 'claude', label: 'Claude', html: `${icon('assistant')}Claude` });
@@ -4190,7 +4203,7 @@ export class UI {
     if (!b) { a.toast('That body no longer exists', true); return; }
     const cur = bodySettings(doc, id) || {};
     const st = { name: cur.name || '', material: cur.material || null, description: cur.description || '', props: (cur.props || []).map((p) => ({ ...p })), qty: cur.qty || 1, flatSide: cur.flatSide || 'top' };
-    const partMat = materialById(doc.material);
+    const partMat = materialById(memberMaterial(doc, id) || doc.material);
     const wrap = el('div', { class: 'bodyprops' });
     wrap.innerHTML = `
       <div class="bp-sec">General</div>
@@ -4850,15 +4863,28 @@ export class UI {
           };
           const firstSize = () => LIBRARY[f.standard]?.[f.ptype]?.[0]?.name || '';
           const typesOf = (std) => (std === 'custom' ? Object.keys(PROFILE_TYPES) : Object.keys(LIBRARY[std] || {}));
-          sel('Standard', [...STANDARDS.map((x) => [x, x]), ['custom', 'Custom sizes']], f.standard, (v) => {
+          const isTimber = isTimberStandard(f.standard);
+          const setStandard = (v) => {
             f.standard = v;
             if (!typesOf(v).includes(f.ptype)) f.ptype = typesOf(v)[0];
             if (v !== 'custom' && !(LIBRARY[v]?.[f.ptype] || []).some((x) => x.name === f.size)) f.size = firstSize();
+          };
+          sel('Standard', [...STANDARDS.map((x) => [x, x]), ['Timber', 'Timber'], ['custom', 'Custom sizes']], isTimber ? 'Timber' : f.standard, (v) => {
+            if (v === 'Timber') Object.assign(f, timberMember(this.timberMarket())); else setStandard(v);
+          });
+          if (isTimber) sel('Market', TIMBER_MARKETS, f.standard, (v) => {
+            this.setTimberMarket(v);
+            if (f.ptype === 'timber' && !LIBRARY[v].timber.some((x) => x.name === f.size)) f.size = timberMember(v).size;
+            setStandard(v);
           });
           sel('Type', typesOf(f.standard).map((k) => [k, PROFILE_TYPES[k].label]), f.ptype, (v) => { f.ptype = v; f.size = firstSize(); });
           if (f.standard !== 'custom') {
             const list = LIBRARY[f.standard]?.[f.ptype] || [];
             sel('Size', list.map((x) => [x.name, x.name]), f.size, (v) => { f.size = v; });
+            if (isTimber) {
+              sel('Material', [['', 'Part material'], ...MATERIALS.map((m) => [m.id, m.name])], f.material || '', (v) => { f.material = v; });
+              if (f.ptype === 'timber') body.appendChild(el('div', { class: 'pm-hint' }, esc(tr('The wide side stands upright (in a sketch on an upright plane, it lies in that plane). Rotate Profile by 90° turns it, for wall studs for example.'))));
+            }
           } else {
             f.dims ||= {};
             // (sizes of your own, kept in your settings by type)
@@ -6027,6 +6053,17 @@ export class UI {
 
   // A dialog of a few fields ({ key, label, value, type: 'text' | 'expr' | 'select' | 'check', options }); resolves
   // with { key: value } (strings, booleans for checks), or null if cancelled.
+  // The timber market last chosen, at first the one the computer is set to
+  timberMarket() {
+    const m = this.prefs?.timberMarket, lang = navigator.language || '';
+    return isTimberStandard(m) ? m : lang.endsWith('-US') ? 'Timber US' : lang.endsWith('-AU') ? 'Timber AU' : 'Timber NZ';
+  }
+  setTimberMarket(m) {
+    this.prefs ||= {};
+    this.prefs.timberMarket = m;
+    this.savePrefs();
+  }
+
   promptFields(title, ic, fields, hint = '') {
     return new Promise((resolve) => {
       let done = false;
@@ -6043,6 +6080,7 @@ export class UI {
         } else if (f.type === 'check') { inp = el('input', { type: 'checkbox' }); inp.checked = !!f.value; }
         else { inp = el('input', { type: 'text', style: 'width:90px' }); inp.value = f.value ?? ''; }
         if (f.type === 'expr') this.completeExpression(inp);
+        if (f.onChange) inp.onchange = () => f.onChange(inp.value, inputs);
         row.append(el('span', { style: 'flex:1' }, esc(f.label)), inp);
         box.appendChild(row);
         inputs[f.key] = inp;
@@ -6184,7 +6222,7 @@ export class UI {
     if (a.mode !== 'part' && a.mode !== 'sketch') { a.toast('The tour shows the part window: open or start a part first'); return; }
     const steps = [
       { title: 'Welcome to RazorCAD', text: 'A one-minute look round the window. Use <b>Next</b> (or → / Enter); <b>Esc</b> ends the tour.' },
-      { at: '#commandmanager', title: 'Commands', text: 'The toolbar holds the commands of each tab: Features, Sketch, Surfaces, Sheet Metal, Fast Structure, Evaluate. Point at a button for its name. The menus above have them all as well.' },
+      { at: '#commandmanager', title: 'Commands', text: 'The toolbar holds the commands of each tab: Features, Sketch, Surfaces, Sheet Metal, Fast Structure, Timber Works, Evaluate. Point at a button for its name. The menus above have them all as well.' },
       { at: '#tree', title: 'The feature tree', text: 'Your part as you built it, one feature after another. Double-click a feature to change it, right-click for more, and drag the bar at the end to roll the part back.' },
       { at: '#viewport', title: 'The view', text: '<b>Middle mouse</b>: turn · <b>Shift + right mouse</b>: pan · <b>wheel</b>: zoom · <b>F</b>: zoom to fit. Click faces, edges and vertices to pick them; the arrows turn the view in steps.' },
       { at: '#tree', title: 'Your first part', text: 'Click <b>Top Plane</b> here, then <b>Sketch</b> (Sketch tab). Draw with <b>R</b> (rectangle), <b>L</b> (line) or <b>C</b> (circle), dimension with <b>D</b>, close the sketch and click <b>Extrude</b>.' },
@@ -6285,7 +6323,7 @@ export class UI {
     const a = this.app;
     let members;
     try { members = await a.kernel.request('cutList', {}); } catch (e) { a.toast(e.message, true); return; }
-    if (!members.length) { a.toast('There are no weldment members yet (Fast Structure ▸ Structural Member)', true); return; }
+    if (!members.length) { a.toast('There are no members yet (Fast Structure ▸ Structural Member, or Timber Works ▸ Timber Member)', true); return; }
     for (const m of members) m.density = a.bodyById(m.id)?.material?.density || null;
     const cl = cutListRows(members);
     const f2 = (x) => (x == null ? '—' : fmt(x, 1));

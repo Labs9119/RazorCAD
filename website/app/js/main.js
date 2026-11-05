@@ -8,6 +8,7 @@ import { ToolWheel } from './toolwheel.js';
 import { breadcrumb, reportError, installCrashHandlers, rememberPart } from './crash.js';
 import { UI } from './ui.js';
 import * as M from './model.js';
+import { isTimberStandard, timberMember } from './profiles.js';
 import * as G from './geometry.js';
 import * as S from './sketchmodel.js';
 import * as LR from './loftrefs.js';
@@ -4964,6 +4965,7 @@ class App {
     this.selection = null;
     this.viewport.clearFaceHighlights();
     this.sketcher.enter(f, s.frame, isNew);
+    this.sketchFrom = this.ui.cmTab === 'timber' ? 'timber' : null; // (the ribbon goes back there after the sketch)
     this.ui.setCmTab('sketch');
     $('#status-mode').textContent = 'Editing ' + f.name;
     this.updateSketchDisplay();
@@ -4971,6 +4973,7 @@ class App {
     this.ui.renderTree();
     this.ui.renderPM();
     this.ui.refreshCommandStates();
+    if (this.pendingTimber) { this.pendingTimber = false; this.sketcher.timberSection(); }
     if (this.pendingGears) { this.pendingGears = false; this.sketcher.startGearPick(); }
     if (this.pendingAirfoil) { this.pendingAirfoil = false; this.sketcher.makeAirfoil(); }
     else if (this.pendingTool) { this.sketcher.setTool(this.pendingTool); this.pendingTool = null; }
@@ -5011,6 +5014,7 @@ class App {
     this.selection = null;
     this.viewport.clearFaceHighlights();
     this.sketch3d.enter(f, isNew);
+    this.sketchFrom = this.ui.cmTab === 'timber' ? 'timber' : null; // (the ribbon goes back there after the sketch)
     this.ui.setCmTab('sketch');
     $('#status-mode').textContent = 'Editing ' + f.name;
     this.updateRefGeometry();
@@ -5036,7 +5040,7 @@ class App {
     s3.exit();
     this.mode = 'part';
     this.pm = null;
-    this.ui.setCmTab('features');
+    this.ui.setCmTab(this.sketchFrom || 'features');
     $('#status-mode').textContent = 'Editing Part';
     if (save) { f.rev = M.newRev(); this.commit(); }
     const kept = this.doc.features.includes(f);
@@ -5092,7 +5096,7 @@ class App {
     this.selection = kept ? { kind: 'feature', id: f.id } : null;
     this.rebuild();
     // (back to the tab a waiting feature was started from: Sheet Metal for a Base Flange, say)
-    this.ui.setCmTab(this.pendingFeature?.tab || 'features');
+    this.ui.setCmTab(this.pendingFeature?.tab || this.sketchFrom || 'features');
     if (this.pendingFeature) this.showBanner(null);
     this.ui.renderPM();
     this.ui.refreshCommandStates();
@@ -5306,7 +5310,8 @@ class App {
       props.path = src.id;
       // the profile last used
       const last = [...doc.features].reverse().find((x) => x.type === 'structMember');
-      if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner });
+      if (last) Object.assign(props, { standard: last.standard, ptype: last.ptype, size: last.size, dims: { ...(last.dims || {}) }, corner: last.corner, trim: last.trim, material: last.material });
+      if (opts.timber && !isTimberStandard(props.standard)) Object.assign(props, timberMember(this.ui.timberMarket()));
     }
     if (type === 'hole') {
       const last = [...doc.features].reverse().find((x) => x.type === 'hole');
@@ -5445,6 +5450,9 @@ class App {
       if (this.pm !== pm) return;
       const error = this.result.errors.get(pm.feature.id);
       if (error) { this.refuseFeature(pm, error); return; }
+      // (a part of nothing but these members: it is of their material too, for the BOM and the title block)
+      const mat = pm.feature.type === 'structMember' && pm.feature.material;
+      if (mat && this.result.bodies.every((b) => b.kind === 'surface' || M.memberMaterial(this.doc, b.id) === mat)) this.doc.material = mat;
     }
     clearTimeout(this._previewTimer);
     this.pm = null;
@@ -5554,7 +5562,7 @@ class App {
     if (pm.kind === 'section') this.clearSection();
     if (pm.kind === 'measure') { this.viewport.setMeasure(null); this.viewport.setPointMarks('measure-picks', null); this.viewport.setPointMarks('measure-hover', null); }
     this.viewport.setPointMarks('pathFrom', null);
-    if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.showBanner(null); }
+    if (pm.kind === 'selectPlane') { this.pendingTool = null; this.pendingFeature = null; this.pendingGears = false; this.pendingAirfoil = false; this.pendingTimber = false; this.showBanner(null); }
     if (pm.kind === 'annotate' || pm.kind === 'decal') this.showBanner(null);
     this.hoverEdge = null;
     this.hoverVertex = null;

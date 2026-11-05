@@ -1040,4 +1040,11 @@ export default {
   "Pine (radiata)": "Pino (radiata)",
   "Oak": "Roble",
   "Plywood": "Contrachapado",
+  "Timber Member": "Miembro de madera",
+  "Market": "Mercado",
+  "New Zealand": "Nueva Zelanda",
+  "United States": "Estados Unidos",
+  "Part material": "Material de la pieza",
+  "The wide side stands upright (in a sketch on an upright plane, it lies in that plane). Rotate Profile by 90° turns it, for wall studs for example.": "El lado ancho queda vertical (en un croquis en un plano vertical, queda en ese plano). Girar el perfil 90° lo gira, por ejemplo para montantes de pared.",
+  "Timber Works": "Trabajos en madera",
 };

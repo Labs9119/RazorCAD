@@ -20,6 +20,7 @@ Main capabilities:
 - Surface modelling: extruded, revolved, planar, lofted, swept, filled, boundary and ruled surfaces, trim, extend, knit, thicken and more
 - Sheet metal: flanges, hems, miter flanges, sketched bends, jogs, forming tools, tab and slot, lofted bends, transitions, flat patterns and DXF export
 - **Fast Structure** (weldments): structural members from standard profiles, end caps, gussets, weld beads and a cut list
+- **Timber Works**: timber frames from sketches and 3D sketches, in the sizes of Australia, New Zealand and the United States
 - Assemblies with mates (including gear and rack-pinion mates), sub-assemblies, configurations, standard parts and fastener sets, equations shared with the parts, holes and cuts made in the assembly, exploded views, motion studies, collision detection, an interference check, a bill of materials with mass and cost, and STEP export
 - 2D drawings of parts and assemblies, with projected, section, detail, auxiliary, broken, exploded and flat pattern views, dimensions (also made automatically), GD&T, cosmetic threads, balloons, bill-of-materials tables, a drawing check, DXF drawings placed on the sheet, and PDF and DXF export
 - Millimetres or inches, chosen for each document
@@ -114,7 +115,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 |---|---|
 | **Menu bar** | File, Edit, View, Insert, Tools, Help. Next to the menus are quick buttons for **Save**, **Save As**, **Rebuild**, **Settings** (the gear) and **Search commands** (the magnifier). |
 | **Document tabs** | Each open part or drawing has its own tab. ✕ closes a tab and asks to save. |
-| **Command ribbon** | Tabs of tool buttons: **Features**, **Sketch**, **Surfaces**, **Sheet Metal**, **Fast Structure**, **Evaluate** and **Claude**. Buttons with a shortcut show the key in their bottom-right corner. |
+| **Command ribbon** | Tabs of tool buttons: **Features**, **Sketch**, **Surfaces**, **Sheet Metal**, **Fast Structure**, **Timber Works**, **Evaluate** and **Claude**. Buttons with a shortcut show the key in their bottom-right corner. |
 | **Feature tree** | The part's history, with folders for Solid Bodies, Sheet Metal Bodies and Surface Bodies, the material, the planes and every feature. An eye column on the right shows or hides each item. |
 | **Configurations tab** | Next to the Feature tree and the Property panel at the top of the left panel (see the Configurations chapter) |
 | **Property panel** | Opens in place of the tree while you create or edit a feature. ✔ accepts ([[Enter]]), ✕ cancels ([[Esc]]). On a new feature, **✔+** ([[Shift+Enter]]) accepts it and starts another of the same kind straight away (another Extrude, another Fillet…) {idx:OK and start another}. While a new feature still needs something picked, the panel says what (in black, not as an error), and the status bar doesn't count it as an error. Starting another feature (or editing another) while one is open asks first: **Apply** it, **Discard** it, or **Keep editing**; it is never thrown away unasked {idx:feature, left open}. A feature that fails is not accepted {idx:feature, refused}: ✔ shows a dialog saying why, and the panel stays open to put it right; a new one is not added to the tree, and an edit that makes a feature fail is not kept (✕ leaves it as it was). |
@@ -512,7 +513,7 @@ In the sketch Property panel, **Rotate 90°** turns the sketch axes about the sk
 | **Equation Curve** | | A spline through the points of **y = f(x)** (x from / to) or of **x = f(t), y = g(t)** (t from / to), in a number of **Pieces**. Part variables can be used and the curve follows them; sin, cos and tan take degrees. A parametric curve that ends where it starts is closed. An **Equation** relation holds it (it is fully defined); select it and use Equation Curve again to change it. {idx:equation curve} |
 | **Linear Sketch Pattern** | | Opens a side panel with an orange preview. Select source entities before or after opening it, then choose an angle, line or curve as direction/path. Copies stay linked to their sources, path, quantity and spacing. Along a curve, spacing is measured along it and copies can rotate with it; open paths stop at their end. A straight direction also supports a second direction. |
 | **Circular Sketch Pattern** | | Copies the selected entities round a centre: enter the number of instances (the original included) and the total angle (360 spreads them evenly). A selected point is the centre (it may move later); otherwise enter its X and Y. The copies stay linked to the originals, as a linear pattern's do: they follow their size and position, so a bolt circle drawn as one dimensioned hole and its pattern is fully defined. Change the count or angle with **Sketch Patterns ▸ Edit Circular Pattern** in the sketch's panel. An airfoil on a patterned chord line is copied with it. |
-| **Timber Section** {idx:Timber Section} | | Pick a timber size (or one you saved under Structural Member) and whether it sits on edge or flat, then click where the middle of the section goes: a rectangle sized by its two dimensions, ready to extrude to length. Click again for more; Esc ends. |
+| **Timber Section** {idx:Timber Section} | | Pick a market, a timber size (or one you saved under Structural Member) and whether it sits on edge or flat, then click where the middle of the section goes: a rectangle sized by its two dimensions, ready to extrude to length. Click again for more; Esc ends. |
 | **Make Block / Insert Block / Explode Block** | | Make Block saves the selection (with its relations) under a name in your settings. Insert Block places copies with a click, in any sketch, turned by an angle, and can delete blocks from the library. A **linked** copy (the default) moves and turns as one (a rigid Block relation holds it) and follows the block: Make Block again under the same name updates every copy in the sketch where it is, keeping relations from other geometry to it. Explode Block makes the selected copies plain geometry with the block's own relations and dimensions. Untick **Linked** for plain copies. |
 | **Text** | | See below |
 | **Gears** | | See the Gears chapter |
@@ -1705,7 +1706,7 @@ Body Properties for a sheet metal body shows thickness, bend radius and K-factor
 
 # Fast Structure
 
-The **Fast Structure** tab builds welded frames (weldments) from standard steel profiles: Structural Member, Trim/Extend, End Cap, Gusset, Weld Bead and Cut List. It also has a **3D Sketch** button, since frames are often laid out in 3D. {idx:Fast Structure}{idx:weldments}
+The **Fast Structure** tab builds welded frames (weldments) from standard steel profiles: Structural Member, Trim/Extend, End Cap, Gusset, Weld Bead and Cut List. Timber frames have a tab of their own: see the Timber Works chapter. It also has a **3D Sketch** button, since frames are often laid out in 3D. {idx:Fast Structure}{idx:weldments}
 
 ## Structural Member
 
@@ -1717,9 +1718,9 @@ Pick a profile and a sketch or 3D sketch: every line and arc of it becomes a mem
 | Angles | Equal and unequal angle |
 | Channels and beams | Channel (PFC / UPN); I-beam (UB, UC, IPE, HEA) |
 | Bars | Flat bar, round bar |
-| Timber {idx:timber sizes} | Rectangular sections; dowels |
+| Timber {idx:timber sizes} | Rectangular sections; dowels and poles |
 
-Sizes come from the AS/NZS, EN/ISO or Timber tables, or enter your own dimensions. **Timber** lists common metric framing and dressed boards, nominal sizes such as 2x4 with what they really measure, and dowels; the **Type** list only offers what the chosen table has.
+Sizes come from the AS/NZS or EN/ISO tables, from **Timber** (see the Timber Works chapter), or enter your own dimensions. The **Type** list only offers what the chosen table has.
 
 With **Custom sizes**, **Save These Sizes…** keeps the dimensions under a name in your settings, by type, for any part: pick it again from **Saved sizes**, or **Delete Saved Size**. Saved timber sizes also appear in the sketcher's **Timber Section**.
 
@@ -1766,6 +1767,28 @@ Set the weld size and click the bodies to weld (none: every weldment member). A 
 **Cable** {idx:Cable}{idx:harness}{idx:routing, cables} sweeps a round cable or bundle along a sketch or 3D sketch (a 3D sketch spline through the points it must pass follows them smoothly). Give its **Diameter**, or the number of **Wires** and their diameter (the bundle is about 1.15 × d × √n across). The message gives the route length and the cut length with the **Slack** added.
 
 **Harness Formboard** {idx:formboard}{idx:harness, formboard} lays the part's cables flat at their cut lengths, joined where their ends meet: each cable straight on from the one before it, branches fanned out at 45° steps. It shows the board with each cable's name and length and the points where cables meet, and **Export DXF…** writes it to lay out the board full size.
+
+# Timber Works
+
+The **Timber Works** tab holds the tools for timber structures: **Sketch**, **3D Sketch**, **Timber Member**, **Timber Section**, **Extrude**, **Hole**, **Trim/Extend** and **Cut List**. {idx:Timber Works}
+
+## Timber Member
+
+**Timber Member** {idx:Timber Member}{idx:timber frames} is Structural Member set up for timber. It works the same way: draw the frame as a sketch, a 3D sketch or several of them, and every line becomes a member, with Groups, Corners, Alignment, Trim/Extend and the Cut List as for steel (see the Fast Structure chapter). Choosing **Timber** as the Standard of a Structural Member does the same.
+
+- **Market** {idx:timber market}: **Australia**, **New Zealand** or **United States**. The Size list then shows what merchants there commonly stock: framing, sawn sizes, posts, decking and dressed boards, with dowels and poles under the round Type. US lumber goes by its nominal name with its real size in inches, such as 2x4 (1-1/2 x 3-1/2 in). Your choice is remembered. Stock differs from one merchant to the next, so check a size before you rely on it.
+- **On edge**: timber stands with its wide side upright, as joists and rafters do. In a sketch on an upright plane the wide side lies in that plane. **Rotate Profile** by 90° turns it, for wall studs for example.
+- **Corners** start as **Butt**, and trimmed ends are cut to the face they meet, so a brace gets an angled cut. Use Groups to choose which members run through, plates over studs for example. **Mitre** is still there for a picture frame.
+- **Material** starts as Pine. If the part holds nothing else, the part takes that material too, for the BOM and title block. Otherwise only the members have it, so a timber deck on a steel frame gets both right. **Part material** makes the members follow the part.
+- The **Cut List** gives each cut's angle: 0 is square. Weld Bead leaves timber out unless you click it.
+
+## Timber Section
+
+For one piece of timber rather than a frame. Pick a market, a size and whether it sits on edge or flat, then click where the middle of the section goes: a rectangle sized by its two dimensions, ready to **Extrude** to length. Click again for more; Esc ends. Outside a sketch, **Timber Section** opens one on the selected plane or asks for one. It is on the Sketch tab as well.
+
+## Holes in timber
+
+**Hole** has **Centre on the Face** for a row of holes down a board: see Hole in the Solid Features chapter.
 
 # Designing for 3D Printing
 

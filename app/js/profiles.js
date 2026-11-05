@@ -31,8 +31,13 @@ export const PROFILE_TYPES = {
 const named = (list, fmt) => list.map((x) => ({ ...x, name: fmt(x) }));
 const n = (v) => String(+(+v).toFixed(2));
 const tubeName = (x) => `${n(x.d || x.b)}x${n(x.b)}x${n(x.t)}`;
-// (timber: [width, thickness] of the finished section; a size sold by a nominal name keeps it, with what it really is)
-const boards = (list) => list.map(([b, t, nominal]) => ({ name: nominal ? `${nominal} (${b}x${t})` : `${b}x${t}`, b, t }));
+// (timber: [wide side, thin side] of the finished section)
+const boards = (list) => list.map(([b, t]) => ({ name: `${b}x${t}`, b, t }));
+// (US lumber: the nominal name, then the real size in inches)
+const inch = (x) => { const w = Math.floor(x), r = x - w, q = r === 0.5 ? '1/2' : r === 0.25 ? '1/4' : '3/4'; return !r ? `${w}` : w ? `${w}-${q}` : q; };
+const lumber = (list) => list.map(([nom, t, b]) => ({ name: `${nom} (${inch(t)} x ${inch(b)} in)`, b: +(b * 25.4).toFixed(2), t: +(t * 25.4).toFixed(2) }));
+const dowels = (list) => list.map((D) => ({ name: `${D} dowel`, D }));
+const poles = (list) => list.map((D) => ({ name: `${D} pole`, D }));
 export const LIBRARY = {
   'AS/NZS': {
     shs: named(tubes('20:1.6,2; 25:1.6,2,2.5,3; 30:1.6,2; 35:2,2.5,3; 40:2,2.5,3,4; 50:2,2.5,3,4,5,6; 65:2.5,3,4,5,6; 75:2.5,3,3.5,4,5,6; 89:3.5,5,6; 100:3,4,5,6,9; 125:4,5,6,9; 150:5,6,9,10; 200:5,6,9,10'), (x) => `${n(x.b)}x${n(x.b)}x${n(x.t)} SHS`),
@@ -64,13 +69,32 @@ export const LIBRARY = {
     flat: named(rows('20 3; 20 5; 25 5; 30 5; 40 5; 40 8; 50 5; 50 8; 50 10; 60 6; 80 8; 100 10; 120 10; 150 12', ['b', 't']), (x) => `FL ${n(x.b)}x${n(x.t)}`),
     round: named(rows('6; 8; 10; 12; 16; 20; 25; 30; 40; 50; 60', ['D']), (x) => `RD ${n(x.D)}`),
   },
-  Timber: {
-    timber: boards([[70, 35], [90, 35], [90, 45], [140, 35], [140, 45], [190, 45], [240, 45], [290, 45], [42, 19], [65, 19], [90, 19], [115, 19], [140, 19], [190, 19], [240, 19], [42, 42], [65, 42],
-      [38, 19, '1x2'], [64, 19, '1x3'], [89, 19, '1x4'], [140, 19, '1x6'], [184, 19, '1x8'], [235, 19, '1x10'], [286, 19, '1x12'], [38, 38, '2x2'], [64, 38, '2x3'], [89, 38, '2x4'], [140, 38, '2x6'], [184, 38, '2x8'], [235, 38, '2x10'], [286, 38, '2x12'], [89, 89, '4x4']]),
-    round: [6, 8, 10, 12, 16, 20, 25, 32].map((D) => ({ name: `${D} dowel`, D })),
+  // What the merchants of each market commonly stock (framing, sawn, posts, decking, dressed boards); finished sizes
+  'Timber AU': {
+    timber: boards([[70, 35], [70, 45], [90, 35], [90, 45], [120, 35], [120, 45], [140, 35], [140, 45], [190, 35], [190, 45], [240, 35], [240, 45], [290, 45],
+      [90, 90], [100, 100], [125, 125], [150, 150], [200, 50], [200, 75], [90, 19], [90, 22], [140, 19],
+      [42, 19], [64, 19], [89, 19], [138, 19], [184, 19], [235, 19], [285, 19], [42, 42]]),
+    round: [...dowels([6, 8, 10, 12, 16, 20, 25, 32]), ...poles([75, 100, 125, 150, 200])],
+  },
+  'Timber NZ': {
+    timber: boards([[70, 35], [90, 35], [70, 45], [90, 45], [140, 45], [190, 45], [240, 45], [290, 45],
+      [75, 50], [100, 50], [150, 50], [200, 50], [250, 50], [300, 50], [100, 100], [125, 125], [150, 150], [90, 32], [140, 32],
+      [42, 19], [65, 19], [90, 19], [115, 19], [140, 19], [190, 19], [240, 19], [42, 42], [65, 42]]),
+    round: [...dowels([6, 8, 10, 12, 16, 20, 25, 32]), ...poles([100, 125, 150, 175, 200])],
+  },
+  'Timber US': {
+    timber: lumber([['1x2', 0.75, 1.5], ['1x3', 0.75, 2.5], ['1x4', 0.75, 3.5], ['1x6', 0.75, 5.5], ['1x8', 0.75, 7.25], ['1x10', 0.75, 9.25], ['1x12', 0.75, 11.25],
+      ['5/4x4', 1, 3.5], ['5/4x6', 1, 5.5], ['2x2', 1.5, 1.5], ['2x3', 1.5, 2.5], ['2x4', 1.5, 3.5], ['2x6', 1.5, 5.5], ['2x8', 1.5, 7.25], ['2x10', 1.5, 9.25], ['2x12', 1.5, 11.25],
+      ['4x4', 3.5, 3.5], ['4x6', 3.5, 5.5], ['4x8', 3.5, 7.25], ['4x10', 3.5, 9.25], ['4x12', 3.5, 11.25], ['6x6', 5.5, 5.5], ['6x8', 5.5, 7.5], ['8x8', 7.5, 7.5]]),
+    round: [[0.25, '1/4'], [0.375, '3/8'], [0.5, '1/2'], [0.625, '5/8'], [0.75, '3/4'], [1, '1'], [1.25, '1-1/4']].map(([x, nm]) => ({ name: `${nm} in dowel`, D: +(x * 25.4).toFixed(3) })),
   },
 };
-export const STANDARDS = Object.keys(LIBRARY);
+// (the panels offer Timber, then its market)
+export const TIMBER_MARKETS = [['Timber AU', 'Australia'], ['Timber NZ', 'New Zealand'], ['Timber US', 'United States']];
+export const isTimberStandard = (std) => TIMBER_MARKETS.some(([id]) => id === std);
+export const STANDARDS = Object.keys(LIBRARY).filter((x) => !isTimberStandard(x));
+// What a timber frame starts as: a common size on edge, butted, its ends cut to the faces they meet, in pine
+export const timberMember = (market) => ({ standard: market, ptype: 'timber', size: LIBRARY[market].timber.find((x) => x.name === '90x45' || x.name.startsWith('2x4 ')).name, corner: 'butt1', trim: 'cope', material: 'pine' });
 
 // The dimensions of a member's profile: from the library, or the custom ones. f: { standard, ptype, size, dims }
 export function profileDims(f, ev = Number) {
@@ -81,12 +105,12 @@ export function profileDims(f, ev = Number) {
     if (type === 'shs') d.d = d.b;
     if (type === 'ea') d.b = d.a;
     const label = `${PROFILE_TYPES[type].label.split(' (')[0]} ${PROFILE_TYPES[type].dims.map(([k]) => n(d[k])).join('x')}`;
-    return { type, ...d, label };
+    return { type, ...d, label, timber: type === 'timber' };
   }
   const list = LIBRARY[f.standard]?.[type] || [];
   const row = list.find((x) => x.name === f.size) || list[0];
   if (!row) throw new Error('Choose a profile size');
-  return { type, ...row, d: row.d ?? row.b, b: row.b ?? row.a, label: row.name };
+  return { type, ...row, d: row.d ?? row.b, b: row.b ?? row.a, label: type === 'timber' ? `Timber ${row.name}` : row.name, timber: isTimberStandard(f.standard) };
 }
 
 // ---- cross sections
@@ -136,7 +160,8 @@ export function profileSection(p) {
       break;
     }
     case 'round': w = h = p.D; outer = circle(p.D); break;
-    case 'flat': case 'timber': w = p.b; h = p.t; outer = rect(w, h); break;
+    case 'flat': w = p.b; h = p.t; outer = rect(w, h); break;
+    case 'timber': w = p.t; h = p.b; outer = rect(w, h); break; // (on edge, as joists and rafters stand)
     case 'ea': case 'ua': {
       const a = p.a, b = p.type === 'ea' ? p.a : p.b, t = p.t, r = Math.min(p.r || 0, Math.min(a, b) - t - 1e-3);
       w = a; h = b;

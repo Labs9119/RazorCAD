@@ -10,7 +10,7 @@ import { evaluate, fmt, isNumeric, normalizeValue } from './expr.js';
 import { fmtLen, lenText, lenValue } from './units.js';
 import { parseDXF, dxfShapes, addShapes } from './dxfimport.js';
 import { platform } from './platform.js';
-import { LIBRARY } from './profiles.js';
+import { LIBRARY, TIMBER_MARKETS, timberMember } from './profiles.js';
 import { isDark, sketchDefined, sketchUnder } from './theme.js';
 
 const COL = {
@@ -2345,16 +2345,23 @@ export class Sketcher {
   // Timber Section: a size from the timber list or your own saved ones, as a rectangle to click into place in this
   // sketch, for extruding to length
   async timberSection() {
-    const ui = this.app.ui, ev = (x) => +this.app.result.ev(x) || 0;
-    const sizes = [...LIBRARY.Timber.timber, ...(ui.prefs?.profileSizes || []).filter((x) => x.ptype === 'timber').map((x) => ({ name: x.name, b: ev(x.dims.b), t: ev(x.dims.t) }))];
-    const last = this.timberIns;
+    const ui = this.app.ui, ev = (x) => +this.app.result.ev(x) || 0, market = ui.timberMarket(), last = this.timberIns;
+    const mine = (ui.prefs?.profileSizes || []).filter((x) => x.ptype === 'timber').map((x) => ({ name: x.name, b: ev(x.dims.b), t: ev(x.dims.t) }));
+    const sizesOf = (m) => [...LIBRARY[m].timber, ...mine];
     const v = await ui.promptFields('Timber Section', 'skTimber', [
-      { key: 'size', label: 'Size', type: 'select', options: sizes.map((x) => [x.name, x.name]), value: last?.name || '90x45' },
+      { key: 'market', label: 'Market', type: 'select', options: TIMBER_MARKETS, value: market, onChange: (m, inputs) => {
+        const size = inputs.size, was = size.value;
+        size.replaceChildren(...sizesOf(m).map((x) => new Option(x.name, x.name)));
+        size.value = was;
+        if (!size.value) size.value = timberMember(m).size;
+      } },
+      { key: 'size', label: 'Size', type: 'select', options: sizesOf(market).map((x) => [x.name, x.name]), value: last?.name || timberMember(market).size },
       { key: 'lay', label: 'Laid', type: 'select', options: [['edge', 'On edge (wide side upright)'], ['flat', 'Flat (wide side across)']], value: last?.lay || 'edge' },
     ]);
     if (!v || !this.active) return;
-    const b = sizes.find((x) => x.name === v.size);
+    const b = sizesOf(v.market).find((x) => x.name === v.size);
     if (!b) return;
+    if (v.market !== market) ui.setTimberMarket(v.market);
     this.timberIns = { name: b.name, lay: v.lay, w: v.lay === 'flat' ? b.b : b.t, h: v.lay === 'flat' ? b.t : b.b };
     this.setTool('timber');
   }

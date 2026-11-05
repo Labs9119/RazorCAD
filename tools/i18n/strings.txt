@@ -1055,3 +1055,11 @@ Pine (radiata)
 Oak
 Plywood
 MDF
+Timber Member
+Market
+Australia
+New Zealand
+United States
+Part material
+The wide side stands upright (in a sketch on an upright plane, it lies in that plane). Rotate Profile by 90° turns it, for wall studs for example.
+Timber Works

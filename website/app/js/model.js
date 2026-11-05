@@ -77,10 +77,16 @@ export function ensureBodySettings(doc, id) {
   return (doc.bodies[id] ||= { name: '', material: null, description: '', props: [] });
 }
 
-// The material that applies to a body: its own, else the part's (null = not specified).
+// The material a Structural Member gives its members (timber in a steel part, say)
+export function memberMaterial(doc, id) {
+  const fid = String(id).split('.')[0];
+  return doc.features?.find((f) => f.id === fid && f.type === 'structMember')?.material || null;
+}
+
+// The material that applies to a body: its own, else its member's, else the part's (null = not specified).
 export function bodyMaterialId(doc, id) {
   const own = doc.bodies?.[id]?.material;
-  return own || doc.material || null;
+  return own || memberMaterial(doc, id) || doc.material || null;
 }
 
 export const materialById = (id) => MATERIALS.find((m) => m.id === id) || null;
@@ -372,8 +378,9 @@ export function createFeature(doc, type, props = {}) {
     endCap: { faces: [], capType: 'outside', thickness: 3 },
     // a triangular plate between two flat faces: legs d1 / d2, thickness, corner chamfer, position along the corner
     weldGusset: { faces: [], d1: 75, d2: 75, thickness: 6, chamfer: 10, position: 'mid', offset: 0 },
-    // groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }] (none: every line of the paths)
-    structMember: { path: null, paths: [], groups: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar' },
+    // groups: [{ segs: [{ s: sketch, c: its line / arc }], pierce, rotate, mirror, corner }] (none: every line of the paths);
+    // material: the members' material (blank: the part's)
+    structMember: { path: null, paths: [], groups: [], standard: 'AS/NZS', ptype: 'shs', size: '50x50x3 SHS', dims: {}, pierce: 'mc', rotate: 0, mirror: false, corner: 'mitre', trim: 'planar', material: '' },
     // faces: picked faces of any bodies (solid or surface), copied as they are; knit: touching copies become one surface body
     surfCopy: { faces: [], knit: true },
     knit: { bodies: [], solid: true, tolerance: 0.01, merge: true },

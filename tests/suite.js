@@ -9726,13 +9726,14 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
   // turning the view about the cursor: zoomed in off the part's centre, a middle-drag started on the part turns
   // about the point under the cursor (it stays there, and a dot shows it while dragging), one started over empty
   // space about that spot at the part's depth; the arrow keys still turn about the part's centre
-  // Woodworking: timber in Structural Member (the Type list holds what the standard has; your own sizes saved),
+  // Woodworking: timber in Structural Member by market (the Type list holds what the standard has; your own sizes saved),
   // Timber Section in a sketch (a click, a sized rectangle, one undo step), a hole centred on a board staying centred
   // as the board changes (wider from one side, narrower than where it was, turned at an angle), timber materials
   async 'woodworking-timber'() {
     const a=window.app,S=await import('/js/sketchmodel.js'),{Vector3}=await import('three'),bad=[];
     const settle=async()=>{await wait(180);await until(()=>!a.kernel.pending,60000,20);};
-    const keep={prompt:a.ui.promptFields,sizes:a.ui.prefs?.profileSizes};
+    const keep={prompt:a.ui.promptFields,sizes:a.ui.prefs?.profileSizes,market:a.ui.prefs?.timberMarket};
+    a.ui.setTimberMarket('Timber NZ');
     const volume=async()=>(await a.kernel.request('measure',{refs:[{kind:'body',id:a.result.bodies.at(-1).id}]})).items[0].volume;
     const pick=(value)=>[...document.querySelectorAll('#pm select')].find((s)=>[...s.options].some((o)=>o.value===value));
     const choose=async(s,v)=>{s.value=v;s.dispatchEvent(new Event('change'));await settle();};
@@ -9741,7 +9742,7 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       {
         const d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}}),p=[[0,0],[1000,0]].map((q)=>S.addPoint(sk,...q));
         S.addLine(sk,p[0],p[1]);
-        const f=M.createFeature(d,'structMember',{standard:'Timber',ptype:'timber',size:'90x45',path:sk.id,paths:[sk.id]});d.features.push(sk,f);
+        const f=M.createFeature(d,'structMember',{standard:'Timber NZ',ptype:'timber',size:'90x45',path:sk.id,paths:[sk.id]});d.features.push(sk,f);
         await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();
         if(a.result.errors.size||!near(await volume(),90*45*1000,1e-3))bad.push(`90x45 member: ${await volume()}, ${JSON.stringify([...a.result.errors])}`);
         a.editFeature(f.id);await settle();
@@ -9750,10 +9751,19 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
         await choose(pick('AS/NZS'),'AS/NZS');
         if(a.pm.feature.ptype!=='shs'||!a.pm.feature.size)bad.push(`To AS/NZS: ${a.pm.feature.ptype} ${a.pm.feature.size}`);
         await choose(pick('Timber'),'Timber');
-        if(a.pm.feature.ptype!=='timber'||a.pm.feature.size!=='70x35')bad.push(`Back to Timber: ${a.pm.feature.ptype} ${a.pm.feature.size}`);
-        await choose(pick('2x4 (89x38)'),'2x4 (89x38)');
+        const f2=a.pm.feature;
+        if(f2.standard!=='Timber NZ'||f2.ptype!=='timber'||f2.size!=='90x45'||f2.corner!=='butt1'||f2.trim!=='cope'||f2.material!=='pine')bad.push(`Back to Timber: ${JSON.stringify([f2.standard,f2.ptype,f2.size,f2.corner,f2.trim,f2.material])}`);
+        const sizes=()=>[...pick('Timber NZ')?.closest('.pm-group,.pm-section,#pm')?.querySelectorAll('select')||[]].flatMap((x)=>[...x.options].map((o)=>o.value));
+        if(!sizes().includes('290x45')||sizes().includes('120x35')||sizes().some((x)=>x.startsWith('2x4')))bad.push('New Zealand sizes');
+        await choose(pick('Timber AU'),'Timber AU');
+        if(f2.standard!=='Timber AU'||!sizes().includes('120x35')||sizes().includes('300x50'))bad.push(`Australia: ${f2.standard}`);
+        await choose(pick('Timber US'),'Timber US');
+        if(a.ui.timberMarket()!=='Timber US')bad.push('The market is not remembered');
+        const twoBy=sizes().find((x)=>x.startsWith('2x4 '));
+        if(twoBy!=='2x4 (1-1/2 x 3-1/2 in)'||sizes().includes('90x45'))bad.push(`United States: ${twoBy}`);
+        await choose(pick(twoBy),twoBy);
         await a.okPM();await settle();
-        if(!near(await volume(),89*38*1000,1e-3))bad.push(`2x4: ${await volume()}`);
+        if(!near(await volume(),88.9*38.1*1000,1e-3))bad.push(`2x4: ${await volume()}`);
         a.editFeature(f.id);await settle();
         await choose(pick('custom'),'custom');
         a.pm.feature.dims={b:'100',t:'30'};a.ui.renderPM();
@@ -9772,9 +9782,10 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
         a.select({kind:'plane',id:'front'});await a.startSketch();await until(()=>a.mode==='sketch',5000,50);
         const sk=a.sketcher,cv=a.viewport.canvas.getBoundingClientRect(),at=(dx,dy)=>({button:0,clientX:cv.left+cv.width/2+dx,clientY:cv.top+cv.height/2+dy,ctrlKey:false,shiftKey:false,metaKey:false});
         const click=(p)=>{sk.pointerMove(at(...p));sk.pointerDown(at(...p));sk.pointerUp(at(...p));};
-        const offered={};a.ui.promptFields=async(t,i,fields)=>{offered.sizes=fields[0].options.map((o)=>o[0]);return {size:'90x45',lay:'edge'};};
+        a.ui.setTimberMarket('Timber NZ');
+        const offered={};a.ui.promptFields=async(t,i,fields)=>{offered.sizes=fields[1].options.map((o)=>o[0]);const size=document.createElement('select');fields[0].onChange('Timber US',{size});offered.us=[...size.options].map((o)=>o.value);return {market:'Timber NZ',size:'90x45',lay:'edge'};};
         await sk.timberSection();
-        if(sk.tool!=='timber'||!offered.sizes.includes('2x4 (89x38)')||!offered.sizes.includes('Slab'))bad.push(`Timber Section: tool ${sk.tool}, ${offered.sizes?.length} sizes`);
+        if(sk.tool!=='timber'||!offered.sizes.includes('290x45')||!offered.sizes.includes('Slab')||!offered.us.includes('2x4 (1-1/2 x 3-1/2 in)')||offered.us.includes('290x45'))bad.push(`Timber Section: tool ${sk.tool}, ${offered.sizes?.length} sizes, ${offered.us?.length} US`);
         sk.pointerMove(at(-120,0));const ghost=sk.timberPreview()[0],side=ghost&&Math.abs(ghost[1][0]-ghost[0][0]);
         if(!(side>44.9&&side<45.1))bad.push(`Outline at the mouse: ${JSON.stringify(ghost)}`);
         const h0=sk.hist.length;click([-120,0]);
@@ -9819,12 +9830,71 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
         const want=300*90*45-2*Math.PI*3.3*3.3*45;
         if(!near(await volume(),want,1e-3))bad.push(`Volume: ${await volume()}, expected ${want}`);
       }
+      // Timber frames: Timber Member's start, joists on edge, butted corners and T-joints with nothing overlapping, a
+      // brace cut on the face it meets with its angle on the cut list, a line running on through a joint, a 3D sketch
+      {
+        const build=async(d,...fs)=>{d.features.push(...fs);await a.newDocument?.();closeModals();await a.setDoc(d);await a.rebuild();await settle();if(a.result.errors.size)bad.push(`Frame: ${JSON.stringify([...a.result.errors])}`);return a.kernel.request('cutList',{});};
+        const sum=(l)=>l.reduce((t,m)=>t+m.volume,0);
+        const line=(sk,q,r)=>{const [i,j]=[q,r].map((x)=>S.addPoint(sk,...x));S.addLine(sk,i,j);};
+        const tm=(sk,o={})=>({path:sk.id,paths:[sk.id],standard:'Timber NZ',ptype:'timber',size:'190x45',corner:'butt1',trim:'cope',material:'pine',...o});
+        let d=M.newDoc(),sk=M.createFeature(d,'sketch',{plane:{ref:'top'}});
+        const c=[[0,0],[2000,0],[2000,1000],[0,1000]].map((q)=>S.addPoint(sk,...q));
+        c.forEach((id,i)=>S.addLine(sk,id,c[(i+1)%4]));line(sk,[1000,0],[1000,1000]);
+        let f=M.createFeature(d,'structMember',tm(sk)),list=await build(d,sk,f);
+        if(list.length!==5||!near(sum(list),(2045*1045-1955*955+955*45)*190,1e-2))bad.push(`Floor frame: ${list.length} members, ${sum(list)} mm³`);
+        const {Box3}=await import('three'),vp=a.viewport,box=new Box3().setFromBufferAttribute(vp.bodyInfo(0).geometry.getAttribute('position'));
+        if(!near(box.max.y-box.min.y,190,1e-3))bad.push(`A joist stands ${box.max.y-box.min.y} high`);
+        if(a.bodyById(list[0].id)?.material?.id!=='pine'||!list[0].label.startsWith('Timber 190x45')||!list[0].timber)bad.push(`A member: ${a.bodyById(list[0].id)?.material?.id}, ${list[0].label}`);
+        d=M.newDoc();sk=M.createFeature(d,'sketch',{plane:{ref:'front'}});
+        line(sk,[0,0],[1000,0]);line(sk,[0,0],[0,1000]);line(sk,[500,0],[0,500]);
+        f=M.createFeature(d,'structMember',tm(sk,{size:'90x45'}));list=await build(d,sk,f);
+        const brace=list.find((m)=>m.angles.every((x)=>x>1));
+        if(!brace||!near(brace.angles[0],45,0.01)||!near(brace.angles[1],45,0.01))bad.push(`Brace: ${JSON.stringify(list.map((m)=>m.angles))}`);
+        d=M.newDoc();sk=M.createFeature(d,'sketch',{plane:{ref:'top'}});
+        const q=[[0,0],[500,0],[1000,0],[500,500]].map((x)=>S.addPoint(sk,...x));
+        S.addLine(sk,q[0],q[1]);S.addLine(sk,q[1],q[2]);S.addLine(sk,q[1],q[3]);
+        f=M.createFeature(d,'structMember',tm(sk,{size:'90x45'}));list=await build(d,sk,f);
+        if(list.length!==3||!near(sum(list),(1000+477.5)*90*45,1e-2))bad.push(`Three lines at a point: ${list.length}, ${sum(list)} mm³, expected ${(1000+477.5)*90*45}`);
+        d=M.newDoc();const s3=M.createFeature(d,'sketch3d');
+        s3.pts=[[0,0,0],[0,2000,0],[1500,2600,0],[3000,2000,0],[3000,0,0],[1500,2600,2000]].map(([x,y,z],i)=>({id:'p'+(i+1),x,y,z}));
+        s3.segs=[[1,2],[2,3],[3,4],[4,5],[3,6]].map(([x,y],i)=>({id:'s'+(i+1),a:'p'+x,b:'p'+y}));
+        f=M.createFeature(d,'structMember',tm(s3,{size:'140x45'}));list=await build(d,s3,f);
+        if(list.length!==5||list.some((m)=>!(m.volume>0)))bad.push(`3D frame: ${list.length} members`);
+        // (the part is pine once it holds nothing else; steel in the part keeps the part's material, and Weld Bead leaves timber out)
+        await a.setDoc(M.newDoc());await settle();
+        const dk=a.doc,sb=M.createFeature(dk,'sketch',{plane:{ref:'top'}});line(sb,[0,0],[500,0]);dk.features.push(sb);await a.rebuild();await settle();
+        a.startFeature('structMember',null,{timber:true});await settle();
+        if(a.pm?.feature?.standard!=='Timber NZ'||a.pm.feature.size!=='90x45'||a.pm.feature.material!=='pine')bad.push(`Timber Member: ${a.pm?.feature?.standard} ${a.pm?.feature?.size}`);
+        await a.okPM();await settle();
+        if(a.doc.material!=='pine')bad.push(`Part material: ${a.doc.material}`);
+        const wb=M.createFeature(a.doc,'weldBead',{bodies:[]});a.doc.features.push(wb);await a.rebuild();await settle();
+        if(!/two or more/.test(a.result.errors.get(wb.id)||''))bad.push(`Weld Bead on timber: ${a.result.errors.get(wb.id)}`);
+        a.doc.features.pop();await a.rebuild();await settle();
+      }
+      // The Timber Works tab: its own tools, Timber Member gone from Fast Structure, Timber Section opening a sketch first
+      {
+        const defs=a.ui.commandDefs(),labels=(t)=>(defs[t]||[]).map((x)=>x.label);
+        const tab=a.ui.toolbarTabs().find((t)=>t.id==='timber');
+        if(tab?.label!=='Timber Works')bad.push(`The tab: ${tab?.label}`);
+        for(const l of ['Sketch','3D Sketch','Timber Member','Timber Section','Extrude','Hole','Trim/Extend','Cut List'])if(!labels('timber').includes(l))bad.push(`Timber Works has no ${l}`);
+        if(labels('weldments').includes('Timber Member'))bad.push('Timber Member still on Fast Structure');
+        if(!labels('sketch').includes('Timber Section'))bad.push('Timber Section left the Sketch tab');
+        await a.setDoc(M.newDoc());await settle();
+        a.select({kind:'plane',id:'top'});
+        let asked=0;a.ui.promptFields=async()=>{asked++;return null;};
+        a.ui.setCmTab('timber');
+        await defs.timber.find((x)=>x.label==='Timber Section').action();await settle();
+        if(a.mode!=='sketch'||!asked)bad.push(`Timber Section outside a sketch: mode ${a.mode}, asked ${asked}`);
+        await a.exitSketch(true);await settle();
+        if(a.ui.cmTab!=='timber')bad.push(`After the sketch the ribbon is on ${a.ui.cmTab}`);
+        a.ui.setCmTab('features');
+      }
       for(const [id,rho] of [['pine',0.5],['oak',0.75],['plywood',0.6],['mdf',0.75]])if(M.materialById(id)?.density!==rho)bad.push(`Material ${id}: ${M.materialById(id)?.density}`);
     } finally {
       a.ui.promptFields=keep.prompt;
-      if(a.ui.prefs){if(keep.sizes)a.ui.prefs.profileSizes=keep.sizes;else delete a.ui.prefs.profileSizes;a.ui.savePrefs();}
+      if(a.ui.prefs){if(keep.sizes)a.ui.prefs.profileSizes=keep.sizes;else delete a.ui.prefs.profileSizes;if(keep.market)a.ui.prefs.timberMarket=keep.market;else delete a.ui.prefs.timberMarket;a.ui.savePrefs();}
     }
-    return {ok:!bad.length,detail:bad.join('; ')||'timber members, saved sizes, Timber Section, holes that stay centred, timber materials'};
+    return {ok:!bad.length,detail:bad.join('; ')||'timber by market, saved sizes, Timber Section, timber frames from sketches and a 3D sketch, holes that stay centred, timber materials'};
   },
 
   async 'rotate-about-cursor'() {
