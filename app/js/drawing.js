@@ -610,7 +610,8 @@ export function arrowHead(tip, d, dwg) {
 // Points of annotations that belong to a view are stored in that view's coordinates, so they move
 // with the view; `pos` (where the text is) is stored relative to the view's origin on the sheet.
 //   dim linear: { kind: 'linear', view, p1, p2, orient: 'h' | 'v' | 'a', pos }
-//   dim diameter / radius: { kind, view, c, r, pos, leaderOnly? (a diameter: one arrow, not across the circle) }
+//   dim diameter / radius: { kind, view, c, r, pos, leaderOnly? (a diameter: one arrow, not across the circle; a
+//     radius: a leader onto the arc, not a line from the centre) }
 //   dim angle: { kind: 'angle', view, l1, l2, pos }
 //   note: { type: 'note', text, pos, view?, leader?: point (view coordinates) }
 //   center mark: { type: 'cmark', view, c, r }           centerline: { type: 'cline', view, a, b }
@@ -805,7 +806,9 @@ export function annPrims(dwg, a, ctx) {
         out.push(arrowHead(near, u, dwg), arrowHead(far, mul2(u, -1), dwg));
       }
     } else {
-      out.push({ t: 'line', a: c, b: outside ? P : near, w: LW.thin });
+      // (leader only: from the text onto the arc, in line with the centre, not from the centre: for a big radius whose
+      // centre lies far off the view)
+      out.push({ t: 'line', a: a.leaderOnly ? (outside ? near : P) : c, b: outside ? P : near, w: LW.thin });
       if (outside) out.push({ t: 'line', a: P, b: end, w: LW.thin });
       out.push(arrowHead(near, outside ? mul2(u, -1) : u, dwg));
     }

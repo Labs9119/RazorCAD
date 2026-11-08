@@ -4606,6 +4606,49 @@ const UI = {
     return grew && kidsFollow ? { ok: true, detail: `front view ${r6(w0)} → ${r6(w1)} mm wide; projected views follow` } : { ok: false, detail: `front ${w0} → ${w1}, projected ${JSON.stringify(k0)} → ${JSON.stringify(k1)}` };
   },
 
+  // an exploded view of a multi-body part on a drawing sheet: two cubes side by side, the second moved 50 along X
+  // by the part's exploded view; the view switched to it grows 50 wide (and its projected views follow), and the
+  // part itself is left as it was
+  async 'exploded-part-drawing-view'() {
+    const a = window.app;
+    if (a.mode === 'drawing') { await a.newDocument?.(); closeModals(); }
+    const p = M.newDoc(); p.name = 'Two cubes';
+    for (const x0 of [-30, 10]) {
+      const s = M.createFeature(p, 'sketch', { plane: { ref: 'top' } });
+      const pts = [[x0, -10], [x0 + 20, -10], [x0 + 20, 10], [x0, 10]];
+      Object.assign(s, { points: pts.map(([x, y], i) => ({ id: 'p' + (i + 1), x, y })), curves: pts.map((_, i) => ({ id: 'c' + (i + 1), type: 'line', p1: 'p' + (i + 1), p2: 'p' + ((i + 1) % 4 + 1), construction: false })), constraints: [] });
+      p.features.push(s, M.createFeature(p, 'extrude', { sketch: s.id, depth: 20, merge: false }));
+    }
+    await a.setDoc(p); await until(() => !a.kernel.pending && a.result?.bodies?.length === 2, 60000, 100);
+    const second = a.result.bodies.map((b) => b.id).sort().pop();
+    a.doc.explodes = [{ id: 'ex1', name: 'Exploded View 1', steps: [{ id: 's1', items: [second], dir: [1, 0, 0], dist: 50 }] }];
+    const nFeat = a.doc.features.length;
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Exploded part', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing;
+    if (!ed) return { ok: false, detail: 'no drawing' };
+    const ready = () => until(() => ed.doc.views.every((v) => ed.geos.get(v.id)?.box && !ed.errors.get(v.id)), 60000, 200);
+    await ready();
+    const D = await import('/js/drawing.js');
+    // (the view looking along Z: X across it)
+    const front = ed.doc.views.find((v) => v.type === 'model' && Math.abs(Math.abs(D.viewCamera(ed.doc, v).dir[2]) - 1) < 1e-9);
+    if (!front) return { ok: false, detail: 'no view looking along Z' };
+    const width = (v) => { const b = ed.geos.get(v.id).box; return b.max[0] - b.min[0]; };
+    const kids = ed.doc.views.filter((v) => v.parent === front.id);
+    const w0 = width(front), k0 = kids.map(width);
+    front.explode = 'ex1';
+    const before = ed.geos.get(front.id);
+    await ed.updateGeometry();
+    await until(() => ed.geos.get(front.id) !== before, 30000, 100);
+    await ready();
+    const w1 = width(front), k1 = kids.map(width);
+    const grew = Math.abs(w1 - w0 - 50) < 1e-3, kidsFollow = k1.some((w, i) => Math.abs(w - k0[i] - 50) < 1e-3);
+    const model = ed.doc.models.find((m) => m.id === front.model)?.doc, untouched = model && model.features.length === nFeat;
+    return grew && kidsFollow && untouched ? { ok: true, detail: `front view ${r6(w0)} → ${r6(w1)} mm wide; projected views follow; the part keeps its ${nFeat} features` }
+      : { ok: false, detail: `front ${w0} → ${w1}, projected ${JSON.stringify(k0)} → ${JSON.stringify(k1)}, features ${model?.features.length} (was ${nFeat})` };
+  },
+
   // explode lines follow each step: a cube moved up 40, then across 50 and 10 more, has its line go up and
   // turn the corner (not straight across); a cube moved one way only has a straight line
   async 'explode-line-corners'() {
@@ -5217,6 +5260,49 @@ ENDSEC;END-ISO-10303-21;`;
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `scroll made (starts with a roll); the opening took ${r6(got)} mm³ (${r6(want)}); the holed plate stayed put with its flanges` };
   },
 
+  // a curved door (SM-Extrude of a lone R500 arc: all one bend, no flat) with the two corners at one end rounded R10 by
+  // a cut square to the sheet there that runs out over its edges: the rounds are in the flat pattern (no sliver of
+  // sheet left along an edge, which made the cut fall back to one the pattern doesn't follow) and the part folds again
+  // whole, less the rounds (a cut whose tool lay on the bend's own end face took nearly all of it)
+  async 'sheet-all-bend-corner-rounds'() {
+    const k = window.app.kernel;
+    const d = M.newDoc();
+    const s = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+    Object.assign(s, { points: [{ id: 'a', x: 500, y: 0 }, { id: 'b', x: 0, y: 500 }], curves: [{ id: 'k1', type: 'arc', c: 'O', p1: 'a', p2: 'b', construction: false }], constraints: [] });
+    const sc = M.createFeature(d, 'smExtrude', { sketch: s.id, depth: 300, direction: 'mid', thickness: 3, side: 'other', radius: 3 });
+    d.features.push(s, sc);
+    let r = await k.rebuild(d, null, null);
+    const vol = async (id) => { const m = await k.request('measure', { refs: [{ kind: 'body', id }] }); return (m.items?.[0] || m).volume; };
+    const v0 = await vol(r.body.bodies[0].id);
+    // the rounds, at the arc's end (y 0) and the sheet's edges (z ±150): drawn on a plane square to the sheet there
+    // (x 600), each the corner outside an R10 quarter circle tangent to both edges, run on 5 past them; cut in to x 400
+    const pl = M.createFeature(d, 'plane', { refs: [{ kind: 'plane', id: 'right' }], offset: 600 });
+    const cs = M.createFeature(d, 'sketch', { plane: { ref: pl.id } });
+    const pts = [], curves = [];
+    for (const su of [-1, 1]) {
+      const u = -150 * su, P = (x, y) => { pts.push({ id: 'p' + pts.length, x, y }); return 'p' + (pts.length - 1); };
+      const o1 = P(u - 5 * su, -5), o2 = P(u + 10 * su, -5), a = P(u + 10 * su, 0), b = P(u, 10), o3 = P(u - 5 * su, 10), c = P(u + 10 * su, 10);
+      for (const [p, q] of [[o1, o2], [o2, a], [b, o3], [o3, o1]]) curves.push({ id: 'l' + curves.length, type: 'line', p1: p, p2: q, construction: false });
+      curves.push({ id: 'l' + curves.length, type: 'arc', c, ...(su > 0 ? { p1: b, p2: a } : { p1: a, p2: b }), construction: false });
+    }
+    Object.assign(cs, { points: pts, curves, constraints: [] });
+    const cut = M.createFeature(d, 'extrude', { sketch: cs.id, op: 'cut', end: 'blind', depth: 200, reverse: true });
+    d.features.push(pl, cs, cut);
+    r = await k.rebuild(d, null, null);
+    const b = r.body?.bodies?.[0];
+    if (r.errors?.length || !b) return { ok: false, detail: JSON.stringify(r.errors) };
+    const f = await k.request('sheetFlat', { bodyId: b.id, flip: false });
+    // what the rounds take: (10² − π 10²/4) each, through the 3 thick sheet (square to it there, to within 0.01 %)
+    const want = 2 * 3 * (100 - (Math.PI * 100) / 4), got = v0 - (await vol(b.id));
+    const bad = [];
+    if (r.notes?.[cut.id]) bad.push(`note: ${r.notes[cut.id]}`);
+    if (f.stale) bad.push(`flat pattern without ${f.stale}`);
+    if (f.cut?.loops !== 1) bad.push(`flat has ${f.cut?.loops} loops (want 1: the rounds in its outline)`);
+    if (b.faceCount !== 8) bad.push(`${b.faceCount} faces (want 8: 6 and the two rounds)`);
+    if (Math.abs(got - want) > 0.02 * want) bad.push(`the rounds took ${r6(got)} mm³, want ${r6(want)}`);
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `rounds in the flat outline; they took ${r6(got)} mm³ (${r6(want)})` };
+  },
+
   // a whole cone as a Lofted Bend (formed) between two circles open only at a 0.5 mm seam (it came out 2.5 m long);
   // a roll trimmed to a rounded panel by a cut round it (a ring: the panel kept, not lost); a sketch spline made a
   // surface (one face) and converted to sheet metal; and a circular pattern's body copies called after their body
@@ -5384,7 +5470,7 @@ ENDSEC;END-ISO-10303-21;`;
   },
 
   // a diameter dimension as a leader only: one arrow onto the circle and no line across it (the usual one has two
-  // arrows and its line through the centre)
+  // arrows and its line through the centre); a radius as a leader only: onto the arc, no line from the centre
   async 'drawing-diameter-leader'() {
     const D = await import('/js/drawing.js');
     const dwg = D.newDrawing();
@@ -5397,9 +5483,12 @@ ENDSEC;END-ISO-10303-21;`;
       return Math.hypot(p[0] + t * d[0] - 100, p[1] + t * d[1] - 100);
     }));
     const full = D.annPrims(dwg, a, {}), lead = D.annPrims(dwg, { ...a, leaderOnly: true }, {});
-    const ok = arrows(full) === 2 && nearest(full) < 1e-6 && arrows(lead) === 1 && nearest(lead) > 19.9 && D.dimText(dwg, { ...a, leaderOnly: true }) === D.dimText(dwg, a);
-    return ok ? { ok: true, detail: `across: ${arrows(full)} arrows through the centre; leader: ${arrows(lead)} arrow, ${nearest(lead).toFixed(1)} from it` }
-      : { ok: false, detail: `across ${arrows(full)} arrows, ${nearest(full)}; leader ${arrows(lead)} arrows, ${nearest(lead)}` };
+    // (a radius: from its centre as usual; leader only, onto the arc and no nearer the centre)
+    const ra = { ...a, kind: 'radius' }, rFull = D.annPrims(dwg, ra, {}), rLead = D.annPrims(dwg, { ...ra, leaderOnly: true }, {});
+    const ok = arrows(full) === 2 && nearest(full) < 1e-6 && arrows(lead) === 1 && nearest(lead) > 19.9 && D.dimText(dwg, { ...a, leaderOnly: true }) === D.dimText(dwg, a)
+      && nearest(rFull) < 1e-6 && arrows(rLead) === 1 && nearest(rLead) > 19.9;
+    return ok ? { ok: true, detail: `across: ${arrows(full)} arrows through the centre; leader: ${arrows(lead)} arrow, ${nearest(lead).toFixed(1)} from it; radius leader ${nearest(rLead).toFixed(1)} from it` }
+      : { ok: false, detail: `across ${arrows(full)} arrows, ${nearest(full)}; leader ${arrows(lead)} arrows, ${nearest(lead)}; radius ${nearest(rFull)}, leader ${arrows(rLead)} arrows, ${nearest(rLead)}` };
   },
 
   // motion studies: gear A turned two full turns (72 steps) carries gear B (−360°) and the rack (2π·10·2 mm) with

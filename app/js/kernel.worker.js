@@ -3007,7 +3007,9 @@ async function rebuild(doc, previewId = null, opts = {}) {
             continue;
           } catch (e) {
             if (isFatal(e)) throw e;
-            // fall back to an ordinary cut; the flat pattern no longer matches (see below)
+            // fall back to an ordinary cut; the flat pattern no longer matches (see below), and the feature says why
+            const why = `⚠ Not in the flat pattern of ${doc.bodies?.[s.id]?.name || s.name || 'the sheet metal body'}: ${e.message}`;
+            res.notes[fid] = res.notes[fid] ? `${res.notes[fid]} · ${why}` : why;
           }
           // (Kernel Lab: the ordinary cut needs the body as it is: its waiting fold made, in place)
           if (s.sheetPending) { s.shape = SM.toSolid(s.sheet); s.box = bbox(s.shape); delete s.sheetPending; LAB_SHEETS.refolds++; }
@@ -10723,7 +10725,7 @@ function flatView(solids, v) {
   const notes = bends.map((b, i) => ({ p: [(b.a[0] + b.b[0]) / 2, (b.a[1] + b.b[1]) / 2], rot: b.rot, text: b.note, len: b.len, n: i + 1, up: b.up, deg: b.deg, R: b.R }));
   return {
     edges, cut: [], notes, box: { min: [0, 0], max: [fp.size[0], fp.size[1]] },
-    flat: { size: fp.size, area: fp.area, cut: (({ length, loops }) => ({ length: length + SM.cutLines(rec.sheet), loops }))(SM.cutInfo(fp.region)), t: rec.sheet.t, K: rec.sheet.K, R: rec.sheet.R, bends: bends.length, body: rec.id, bodies: sheets.map((r) => r.id), stale: rec.sheet.stale || null, flip },
+    flat: { size: fp.size, area: fp.area, cut: (({ length, loops }) => ({ length: length + SM.cutLines(rec.sheet), loops }))(SM.cutInfo(fp.region)), t: rec.sheet.t, K: rec.sheet.K, R: rec.sheet.R, bends: bendCount(bends), body: rec.id, bodies: sheets.map((r) => r.id), stale: rec.sheet.stale || null, flip },
   };
 }
 
@@ -13231,6 +13233,9 @@ function writeDXF(ents) {
 // OUTLINE / HOLES (the cut), BEND_UP / BEND_DOWN (bend centre lines), BEND_REGION (where the bends
 // start and end) and NOTES (bend notes, as TEXT). Also a mesh of the flat part where it lies in the
 // model (the panel that stays put when folding), for showing it in the view.
+// How many bends a flat pattern has: a bend line broken by holes across it (slots along a roll) is one bend in
+// pieces, each piece a line of its own
+const bendCount = (bends) => new Set(bends.map((b, i) => b.id ?? `#${i}`)).size;
 function sheetFlatData(bodyId, flip = false) {
   const rec = lastSolids.find((r) => r.id === bodyId && r.sheet);
   if (!rec) throw new Error('That body is not sheet metal');
@@ -13240,7 +13245,7 @@ function sheetFlatData(bodyId, flip = false) {
   const flatSolid = SM.toSolid({ ...sheet, flat: { pt: sheet.rootPt } });
   const mesh = meshData([flatSolid], bbox(flatSolid).diag);
   return {
-    ents, size: fp.size, area: fp.area, bends, t: sheet.t, R: sheet.R, K: sheet.K,
+    ents, size: fp.size, area: fp.area, bends, bendCount: bendCount(bends), t: sheet.t, R: sheet.R, K: sheet.K,
     cut: (({ length, loops }) => ({ length: length + SM.cutLines(sheet), loops }))(SM.cutInfo(fp.region)),
     frame: sheet.frame, origin: [x0, y0], mesh, stale: sheet.stale || null, flip: !!flip,
   };
@@ -13303,7 +13308,7 @@ function flatEntsTop(sheet) {
     const r = (rot * Math.PI) / 180, nrm = [-Math.sin(r), Math.cos(r)];
     const mid = [(a[0] + b[0]) / 2 + nrm[0] * h * 0.4, (a[1] + b[1]) / 2 + nrm[1] * h * 0.4];
     if (len2 > h * 3) ents.push({ type: 'TEXT', layer: 'NOTES', p: mid, h, rot, text: note, align: 'center' });
-    bends.push({ up: bl.up, deg, R: bl.R, len: len2, a, b, note, rot });
+    bends.push({ id: bl.id, up: bl.up, deg, R: bl.R, len: len2, a, b, note, rot });
   }
   // forming marks (cross breaks, forms; a louver's slit is cut), with one note per mark
   const noted = new Set();

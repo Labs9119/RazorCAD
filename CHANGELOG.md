@@ -6,6 +6,26 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-09 — Cuts at the edge of a rolled sheet metal part reach its flat pattern; exploded part views on drawings
+
+- **Sheet metal:** a cut that runs out over the edge of a bend (rounded corners on a curved door that is all one
+  roll, say) left a hair-thin sliver of sheet along the edge in the flat pattern. The pattern then couldn't be folded,
+  so the cut was made on the body alone: the flat pattern, its DXF and drawing views went on without it, and without
+  every cut after it (slots, holes). The cut now runs cleanly off the edge in the pattern.
+- **Sheet metal:** folding such a part again, a cut-out that reached the bend's edge was cut away with a tool lying on
+  the bend's own end face, which could take nearly the whole part. It is carried a little past the edge now.
+- **Sheet metal:** when a cut still can't be carried into the flat pattern, the cut feature now says so, and why
+  ("⚠ Not in the flat pattern of …"), instead of only the Flat Pattern window noting it.
+- **Sheet metal:** a bend line broken by holes across it (slots along a roll) counted as a bend for each piece in the
+  flat pattern's note, banner and DXF ("3 bends" for one). It counts once now.
+- **Drawings:** a radius dimension can be **Leader only** too (its edit box): a leader onto the arc in line with the
+  centre, instead of a line from a centre far off the view across the sheet.
+- **Drawings:** a view of a part with several bodies can be shown exploded, as an assembly's can: pick one of the
+  part's exploded views under **Exploded** in the view's panel. The bodies are drawn where it moves them (hidden lines
+  and all), its projected views follow, and the part itself is left as it is. For an exploded parts list of a
+  fabrication made as one part, with a balloon on each part.
+- Tests: sheet-all-bend-corner-rounds, drawing-diameter-leader (a radius too), exploded-part-drawing-view.
+
 ## 2026-11-08 — Auto Dimension on a view with centre marks
 
 - **Drawings ▸ Auto Dimension** stopped with an error ("Cannot read properties of undefined") on a view that already

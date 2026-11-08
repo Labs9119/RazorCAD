@@ -352,6 +352,8 @@ export function fold(sheet) {
     }
   }
   for (const lk of links) {
+    // (a piece of a bend joined to nothing: a cut that stops just short of the sheet's edge leaves a sliver of it)
+    if (!lk.A && !lk.B) throw new Error('A cut leaves a loose sliver of a bend (it stops just short of cutting it off): make the cut reach right through');
     if (!lk.A || !lk.B) throw new Error('A bend is not joined to flat material on both sides');
     if (lk.A === lk.B) throw new Error('A bend needs a relief at its end (the material on both sides of it is still connected)');
   }
@@ -455,7 +457,11 @@ function bendSolidMade(b, t, piece, vcuts = null) {
   free(prof);
   if (partial) {
     const sf = stripFace(b), missing = bop('cut', sf, piece);
-    for (const face of facesOf(missing)) {
+    for (const face0 of facesOf(missing)) {
+      // (material missing at the bend's edge, e.g. a corner notch on a part that is all one bend: carried on a little
+      // past the edge, so the tool's faces don't lie on the bend's own end faces, a boolean that takes away the wrong
+      // side)
+      const ext = pastEdge(sf, face0, t), face = ext || face0;
       // (material missing all round an island of the bend that is kept, e.g. a rolled panel trimmed by a cut
       // round it: the bend as it is inside each island is kept aside, the whole outline cut away, the islands put
       // back; taking the islands out of the tool instead leaves its faces on top of each other, and that boolean
@@ -479,6 +485,7 @@ function bendSolidMade(b, t, piece, vcuts = null) {
       const tool = wrapTool(b, t, face);
       sol = swap(sol, cut3(sol, tool)); free(tool);
       for (const kept of keeps) sol = sol && [...R.iterTopo(sol.wrapped, 'solid')].length ? swap(sol, bop('fuse', sol, kept)) : kept;
+      if (ext) free(ext);
     }
     free(sf, missing);
   }
@@ -486,6 +493,21 @@ function bendSolidMade(b, t, piece, vcuts = null) {
     try { sol = swap(sol, sol.cut(vcutTool(b, t, v.X, v.top, v.mid ?? v.top, v.relief || 0, v.line))); } catch { /* keep */ }
   }
   return sol;
+}
+// A face of a bend's strip (sf) that reaches the strip's edge, run on past it by about the thickness (what lies
+// round it outside the strip added to it), or null when it doesn't reach the edge (or the result isn't one face).
+function pastEdge(sf, face, t) {
+  const m = Math.max(0.5, t), bb = bbox2(face);
+  const box = rectFace([bb.min[0] - m, bb.min[1] - m], [1, 0], [0, 1], bb.max[0] - bb.min[0] + 2 * m, bb.max[1] - bb.min[1] + 2 * m);
+  const out = bop('cut', box, sf);
+  if (out !== box) free(box);
+  if (!out || !(areaOf(out) > 1e-9)) { free(out); return null; }
+  const big = bop('fuse', face, out);
+  free(out);
+  const fs = big ? facesOf(big) : [];
+  const one = fs.length === 1 ? fs[0].clone() : null;
+  free(big);
+  return one;
 }
 
 // A converted bend's solid: bent over the whole span of its zone, then cut at each end along the zone's own end
@@ -1514,12 +1536,16 @@ export function cutSheet(sheet, tool) {
     for (const lk of links) {
       const b = lk.b;
       const local = applyM(tool, invM(mulM(W, lk.A.M)), false);
-      // the neutral (mid-thickness) surface of the bend, and the tool's footprint on it
-      const q1 = a2(b.p0, m2(b.e, b.w));
-      const line = R.makeLine(P3(b.p0, t / 2), P3(q1, t / 2));
-      const surf = revolveEdge(line, [b.p0[0], b.p0[1], axisZ(b, t)], [b.e[0], b.e[1], 0], (bendSign(b) * b.ang * 180) / Math.PI);
+      // the neutral (mid-thickness) surface of the bend, and the tool's footprint on it. (The surface runs on a hair
+      // past the bend's ends and edges: a tool that runs out over an edge then makes a hole that runs out of the
+      // pattern, not one that ends on its edge to 1e-10 and leaves a sliver of sheet along it)
+      const ext = Math.max(1e-4, t * 1e-3), dA = b.ang + 0.02 < Math.PI ? ext / (b.R + t / 2) : 0;
+      const ax0 = [b.p0[0], b.p0[1], axisZ(b, t)], axd = [b.e[0], b.e[1], 0], sg = bendSign(b);
+      const line = R.makeLine(P3(a2(b.p0, m2(b.e, -ext)), t / 2), P3(a2(b.p0, m2(b.e, b.w + ext)), t / 2));
+      const surf0 = revolveEdge(line, ax0, axd, (sg * (b.ang + 2 * dA) * 180) / Math.PI);
+      const surf = surf0 && dA ? applyM(surf0, rotM(ax0, axd, -sg * dA)) : surf0;
       const foot = surf ? bop('common', surf, local) : null;
-      free(local, line, surf);
+      free(local, line, surf, ...(surf0 !== surf ? [surf0] : []));
       // the footprint unrolled: traced at 48 points per curved edge, each edge then made one smooth
       // B-spline (a polyline would give the pattern, and so the folded body, hundreds of tiny faces)
       const unrolled = (wire) => {

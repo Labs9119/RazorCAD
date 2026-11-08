@@ -3876,7 +3876,7 @@ export class UI {
       const left = el('div', { class: 'dxf-left' });
       const cv = el('canvas', { class: 'dxf-canvas', tabindex: '0', 'data-own-escape': true });
       const [w, h] = data.size.map((x) => +x.toFixed(2));
-      const facts = el('div', { class: 'pm-hint' }, esc(`${fileName} · flat size ${w} × ${h} mm · thickness ${+data.t.toFixed(3)} mm · ${data.bends.length} bend${data.bends.length === 1 ? '' : 's'} (K ${data.K}, R ${+data.R.toFixed(3)})`));
+      const facts = el('div', { class: 'pm-hint' }, esc(`${fileName} · flat size ${w} × ${h} mm · thickness ${+data.t.toFixed(3)} mm · ${(data.bendCount ?? data.bends.length)} bend${(data.bendCount ?? data.bends.length) === 1 ? '' : 's'} (K ${data.K}, R ${+data.R.toFixed(3)})`));
       // the edit bar: what is selected, its layer and line type, delete / undo / restore / fit
       const bar = el('div', { class: 'dxf-bar' });
       const selInfo = el('span', { class: 'dxf-selinfo' });

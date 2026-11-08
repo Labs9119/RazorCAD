@@ -1191,7 +1191,7 @@ The sun (or the brightest light) is put at the view's right, where the key light
 
 ## Exploded views of a part
 
-A part with two or more bodies can have exploded views: **Insert ▸ Exploded View…**, or right-click the Solid Bodies folder. Only the display moves; the model stays as it is. The steps are made as for an assembly (see Exploded views in the Assemblies chapter). {idx:exploded view, part}
+A part with two or more bodies can have exploded views: **Insert ▸ Exploded View…**, or right-click the Solid Bodies folder. Only the display moves; the model stays as it is. The steps are made as for an assembly (see Exploded views in the Assemblies chapter). A drawing view of the part can be shown exploded too (**Exploded** in the view's panel), for a ballooned parts list of a fabrication made as one part. {idx:exploded view, part}
 
 ## Combine and Subtract Bodies
 
@@ -1660,7 +1660,7 @@ Closes the corners between flanges: one flange covers the other's end, with a ga
 
 ## Cuts and other features on sheet metal
 
-Cuts on sheet metal (extruded cut and so on) become holes in the flat pattern, so the flat pattern always matches. Holes (the Hole feature) work on sheet metal too. Other features that change a sheet metal body are allowed, but the flat pattern can't follow them; this is shown in Body Properties and the DXF preview.
+Cuts on sheet metal (extruded cut and so on) become holes in the flat pattern, so the flat pattern always matches. A cut may run out over the edge of the sheet or of a bend, as for rounded corners on a rolled door. Holes (the Hole feature) work on sheet metal too. Other features that change a sheet metal body are allowed, but the flat pattern can't follow them; this is shown in Body Properties and the DXF preview. A cut that can't be carried into the flat pattern says so under the feature ("⚠ Not in the flat pattern of …", with the reason), for example one that stops just short of cutting a piece off, leaving a sliver of a bend: make it reach right through.
 
 ## Flatten
 
@@ -2206,7 +2206,7 @@ Click a view to open its panel: {idx:view properties}
 
 - Orientation, changeable after placing (also to and from Flat Pattern; projected and section views made from it are removed when it becomes a flat pattern, and [[Ctrl+Z]] brings them back).
 - Display style: hidden lines removed, hidden lines visible, or wireframe; tangent edges and cosmetic threads on or off.
-- **Exploded** (a view of an assembly that has exploded views): shows the view exploded as one of them. The components are where that exploded view moves them, the view keeps its place on the sheet, and its projected, section, auxiliary and detail views follow. Balloons on it pick the moved parts. {idx:exploded view, drawing}
+- **Exploded** (a view of an assembly, or of a part with several bodies, that has exploded views): shows the view exploded as one of them. The components (or bodies) are where that exploded view moves them, the view keeps its place on the sheet, and its projected, section, auxiliary and detail views follow. Balloons on it pick the moved parts. The part or assembly itself is not changed. {idx:exploded view, drawing}
 - **Alternate position** (a view of an assembly): draws the assembly again as a **position** kept in it, in thin phantom lines (long dash, two short), over the view: a lid open, a lever at its other end. Keep positions in the assembly with **Assembly ▸ Positions** (move the components, e.g. by changing a mate, keep the position, then put them back). {idx:alternate position}{idx:positions, assembly}
 - **Scale**: the sheet scale or a scale of the view's own, whatever the sheet's; labels. A view and the views made from it (projected, section and auxiliary views) share one scale: change it on any of them and they all follow. The first view keeps its middle, and each view made from it keeps its gap to the view it was made from. A **detail view** has a scale of its own (2:1 of its parent's when placed), which a change of its parent's scale leaves alone. Changing the sheet's scale (Sheet Properties) keeps the gaps the same way for the views that use it. {idx:drawing views, scale}
 - **Break from Parent View** (right-click a projected, section or auxiliary view): the view stays as it is (the same direction, cut, scale and place) but no longer depends on the view it was made from. It can be dragged anywhere, given a scale of its own and moved to another sheet, and it stays when that view is deleted. A projected view becomes a model view of its own; a section or auxiliary view keeps its cutting line or arrow on the view it came from. Its own projected and section views go with it. [[Ctrl+Z]] puts it back. This is not **Break Lines**, which leaves out the middle of a long part. {idx:Break from Parent View}
@@ -2225,7 +2225,7 @@ A flat pattern view shows a sheet metal body unfolded with its outline and holes
 
 | Command | How |
 |---|---|
-| **Dimension** | Click a line for its length, a circle for its diameter (an arc: radius), two points, lines or circles for the distance between them (two lines at an angle: the angle), then click where the text goes. Horizontal, vertical or aligned depends on where you place it. Prefix, suffix, tolerance and override text can be set; a diameter can be a **Leader only** (one arrow onto the circle) instead of a line across it. |
+| **Dimension** | Click a line for its length, a circle for its diameter (an arc: radius), two points, lines or circles for the distance between them (two lines at an angle: the angle), then click where the text goes. Horizontal, vertical or aligned depends on where you place it. Prefix, suffix, tolerance and override text can be set; a diameter can be a **Leader only** (one arrow onto the circle) instead of a line across it, and a radius a **Leader only** onto the arc instead of a line from its centre (for a big radius whose centre is far off the view). |
 | **Auto Dimension** | Dimensions the selected views, or every view on the sheet (see below) |
 | **Check Drawing** | Lists what the drawing still lacks (see below) |
 | **Note** | Click on the sheet; click an edge first to add a leader |

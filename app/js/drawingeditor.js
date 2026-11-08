@@ -299,15 +299,19 @@ export class DrawingEditor {
     }
     return null;
   }
-  // The model a view shows: its part or assembly — an assembly exploded as the view asks (each component moved
-  // by the steps of that exploded view).
+  // The model a view shows: its part or assembly — exploded as the view asks: an assembly's components moved by
+  // the steps of that exploded view, a multi-body part's bodies by a Move Body each at the end of its tree.
   viewModel(v) {
     const m = this.doc.models.find((x) => x.id === v.model);
-    const exId = m?.doc?.kind === 'assembly' ? this.explodeOf(v) : null;
-    const ex = exId && (m.doc.explodes || []).find((x) => x.id === exId);
+    const exId = this.explodeOf(v);
+    const ex = exId && (m?.doc?.explodes || []).find((x) => x.id === exId);
     const shown = m?.doc?.kind === 'assembly' ? withoutEnvelope(m.doc) : m?.doc;
     if (!ex) return shown === m?.doc ? m : { ...m, doc: shown };
     const offs = explodeOffsets(ex);
+    if (shown.kind !== 'assembly') {
+      const moves = [...offs].map(([id, o], i) => ({ id: `xpl${i + 1}`, type: 'moveBody', name: `Exploded: ${id}`, suppressed: false, bodies: [id], copy: false, copies: 1, mode: 'translate', dx: o[0], dy: o[1], dz: o[2], rotAxis: 'none', angle: 0, rotCenter: 'origin', mates: [] }));
+      return { ...m, doc: { ...shown, exploded: null, rollbackAt: null, features: [...shown.features, ...moves] } };
+    }
     return { ...m, doc: { ...shown, exploded: null, components: shown.components.map((c) => { const o = offs.get(c.id); return o ? { ...c, pos: c.pos.map((x, i) => x + o[i]) } : c; }) } };
   }
 
@@ -2186,7 +2190,7 @@ export class DrawingEditor {
       <div class="k">Suffix</div><div><input type="text" class="d-suf"></div>
       <div class="k">Tolerance</div><div><input type="text" class="d-tol" placeholder="e.g. ±0.1  or  H7"></div>
       <div class="k">Override text</div><div><input type="text" class="d-ovr" placeholder="(empty: the measured value)"></div>
-      ${a.kind === 'diameter' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (one arrow, not across the circle)</label></div>' : ''}</div>`;
+      ${a.kind === 'diameter' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (one arrow, not across the circle)</label></div>' : a.kind === 'radius' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (onto the arc, not from the centre)</label></div>' : ''}</div>`;
     const q = (c) => box.querySelector(c);
     q('.d-pre').value = a.prefix || ''; q('.d-suf').value = a.suffix || ''; q('.d-tol').value = a.tol || ''; q('.d-ovr').value = a.override || '';
     if (q('.d-lead')) q('.d-lead').checked = !!a.leaderOnly;
@@ -2789,7 +2793,8 @@ export class DrawingEditor {
           if (md.positions?.length) row(d, 'Alternate position', select([['', 'None'], ...md.positions.map((x) => [x.id, x.name])], v.altPos || '', (s) => { if (s) v.altPos = s; else delete v.altPos; this.changed(); this.updateGeometry(); }));
           else d.appendChild(el('div', { class: 'pm-hint' }, 'Positions kept in the assembly (Assembly ▸ Positions) can be shown here as alternate positions, in phantom lines.'));
         }
-        if (md?.kind === 'assembly' && md.explodes?.length && (v.type === 'model' || v.explode)) {
+        // (and a multi-body part with exploded views of its bodies)
+        if (md && md.explodes?.length && (v.type === 'model' || v.explode)) {
           row(d, 'Exploded', select([['', 'Not exploded'], ...md.explodes.map((x) => [x.id, x.name])], v.explode || '', (s) => { (this.pendingCentre ||= new Map()).set(v.id, this.viewCentre(v)); if (s) v.explode = s; else delete v.explode; this.changed(); this.updateGeometry(); }));
         } else if (md?.kind === 'assembly' && v.type === 'model') d.appendChild(el('div', { class: 'pm-hint' }, 'Exploded views made in the assembly (Exploded View) can be shown here.'));
         // (an assembly: how its hidden lines are worked out — exactly, or quickly from the display meshes)
