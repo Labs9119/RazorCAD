@@ -2277,6 +2277,21 @@ Click an item to show its view or annotation. **Add Missing Dimensions** puts in
 
 **Insert ▸ DXF Drawing…** places a DXF file's lines, circles, arcs, polylines, ellipses, splines and texts on the sheet as one item, in the middle of the frame at full size or scaled down to a standard scale that fits. Drag it, right-click ▸ **Scale…**, or delete it; it prints and exports with the sheet. {idx:DXF, into drawings}
 
+## Sketch tab
+
+Lines, rectangles, circles and arcs drawn straight on the sheet {idx:sketch, drawing}: reference lines, alignment lines between views, outlines and the like.
+
+| Command | How |
+|---|---|
+| **Line** | Click the start, then each end: the lines go on from the last end until **Esc** (Esc again closes the tool) |
+| **Rectangle** | Click two opposite corners |
+| **Circle** | Click the centre, then a point on the circle |
+| **3 Point Arc** | Click the start, the end, then a point the arc passes through |
+| **Continuous**, **Hidden**, **Center**, **Phantom** | The line type for new lines, and for the sketch lines selected |
+| **Thin**, **Thick** | The weight (thick: as the views' outlines) |
+
+Clicks snap to the views' corners, ends and centres and to other sketch lines' ends, corners and centres (an orange square shows the snap). A line within 3° of horizontal or vertical is locked square; hold **Alt** to draw it freely. A sketch started on a point of a view moves with that view; one started anywhere else stays where it is on the sheet. Drag a sketch line to move it, **Del** deletes it, and a double-click sets its line type and weight. Sketch lines go into the PDF and DXF with the drawing (centre and hidden lines on the DXF's CENTER and HIDDEN layers). **Insert ▸ Sketch** has the same commands.
+
 ## Sheet tab
 
 - **Sheet Properties**: size, orientation, scale, first or third angle. {idx:sheet properties}

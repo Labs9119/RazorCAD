@@ -6,6 +6,19 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-08 — Sketching on drawings; turned views fit their lines
+
+- **Drawings ▸ Sketch tab** (new): **Line**, **Rectangle**, **Circle** and **3 Point Arc** drawn straight on the sheet,
+  for reference lines, alignment lines between views and outlines, in a line type (continuous, hidden, centre,
+  phantom) and weight (thin, thick) picked on the tab. Clicks snap to the views' points and to other sketch lines;
+  lines within 3° of horizontal or vertical lock square (Alt draws freely). A sketch started on a point of a view moves
+  with the view. Sketch lines can be dragged, deleted and restyled (double-click, or the tab's buttons with them
+  selected), and go into the PDF and DXF. Also under **Insert ▸ Sketch**.
+- **Drawings:** a view turned on the sheet (Rotate View) at an angle other than a quarter turn had its label and its
+  room on the sheet worked out from the turned box round it, which reaches well past a long thin view (an aerofoil
+  section turned level left its SECTION label far below it). The view's own lines are used now.
+- Tests: drawing-sketch.
+
 ## 2026-11-07 20:31 — Loft profiles from model faces, from pull request 15
 
 - Face profiles now accept G1/G2 endpoint joins to adjacent CAD surfaces, with automatic boundary alignment,

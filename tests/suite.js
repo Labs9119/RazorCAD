@@ -366,6 +366,77 @@ const UI = {
     return { ok: true, detail: `hole table ${got}; a 45° section drawn (${ed.geos.get(sec.id).edges.length} lines)` };
   },
 
+  // sketching on a drawing (the Sketch tab): a line chain from a view's corner (it snaps there and moves with the view),
+  // locked square near horizontal / vertical, ended by Esc; a rectangle, a circle and a 3-point arc; a selected line's
+  // type and weight changed from the ribbon; and a view turned on the sheet measured by its lines, not its turned box
+  async 'drawing-sketch'() {
+    const a = window.app, D = await import('/js/drawing.js'), S = await import('/js/sketchmodel.js');
+    if (a.mode === 'drawing') { await a.newDocument?.(); closeModals(); }
+    const doc = M.newDoc(); doc.name = 'Block';
+    const s = M.createFeature(doc, 'sketch', { plane: { ref: 'front' } });
+    const P4 = [[0, 0], [80, 0], [80, 50], [0, 50]].map((q) => S.addPoint(s, ...q)); P4.forEach((id, i) => S.addLine(s, id, P4[(i + 1) % 4]));
+    doc.features.push(s, M.createFeature(doc, 'extrude', { sketch: s.id, depth: 10 }));
+    await a.setDoc(doc); await until(() => !a.kernel.pending && a.result?.bodies?.length, 60000, 100);
+    const keep = a.ui.newDrawingSetup;
+    a.ui.newDrawingSetup = async () => ({ template: BUILTIN_TEMPLATES.find((t) => t.id === 'builtin:A3L'), name: 'Sketch', props: {}, sheet: null });
+    try { await a.newDrawing(true); } finally { a.ui.newDrawingSetup = keep; }
+    const ed = a.drawing;
+    if (!ed) return { ok: false, detail: 'no drawing' };
+    await until(() => ed.doc.views.length && ed.doc.views.every((v) => (ed.geos.get(v.id)?.edges?.length || 0) > 0), 60000, 250);
+    const bad = [], r6 = (x) => Math.round(x * 1e6) / 1e6;
+    const v = ed.doc.views[0], corner = D.viewPickables(ed.doc, v, ed.geos).points[0].P;
+    const click = (P) => ed.sketchClick(ed.sketchSnap(P, {}));
+    const esc = () => ed.handleKey({ key: 'Escape', target: document.body, ctrlKey: false, metaKey: false });
+    const mine = () => ed.doc.anns.filter((x) => x.type === 'sketch');
+    // a chain: from the corner (snapped onto it from 0.3 mm off), 1 mm off level over 60, then 1.5 mm off plumb over 40
+    ed.startTool('skLine');
+    click([corner[0] + 0.3, corner[1] - 0.2]); click([corner[0] + 60, corner[1] + 1]); click([corner[0] + 61.5, corner[1] + 41]);
+    esc();
+    if (ed.tool?.kind !== 'skLine' || ed.tool.pts.length) bad.push('Esc did not end the chain (or closed the tool)');
+    const [l1, l2] = mine();
+    const p1 = l1 && D.sketchPoints(ed.doc, l1), p2 = l2 && D.sketchPoints(ed.doc, l2);
+    if (!l1 || !l2 || mine().length !== 2) bad.push(`${mine().length} lines`);
+    else {
+      if (l1.view !== v.id || r6(p1[0][0]) !== r6(corner[0]) || r6(p1[0][1]) !== r6(corner[1])) bad.push(`not from the corner on its view: ${JSON.stringify(p1[0])} ${l1.view}`);
+      if (r6(p1[1][1]) !== r6(p1[0][1])) bad.push('first line not level');
+      if (r6(p2[1][0]) !== r6(p2[0][0]) || r6(p2[0][0]) !== r6(p1[1][0])) bad.push('second line not plumb from the first one\'s end');
+      // (it moves with its view)
+      D.moveView(ed.doc, v, 10, 5);
+      const q = D.sketchPoints(ed.doc, l1)[0];
+      if (r6(q[0] - p1[0][0]) !== 10 || r6(q[1] - p1[0][1]) !== 5) bad.push('the line did not move with its view');
+      D.moveView(ed.doc, v, -10, -5);
+    }
+    ed.cancelTool();
+    // a rectangle, a circle and an arc in empty sheet space
+    const O = [330, 60];
+    ed.startTool('skRect'); click(O); click([O[0] + 40, O[1] + 20]);
+    ed.startTool('skCircle'); click([O[0] + 20, O[1] + 10]); click([O[0] + 28, O[1] + 10]);
+    ed.startTool('skArc'); click([O[0], O[1] + 60]); click([O[0] + 40, O[1] + 60]); click([O[0] + 20, O[1] + 40]);
+    ed.cancelTool();
+    const [rc, ci, ar] = mine().slice(2);
+    if (rc?.shape !== 'rect' || JSON.stringify(D.sketchPoints(ed.doc, rc).map((p) => p.map(r6))) !== JSON.stringify([O, [O[0] + 40, O[1]], [O[0] + 40, O[1] + 20], [O[0], O[1] + 20]])) bad.push(`rectangle ${JSON.stringify(rc)}`);
+    if (ci?.shape !== 'circle' || r6(ci.r) !== 8) bad.push(`circle ${JSON.stringify(ci)}`);
+    // (the arc through its third point: centre at x + 20, radius 20, the half above)
+    if (ar?.shape !== 'arc' || r6(ar.r) !== 20 || r6(ar.pos[0]) !== O[0] + 20 || r6(ar.pos[1]) !== O[1] + 60) bad.push(`arc ${JSON.stringify(ar)}`);
+    else {
+      const top = D.sketchPrims(ed.doc, ar)[0].pts.reduce((m, p) => Math.min(m, p[1]), Infinity);
+      if (Math.abs(top - (O[1] + 40)) > 0.05) bad.push(`the arc does not pass its third point (top at ${top})`);
+    }
+    // the ribbon's line type and weight on the selected rectangle
+    // (selected: it takes the style; then, nothing selected, the style for new lines goes back without touching it)
+    ed.selected = new Set([rc.id]); ed.setSketchStyle({ ltype: 'center', weight: 'thick' }); ed.selected.clear(); ed.setSketchStyle({ ltype: 'continuous', weight: 'thin' });
+    const pr = D.sketchPrims(ed.doc, rc)[0];
+    if (rc.ltype !== 'center' || rc.weight !== 'thick' || !pr.dash || !(pr.w > 0.3)) bad.push(`style ${rc.ltype} ${rc.weight}`);
+    // a view turned 30°: its rectangle round its lines, smaller than round its turned box
+    v.rot = 30;
+    const g = ed.geos.get(v.id), X = D.viewXform(ed.doc, v), rr = D.viewRect(ed.doc, v, ed.geos);
+    const bc = [g.box.min, [g.box.max[0], g.box.min[1]], g.box.max, [g.box.min[0], g.box.max[1]]].map(X.toSheet);
+    const boxW = Math.max(...bc.map((p) => p[0])) - Math.min(...bc.map((p) => p[0]));
+    if (!(rr.x1 - rr.x0 <= boxW + 1e-6)) bad.push(`turned view ${rr.x1 - rr.x0} wide, its box ${boxW}`);
+    v.rot = 0;
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `chain from a view corner, square, moves with the view; rectangle, circle, arc; restyled; turned view ${(rr.x1 - rr.x0).toFixed(1)} wide (box ${boxW.toFixed(1)})` };
+  },
+
   // thickness analysis (a 5 mm plate: 5 on its faces, its length across its ends) and the undercut check (a hole
   // across the pull direction, 60 long, is undercut, the rest is not: its share of the area)
   async 'thickness-and-undercut-analysis'() {
