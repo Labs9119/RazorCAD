@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-08 — Auto Dimension on a view with centre marks
+
+- **Drawings ▸ Auto Dimension** stopped with an error ("Cannot read properties of undefined") on a view that already
+  had a centre mark or a centreline when it added hole diameters: spreading the new labels apart, it measured the
+  text of every annotation on the view, and those have none. They are passed over now.
+- Test: drawing-hole-table-angled-section (Auto Dimension with a centre mark on the view).
+
 ## 2026-11-08 — Sketching on drawings; turned views fit their lines
 
 - **Drawings ▸ Sketch tab** (new): **Line**, **Rectangle**, **Circle** and **3 Point Arc** drawn straight on the sheet,

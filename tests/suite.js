@@ -344,6 +344,14 @@ const UI = {
     // (the view the holes are round in: looking along Z)
     const front = ed.doc.views.find((v) => { const c = D.viewCamera(ed.doc, v); return Math.abs(Math.abs(c.dir[2]) - 1) < 1e-9; });
     if (!front) return { ok: false, detail: 'no view looking along Z' };
+    // (Auto Dimension on a view that has a centre mark already: it measured every annotation's text, and a centre
+    // mark has none)
+    const hole = D.viewPickables(ed.doc, front, ed.geos).circles.find((c) => c.full);
+    ed.doc.anns.push({ id: D.newId(ed.doc, 'a'), type: 'cmark', sheet: front.sheet, view: front.id, c: [...hole.c], r: hole.r });
+    ed.selected = new Set([front.id]);
+    let added;
+    try { added = ed.autoDimension({ overall: false, holes: true, positions: false, radii: false, spread: true }); } catch (e) { return { ok: false, detail: `Auto Dimension with a centre mark on the view: ${e.message}` }; }
+    if (!(added > 0)) return { ok: false, detail: 'Auto Dimension added no hole diameters' };
     ed.selected = new Set([front.id]);
     const ann = ed.addHoleTable();
     const rows = D.holeTableRows(ed.doc, ann, ed.geos) || [];
