@@ -1537,13 +1537,17 @@ export function cutSheet(sheet, tool) {
       const b = lk.b;
       const local = applyM(tool, invM(mulM(W, lk.A.M)), false);
       // the neutral (mid-thickness) surface of the bend, and the tool's footprint on it. (The surface runs on a hair
-      // past the bend's ends and edges: a tool that runs out over an edge then makes a hole that runs out of the
-      // pattern, not one that ends on its edge to 1e-10 and leaves a sliver of sheet along it)
-      const ext = Math.max(1e-4, t * 1e-3), dA = b.ang + 0.02 < Math.PI ? ext / (b.R + t / 2) : 0;
+      // past the bend's edges, and past its ends where the sheet ends there (a rolled part's last bend): a tool that
+      // runs out over an edge then makes a hole that runs out of the pattern, not one that ends on its edge to 1e-10
+      // and leaves a sliver of sheet along it. Not past an end that runs on into a panel or the next bend: there the
+      // two footprints would overlap, and a rolled skin of many bends (an aerofoil blade) is left in slivers)
+      const ext = Math.max(1e-4, t * 1e-3), da = ext / (b.R + t / 2), open = b.ang + 0.02 < Math.PI;
+      const endOf = (side) => !!(side?.joint && String(side.key).includes('|end-'));
+      const dA0 = open && endOf(lk.A) ? da : 0, dA1 = open && endOf(lk.B) ? da : 0;
       const ax0 = [b.p0[0], b.p0[1], axisZ(b, t)], axd = [b.e[0], b.e[1], 0], sg = bendSign(b);
       const line = R.makeLine(P3(a2(b.p0, m2(b.e, -ext)), t / 2), P3(a2(b.p0, m2(b.e, b.w + ext)), t / 2));
-      const surf0 = revolveEdge(line, ax0, axd, (sg * (b.ang + 2 * dA) * 180) / Math.PI);
-      const surf = surf0 && dA ? applyM(surf0, rotM(ax0, axd, -sg * dA)) : surf0;
+      const surf0 = revolveEdge(line, ax0, axd, (sg * (b.ang + dA0 + dA1) * 180) / Math.PI);
+      const surf = surf0 && dA0 ? applyM(surf0, rotM(ax0, axd, -sg * dA0)) : surf0;
       const foot = surf ? bop('common', surf, local) : null;
       free(local, line, surf, ...(surf0 !== surf ? [surf0] : []));
       // the footprint unrolled: traced at 48 points per curved edge, each edge then made one smooth

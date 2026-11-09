@@ -6,6 +6,14 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-09 — Cuts across a rolled skin of many bends no longer leave slivers
+
+- **Sheet metal:** since the change below, a cut across a skin rolled as a run of bends with no flat between them (an
+  aerofoil blade trimmed to its shroud, say) left a comb of thin slivers standing along the cut, where the bends meet.
+  The cut is carried a hair past a bend's end now only where the sheet really ends there (a rolled part's last bend),
+  not where it runs on into the next bend or a flat.
+- Tests: sheet-rolled-bends-cut-across.
+
 ## 2026-11-09 — Cuts at the edge of a rolled sheet metal part reach its flat pattern; exploded part views on drawings
 
 - **Sheet metal:** a cut that runs out over the edge of a bend (rounded corners on a curved door that is all one

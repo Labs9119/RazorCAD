@@ -5303,6 +5303,43 @@ ENDSEC;END-ISO-10303-21;`;
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `rounds in the flat outline; they took ${r6(got)} mm³ (${r6(want)})` };
   },
 
+  // a rolled skin of two bends run straight on into each other (no flat between, as an aerofoil blade's) cut across
+  // both: the cut takes exactly its share, with no slivers left where the bends meet
+  async 'sheet-rolled-bends-cut-across'() {
+    const k = window.app.kernel;
+    const d = M.newDoc();
+    const s = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+    Object.assign(s, { points: [{ id: 'a', x: 100, y: 0 }, { id: 'b', x: 0, y: 100 }, { id: 'c', x: -100, y: 0 }],
+      curves: [{ id: 'k1', type: 'arc', c: 'O', p1: 'a', p2: 'b', construction: false }, { id: 'k2', type: 'arc', c: 'O', p1: 'b', p2: 'c', construction: false }], constraints: [] });
+    const sc = M.createFeature(d, 'smExtrude', { sketch: s.id, depth: 300, direction: 'mid', thickness: 3, side: 'other', radius: 3 });
+    d.features.push(s, sc);
+    let r = await k.rebuild(d, null, null);
+    const vol = async (id) => { const m = await k.request('measure', { refs: [{ kind: 'body', id }] }); return (m.items?.[0] || m).volume; };
+    const v0 = await vol(r.body.bodies[0].id);
+    // its top trimmed on a slant across both bends, as a blade's is to its shroud: all above z = 50 + x/2 cut away
+    // (drawn on the Top plane, sketch y = -z, and cut right through). The skin is a half tube about the z axis, so
+    // what is cut off, (100 - x/2) high over its section, is exactly 100 x the section (the x/2 cancels side to
+    // side): a third of its 300 length
+    const cs = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    Object.assign(cs, { points: [{ id: 'p0', x: -200, y: 50 }, { id: 'p1', x: 200, y: -150 }, { id: 'p2', x: 200, y: -400 }, { id: 'p3', x: -200, y: -400 }],
+      curves: [0, 1, 2, 3].map((i) => ({ id: 'l' + i, type: 'line', p1: 'p' + i, p2: 'p' + ((i + 1) % 4), construction: false })), constraints: [] });
+    const cut = M.createFeature(d, 'extrude', { sketch: cs.id, op: 'cut', end: 'through2' });
+    d.features.push(cs, cut);
+    r = await k.rebuild(d, null, null);
+    const b = r.body?.bodies?.[0];
+    if (r.errors?.length || !b) return { ok: false, detail: JSON.stringify(r.errors) };
+    const got = await vol(b.id), want = (v0 * 200) / 300;
+    const f = await k.request('sheetFlat', { bodyId: b.id, flip: false });
+    const bad = [];
+    if (r.notes?.[cut.id]) bad.push(`note: ${r.notes[cut.id]}`);
+    if (f.stale) bad.push(`flat pattern without ${f.stale}`);
+    if (Math.abs(got - want) > 1e-3 * want) bad.push(`${r6(got)} mm³ left, want ${r6(want)}`);
+    // (slivers left where the bends meet show as extra faces: 9 instead of 7 here, thin enough to hide in the volume;
+    // on a blade's skin of many short bends they were thousands of mm³ each)
+    if (b.faceCount !== 7) bad.push(`${b.faceCount} faces, want 7 (slivers where the bends meet?)`);
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `${r6(got)} mm³ left (${r6(want)}); ${b.faceCount} faces` };
+  },
+
   // a whole cone as a Lofted Bend (formed) between two circles open only at a 0.5 mm seam (it came out 2.5 m long);
   // a roll trimmed to a rounded panel by a cut round it (a ring: the panel kept, not lost); a sketch spline made a
   // surface (one face) and converted to sheet metal; and a circular pattern's body copies called after their body
