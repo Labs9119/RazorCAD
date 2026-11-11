@@ -2111,7 +2111,7 @@ The motion is worked out step by step and the mates carry the other components a
 **Measure** (Assembly tab, or **Tools ▸ Measure…**) works as it does in a part, on the components where they are assembled {idx:measure, assembly}. Click up to two items: vertices, edges, faces of any component (inside sub-assemblies too) or the origin planes. One item gives its size: an edge's length (and a circle's diameter), a face's area (and a round face's diameter), a vertex's position. Two give the shortest distance between them, with dX, dY and dZ, the angle between flat faces or straight edges, and the centre-to-centre distance of two round faces.
 
 - Turn on **Filter Solid Bodies** above the view to pick whole components: one gives its volume and surface area, two the clearance between them.
-- The sizes come from the parts' own geometry, not the display meshes, so they are exact. A component measured for the first time is built first, which can take a moment on a big part.
+- The sizes come from the parts' own geometry, not the display meshes, so they are exact. A part measured for the first time is built first (only that part, not the rest of its sub-assembly), which can take a moment on a big part; while Measure is open, the part the cursor rests on is built ahead, so a click on it is usually answered at once.
 - **Keep the first item** and the list of distances measured work as in a part. An exploded assembly is collapsed first. Esc or ✗ ends it.
 
 ## Bill of Materials

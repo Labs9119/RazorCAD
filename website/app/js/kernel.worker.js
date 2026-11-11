@@ -10377,10 +10377,11 @@ function measureRefs(refs, list = null) {
 }
 
 // Measure in an assembly: refs as measureRefs takes them, in the assembly's coordinates, each on a component (comp:
-// its path, top component first). Only the components picked are built (kept from one measure to the next).
+// its path, top component first). The assembly comes cut down to the parts picked (assembly.js measureDoc); each part
+// is built once and kept (builtPart), so a part measured again, or built ahead while the cursor rested on it (no
+// refs), is ready at once.
 async function asmMeasure(docJson, refs) {
-  const asm = JSON.parse(docJson), tops = new Set(refs.filter((r) => r.comp).map((r) => String(r.comp).split('/')[0]));
-  const { solids } = tops.size ? await assemblySolids({ ...asm, components: (asm.components || []).filter((c) => tops.has(c.id)) }) : { solids: [] };
+  const { solids } = await assemblySolids(JSON.parse(docJson), 'measuring');
   return measureRefs(refs, solids);
 }
 
@@ -10491,7 +10492,7 @@ async function compareParts(aJson, bJson) {
     mesh: { add: added.length ? meshData(added, diag) : null, remove: removed.length ? meshData(removed, diag) : null } };
 }
 
-async function assemblySolids(asm) {
+async function assemblySolids(asm, why = 'the drawing') {
   const oc = R.getOC();
   const built = asmPartsBuilt;
   const solids = [], holes = [], threads = [];
@@ -10537,7 +10538,7 @@ async function assemblySolids(asm) {
       // (a top component cut by the assembly's holes and cuts: its part with them)
       const extra = depth === 0 && cuts.get(c.id);
       const pd = { ...p.doc, activeConfig: cfg, rollbackAt: null, ...(extra ? { features: [...p.doc.features, ...extra] } : {}) };
-      const b = await builtPart(JSON.stringify(pd), p.name || pd.name);
+      const b = await builtPart(JSON.stringify(pd), p.name || pd.name, why);
       void built;
       for (const s of b.solids) solids.push({ ...s, id: `${prefix}${c.id}/${s.id}`, shape: placed(s.shape, Mc), comp: c.name });
       for (const h of b.holes) holes.push({ ...h, p: ptM(Mc, h.p), dir: dirM(Mc, h.dir) });

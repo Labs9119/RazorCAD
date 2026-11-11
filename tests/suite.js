@@ -4757,6 +4757,9 @@ const UI = {
     r = await run({ kind: 'plane', o: [0, 0, 0], n: [1, 0, 0] }, { kind: 'face', p: [60, 10, 0], comp: c2.id });
     if (!near(r.distance, 60)) bad.push(`plane: ${r.distance}`);
     if (pm.history.length < 4 || !near(pm.history.at(-1).distance, d1)) bad.push(`history: ${pm.history.length}`);
+    // (the kernel is sent only the components picked)
+    const md = asm.measureDoc([c2.id]);
+    if (md.components.length !== 1 || md.components[0].id !== c2.id) bad.push(`cut down to ${md.components.length} components`);
     // Esc ends it
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(50);
     if (a.pm || asm.measuring()) bad.push('Esc did not end Measure');

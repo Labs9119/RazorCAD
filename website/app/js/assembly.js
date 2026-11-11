@@ -1370,6 +1370,7 @@ export class AssemblyEditor {
     if (this.doc.exploded) this.setExploded(null, false);
     const o = (a._measureOpts ||= { snap: { sketch: true, mids: true, centres: true }, keepFirst: false });
     a.pm = { kind: 'measure', asm: true, picks: [], result: null, error: null, snap: o.snap, keepFirst: o.keepFirst, history: [] };
+    this._warmed = new Set(); this._warmNext = null;
     this.select(null);
     this.renderAll();
     a.status('Measure: click vertices, edges, faces or the origin planes of the components (two items: the distance between them). Turn on Filter Solid Bodies to pick whole components.');
@@ -1415,7 +1416,7 @@ export class AssemblyEditor {
     this.measureMarks();
     this.renderPM();
     if (pm.picks.length) {
-      const refs = pm.picks.map(({ label, ...r }) => r), doc = JSON.stringify(this.doc);
+      const refs = pm.picks.map(({ label, ...r }) => r), doc = JSON.stringify(this.measureDoc(refs.map((r) => r.comp).filter(Boolean)));
       let res = null, err = null;
       try { res = await this.app.withProgress('Measuring…', () => (this.app.kernelPool || this.app.kernel).request('asmMeasure', { doc, refs }, 'asm-parts')); } catch (e) { err = e.message; }
       if (this.app.pm !== pm || seq !== this._measureSeq) return;
@@ -1430,6 +1431,45 @@ export class AssemblyEditor {
     this.measureMarks();
     this.renderPM();
     this.vp.requestRender?.();
+  }
+  // The assembly cut down to the components on the paths given, for the kernel to build: a part inside a
+  // sub-assembly without the rest of it (a path ending at a sub-assembly keeps all of it). A sub-assembly cut down is
+  // a copy of its own for that component.
+  measureDoc(paths) {
+    const on = (id) => paths.some((w) => w === id || w.startsWith(id + '/') || id.startsWith(w + '/'));
+    const cut = (doc, prefix, depth) => {
+      const parts = [], components = [];
+      for (const c of doc.components || []) {
+        const id = prefix + c.id;
+        if (!on(id)) continue;
+        const p = (doc.parts || []).find((x) => x.id === c.part);
+        if (!p) continue;
+        if (isAssembly(p.doc) && depth < 16 && !paths.includes(id)) {
+          const q = { ...p, id: `${p.id}~${c.id}`, doc: cut(p.doc, id + '/', depth + 1) };
+          parts.push(q); components.push({ ...c, part: q.id });
+        } else {
+          if (!parts.includes(p)) parts.push(p);
+          components.push(c);
+        }
+      }
+      return { ...doc, components, parts };
+    };
+    return cut(this.doc, '', 0);
+  }
+  // (while measuring: the part the cursor rests on built ahead, one at a time, so a click on it is answered at once)
+  warmMeasure(path) {
+    clearTimeout(this._warmTimer);
+    if (!path || this._warmed?.has(path)) return;
+    this._warmTimer = setTimeout(async () => {
+      if (!this.measuring() || this._warming) { this._warmNext = path; return; }
+      (this._warmed ||= new Set()).add(path);
+      this._warming = true;
+      try { await (this.app.kernelPool || this.app.kernel).request('asmMeasure', { doc: JSON.stringify(this.measureDoc([path])), refs: [] }, 'asm-parts'); } catch { this._warmed.delete(path); }
+      this._warming = false;
+      const next = this._warmNext;
+      this._warmNext = null;
+      if (next && next !== path) this.warmMeasure(next);
+    }, 250);
   }
   endMeasure() {
     const a = this.app;
@@ -1523,7 +1563,12 @@ export class AssemblyEditor {
     // (Measure: a click picks an item; the components stay where they are)
     if (this.measuring()) {
       if (kind === 'click') return this.measureClick(e);
-      if (kind === 'hover') { const r = this.entityAt(e); this.hoverComp = r?.kind === 'comp' ? r.comp : null; this.hoverRef = r && r.kind !== 'comp' ? r : null; this.highlight(); this.measureMarks(this.measureAt(e)); return; }
+      if (kind === 'hover') {
+        const r = this.entityAt(e); this.hoverComp = r?.kind === 'comp' ? r.comp : null; this.hoverRef = r && r.kind !== 'comp' ? r : null; this.highlight(); this.measureMarks(this.measureAt(e));
+        const ch = this.compAt(e), l = ch && this._leaves[ch.leaf];
+        if (l) this.warmMeasure(this.app.allows('body') && !this.app.allows('face') ? l.comp.id : [l.comp.id, ...l.chain].join('/'));
+        return;
+      }
       if (kind === 'leave') { this.hoverRef = null; this.hoverComp = null; this.highlight(); this.measureMarks(null); return; }
       if (kind === 'down' || kind === 'up' || kind === 'dbl' || kind === 'move') return;
     }

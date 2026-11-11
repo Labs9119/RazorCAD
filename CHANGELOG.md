@@ -6,6 +6,17 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-11 20:41 — Measure in assemblies: quicker
+
+- The kernel builds only the parts clicked, not the whole sub-assembly they are in, and is sent only those parts,
+  not the whole assembly (the robot arm: 76 kB instead of 660 kB a click; a part inside a joint module measured in
+  0.2 s instead of 0.8 s). assembly.js measureDoc; kernel.worker.js asmMeasure builds what it is sent.
+- While measuring, the part the cursor rests on is built ahead (one at a time), so a click on it is answered at once
+  (warmMeasure). The kernel's progress says "for measuring", not "for the drawing".
+- A part measured for the first time is still built from its features, which takes as long as building it does.
+
+---
+
 ## 2026-11-11 20:28 — Measure in assemblies
 
 - **Measure on the Assembly tab** (and Tools ▸ Measure…). The part's Measure panel, on components where they are
