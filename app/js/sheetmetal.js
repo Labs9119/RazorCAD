@@ -567,6 +567,18 @@ function wrapPoint(b, t, p, r) {
   const dir = apMdir(rotM([0, 0, 0], e3, phi), r0);
   return add3(add3([b.p0[0], b.p0[1], axisZ(b, t)], mul3(e3, x)), mul3(dir, r));
 }
+// Flat points held to the span wrapPoint bends (half the bend's width each side of it), with any that then fall on the
+// one before them taken out (closed: the last on the first too).
+function heldOnBend(b, pts, closed = false) {
+  const tol = 1e-9 * (1 + b.ba + b.w), out = [];
+  for (const p of pts) {
+    const s = d2(s2(p, b.p0), b.d), sc = Math.min(Math.max(s, -0.5 * b.ba), 1.5 * b.ba);
+    const q = sc === s ? p : a2(p, m2(b.d, sc - s));
+    if (!out.length || l2(s2(q, out[out.length - 1])) > tol) out.push(q);
+  }
+  if (closed) while (out.length > 1 && l2(s2(out[0], out[out.length - 1])) <= tol) out.pop();
+  return out;
+}
 // A solid that cuts the part of a bend zone outside the pattern (a flat face in the zone) out of the bent strip.
 // (each curved edge of the face is carried onto the bend as one smooth edge, so one face of the tool)
 function wrapTool(b, t, face, formed = false) {
@@ -587,7 +599,12 @@ function wrapTool(b, t, face, formed = false) {
       return Array.from({ length: n + 1 }, (_, i) => a2(pts[0], m2(s2(pts[1], pts[0]), i / n)));
     });
   }
-  const polygon = () => wrapLoopTool(b, t, wireLoop(face.clone().outerWire(), 32).map((p) => [p[0], p[1]]));
+  // (each point held to where wrapPoint carries it, from half the bend's width before it to half past it, and points
+  // that then fall on each other taken out: a tool run on past a narrow bend (a rolled skin's, under a mm wide) has
+  // several points of an edge across it beyond that, all carried to one place, and a curve through them doubled back
+  // on itself makes a tool that cuts away the wrong side)
+  runs = runs.map((pts) => heldOnBend(b, pts)).filter((pts) => pts.length > 1);
+  const polygon = () => wrapLoopTool(b, t, heldOnBend(b, wireLoop(face.clone().outerWire(), 32).map((p) => [p[0], p[1]]), true));
   if (runs.every((pts) => pts.length === 2)) return polygon();
   const ri = Math.max(1e-3, b.R - 0.1 * t), ro = b.R + 1.1 * t;
   const wire = (r, rs) => R.assembleWire(rs.map((lp) => {

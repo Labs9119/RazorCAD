@@ -6,6 +6,19 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-12 06:12 — Cuts across very narrow bends of a folded aerofoil blade
+
+- **Sheet metal:** a cut across a folded aerofoil blade (trimming its top to a shroud) could leave a strip of the
+  folded body standing to full height near the nose, and take most of a neighbouring bend away, while the flat
+  pattern was cut right (a Clark Y blade of 13.8 % or 13.9 %; 13.5 % was fine). Some of the skin's bends there are
+  under a millimetre wide in the flat, and the cut carried onto them took away the wrong side. It now cuts them as
+  it does wider bends: the body ends at the cut, matching its flat pattern, and Interference Check gives sensible
+  volumes again. (sheetmetal.js wrapTool: points of the tool carried past a bend's span are held to it and those
+  that then fall on each other taken out, so its edges never double back.)
+- Test: sheet-airfoil-blade-cut-narrow-bends (fails on the previous code: the blade reaches Y 260 above the cone).
+
+---
+
 ## 2026-11-11 — S2205 duplex stainless in the material list
 
 - **Materials:** **S2205 Duplex Stainless** (UNS S32205, 7.80 g/cm³) joins the list, for parts and bodies (Edit

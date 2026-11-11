@@ -5534,6 +5534,51 @@ ENDSEC;END-ISO-10303-21;`;
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `one bend line (R2), formed skins, ${note}` };
   },
 
+  // a folded blade (Clark Y 13.8 %, chord 181, nose R4.5 in 2.5 sheet, 260 deep) trimmed by a cone revolved round Y,
+  // as a fan blade is to its shroud. Some of its skin's bends near the nose are under a mm wide in the flat; the cut
+  // carried onto two of them kept the wrong side, so the body still reached Y 260 there (a strip) and lost most of
+  // another bend, while the flat pattern was right. Checked: the body ends under the cone, and what the cut keeps and
+  // what the opposite cut keeps (all above the cone) make up the whole blade
+  async 'sheet-airfoil-blade-cut-narrow-bends'() {
+    const k = window.app.kernel, bad = [];
+    const make = (above) => {
+      const d = M.newDoc(), s = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+      Object.assign(s, {
+        points: [{ id: 'p1', x: 17.05, y: 247.4 }, { id: 'p2', x: -153.79, y: 306.59 }],
+        curves: [{ id: 'c1', type: 'line', p1: 'p1', p2: 'p2', construction: true }], constraints: [],
+        airfoils: [{ id: 'a1', line: 'c1', spec: { kind: 'clarky', t: 13.8 }, sharpTE: true, flip: true, swap: false, noseR: 4.5, open: true }],
+      });
+      const f = M.createFeature(d, 'smExtrude', { sketch: s.id, depth: 260, thickness: 2.5, side: 'other', radius: 2, kFactor: 0.44, trimSelf: true, trimAt: 'end' });
+      d.features.push(s, f);
+      if (above == null) return { d, f };
+      // the cone: Y 386.38 on the axis down to 142.48 at radius 400 (Y 237 to 177 over the blade), on the Front
+      // plane; the region above it cut away, or (above) the one below it
+      const cs = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+      const ys = above ? [-10, 386.38, 142.48, -10] : [450, 386.38, 142.48, 450];
+      Object.assign(cs, { points: [[0, ys[0]], [0, ys[1]], [400, ys[2]], [400, ys[3]]].map(([x, y], i) => ({ id: 'q' + i, x, y })),
+        curves: [0, 1, 2, 3].map((i) => ({ id: 'l' + i, type: 'line', p1: 'q' + i, p2: 'q' + ((i + 1) % 4), construction: false })), constraints: [] });
+      const cut = M.createFeature(d, 'revolve', { sketch: cs.id, op: 'cut', axis: 'v', angle: 360, end: 'oneway', scopeAll: false, scope: [f.id] });
+      d.features.push(cs, cut);
+      return { d, f: cut };
+    };
+    const vol = async (id) => { const m = await k.request('measure', { refs: [{ kind: 'body', id }] }); return (m.items?.[0] || m).volume; };
+    const res = [];
+    for (const above of [null, false, true]) {
+      const { d, f } = make(above);
+      const r = await k.rebuild(d, null, null), b = r.body?.bodies?.[0];
+      if (r.errors?.length || !b?.sheet) { bad.push(`${above}: ${JSON.stringify(r.errors)}`); continue; }
+      if (r.notes?.[f.id] && above != null) bad.push(`note: ${r.notes[f.id]}`);
+      const ys = r.body.edges.slice(b.edgeStart, b.edgeStart + b.edgeCount).flatMap((e) => e.pts.filter((_, i) => i % 3 === 1));
+      res.push({ v: await vol(b.id), top: Math.max(...ys), bottom: Math.min(...ys) });
+    }
+    if (bad.length) return { ok: false, detail: bad.join('; ') };
+    const [whole, below, top] = res;
+    if (!(below.top < 237)) bad.push(`the trimmed blade reaches Y ${r6(below.top)} (a strip left above the cone?)`);
+    if (!(top.bottom > 176)) bad.push(`the part above the cone reaches down to Y ${r6(top.bottom)}`);
+    if (Math.abs(below.v + top.v - whole.v) > 1e-4 * whole.v) bad.push(`${r6(below.v)} + ${r6(top.v)} mm³ kept, want ${r6(whole.v)}`);
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `trimmed to Y ${r6(below.top)}; ${r6(below.v)} + ${r6(top.v)} = ${r6(whole.v)} mm³` };
+  },
+
   // the same blade in drawing views: seen end on, its outline is there (the skins' long flat arcs, R up to ~3 m,
   // were dropped as "reaching far outside the part" by their whole circles); seen from the side, no line where the
   // formed skins' arcs meet (as in the 3D view), only the nose's and the ends'
