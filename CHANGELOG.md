@@ -6,6 +6,13 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-11 — S2205 duplex stainless in the material list
+
+- **Materials:** **S2205 Duplex Stainless** (UNS S32205, 7.80 g/cm³) joins the list, for parts and bodies (Edit
+  Material…, Body Properties). Mass Properties, bills of materials and drawings take its density and name.
+
+---
+
 ## 2026-11-11 20:41 — Measure in assemblies: quicker
 
 - The kernel builds only the parts clicked, not the whole sub-assembly they are in, and is sent only those parts,

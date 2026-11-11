@@ -2728,6 +2728,7 @@ Run `python serve.py` and open http://localhost:8765/ in a browser. In that mode
 |---|---|
 | Plain Carbon Steel | 7.80 |
 | AISI 304 Stainless | 8.00 |
+| S2205 Duplex Stainless (UNS S32205) | 7.80 |
 | 6061 Aluminum Alloy | 2.70 |
 | Brass | 8.50 |
 | Copper | 8.96 |
