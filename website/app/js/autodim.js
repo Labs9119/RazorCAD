@@ -157,8 +157,10 @@ function spreadLabels(dwg, v, mine) {
   }
   // round dimensions: further out while their text meets another one's
   const boxes = (a) => {
+    // (dimensions only: a centre mark or centreline on the view has no text, nor a place for one)
+    if (a.type !== 'dim' || !a.pos) return null;
     const P = D.annPos(dwg, a), w = width(a);
-    if (a.type === 'dim' && (a.kind === 'diameter' || a.kind === 'radius')) return [P[0], P[1] - th, P[0] + w + 2, P[1]];
+    if (a.kind === 'diameter' || a.kind === 'radius') return [P[0], P[1] - th, P[0] + w + 2, P[1]];
     if (a.type === 'dim' && a.kind === 'linear') return a.orient === 'v' ? [P[0] - th, P[1] - w / 2, P[0], P[1] + w / 2] : [P[0] - w / 2, P[1] - th - 1, P[0] + w / 2, P[1]];
     return null;
   };

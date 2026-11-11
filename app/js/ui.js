@@ -5829,9 +5829,9 @@ export class UI {
   renderMeasurePM(root) {
     const a = this.app, pm = a.pm;
     this.pmHeader(root, 'measure', 'Measure', { ok: false });
-    root.appendChild(el('div', { class: 'pm-msg' }, 'Click up to two items: vertices, snap points, edges, faces, planes, sketch points or lines (turn on the body filter, B, to pick whole bodies). The point a click would pick is marked as you move. Click an item again to remove it.'));
-    const sg = this.pmGroup(root, 'Snap To', 'ms:snap');
-    for (const [k, label] of [['sketch', 'Sketch points'], ['mids', 'Midpoints of edges'], ['centres', 'Centres of circles and arcs']]) {
+    root.appendChild(el('div', { class: 'pm-msg' }, pm.asm ? 'Click up to two items on the components: vertices, edges, faces or the origin planes (turn on Filter Solid Bodies above the view to pick whole components). Click an item again to remove it.' : 'Click up to two items: vertices, snap points, edges, faces, planes, sketch points or lines (turn on the body filter, B, to pick whole bodies). The point a click would pick is marked as you move. Click an item again to remove it.'));
+    const sg = this.pmGroup(root, pm.asm ? 'Options' : 'Snap To', 'ms:snap');
+    for (const [k, label] of pm.asm ? [] : [['sketch', 'Sketch points'], ['mids', 'Midpoints of edges'], ['centres', 'Centres of circles and arcs']]) {
       const cb = el('input', { type: 'checkbox' });
       cb.checked = pm.snap[k] !== false;
       cb.onchange = () => { pm.snap[k] = cb.checked; };

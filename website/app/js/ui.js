@@ -3876,7 +3876,7 @@ export class UI {
       const left = el('div', { class: 'dxf-left' });
       const cv = el('canvas', { class: 'dxf-canvas', tabindex: '0', 'data-own-escape': true });
       const [w, h] = data.size.map((x) => +x.toFixed(2));
-      const facts = el('div', { class: 'pm-hint' }, esc(`${fileName} · flat size ${w} × ${h} mm · thickness ${+data.t.toFixed(3)} mm · ${data.bends.length} bend${data.bends.length === 1 ? '' : 's'} (K ${data.K}, R ${+data.R.toFixed(3)})`));
+      const facts = el('div', { class: 'pm-hint' }, esc(`${fileName} · flat size ${w} × ${h} mm · thickness ${+data.t.toFixed(3)} mm · ${(data.bendCount ?? data.bends.length)} bend${(data.bendCount ?? data.bends.length) === 1 ? '' : 's'} (K ${data.K}, R ${+data.R.toFixed(3)})`));
       // the edit bar: what is selected, its layer and line type, delete / undo / restore / fit
       const bar = el('div', { class: 'dxf-bar' });
       const selInfo = el('span', { class: 'dxf-selinfo' });
@@ -5829,9 +5829,9 @@ export class UI {
   renderMeasurePM(root) {
     const a = this.app, pm = a.pm;
     this.pmHeader(root, 'measure', 'Measure', { ok: false });
-    root.appendChild(el('div', { class: 'pm-msg' }, 'Click up to two items: vertices, snap points, edges, faces, planes, sketch points or lines (turn on the body filter, B, to pick whole bodies). The point a click would pick is marked as you move. Click an item again to remove it.'));
-    const sg = this.pmGroup(root, 'Snap To', 'ms:snap');
-    for (const [k, label] of [['sketch', 'Sketch points'], ['mids', 'Midpoints of edges'], ['centres', 'Centres of circles and arcs']]) {
+    root.appendChild(el('div', { class: 'pm-msg' }, pm.asm ? 'Click up to two items on the components: vertices, edges, faces or the origin planes (turn on Filter Solid Bodies above the view to pick whole components). Click an item again to remove it.' : 'Click up to two items: vertices, snap points, edges, faces, planes, sketch points or lines (turn on the body filter, B, to pick whole bodies). The point a click would pick is marked as you move. Click an item again to remove it.'));
+    const sg = this.pmGroup(root, pm.asm ? 'Options' : 'Snap To', 'ms:snap');
+    for (const [k, label] of pm.asm ? [] : [['sketch', 'Sketch points'], ['mids', 'Midpoints of edges'], ['centres', 'Centres of circles and arcs']]) {
       const cb = el('input', { type: 'checkbox' });
       cb.checked = pm.snap[k] !== false;
       cb.onchange = () => { pm.snap[k] = cb.checked; };

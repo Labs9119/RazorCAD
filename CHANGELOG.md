@@ -6,6 +6,20 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-11 20:28 — Measure in assemblies
+
+- **Measure on the Assembly tab** (and Tools ▸ Measure…). The part's Measure panel, on components where they are
+  assembled: vertices, edges, faces (inside sub-assemblies too) and the origin planes; with Filter Solid Bodies, whole
+  components (volume, area, the clearance between two). Distances, dX/dY/dZ, angles and centre to centre, from the
+  parts' own geometry: the kernel builds only the components picked (kernel.worker.js asmMeasure, measureRefs on a
+  list of placed bodies, each ref kept to its own component so mated faces are told apart).
+- Picks show at once while a component is built the first time; a result overtaken by another click is dropped.
+  An exploded assembly is collapsed first; Esc or ✗ ends it.
+- Test: assembly-measure (faces, corners, an edge, a turned component's volume and distance, a plane; the button,
+  the panel, Esc).
+
+---
+
 ## 2026-11-09 — Cuts across a rolled skin of many bends no longer leave slivers
 
 - **Sheet metal:** since the change below, a cut across a skin rolled as a run of bends with no flat between them (an

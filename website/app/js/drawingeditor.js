@@ -50,6 +50,9 @@ const unit2 = (a) => { const l = len2(a) || 1; return [a[0] / l, a[1] / l]; };
 const VIEW_ICONS = { model: 'modelView', projected: 'projView', section: 'sectionView', detail: 'detailView', flat: 'smFlatten', aux: 'auxView' };
 // annotation tools placed like a note: an optional leader (click an edge first), then the symbol
 const SYMBOL_TOOLS = ['datum', 'fcf', 'sfin', 'weld'];
+// the Sketch tab's tools: the shape each draws and the clicks it takes
+const SKETCH_TOOLS = { skLine: { shape: 'line', clicks: 2 }, skRect: { shape: 'rect', clicks: 2 }, skCircle: { shape: 'circle', clicks: 2 }, skArc: { shape: 'arc', clicks: 3 } };
+const SKETCH_LTYPE_NAMES = [['continuous', 'Continuous'], ['hidden', 'Hidden (dashed)'], ['center', 'Center'], ['phantom', 'Phantom']];
 
 export class DrawingEditor {
   constructor(app, doc, filePath = null) {
@@ -296,15 +299,19 @@ export class DrawingEditor {
     }
     return null;
   }
-  // The model a view shows: its part or assembly — an assembly exploded as the view asks (each component moved
-  // by the steps of that exploded view).
+  // The model a view shows: its part or assembly — exploded as the view asks: an assembly's components moved by
+  // the steps of that exploded view, a multi-body part's bodies by a Move Body each at the end of its tree.
   viewModel(v) {
     const m = this.doc.models.find((x) => x.id === v.model);
-    const exId = m?.doc?.kind === 'assembly' ? this.explodeOf(v) : null;
-    const ex = exId && (m.doc.explodes || []).find((x) => x.id === exId);
+    const exId = this.explodeOf(v);
+    const ex = exId && (m?.doc?.explodes || []).find((x) => x.id === exId);
     const shown = m?.doc?.kind === 'assembly' ? withoutEnvelope(m.doc) : m?.doc;
     if (!ex) return shown === m?.doc ? m : { ...m, doc: shown };
     const offs = explodeOffsets(ex);
+    if (shown.kind !== 'assembly') {
+      const moves = [...offs].map(([id, o], i) => ({ id: `xpl${i + 1}`, type: 'moveBody', name: `Exploded: ${id}`, suppressed: false, bodies: [id], copy: false, copies: 1, mode: 'translate', dx: o[0], dy: o[1], dz: o[2], rotAxis: 'none', angle: 0, rotCenter: 'origin', mates: [] }));
+      return { ...m, doc: { ...shown, exploded: null, rollbackAt: null, features: [...shown.features, ...moves] } };
+    }
     return { ...m, doc: { ...shown, exploded: null, components: shown.components.map((c) => { const o = offs.get(c.id); return o ? { ...c, pos: c.pos.map((x, i) => x + o[i]) } : c; }) } };
   }
 
@@ -688,6 +695,74 @@ export class DrawingEditor {
     return best;
   }
 
+  // ------------------------------------------------------------ sketching on the sheet
+  // Where a sketch click lands: a view's point or a sketch's end / corner / centre near the cursor; else, from the
+  // last point, square when the line is within 3° of horizontal or vertical (not with Alt). { P, snap, view }
+  sketchSnap(P, e) {
+    const tol = Math.max(0.8, 6 / this.cam.k), t = this.tool;
+    let best = null, bd = tol;
+    for (const a of this.doc.anns) {
+      if (a.type !== 'sketch' || a.sheet !== this.sheetId) continue;
+      for (const q of D.sketchPoints(this.doc, a)) { const d = len2(sub2(q, P)); if (d < bd) { bd = d; best = { P: q, snap: true, view: a.view || null }; } }
+    }
+    const ent = this.entityAt(P, ['point']);
+    if (ent && len2(sub2(ent.P, P)) < bd) best = { P: ent.P, snap: true, view: ent.view };
+    if (best) return { ...best, P: [...best.P] };
+    const last = t?.pts?.[t.pts.length - 1];
+    if (last && !e?.altKey && t.kind !== 'skCircle') {
+      const d = sub2(P, last), k = Math.tan((3 * Math.PI) / 180);
+      if (Math.abs(d[1]) <= k * Math.abs(d[0])) return { P: [P[0], last[1]], snap: false, view: null };
+      if (Math.abs(d[0]) <= k * Math.abs(d[1])) return { P: [last[0], P[1]], snap: false, view: null };
+    }
+    return { P: [...P], snap: false, view: null };
+  }
+  // The sketch annotation the tool's points make (null until there are enough, or when they make nothing).
+  sketchFrom(pts, preview = false) {
+    const t = this.tool, spec = SKETCH_TOOLS[t?.kind];
+    if (!spec || pts.length < 2) return null;
+    const base = { type: 'sketch', shape: spec.shape, sheet: this.sheetId, ltype: this.skStyle.ltype, weight: this.skStyle.weight };
+    const [p, q] = pts;
+    if (spec.shape === 'line' || spec.shape === 'rect') {
+      if (len2(sub2(q, p)) < 1e-6 || (spec.shape === 'rect' && (Math.abs(q[0] - p[0]) < 1e-6 || Math.abs(q[1] - p[1]) < 1e-6))) return null;
+      return { ...base, pos: [...p], pts: [[0, 0], sub2(q, p)] };
+    }
+    if (spec.shape === 'circle') { const r = len2(sub2(q, p)); return r > 1e-6 ? { ...base, pos: [...p], r } : null; }
+    // arc: start, end, a point on it (while the third is being picked: a straight preview)
+    if (pts.length < 3) return preview ? { ...base, shape: 'line', pos: [...p], pts: [[0, 0], sub2(q, p)] } : null;
+    const m = pts[2];
+    const ax = p[0], ay = -p[1], bx = q[0], by = -q[1], cx = m[0], cy = -m[1];
+    const det = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    if (Math.abs(det) < 1e-9) return null;
+    const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / det;
+    const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / det;
+    const ang = (x, y) => Math.atan2(y - uy, x - ux), two = 2 * Math.PI, ccw = (f, g) => (((g - f) % two) + two) % two;
+    let a0 = ang(ax, ay), a1 = ang(bx, by);
+    // (anticlockwise from a0 to a1 if that passes the third point, else the other way round)
+    if (ccw(a0, ang(cx, cy)) > ccw(a0, a1)) [a0, a1] = [a1, a0];
+    return { ...base, pos: [ux, -uy], r: Math.hypot(ax - ux, ay - uy), a0, a1 };
+  }
+  sketchClick(at) {
+    const t = this.tool, spec = SKETCH_TOOLS[t.kind];
+    if (!t.pts.length) t.view = at.view || null;
+    t.pts.push(at.P);
+    if (t.pts.length >= spec.clicks) {
+      const a = this.sketchFrom(t.pts);
+      if (a) {
+        a.id = D.newId(this.doc, 'a');
+        const P0 = a.pos;
+        if (t.view && D.findView(this.doc, t.view)) { a.view = t.view; D.setAnnPos(this.doc, a, P0); }
+        this.doc.anns.push(a);
+        this.changed();
+      }
+      // (lines go on from the end; the others start again)
+      const end = t.pts[t.pts.length - (spec.shape === 'arc' ? 2 : 1)];
+      t.pts = spec.shape === 'line' ? [end] : [];
+      if (spec.shape !== 'line') t.view = null;
+    }
+    this.toolHint();
+    this.render();
+  }
+
   // ------------------------------------------------------------ pointer
   onDown(e) {
     const P = this.toSheet(e);
@@ -836,7 +911,12 @@ export class DrawingEditor {
       return false;
     }
     if (typing || document.querySelector('.modal-back')) return false;
-    if (e.key === 'Escape') { if (this.tool) this.cancelTool(); else { this.selected.clear(); this.renderLeft(); this.render(); } return true; }
+    if (e.key === 'Escape') {
+      // (a sketch line chain ends first; Esc again closes the tool)
+      if (SKETCH_TOOLS[this.tool?.kind] && this.tool.pts.length) { this.tool.pts = []; this.toolHint(); this.render(); return true; }
+      if (this.tool) this.cancelTool(); else { this.selected.clear(); this.renderLeft(); this.render(); }
+      return true;
+    }
     if (e.key === 'Delete') { this.deleteSelection(); return true; }
     if (k === 'f') { this.fit(); return true; }
     if (e.key === 'Enter' && this.tool?.kind === 'viewprops') { this.cancelTool(); return true; }
@@ -879,6 +959,7 @@ export class DrawingEditor {
     if (kind === 'section') t.horizontal ??= true;
     if (kind === 'dim') t.picks = [];
     if (kind === 'cline') t.picks = [];
+    if (SKETCH_TOOLS[kind]) t.pts = [];
     if (kind === 'baseline' || kind === 'chamferDim') t.picks = [];
     if (kind === 'ordinate') t.axis ||= 'x';
     if (kind === 'break') t.axis ||= 'x';
@@ -903,6 +984,10 @@ export class DrawingEditor {
       detail: !t?.parent ? 'Click the view to take the detail from.' : !t?.c ? 'Click the centre of the detail circle.' : !t?.r ? 'Click to set the circle size.' : 'Click to place the detail view.',
       dim: 'Click edges, circles or points; then click where the dimension goes. Esc to finish.',
       note: 'Click where the note goes (click an edge first for a leader).',
+      skLine: !t?.pts?.length ? 'Click the start of the line (it snaps to the views’ points and other sketch lines’ ends).' : 'Click the end: lines go on from there; Esc ends the chain. Near horizontal or vertical locks square (hold Alt to draw freely).',
+      skRect: !t?.pts?.length ? 'Click the first corner.' : 'Click the opposite corner.',
+      skCircle: !t?.pts?.length ? 'Click the centre.' : 'Click a point on the circle.',
+      skArc: !t?.pts?.length ? 'Click the start of the arc.' : t.pts.length === 1 ? 'Click the end of the arc.' : 'Click a point the arc passes through.',
       cmark: 'Click circles or arcs to add center marks. Esc to finish.',
       cline: 'Click two lines (or two points) to add a centerline between them. Esc to finish.',
       callout: 'Click a hole (its circle) in a view, then where the callout goes.',
@@ -1043,6 +1128,11 @@ export class DrawingEditor {
         }
       }
     }
+    if (SKETCH_TOOLS[t.kind] && t.cur) {
+      const a = this.sketchFrom([...t.pts, t.cur.P], true);
+      if (a) out.push(...D.sketchPrims(this.doc, a).map((q) => ({ ...q, color: '#1f6fd6' })));
+      if (t.cur.snap) { const [x, y] = t.cur.P, h = 1.2; out.push({ t: 'poly', pts: [[x - h, y - h], [x + h, y - h], [x + h, y + h], [x - h, y + h]], closed: true, w: 0.25, color: '#e8892c' }); }
+    }
     if ((['dim', 'cmark', 'cline', 'note', 'callout', 'baseline', 'ordinate', 'chamferDim', 'aux'].includes(t.kind) || SYMBOL_TOOLS.includes(t.kind)) && t.hoverEnt) out.push(...entPrims(t.hoverEnt, '#e8892c'));
     if (['dim', 'cline', 'baseline', 'chamferDim'].includes(t.kind)) for (const pk of [...(t.picks || []), ...(t.base ? [t.base] : [])]) out.push(...entPrims(pk, '#1f6fd6'));
     if (t.kind === 'baseline' && t.base && t.picks?.length && P && !t.hoverEnt) {
@@ -1100,6 +1190,7 @@ export class DrawingEditor {
       this.render();
       return;
     }
+    if (SKETCH_TOOLS[t.kind]) { t.cur = this.sketchSnap(P, e); this.render(); return; }
     if (t.kind === 'dim') { t.hoverEnt = this.entityAt(P); this.render(); return; }
     if (t.kind === 'cmark') { t.hoverEnt = this.entityAt(P, ['circle']); this.render(); return; }
     if (t.kind === 'cline') { t.hoverEnt = this.entityAt(P, ['line', 'point']); this.render(); return; }
@@ -1173,6 +1264,7 @@ export class DrawingEditor {
 
   async toolClick(P, e) {
     const t = this.tool;
+    if (SKETCH_TOOLS[t.kind]) { this.sketchClick(this.sketchSnap(P, e)); return; }
     if (t.kind === 'model') {
       if (!t.geom) { this.app.toast('Pick a part first (the view is still being made)', true); return; }
       const mid = this.ensureModel(t);
@@ -2079,6 +2171,18 @@ export class DrawingEditor {
       this.changed();
       return;
     }
+    if (a.type === 'sketch') {
+      const box = el('div', { class: 'dw-form' });
+      box.innerHTML = `<div class="kv"><div class="k">Line type</div><div><select class="sk-lt">${SKETCH_LTYPE_NAMES.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></div>
+        <div class="k">Weight</div><div><select class="sk-w"><option value="thin">Thin</option><option value="thick">Thick</option></select></div></div>`;
+      const q = (c) => box.querySelector(c);
+      q('.sk-lt').value = a.ltype || 'continuous'; q('.sk-w').value = a.weight || 'thin';
+      this.app.ui.modal('Sketch Line', 'line', box, [
+        { label: 'OK', primary: true, action: () => { a.ltype = q('.sk-lt').value; a.weight = q('.sk-w').value; this.changed(); } },
+        { label: 'Cancel' },
+      ]);
+      return;
+    }
     if (a.type !== 'dim') return;
     const box = el('div', { class: 'dw-form' });
     box.innerHTML = `<div class="pm-hint">Value: <b>${esc(a.kind === 'angle' ? D.fmtNum(D.dimValue(this.doc, a), this.doc) : D.fmtLen(D.dimValue(this.doc, a), this.doc))}</b>${a.kind === 'angle' ? '°' : ' ' + D.unitName(this.doc)}</div>
@@ -2086,7 +2190,7 @@ export class DrawingEditor {
       <div class="k">Suffix</div><div><input type="text" class="d-suf"></div>
       <div class="k">Tolerance</div><div><input type="text" class="d-tol" placeholder="e.g. ±0.1  or  H7"></div>
       <div class="k">Override text</div><div><input type="text" class="d-ovr" placeholder="(empty: the measured value)"></div>
-      ${a.kind === 'diameter' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (one arrow, not across the circle)</label></div>' : ''}</div>`;
+      ${a.kind === 'diameter' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (one arrow, not across the circle)</label></div>' : a.kind === 'radius' ? '<div class="k"></div><div><label><input type="checkbox" class="d-lead"> Leader only (onto the arc, not from the centre)</label></div>' : ''}</div>`;
     const q = (c) => box.querySelector(c);
     q('.d-pre').value = a.prefix || ''; q('.d-suf').value = a.suffix || ''; q('.d-tol').value = a.tol || ''; q('.d-ovr').value = a.override || '';
     if (q('.d-lead')) q('.d-lead').checked = !!a.leaderOnly;
@@ -2522,6 +2626,7 @@ export class DrawingEditor {
     const t = this.tool;
     if (!t) { root.appendChild(el('div', { class: 'pm-msg' }, 'Pick a drawing command (View Layout or Annotation tab) or double-click a view to edit it.')); return; }
     const titles = { model: t.orient === 'flat' ? ['smFlatten', 'Flat Pattern'] : ['modelView', 'Model View'], std3: ['std3View', 'Standard Views'], projected: ['projView', 'Projected View'], section: ['sectionView', 'Section View'], detail: ['detailView', 'Detail View'], dim: ['smartdim', 'Dimension'], note: ['note', 'Note'], cmark: ['centerMark', 'Center Mark'], cline: ['centerline', 'Centerline'], viewprops: ['modelView', 'Drawing View'],
+      skLine: ['line', 'Sketch Line'], skRect: ['rect', 'Sketch Rectangle'], skCircle: ['circle', 'Sketch Circle'], skArc: ['arc3', 'Sketch Arc'],
       callout: ['holeCallout', 'Hole Callout'], balloon: ['balloon', 'Balloon'], baseline: ['baselineDim', 'Baseline Dimension'], ordinate: ['ordinateDim', 'Ordinate Dimension'], chamferDim: ['chamferDim', 'Chamfer Dimension'], datum: ['datum', 'Datum Feature'], fcf: ['gdt', 'Geometric Tolerance'], sfin: ['surfFinish', 'Surface Finish'], weld: ['weld', 'Weld Symbol'], aux: ['auxView', 'Auxiliary View'], break: ['breakView', 'Break Lines'], crop: ['cropView', 'Crop View'] };
     const [ic, title] = titles[t.kind] || ['modelView', t.kind];
     root.appendChild(el('div', { class: 'pm-head' }, `<span class="ti">${icon(ic)}</span><span>${esc(title)}</span>`));
@@ -2550,6 +2655,13 @@ export class DrawingEditor {
       const w = el('div', { class: 'pm-input' }); w.appendChild(s);
       return w;
     };
+    if (SKETCH_TOOLS[t.kind]) {
+      const g = group('Line');
+      row(g, 'Type', select(SKETCH_LTYPE_NAMES, this.skStyle.ltype, (v) => this.setSketchStyle({ ltype: v })));
+      row(g, 'Weight', select([['thin', 'Thin'], ['thick', 'Thick']], this.skStyle.weight, (v) => this.setSketchStyle({ weight: v })));
+      g.appendChild(el('div', { class: 'pm-hint' }, 'Snaps to the views’ points and to other sketch lines’ ends, corners and centres. Near horizontal or vertical locks square; hold Alt to draw freely. A sketch started on a view’s point moves with that view.'));
+      return;
+    }
     if (t.kind === 'model' || t.kind === 'std3') {
       const g = group('Part or Assembly');
       const choices = this.partChoices();
@@ -2681,7 +2793,8 @@ export class DrawingEditor {
           if (md.positions?.length) row(d, 'Alternate position', select([['', 'None'], ...md.positions.map((x) => [x.id, x.name])], v.altPos || '', (s) => { if (s) v.altPos = s; else delete v.altPos; this.changed(); this.updateGeometry(); }));
           else d.appendChild(el('div', { class: 'pm-hint' }, 'Positions kept in the assembly (Assembly ▸ Positions) can be shown here as alternate positions, in phantom lines.'));
         }
-        if (md?.kind === 'assembly' && md.explodes?.length && (v.type === 'model' || v.explode)) {
+        // (and a multi-body part with exploded views of its bodies)
+        if (md && md.explodes?.length && (v.type === 'model' || v.explode)) {
           row(d, 'Exploded', select([['', 'Not exploded'], ...md.explodes.map((x) => [x.id, x.name])], v.explode || '', (s) => { (this.pendingCentre ||= new Map()).set(v.id, this.viewCentre(v)); if (s) v.explode = s; else delete v.explode; this.changed(); this.updateGeometry(); }));
         } else if (md?.kind === 'assembly' && v.type === 'model') d.appendChild(el('div', { class: 'pm-hint' }, 'Exploded views made in the assembly (Exploded View) can be shown here.'));
         // (an assembly: how its hidden lines are worked out — exactly, or quickly from the display meshes)
@@ -2783,6 +2896,17 @@ export class DrawingEditor {
         { icon: 'balloon', label: 'Balloon', action: () => this.startTool('balloon'), active: this.tool?.kind === 'balloon' },
         { icon: 'bom', label: 'BOM Table', action: () => this.addBOM() },
       ],
+      // 2D sketching on the sheet: reference lines, outlines, circles and arcs in a line type and weight
+      sketch: [
+        { icon: 'line', label: 'Line', action: () => this.startTool('skLine'), active: this.tool?.kind === 'skLine' },
+        { icon: 'rect', label: 'Rectangle', action: () => this.startTool('skRect'), active: this.tool?.kind === 'skRect' },
+        { icon: 'circle', label: 'Circle', action: () => this.startTool('skCircle'), active: this.tool?.kind === 'skCircle' },
+        { icon: 'arc3', label: '3 Point Arc', action: () => this.startTool('skArc'), active: this.tool?.kind === 'skArc' },
+        'sep',
+        ...[['continuous', 'lineSolid', 'Continuous'], ['hidden', 'lineHidden', 'Hidden'], ['center', 'centerline', 'Center'], ['phantom', 'linePhantom', 'Phantom']].map(([k, ic, l]) => ({ icon: ic, label: l, action: () => this.setSketchStyle({ ltype: k }), active: this.skStyle.ltype === k })),
+        'sep',
+        ...[['thin', 'lineThin', 'Thin'], ['thick', 'lineThick', 'Thick']].map(([k, ic, l]) => ({ icon: ic, label: l, action: () => this.setSketchStyle({ weight: k }), active: this.skStyle.weight === k })),
+      ],
       sheet: [
         { icon: 'sheetProps', label: 'Sheet Properties', action: () => this.sheetPropsDialog() },
         { icon: 'titleBlock', label: 'Title Block', action: () => this.propsDialog() },
@@ -2795,6 +2919,15 @@ export class DrawingEditor {
     };
   }
   cmTab = 'layout';
+  skStyle = { ltype: 'continuous', weight: 'thin' };
+  // The line type / weight for new sketch lines, and the selected sketch lines changed to it.
+  setSketchStyle(st) {
+    Object.assign(this.skStyle, st);
+    const sel = this.doc.anns.filter((a) => a.type === 'sketch' && this.selected.has(a.id));
+    for (const a of sel) Object.assign(a, st);
+    if (sel.length) this.changed();
+    this.renderCommandManager(); this.renderLeft(); this.render();
+  }
   renderCommandManager() {
     if (this.app.drawing !== this) return;
     // (the plug-ins' tabs for drawings after its own)
@@ -2810,7 +2943,7 @@ export class DrawingEditor {
     }
     const tabs = $('#cm-tabs');
     tabs.innerHTML = '';
-    for (const [id, label, title] of [['layout', tr('View Layout')], ['annotation', tr('Annotation')], ['sheet', tr('Sheet')], ...(this.app.plugins?.tabs('drawing') || []).map((p) => [p.id, p.label, p.title])]) {
+    for (const [id, label, title] of [['layout', tr('View Layout')], ['annotation', tr('Annotation')], ['sketch', tr('Sketch')], ['sheet', tr('Sheet')], ...(this.app.plugins?.tabs('drawing') || []).map((p) => [p.id, p.label, p.title])]) {
       const t = el('button', { class: (this.cmTab === id ? 'active' : '') + (id.startsWith('plugin:') ? ' cm-tab-plugin' : ''), title: title || '' }, esc(label));
       t.dataset.tab = id;
       t.onclick = () => { this.cmTab = id; this.renderCommandManager(); };
@@ -2862,6 +2995,10 @@ export class DrawingEditor {
         { label: 'Annotations ▸ Note', icon: 'note', action: () => this.startTool('note') },
         { label: 'Annotations ▸ Center Mark', icon: 'centerMark', action: () => this.startTool('cmark') },
         { label: 'Annotations ▸ Centerline', icon: 'centerline', action: () => this.startTool('cline') },
+        { label: 'Sketch ▸ Line', icon: 'line', action: () => this.startTool('skLine') },
+        { label: 'Sketch ▸ Rectangle', icon: 'rect', action: () => this.startTool('skRect') },
+        { label: 'Sketch ▸ Circle', icon: 'circle', action: () => this.startTool('skCircle') },
+        { label: 'Sketch ▸ 3 Point Arc', icon: 'arc3', action: () => this.startTool('skArc') },
         'sep',
         { label: 'DXF Drawing…', icon: 'dxf', action: () => this.insertDXF() },
         { label: 'Sheet', icon: 'addSheet', action: () => this.addSheet() },

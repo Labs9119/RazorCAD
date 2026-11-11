@@ -2106,6 +2106,14 @@ The motion is worked out step by step and the mates carry the other components a
 
 **Interference Check** (Assembly tab, or **Tools ▸ Interference Check…**) finds where components overlap. Each overlap shows in red and is listed with its two components (inside sub-assemblies as "Sub-assembly ▸ Part") and its volume. Faces that only touch, such as mated faces, are not counted, and nor are the bodies of one multi-body part against each other. An exploded assembly is collapsed first, so the check is of where the mates put the parts. {idx:Interference Check, assembly}
 
+## Measure in an assembly
+
+**Measure** (Assembly tab, or **Tools ▸ Measure…**) works as it does in a part, on the components where they are assembled {idx:measure, assembly}. Click up to two items: vertices, edges, faces of any component (inside sub-assemblies too) or the origin planes. One item gives its size: an edge's length (and a circle's diameter), a face's area (and a round face's diameter), a vertex's position. Two give the shortest distance between them, with dX, dY and dZ, the angle between flat faces or straight edges, and the centre-to-centre distance of two round faces.
+
+- Turn on **Filter Solid Bodies** above the view to pick whole components: one gives its volume and surface area, two the clearance between them.
+- The sizes come from the parts' own geometry, not the display meshes, so they are exact. A component measured for the first time is built first, which can take a moment on a big part.
+- **Keep the first item** and the list of distances measured work as in a part. An exploded assembly is collapsed first. Esc or ✗ ends it.
+
 ## Bill of Materials
 
 **Bill of Materials** lists the parts with their quantities and materials: one row per part and configuration used, with suppressed components left out. It is indented: a sub-assembly's parts are listed under it (1.1, 1.2…), with the quantities in one of it. **Copy as CSV** or **Save CSV…** takes it to a spreadsheet. {idx:Bill of Materials}
@@ -2314,7 +2322,7 @@ DWG import and export: DWG is a closed format with no free reader or writer that
 
 ## Measure
 
-**Evaluate ▸ Measure**, **Tools ▸ Measure…** or the view's right-click menu. Click vertices, edges, faces, planes or sketch lines; with two items picked it shows the distance between them plus dX, dY and dZ. Use the body filter ([[B]]) to pick whole bodies. Sizes are in the document's units. {idx:measure}
+**Evaluate ▸ Measure**, **Tools ▸ Measure…** or the view's right-click menu. Click vertices, edges, faces, planes or sketch lines; with two items picked it shows the distance between them plus dX, dY and dZ. Use the body filter ([[B]]) to pick whole bodies. Sizes are in the document's units. {idx:measure} Assemblies have their own: see Measure in an assembly in the Assemblies chapter.
 
 - **Snap To**: besides vertices, a click picks **sketch points**, the **midpoints of edges** and the **centres of circles and arcs** (a hole's centre too); each can be turned off. As you move, the point a click would pick is marked on the model with its name.
 - The items picked are numbered **1** and **2** on the model.

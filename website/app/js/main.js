@@ -1678,7 +1678,7 @@ class App {
     if (data.flip) fr.n = fr.n.clone().negate();
     this.viewport.showFlat({ mesh: data.mesh, lines: this.flatLines(data), frame: fr });
     const [w, h] = data.size.map((x) => +x.toFixed(2));
-    this.showBanner(`Flat pattern of ${this.sheetPartName(b)}: ${w} × ${h} mm, ${data.bends.length} bend${data.bends.length === 1 ? '' : 's'}, seen from the ${data.flip ? 'bottom' : 'top'} face${data.stale ? ` (not including ${data.stale})` : ''}`,
+    this.showBanner(`Flat pattern of ${this.sheetPartName(b)}: ${w} × ${h} mm, ${(data.bendCount ?? data.bends.length)} bend${(data.bendCount ?? data.bends.length) === 1 ? '' : 's'}, seen from the ${data.flip ? 'bottom' : 'top'} face${data.stale ? ` (not including ${data.stale})` : ''}`,
       [{ label: 'Export DXF…', action: () => this.exportSheetDXF(b.id) }, { label: 'Exit Flatten', action: () => this.exitFlatten() }]);
     this.status('Flat pattern. Red bend lines bend up, blue ones down (seen from this side). Export DXF… saves it; Esc or Flatten again goes back.');
     this.ui.refreshCommandStates();
@@ -1752,7 +1752,7 @@ class App {
     const [w, h] = data.size.map((x) => +x.toFixed(2));
     return {
       h: Math.min(Math.max(Math.max(w, h) * 0.02, 2), 6),
-      lines: [`PART: ${this.sheetPartName(b)}`, `MATERIAL: ${b.material?.name || 'NOT SPECIFIED'}`, `THICKNESS: ${+data.t.toFixed(3)} MM`, `QTY: ${qty}`, `FLAT SIZE: ${w} X ${h} MM`, `BENDS: ${data.bends.length}`,
+      lines: [`PART: ${this.sheetPartName(b)}`, `MATERIAL: ${b.material?.name || 'NOT SPECIFIED'}`, `THICKNESS: ${+data.t.toFixed(3)} MM`, `QTY: ${qty}`, `FLAT SIZE: ${w} X ${h} MM`, `BENDS: ${(data.bendCount ?? data.bends.length)}`,
         ...(data.cut ? [`CUT LENGTH: ${+data.cut.length.toFixed(1)} MM`, `PIERCES: ${data.cut.loops}`] : [])],
     };
   }
@@ -2297,6 +2297,7 @@ class App {
   async runMeasure() {
     const pm = this.pm;
     if (pm?.kind !== 'measure') return;
+    if (pm.asm) return this.drawing?.runMeasure?.();
     pm.result = null; pm.error = null;
     this.viewport.setMeasure(null);
     this.updateEdgeHighlights();
@@ -5559,6 +5560,7 @@ class App {
     if (pm.kind === 'appearance') return this.finishAppearance(false);
     if (pm.kind === 'lights') return this.finishLights(false);
     if (pm.kind === 'section') { this.clearSection(); this.status('Ready'); return; } // (the cut taken away; nothing built again)
+    if (pm.kind === 'measure' && pm.asm) { if (this.drawing?.endMeasure) this.drawing.endMeasure(); else this.pm = null; return; }
     clearTimeout(this._previewTimer);
     this.pm = null;
     this.viewport.setFaceSet([]);

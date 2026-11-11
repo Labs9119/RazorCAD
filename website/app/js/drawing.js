@@ -243,7 +243,20 @@ export function viewRect(dwg, v, geos) {
   }
   if (!g || !g.box || !isFinite(g.box.min[0])) return { x0: v.x - 10, y0: v.y - 10, x1: v.x + 10, y1: v.y + 10 };
   const bx = v.crop ? { min: [Math.max(g.box.min[0], v.crop.x0), Math.max(g.box.min[1], v.crop.y0)], max: [Math.min(g.box.max[0], v.crop.x1), Math.min(g.box.max[1], v.crop.y1)] } : g.box;
-  const pts = [bx.min, [bx.max[0], bx.min[1]], bx.max, [bx.min[0], bx.max[1]]].map(X.toSheet);
+  let pts = [bx.min, [bx.max[0], bx.min[1]], bx.max, [bx.min[0], bx.max[1]]].map(X.toSheet);
+  // (turned off the square: the drawn lines' own extent, not the turned box's corners, which reach well past them)
+  if (!v.crop && (v.rot || 0) % 90 && g.edges?.length) {
+    const q = [];
+    for (const { g: e } of g.edges) {
+      if (e.t === 'l') q.push(e.a, e.b);
+      else if (e.t === 'p') q.push(...e.pts);
+      else if (e.c) {
+        const span = e.t === 'a' ? (((e.a1 - e.a0) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) : 2 * Math.PI, t0 = e.t === 'a' ? e.a0 : 0;
+        for (let i = 0; i <= 16; i++) { const t = t0 + (span * i) / 16; q.push([e.c[0] + e.r * Math.cos(t), e.c[1] + e.r * Math.sin(t)]); }
+      }
+    }
+    if (q.length) pts = q.map(X.toSheet);
+  }
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
   return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
 }
@@ -597,10 +610,15 @@ export function arrowHead(tip, d, dwg) {
 // Points of annotations that belong to a view are stored in that view's coordinates, so they move
 // with the view; `pos` (where the text is) is stored relative to the view's origin on the sheet.
 //   dim linear: { kind: 'linear', view, p1, p2, orient: 'h' | 'v' | 'a', pos }
-//   dim diameter / radius: { kind, view, c, r, pos, leaderOnly? (a diameter: one arrow, not across the circle) }
+//   dim diameter / radius: { kind, view, c, r, pos, leaderOnly? (a diameter: one arrow, not across the circle; a
+//     radius: a leader onto the arc, not a line from the centre) }
 //   dim angle: { kind: 'angle', view, l1, l2, pos }
 //   note: { type: 'note', text, pos, view?, leader?: point (view coordinates) }
 //   center mark: { type: 'cmark', view, c, r }           centerline: { type: 'cline', view, a, b }
+//   sketch: { type: 'sketch', shape: 'line' | 'rect' | 'circle' | 'arc', pos (the anchor: a line's or rectangle's
+//     first point, a circle's or arc's centre), pts (line / rect: the two points, sheet mm from the anchor), r (circle,
+//     arc), a0, a1 (arc: from a0 anticlockwise to a1, radians, y up), ltype: 'continuous' | 'hidden' | 'center' |
+//     'phantom', weight: 'thin' | 'thick', view? (drawn from a point of the view: moves with it) }
 export function annPos(dwg, a) {
   const v = a.view ? findView(dwg, a.view) : null;
   return v ? [v.x + a.pos[0], v.y + a.pos[1]] : a.pos;
@@ -630,6 +648,36 @@ export function dimText(dwg, a) {
   const n = a.kind === 'angle' ? `${fmtNum(v, { settings: { ...dwg.settings, decimals: Math.min(dwg.settings?.decimals ?? 2, 1) } })}°` : fmtLen(v, dwg);
   const pre = a.kind === 'diameter' ? 'Ø' : a.kind === 'radius' ? 'R' : '';
   return `${a.prefix || ''}${pre}${n}${a.suffix || ''}${a.tol ? ` ${a.tol}` : ''}`;
+}
+
+// A sketch line, rectangle, circle or arc drawn on the sheet (reference lines and the like), in its line type and
+// weight; sheet millimetres from its anchor.
+export const SKETCH_LTYPES = { continuous: null, hidden: DASH_HIDDEN, center: DASH_CENTER, phantom: DASH_PHANTOM };
+export function sketchPrims(dwg, a) {
+  const P = annPos(dwg, a), w = a.weight === 'thick' ? LW.visible : LW.thin, dash = SKETCH_LTYPES[a.ltype] || null;
+  const at = (q) => [P[0] + q[0], P[1] + q[1]];
+  if (a.shape === 'line') return [{ t: 'line', a: at(a.pts[0]), b: at(a.pts[1]), w, dash }];
+  if (a.shape === 'rect') {
+    const [p, q] = a.pts;
+    return [{ t: 'poly', pts: [at(p), at([q[0], p[1]]), at(q), at([p[0], q[1]])], closed: true, w, dash }];
+  }
+  if (a.shape === 'circle') return [{ t: 'circle', c: P, r: a.r, w, dash }];
+  if (a.shape === 'arc') {
+    const span = (((a.a1 - a.a0) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI;
+    const n = Math.max(6, Math.ceil(span / (Math.PI / 48)));
+    const pts = Array.from({ length: n + 1 }, (_, i) => { const t = a.a0 + (span * i) / n; return [P[0] + a.r * Math.cos(t), P[1] - a.r * Math.sin(t)]; });
+    return [{ t: 'poly', pts, w, dash }];
+  }
+  return [];
+}
+// The points a sketch snaps to: ends, corners, centres and arc ends (sheet mm).
+export function sketchPoints(dwg, a) {
+  const P = annPos(dwg, a), at = (q) => [P[0] + q[0], P[1] + q[1]];
+  if (a.shape === 'line') return [at(a.pts[0]), at(a.pts[1]), at([(a.pts[0][0] + a.pts[1][0]) / 2, (a.pts[0][1] + a.pts[1][1]) / 2])];
+  if (a.shape === 'rect') { const [p, q] = a.pts; return [at(p), at([q[0], p[1]]), at(q), at([p[0], q[1]])]; }
+  if (a.shape === 'circle') return [P];
+  if (a.shape === 'arc') return [P, ...[a.a0, a.a1].map((t) => [P[0] + a.r * Math.cos(t), P[1] - a.r * Math.sin(t)])];
+  return [];
 }
 
 export function annPrims(dwg, a, ctx) {
@@ -662,6 +710,7 @@ export function annPrims(dwg, a, ctx) {
     out.push({ t: 'line', a: sub2(p, mul2(d, 2.5)), b: add2(q, mul2(d, 2.5)), w: LW.thin, dash: DASH_CENTER });
     return out;
   }
+  if (a.type === 'sketch') return sketchPrims(dwg, a);
   if (a.type === 'balloon') {
     // a circled item number with a leader to a dot on the part
     const P = annPos(dwg, a), h = a.h || th, R = h * 1.25, text = String(a.item ?? '?');
@@ -757,7 +806,9 @@ export function annPrims(dwg, a, ctx) {
         out.push(arrowHead(near, u, dwg), arrowHead(far, mul2(u, -1), dwg));
       }
     } else {
-      out.push({ t: 'line', a: c, b: outside ? P : near, w: LW.thin });
+      // (leader only: from the text onto the arc, in line with the centre, not from the centre: for a big radius whose
+      // centre lies far off the view)
+      out.push({ t: 'line', a: a.leaderOnly ? (outside ? near : P) : c, b: outside ? P : near, w: LW.thin });
       if (outside) out.push({ t: 'line', a: P, b: end, w: LW.thin });
       out.push(arrowHead(near, outside ? mul2(u, -1) : u, dwg));
     }

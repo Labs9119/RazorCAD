@@ -4708,6 +4708,61 @@ const UI = {
     return ok ? { ok: true, detail: `1 interference, ${r6(r.pairs[0].volume)} mm³ (${c1.name} / ${c2.name}); touching cube not counted` } : { ok: false, detail: `${JSON.stringify(r.pairs)} | ${html.replace(/<[^>]+>/g, ' ').slice(0, 200)}` };
   },
 
+  // Measure in an assembly: faces, vertices, an edge and a whole component of placed (and turned) cubes, from the
+  // parts' own geometry; the ribbon button, the panel, Esc
+  async 'assembly-measure'() {
+    const a = window.app;
+    const p = M.newDoc(); p.name = 'Cube';
+    const s = M.createFeature(p, 'sketch', { plane: { ref: 'top' } });
+    const pts = [[-10, -10], [10, -10], [10, 10], [-10, 10]];
+    Object.assign(s, { points: pts.map(([x, y], i) => ({ id: 'p' + (i + 1), x, y })), curves: pts.map((_, i) => ({ id: 'c' + (i + 1), type: 'line', p1: 'p' + (i + 1), p2: 'p' + ((i + 1) % 4 + 1), construction: false })), constraints: [] });
+    p.features.push(s, M.createFeature(p, 'extrude', { sketch: s.id, depth: 20 }));
+    a.newAssembly();
+    await wait(400);
+    closeModals();
+    const asm = a.drawing, bad = [];
+    const pid = asm.addPart(p, null, null);
+    await asm.addComponent(pid); await asm.addComponent(pid); await asm.addComponent(pid);
+    const [c1, c2, c3] = asm.doc.components;
+    // (the cube: x and z −10…10, y 0…20; c2 50 along x, c3 50 along x and turned 45° about y)
+    c1.pos = [0, 0, 0]; c2.pos = [50, 0, 0]; c3.pos = [0, 0, 60];
+    const h = Math.sin(Math.PI / 8); c3.rot = [0, h, 0, Math.cos(Math.PI / 8)];
+    asm.updateGeometry?.();
+    const btn = asm.commandDefs().assembly.find((d) => d.label === 'Measure');
+    if (!btn) bad.push('no Measure on the Assembly tab');
+    btn?.action(); await wait(50);
+    if (!asm.measuring()) bad.push('Measure did not start');
+    if (!/Measure/.test(document.querySelector('#pm')?.textContent || '')) bad.push('no Measure panel');
+    const pm = a.pm;
+    const run = async (...picks) => { pm.picks = picks.map((x) => ({ label: x.kind, ...x })); await asm.runMeasure(); if (pm.error) bad.push(pm.error); return pm.result || {}; };
+    const near = (x, y, tol = 1e-6) => Number.isFinite(x) && Math.abs(x - y) < tol;
+    // two facing flat faces: 30 apart, parallel
+    let r = await run({ kind: 'face', p: [10, 10, 0], comp: c1.id }, { kind: 'face', p: [40, 10, 0], comp: c2.id });
+    if (!near(r.distance, 30) || !near(r.angle, 0)) bad.push(`faces: ${r.distance} at ${r.angle}°`);
+    const d1 = r.distance;
+    // two corners
+    r = await run({ kind: 'vertex', p: [10, 20, 10] }, { kind: 'vertex', p: [40, 0, -10] });
+    if (!near(r.distance, Math.sqrt(1700))) bad.push(`corners: ${r.distance}`);
+    // an edge of c2 (upright, 20 long)
+    r = await run({ kind: 'edge', p: [60, 10, 10], comp: c2.id });
+    if (!near(r.items?.[0]?.length, 20)) bad.push(`edge: ${JSON.stringify(r.items)}`);
+    // a whole component: c3, turned
+    r = await run({ kind: 'body', comp: c3.id });
+    if (!near(r.items?.[0]?.volume, 8000, 1e-3) || !near(r.items?.[0]?.area, 2400, 1e-3)) bad.push(`body: ${JSON.stringify(r.items)}`);
+    // c1's front face (z = 10) to the turned c3: its nearest corner, 60 − 10√2 − 10 along z
+    r = await run({ kind: 'face', p: [0, 10, 10], comp: c1.id }, { kind: 'body', comp: c3.id });
+    const d3 = 50 - 10 * Math.SQRT2;
+    if (!near(r.distance, d3, 1e-5)) bad.push(`face to the turned cube: ${r.distance}, not ${d3}`);
+    // the origin's Right Plane to c2's far face
+    r = await run({ kind: 'plane', o: [0, 0, 0], n: [1, 0, 0] }, { kind: 'face', p: [60, 10, 0], comp: c2.id });
+    if (!near(r.distance, 60)) bad.push(`plane: ${r.distance}`);
+    if (pm.history.length < 4 || !near(pm.history.at(-1).distance, d1)) bad.push(`history: ${pm.history.length}`);
+    // Esc ends it
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(50);
+    if (a.pm || asm.measuring()) bad.push('Esc did not end Measure');
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `faces 30 apart, corners ${r6(Math.sqrt(1700))}, edge 20, a turned cube 8000 mm³ and ${r6(d3)} from a face, a plane 60 from a face; Esc ends it` };
+  },
+
   // gear and rack-pinion mates, through the assembly solver: gear A (R10) turned 30° turns gear B (R20) −15°,
   // the rack slides 2π·10 · 30/360 = 5.236 mm; then 200° more in four steps (turns past half a turn add up)
   async 'gear-rack-mates'() {

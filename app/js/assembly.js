@@ -1359,6 +1359,88 @@ export class AssemblyEditor {
     if (allows('plane') && !ch) { const ph = this.vp.pickPlane(e); if (ph && G.STD_PLANES[ph.id]) return { ...originRef(ph.id), gi: 'plane:' + ph.id }; }
     return null;
   }
+  // ---------------------------------------------------------------- Measure (the app's Measure panel, on components)
+  // Started as in a part: up to two items, from the clicked components' own geometry (the kernel builds them placed).
+  startMeasure() {
+    const a = this.app;
+    if (this.explodeTool || this.motionTool || this.holeTool) { a.toast('Close the exploded view, motion study or assembly feature first, then Measure', true); return; }
+    if (this.pm) this.cancelMate(true);
+    if (a.pm) a.cancelPM();
+    // (measured where the components are assembled, not exploded)
+    if (this.doc.exploded) this.setExploded(null, false);
+    const o = (a._measureOpts ||= { snap: { sketch: true, mids: true, centres: true }, keepFirst: false });
+    a.pm = { kind: 'measure', asm: true, picks: [], result: null, error: null, snap: o.snap, keepFirst: o.keepFirst, history: [] };
+    this.select(null);
+    this.renderAll();
+    a.status('Measure: click vertices, edges, faces or the origin planes of the components (two items: the distance between them). Turn on Filter Solid Bodies to pick whole components.');
+  }
+  measuring() { return this.app.pm?.kind === 'measure' && this.app.pm.asm; }
+  // The item under the cursor, in the assembly's coordinates, on a component (comp: its path; label: what it is, of which)
+  measureAt(e) {
+    const view = this.display;
+    if (!view || !this._leaves) return null;
+    const allows = (k) => this.app.allows(k), path = (l) => [l.comp.id, ...l.chain].join('/');
+    if (allows('vertex')) { const vx = view.pickVertex(e, 7), l = vx && this._leaves[vx.comp]; if (l) return { kind: 'vertex', p: vx.point.toArray(), label: `Vertex of ${leafName(l)}` }; }
+    if (allows('edge')) { const ed = view.pickEdge(e, 5), l = ed && this._leaves[ed.comp]; if (l) return { kind: 'edge', p: ed.point.toArray(), comp: path(l), label: `Edge of ${leafName(l)}` }; }
+    const ch = this.compAt(e);
+    if (ch && allows('body') && !allows('face')) return { kind: 'body', comp: ch.comp.id, label: ch.comp.name };
+    if (ch && allows('face')) { const l = this._leaves[ch.leaf]; return { kind: 'face', p: ch.hit.point.toArray(), comp: path(l), label: `Face of ${leafName(l)}` }; }
+    if (allows('plane') && !ch) { const ph = this.vp.pickPlane(e); if (ph && G.STD_PLANES[ph.id]) { const fr = G.stdFrame(ph.id); return { kind: 'plane', o: fr.o.toArray(), n: fr.n.toArray(), label: G.STD_PLANES[ph.id].name }; } }
+    return null;
+  }
+  async measureClick(e) {
+    const pick = this.measureAt(e), pm = this.app.pm;
+    if (!pick) return;
+    const key = (x) => x.kind + JSON.stringify(x.p || x.o || null) + (x.comp || '');
+    const i = pm.picks.findIndex((x) => key(x) === key(pick));
+    if (i >= 0) pm.picks.splice(i, 1);
+    // (a third item: in place of the first, or, keeping the first, of the second)
+    else { pm.picks.push(pick); if (pm.picks.length > 2) pm.picks.splice(pm.keepFirst ? 1 : 0, 1); }
+    await this.runMeasure();
+  }
+  measureMarks(hover) {
+    const vp = this.vp, pm = this.app.pm;
+    if (!this.measuring()) { vp.setPointMarks('measure-picks', null); vp.setPointMarks('measure-hover', null); return; }
+    if (hover !== undefined) vp.setPointMarks('measure-hover', hover?.kind === 'vertex' && !pm.picks.some((x) => x.kind === 'vertex' && String(x.p) === String(hover.p)) ? [{ p: hover.p, text: hover.label }] : null);
+    vp.setPointMarks('measure-picks', pm.picks.map((r, i) => ({ p: r.p || (r.kind === 'body' ? this.compCenter(this.comp(r.comp)) : r.o), text: String(i + 1), cls: 'pick' })).filter((x) => x.p));
+  }
+  async runMeasure() {
+    const pm = this.app.pm;
+    if (!this.measuring()) return;
+    pm.result = null; pm.error = null;
+    this.vp.setMeasure(null);
+    // (the picks shown at once: a component measured the first time is built first, which can take a moment; a
+    // result overtaken by another click is dropped)
+    const seq = (this._measureSeq = (this._measureSeq || 0) + 1);
+    this.measureMarks();
+    this.renderPM();
+    if (pm.picks.length) {
+      const refs = pm.picks.map(({ label, ...r }) => r), doc = JSON.stringify(this.doc);
+      let res = null, err = null;
+      try { res = await this.app.withProgress('Measuring…', () => (this.app.kernelPool || this.app.kernel).request('asmMeasure', { doc, refs }, 'asm-parts')); } catch (e) { err = e.message; }
+      if (this.app.pm !== pm || seq !== this._measureSeq) return;
+      pm.result = res; pm.error = err;
+      const r = pm.result;
+      if (r?.a && r.distance > 1e-9) this.vp.setMeasure({ a: r.a, b: r.b, text: `${r.distance.toFixed(3)} mm` });
+      if (r?.distance != null && pm.picks.length === 2) {
+        pm.history.unshift({ text: `${pm.picks[0].label} → ${pm.picks[1].label}`, distance: r.distance });
+        if (pm.history.length > 8) pm.history.length = 8;
+      }
+    }
+    this.measureMarks();
+    this.renderPM();
+    this.vp.requestRender?.();
+  }
+  endMeasure() {
+    const a = this.app;
+    if (!this.measuring()) return;
+    a.pm = null;
+    this.vp.setMeasure(null);
+    this.measureMarks();
+    this.renderAll();
+    a.status('Ready');
+  }
+
   // a selected reference the same as another
   sameRef(a, b) { return a.comp === b.comp && (a.gi && a.gi === b.gi || (a.comp === ORIGIN && a.plane === b.plane)); }
   // the references selected in the view (faces, edges, vertices, planes: as in part files, Ctrl adds or takes away)
@@ -1437,6 +1519,13 @@ export class AssemblyEditor {
       if (kind === 'click') return t.click(e);
       if (kind === 'hover') { const ch = this.compAt(e); this.hoverComp = ch?.comp.id || null; this.highlight(); return; }
       return;
+    }
+    // (Measure: a click picks an item; the components stay where they are)
+    if (this.measuring()) {
+      if (kind === 'click') return this.measureClick(e);
+      if (kind === 'hover') { const r = this.entityAt(e); this.hoverComp = r?.kind === 'comp' ? r.comp : null; this.hoverRef = r && r.kind !== 'comp' ? r : null; this.highlight(); this.measureMarks(this.measureAt(e)); return; }
+      if (kind === 'leave') { this.hoverRef = null; this.hoverComp = null; this.highlight(); this.measureMarks(null); return; }
+      if (kind === 'down' || kind === 'up' || kind === 'dbl' || kind === 'move') return;
     }
     // (the Section View panel open: a click on a component's flat face cuts from it; the arrow is dragged by the app)
     if (this.app.pm?.kind === 'section') {
@@ -3093,7 +3182,7 @@ export class AssemblyEditor {
     if (ctrl && views[e.key]) { e.preventDefault(); this.vp.setStandardView(views[e.key]); return true; }
     if (ctrl) return false;
     if (e.key.startsWith('Arrow') && this.vp.controls.key(e)) { e.preventDefault(); return true; }
-    if (e.key === 'Escape') { if (this.pm) this.cancelMate(); else this.select(null); return true; }
+    if (e.key === 'Escape') { if (this.measuring()) this.endMeasure(); else if (this.pm) this.cancelMate(); else this.select(null); return true; }
     if (e.key === 'Enter' && this.pm) { this.okMate(); return true; }
     if (e.key === 'Delete') {
       if (this.sel?.kind === 'comp') this.deleteComponent(this.sel.id);
@@ -3136,6 +3225,7 @@ export class AssemblyEditor {
         { icon: 'bom', label: 'Bill of Materials', action: () => this.showBOM() },
         { icon: 'bom', label: 'Number Parts', action: () => this.numberPartsDialog() },
         { icon: 'interference', label: 'Interference Check', action: () => this.checkInterference() },
+        { icon: 'measure', label: 'Measure', action: () => (this.measuring() ? this.endMeasure() : this.startMeasure()), active: this.measuring() },
         { icon: 'measure', label: 'Tolerance Stack-Up', action: () => this.app.ui.showStackUp(this.doc, () => this.commit('Tolerance stack-up')) },
         { icon: 'section', label: 'Section View', action: () => this.toggleSection(), active: !!this.vp.section },
         { icon: 'collide', label: 'Collision Detection', action: () => this.setCollideMode(this.collideMode === 'off' ? 'stop' : 'off'), active: this.collideMode !== 'off' },
@@ -3214,6 +3304,7 @@ export class AssemblyEditor {
         { label: 'Bill of Materials…', icon: 'bom', action: () => this.showBOM() },
         { label: 'Equations…', icon: 'equations', action: () => this.showEquations() },
         { label: 'Interference Check…', icon: 'interference', action: () => this.checkInterference() },
+        { label: 'Measure…', icon: 'measure', action: () => this.startMeasure() },
         { label: 'Section View…', icon: 'section', action: () => this.app.startSection() },
         'sep',
         ...[['off', 'Collision Detection Off'], ['show', 'Show Collisions While Dragging'], ['stop', 'Stop at Collisions While Dragging']].map(([m, label]) => ({ label: (this.collideMode === m ? '✓ ' : '') + label, icon: 'collide', action: () => this.setCollideMode(m) })),
@@ -3415,6 +3506,8 @@ export class AssemblyEditor {
     if (!this.isActive()) return;
     // (the Section View panel: the app's, as in a part)
     if (this.app.pm?.kind === 'section') { const root = $('#pm'); root.innerHTML = ''; this.app.ui.showLeft('pm'); this.app.ui.renderSectionPM(root); return; }
+    // (Measure: the app's panel, as in a part)
+    if (this.measuring()) { const root = $('#pm'); root.innerHTML = ''; this.app.ui.showLeft('pm'); this.app.ui.renderMeasurePM(root); return; }
     if (this.explodeTool) { this.explodeTool.renderPM(); return; }
     if (this.motionTool) { this.motionTool.renderPM(); return; }
     if (this.holeTool) { this.holeTool.renderPM(); return; }

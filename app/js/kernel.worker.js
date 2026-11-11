@@ -10296,26 +10296,35 @@ const ocList = (shapes) => { const L = new (R.getOC()).NCollection_List_TopoDS_S
 // refs: { kind: 'vertex' | 'point', p } | { kind: 'edge' | 'face', p } | { kind: 'body', id } |
 // { kind: 'seg', a, b } (a sketch line) | { kind: 'plane', o, n }. One entity: its size; two:
 // the shortest distance between them (with the closest points) and the angle when there is one.
-function measureRefs(refs) {
-  const all = [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
+// list: the bodies to measure on (an assembly's, placed: asmMeasure), else the part's. In an assembly a ref's comp
+// (a component's path) keeps it to that component's bodies (mated faces lie on two), and a body ref is a whole component.
+function measureRefs(refs, list = null) {
+  const all = list || [...(lastSolids.length ? lastSolids : lastBody ? [{ id: 'body', shape: lastBody }] : []), ...lastSurfaces];
   const allShape = all.length ? compoundOf(all) : null;
+  const ofComp = (r) => (r.comp ? all.filter((s) => String(s.id).startsWith(r.comp + '/')) : all);
   const diag = allShape ? bbox(allShape).diag : 100;
   const dirOf = (g) => (g?.type === 'line' ? unit(sub(g.b, g.a)) : null);
   const item = (r) => {
     if (r.kind === 'vertex' || r.kind === 'point') return { shape: R.makeVertex(r.p), info: { type: 'point', p: r.p } };
     if (r.kind === 'edge') {
-      const e = allShape && findEdge(allShape, r);
+      const own = ofComp(r), e = own.length && findEdge(own === all ? allShape : compoundOf(own), r);
       if (!e) throw new Error('A selected edge could not be found');
       const g = edgeGeom(e, diag);
       return { shape: e, dir: dirOf(g), info: { type: 'edge', length: R.measureLength(e), curve: g?.type, radius: g?.r ?? null } };
     }
     if (r.kind === 'face') {
-      const h = findFaceAny(all, r);
+      const h = findFaceAny(ofComp(r), r);
       if (!h) throw new Error('A selected face could not be found');
       const planar = h.face.geomType === 'PLANE';
       const n = planar ? unit(vec(h.face.normalAt())) : null;
       const ax = planar ? null : faceAxis(h.face);
       return { shape: h.face, normal: n, axis: ax, info: { type: 'face', area: finite(faceArea(h.face), () => R.measureArea(h.face)), planar, radius: ax ? radiusOfFace(h.face) : null } };
+    }
+    if (r.kind === 'body' && r.comp) {
+      const own = ofComp(r);
+      if (!own.length) throw new Error('A selected component has no solid body to measure');
+      const xs = exactProps(own.map((b) => b.shape)), sum = (k, f) => xs.reduce((t, x, i) => t + finite(x?.[k], () => f(own[i].shape)), 0);
+      return { shape: compoundOf(own), info: { type: 'body', solid: true, volume: sum('volume', preciseVolume), area: sum('area', (sh) => R.measureArea(sh)) } };
     }
     if (r.kind === 'body') {
       const b = all.find((x) => x.id === r.id);
@@ -10365,6 +10374,14 @@ function measureRefs(refs) {
     if (A.axis && B.axis) out.centerDistance = len(rej(sub(B.axis.o, A.axis.o), A.axis.d));
   }
   return out;
+}
+
+// Measure in an assembly: refs as measureRefs takes them, in the assembly's coordinates, each on a component (comp:
+// its path, top component first). Only the components picked are built (kept from one measure to the next).
+async function asmMeasure(docJson, refs) {
+  const asm = JSON.parse(docJson), tops = new Set(refs.filter((r) => r.comp).map((r) => String(r.comp).split('/')[0]));
+  const { solids } = tops.size ? await assemblySolids({ ...asm, components: (asm.components || []).filter((c) => tops.has(c.id)) }) : { solids: [] };
+  return measureRefs(refs, solids);
 }
 
 function radiusOfFace(face) {
@@ -13743,6 +13760,8 @@ async function handleMessage(e) {
       result = textOutlines(data.texts || []);
     } else if (type === 'measure') {
       result = measureRefs(data.refs || []);
+    } else if (type === 'asmMeasure') {
+      result = await asmMeasure(data.doc, data.refs || []);
     } else if (type === 'sectionCurves') {
       const sb = lastSketchBodies.get(data.sketchId);
       if (sb && !sb.body && sb.lazy) {

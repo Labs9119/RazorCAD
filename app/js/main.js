@@ -2297,6 +2297,7 @@ class App {
   async runMeasure() {
     const pm = this.pm;
     if (pm?.kind !== 'measure') return;
+    if (pm.asm) return this.drawing?.runMeasure?.();
     pm.result = null; pm.error = null;
     this.viewport.setMeasure(null);
     this.updateEdgeHighlights();
@@ -5559,6 +5560,7 @@ class App {
     if (pm.kind === 'appearance') return this.finishAppearance(false);
     if (pm.kind === 'lights') return this.finishLights(false);
     if (pm.kind === 'section') { this.clearSection(); this.status('Ready'); return; } // (the cut taken away; nothing built again)
+    if (pm.kind === 'measure' && pm.asm) { if (this.drawing?.endMeasure) this.drawing.endMeasure(); else this.pm = null; return; }
     clearTimeout(this._previewTimer);
     this.pm = null;
     this.viewport.setFaceSet([]);
