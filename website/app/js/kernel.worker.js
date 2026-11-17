@@ -1465,7 +1465,7 @@ function edgeKept(e, diagQ) {
   const key = String(diagQ), got = keptFind(EDGE_POINTS, e.wrapped, key);
   if (got) return got;
   const type = e.geomType, circ = type === 'CIRCLE' ? circleOf(e) : null;
-  const data = { pts: sampleEdge(e, diagQ, type).flat(), mid: curvePoints(e, 2)[1], type, ...(circ ? { circ } : {}) };
+  const data = { pts: drawnEdgePoints(e, diagQ, type).flat(), mid: curvePoints(e, 2)[1], type, ...(circ ? { circ } : {}) };
   keptAdd(EDGE_POINTS, e.wrapped, key, data, (x) => R.getOC().TopoDS.Edge(x));
   return data;
 }
@@ -1498,7 +1498,17 @@ function meshPart(s, tol, diagQ, onWork, ang = 0.2) {
   LAB_INFO.delete(s.shape);
   if (!dense) {
     const formed = !!s.sheet?.bends?.some((b) => b.formed);
-    if (labInfo && labInfo.edges.every(Boolean) && !formed) { for (const d of labInfo.edges) edges.push(d); }
+    if (labInfo && labInfo.edges.every(Boolean) && !formed) {
+      // (an edge that winds round, a thread's helix, drawn again with a point every few degrees: the kernel's
+      // points are spread by length, 160 over a whole thread, and drew it as a zigzag of straight pieces. The
+      // body's edges in the kernel's order, without its seams, each checked by its middle)
+      const wind = labInfo.edges.map((d) => d.type !== 'LINE' && windsRound(d.pts));
+      if (wind.some(Boolean)) {
+        const seams = seamEdges(s.shape), es = s.shape.edges.filter((e) => !seams.some((x) => x.IsSame(e.wrapped)));
+        if (es.length === labInfo.edges.length) wind.forEach((w, k) => { if (!w) return; const d = edgeKept(es[k], diagQ); if (len(sub(d.mid, labInfo.edges[k].mid)) < 1e-6 * Math.max(1, diagQ)) labInfo.edges[k] = d; });
+      }
+      for (const d of labInfo.edges) edges.push(d);
+    }
     else {
       const seams = seamEdges(s.shape);
       if (formed) seams.push(...formedJoints(s.shape, s.sheet));
@@ -1777,6 +1787,35 @@ function sampleEdge(e, diag, type = e.geomType) {
   const nMin = type === 'BSPLINE_CURVE' || type === 'BEZIER_CURVE' || type === 'OTHER_CURVE' ? 160 : 24;
   const n = Math.max(nMin, Math.min(128, Math.ceil(L / Math.max(diag * 0.004, 0.05))));
   return curvePoints(e, n);
+}
+// How far a polyline turns: { total, most } (radians: all its bends together, its sharpest)
+function turning(pts) {
+  let total = 0, most = 0;
+  const at = (i) => (Array.isArray(pts[0]) ? pts[i] : [pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]]), n = Array.isArray(pts[0]) ? pts.length : pts.length / 3;
+  for (let i = 1; i + 1 < n; i++) {
+    const a = sub(at(i), at(i - 1)), b = sub(at(i + 1), at(i)), la = len(a), lb = len(b);
+    if (la < 1e-12 || lb < 1e-12) continue;
+    const t = Math.acos(Math.max(-1, Math.min(1, dot(a, b) / (la * lb))));
+    total += t; if (t > most) most = t;
+  }
+  return { total, most };
+}
+// an edge that winds round more than once (a helix), or is drawn with sharp bends between its points
+const windsRound = (pts) => { const t = turning(pts); return t.total > 7 || t.most > 0.35; };
+// The points an edge is drawn with: sampleEdge's, and for one that winds round (a thread's helix) a point at least
+// every 0.1 rad of its turning. Circles, arcs and gentle curves are drawn as before.
+function drawnEdgePoints(e, diag, type = e.geomType) {
+  let pts = sampleEdge(e, diag, type);
+  if (type === 'LINE' || pts.length < 3 || !windsRound(pts)) return pts;
+  for (let k = 0; k < 3; k++) {
+    const t = turning(pts);
+    if (t.most <= 0.12) break;
+    const n = Math.min(4096, Math.max(Math.ceil(t.total / 0.1), Math.ceil(((pts.length - 1) * t.most) / 0.1)));
+    if (n <= pts.length - 1) break;
+    pts = curvePoints(e, n);
+    if (n >= 4096) break;
+  }
+  return pts;
 }
 // An edge's points at i/n of its parameter range (i = 0..n): the same points as e.pointAt(i / n), from one curve
 // adaptor (pointAt makes one per point: a fifth of the time of meshing a big imported part went there). ends: the

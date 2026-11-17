@@ -1675,7 +1675,7 @@ Turns an ordinary body into sheet metal. Pick a flat face of a thin-walled body 
 - Sharp-cornered bodies (shelled boxes) get bends of the chosen radius at every edge between two flat faces.
 - A flange whose ends run right up against the material beside it, with no relief (a flange off a cross bar between the sides of a window, or off the edges of a slot), is ripped there: the flat pattern (and its DXF) has a cut line along each flange end, across the bend and on to the flange's edge, on the cut-outs layer, as the part is cut and bent. {idx:Convert to Sheet Metal, rips}
 - The panel shows what was found in the body, for example "thickness 3 mm · bend radii R300, R227, R13 (inside, 3 bends)" or "4 sharp edges".
-- **Use the body's thickness** and **Use the body's bend radii** are on by default. Untick either to set your own value (pre-filled with the detected one).
+- **Use the body's thickness** and **Use the body's bend radii** are on by default. Untick either to set your own value (pre-filled with the detected one). With a radius of your own the flat faces stay where they are in the body, holes and all: each bend is made again between them with the new radius, and the faces either side run on to meet it (or stop short of it), as when the part is bent with a different tool. The side you picked keeps its place; a thickness of your own goes on the other side. {idx:Convert to Sheet Metal, bend radius}
 - A body curved other than in plain bends (a square-to-round transition or a reducer from another program, a cone) is **unrolled**: laid out flat at the neutral layer, triangle by triangle, so its flat pattern keeps every length; a ring is cut open at a seam. For a cone, click its curved face. A closed tube (bends all the way round) is unrolled the same way, cut open at a seam. A face curved both ways (a dished end, a spherical cap) can't be laid flat exactly: it is spread out as nearly as it can be (from its middle out along its profile, then relaxed so its lengths change as little as they can), and scaled to the dish's own area (pressed, the sheet keeps its volume). The note gives how far it stretches (the most over 98 % of it, and on average): use it as a blank size to press from, and check it against a trial. Cuts in such a sheet are unrolled with it (the hole is in the flat pattern); flanges, hems and corners can't be added (as on a lofted bend).
 - A body that RazorCAD folded itself (for example its STEP export) gets its closed corners back as RazorCAD made them: the corner type (V cutout, closed mitre or butt), which flange covers which and the gap are worked out from the body, and the relief and curved V lines are made again exactly. Other corners are traced from the body as they are.
 - After converting, the sheet's volume is compared with the body's. The feature note warns when they differ by more than 0.5 % (for example a nut or motor part that isn't sheet metal).
@@ -2729,6 +2729,9 @@ Run `python serve.py` and open http://localhost:8765/ in a browser. In that mode
 | Plain Carbon Steel | 7.80 |
 | AISI 304 Stainless | 8.00 |
 | S2205 Duplex Stainless (UNS S32205) | 7.80 |
+| AS/NZS 3678 Grade 250 Steel | 7.85 |
+| AS/NZS 3678 Grade 350 Steel | 7.85 |
+| Corten-O Weathering Steel | 7.85 |
 | 6061 Aluminum Alloy | 2.70 |
 | Brass | 8.50 |
 | Copper | 8.96 |

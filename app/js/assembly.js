@@ -3219,7 +3219,8 @@ export class AssemblyEditor {
     if (this.motionTool && this.motionTool.key(e)) return true;
     if (this.holeTool && this.holeTool.key(e)) return true;
     const typing = e.target.closest?.('input, select, textarea');
-    if (typing) { if (e.key === 'Enter' && this.pm) { this.okMate(); return true; } return false; }
+    // (Esc ends Measure from its panel too: after ticking Keep the first item, say)
+    if (typing) { if (e.key === 'Enter' && this.pm) { this.okMate(); return true; } if (e.key === 'Escape' && this.measuring()) { this.endMeasure(); return true; } return false; }
     const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
     if (ctrl && k === 'z') { e.preventDefault(); this.undo(); return true; }
     if (ctrl && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); this.redo(); return true; }

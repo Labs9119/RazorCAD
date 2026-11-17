@@ -567,6 +567,18 @@ function wrapPoint(b, t, p, r) {
   const dir = apMdir(rotM([0, 0, 0], e3, phi), r0);
   return add3(add3([b.p0[0], b.p0[1], axisZ(b, t)], mul3(e3, x)), mul3(dir, r));
 }
+// Flat points held to the span wrapPoint bends (half the bend's width each side of it), with any that then fall on the
+// one before them taken out (closed: the last on the first too).
+function heldOnBend(b, pts, closed = false) {
+  const tol = 1e-9 * (1 + b.ba + b.w), out = [];
+  for (const p of pts) {
+    const s = d2(s2(p, b.p0), b.d), sc = Math.min(Math.max(s, -0.5 * b.ba), 1.5 * b.ba);
+    const q = sc === s ? p : a2(p, m2(b.d, sc - s));
+    if (!out.length || l2(s2(q, out[out.length - 1])) > tol) out.push(q);
+  }
+  if (closed) while (out.length > 1 && l2(s2(out[0], out[out.length - 1])) <= tol) out.pop();
+  return out;
+}
 // A solid that cuts the part of a bend zone outside the pattern (a flat face in the zone) out of the bent strip.
 // (each curved edge of the face is carried onto the bend as one smooth edge, so one face of the tool)
 function wrapTool(b, t, face, formed = false) {
@@ -587,7 +599,12 @@ function wrapTool(b, t, face, formed = false) {
       return Array.from({ length: n + 1 }, (_, i) => a2(pts[0], m2(s2(pts[1], pts[0]), i / n)));
     });
   }
-  const polygon = () => wrapLoopTool(b, t, wireLoop(face.clone().outerWire(), 32).map((p) => [p[0], p[1]]));
+  // (each point held to where wrapPoint carries it, from half the bend's width before it to half past it, and points
+  // that then fall on each other taken out: a tool run on past a narrow bend (a rolled skin's, under a mm wide) has
+  // several points of an edge across it beyond that, all carried to one place, and a curve through them doubled back
+  // on itself makes a tool that cuts away the wrong side)
+  runs = runs.map((pts) => heldOnBend(b, pts)).filter((pts) => pts.length > 1);
+  const polygon = () => wrapLoopTool(b, t, heldOnBend(b, wireLoop(face.clone().outerWire(), 32).map((p) => [p[0], p[1]]), true));
   if (runs.every((pts) => pts.length === 2)) return polygon();
   const ri = Math.max(1e-3, b.R - 0.1 * t), ro = b.R + 1.1 * t;
   const wire = (r, rs) => R.assembleWire(rs.map((lp) => {
@@ -3519,7 +3536,7 @@ function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, dev
       const q = pts[0], s = pts.map((p) => dot3(sub3(p, q), d));
       return { G, a: add3(q, mul3(d, Math.min(...s))), b: add3(q, mul3(d, Math.max(...s))) };
     });
-    links.push({ i: ends[0].G, j: ends[1].G, ai: ends[0].a, bi: ends[0].b, aj: ends[1].a, bj: ends[1].b, axis: { o, d }, R: Math.max(Ru, 0), Rbody: Math.max(Rb, 0), outer, faces: g.faces.map((x) => x.face) });
+    links.push({ i: ends[0].G, j: ends[1].G, ai: ends[0].a, bi: ends[0].b, aj: ends[1].a, bj: ends[1].b, axis: { o, d }, R: Math.max(Ru, 0), Rbody: Math.max(Rb, 0), rSide: r, outer, faces: g.faces.map((x) => x.face) });
   }
   const faces = planes.map((F) => ({ face: F.face, n: F.n }));
   const jl = [...joints.values()];
@@ -4276,6 +4293,7 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
   let region = null, nextBend = 1;
   const queue = [fixed];
   const trims = new Map(); // face index → list of rect trims (flat coords, applied to its image)
+  const grows = new Map(); // face index → strips added at a bend (depth > 0) or taken off (< 0): a radius set
   const shifts = new Map([[fixed, IDENT]]);
   const bendFaces = [], realBend = new Set(); // unrolled faces of real bends; their ids
   const usedLinks = new Set(); // links made into bends
@@ -4309,9 +4327,19 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
       }
       if (Fj.joint) Fj.dOut = d;
       const ba = bendAllowance(ang, L.R, K, t);
-      T.set(j, mulM(transM([d[0] * ba, d[1] * ba, 0]), mulM(Ti, rot)));
+      // A radius other than the body's: the faces either side stay where they are (their holes too) and the bend
+      // moves between them, as when the bend is made again with that radius. Each face runs on (or stops short) by
+      // the change in its setback from where the faces' planes meet, on the side picked (its radius in the body:
+      // rSide; now: the radius set, plus the thickness on the outside of a bend)
+      const grow = L.rSide != null && L.R !== L.Rbody ? (L.rSide - (L.outer ? L.R + t : L.R)) * Math.tan(ang / 2) : 0;
+      T.set(j, mulM(transM([d[0] * (ba + 2 * grow), d[1] * (ba + 2 * grow), 0]), mulM(Ti, rot)));
+      if (Math.abs(grow) > 1e-9) {
+        const pj = a2(pa, m2(d, ba + 2 * grow));
+        grows.set(i, [...(grows.get(i) || []), { p: pa, e, d, w, depth: grow }]);
+        grows.set(j, [...(grows.get(j) || []), { p: pj, e, d: m2(d, -1), w, depth: grow }]);
+      }
       realBend.add('b' + nextBend);
-      bends.push({ id: 'b' + nextBend++, p0: pa, e, d, w, ba, ang, up: L.outer, R: L.R });
+      bends.push({ id: 'b' + nextBend++, p0: a2(pa, m2(d, grow)), e, d, w, ba, ang, up: L.outer, R: L.R });
       // unroll: a point of the bend goes to its place along the bend line, and across by the share of
       // the bend's angle it has turned through
       const radial = (p) => { const r = sub3(p, o); return sub3(r, mul3(ax, dot3(r, ax))); };
@@ -4322,7 +4350,7 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
         let phi = Math.atan2(sg * dot3(cross3(r0, rp), ax), dot3(r0, rp));
         phi = Math.max(0, Math.min(ang, phi));
         const q = apM(Ti, add3(L.ai, mul3(ua, dot3(sub3(p, L.ai), ua))));
-        return a2([q[0], q[1]], m2(d, (phi / ang) * ba));
+        return a2([q[0], q[1]], m2(d, grow + (phi / ang) * ba));
       };
       // its zone in the flat: its own faces unrolled edge by edge (a straight edge stays a line, a curved one is
       // one smooth curve). The bend is formed over exactly this zone (fold, bendSolid), so its ends come out as
@@ -4391,6 +4419,7 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
       for (const h of loops.slice(1)) face = bop('cut', face, polyFace(h));
     }
     for (const tr of trims.get(F.i) || []) face = bop('cut', face, rectFace(tr.p, tr.e, tr.d, tr.w, tr.depth));
+    for (const g of grows.get(F.i) || []) face = bop(g.depth > 0 ? 'fuse' : 'cut', face, rectFace(g.p, g.e, g.d, g.w, g.depth));
     if (F.i === fixed) fixedFace = face;
     images.push(imageOf(face, { i: F.i }, tol));
     region = bop('fuse', region, face);

@@ -1571,8 +1571,9 @@ const UI = {
     else bad.push('no depth in the double-click box');
     document.querySelector('.quick-dims')?.remove();
     // (an empty sketch)
-    const s2=M.createFeature(a.doc,'sketch',{plane:{ref:'top'}});a.doc.features.push(s2);await a.editSketch(s2.id);await wait(100);
-    if(!/Empty/.test(document.querySelector('#pm')?.textContent||''))bad.push('an empty sketch does not say it is empty');
+    const s2=M.createFeature(a.doc,'sketch',{plane:{ref:'top'}});a.doc.features.push(s2);await a.editSketch(s2.id);
+    // (waited for: the sketch's panel can take longer than a moment on a slow machine)
+    if(!await until(()=>/Empty/.test(document.querySelector('#pm')?.textContent||''),5000,50))bad.push('an empty sketch does not say it is empty');
     a.exitSketch(false);await done();
     // (edge flanges on the top and the bottom face of the sheet: both up)
     {
@@ -4761,8 +4762,12 @@ const UI = {
     const md = asm.measureDoc([c2.id]);
     if (md.components.length !== 1 || md.components[0].id !== c2.id) bad.push(`cut down to ${md.components.length} components`);
     // Esc ends it
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(50);
-    if (a.pm || asm.measuring()) bad.push('Esc did not end Measure');
+    // (from the panel's tick box, as after ticking it; no dialog or menu left open by an earlier test: Esc closes those first)
+    closeModals(); a.ui.closeContext?.(); a.ui.closeDropdown?.();
+    const left = [document.getElementById('ctxmenu')?.offsetParent ? 'menu' : '', document.querySelector('#cmd-search') ? 'search' : ''].filter(Boolean);
+    const cb = document.querySelector('#pm input[type=checkbox]');
+    (cb || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(50);
+    if (a.pm || asm.measuring()) bad.push(`Esc did not end Measure (${cb ? 'from the tick box' : 'no tick box'}${left.length ? ', ' + left.join(', ') + ' open' : ''})`);
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `faces 30 apart, corners ${r6(Math.sqrt(1700))}, edge 20, a turned cube 8000 mm³ and ${r6(d3)} from a face, a plane 60 from a face; Esc ends it` };
   },
 
@@ -7039,6 +7044,64 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       return ok ? { ok: true, detail: `unrolled and cut open: ${sh.flatArea.toFixed(1)} mm² for ${want.toFixed(1)} (${(100 * dA).toFixed(4)} %), one outline` }
         : { ok: false, detail: sh ? `${sh.lofted}, ${sh.flatArea} for ${want}, ${sh.pierces} outlines` : `not converted: ${JSON.stringify(r.errors)}` };
     } finally { k.dispose(); }
+  },
+
+  // Convert to Sheet Metal with a bend radius of its own (GitHub issue 16): an L bracket (2 mm, R4 inside) made R1 and
+  // R10 keeps its flanges where they are (its outside 61 × 61, a hole in the upright at the same place); R10's bend is
+  // R10 and its flat 2 × 49 + π/2 (10 + 0.44 × 2) long
+  async 'convert-sheet-set-radius'() {
+    const k = window.app.kernel, bad = [];
+    const mk = (R, auto) => {
+      const d = M.newDoc();
+      const s = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+      const P = [['p0', 60, -1], ['p1', 5, -1], ['p2', -1, 5], ['p3', -1, 60], ['p4', 1, 60], ['p5', 1, 5], ['p6', 5, 1], ['p7', 60, 1], ['c', 5, 5]];
+      Object.assign(s, { points: P.map(([id, x, y]) => ({ id, x, y })), constraints: [],
+        curves: [{ id: 'l0', type: 'line', p1: 'p0', p2: 'p1' }, { id: 'a0', type: 'arc', c: 'c', p1: 'p2', p2: 'p1' }, { id: 'l1', type: 'line', p1: 'p2', p2: 'p3' }, { id: 'l2', type: 'line', p1: 'p3', p2: 'p4' },
+          { id: 'l3', type: 'line', p1: 'p4', p2: 'p5' }, { id: 'a1', type: 'arc', c: 'c', p1: 'p5', p2: 'p6' }, { id: 'l4', type: 'line', p1: 'p6', p2: 'p7' }, { id: 'l5', type: 'line', p1: 'p7', p2: 'p0' }].map((x) => ({ ...x, construction: false })) });
+      const s2 = M.createFeature(d, 'sketch', { plane: { ref: 'right' } });
+      Object.assign(s2, { points: [{ id: 'q', x: -15, y: 40 }], curves: [{ id: 'h', type: 'circle', c: 'q', r: 3, construction: false }], constraints: [] });
+      d.features.push(s, M.createFeature(d, 'extrude', { sketch: s.id, depth: 30 }), s2, M.createFeature(d, 'extrude', { sketch: s2.id, op: 'cut', end: 'through2' }));
+      d.features.push(M.createFeature(d, 'smConvert', { face: { p: [40, -1, 15], n: [0, -1, 0] }, autoRadius: auto, radius: R, kFactor: 0.44 }));
+      return d;
+    };
+    const box = (r) => { const V = r.body.vertices, mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9]; for (let i = 0; i < V.length; i += 3) for (let j = 0; j < 3; j++) { mn[j] = Math.min(mn[j], V[i + j]); mx[j] = Math.max(mx[j], V[i + j]); } return [...mn, ...mx]; };
+    for (const R of [1, 10]) {
+      const r = await k.rebuild(mk(R, false), null, null);
+      if (r.errors?.length) { bad.push(`R${R}: ${JSON.stringify(r.errors)}`); continue; }
+      const b = box(r), want = [-1, -1, 0, 60, 60, 30];
+      if (b.some((x, i) => Math.abs(x - want[i]) > 1e-3)) bad.push(`R${R}: outside ${b.map((x) => +x.toFixed(3))}`);
+      // (the hole's wall 3 from its axis: still where it was)
+      const m = await k.request('measure', { refs: [{ kind: 'vertex', p: [0, 40, 15] }, { kind: 'face', p: [0, 43, 15] }] });
+      if (!(Math.abs(m.distance - 3) < 1e-6)) bad.push(`R${R}: the hole's wall ${m.distance} from where its axis was`);
+      if (R === 10) {
+        const q = 11 - 10 * Math.SQRT1_2, f = (await k.request('measure', { refs: [{ kind: 'face', p: [q, q, 15] }] })).items?.[0];
+        if (!(Math.abs(f?.radius - 10) < 1e-6)) bad.push(`R10: the bend's inside ${JSON.stringify(f)}`);
+        const fl = await k.request('sheetFlat', { bodyId: r.body.bodies[0].id }), L = Math.max(...fl.size), wantL = 98 + (Math.PI / 2) * (10 + 0.44 * 2);
+        if (!(Math.abs(L - wantL) < 1e-6)) bad.push(`R10: flat ${L}, not ${wantL}`);
+      }
+    }
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'R1 and R10 set: outside 61 × 61 × 30 and the hole kept, R10 inside, flat 115.090 long' };
+  },
+
+  // A modelled thread is drawn with smooth edges (GitHub issue 17): its helical edges with a point at least every
+  // 0.12 rad of their turn, not 160 points over the whole thread (20 a turn on an M10 × 12 deep)
+  async 'thread-edges-drawn'() {
+    const k = window.app.kernel;
+    const d = M.newDoc();
+    const s = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    const pts = [[-40, -20], [40, -20], [40, 20], [-40, 20]];
+    Object.assign(s, { points: pts.map(([x, y], i) => ({ id: 'p' + (i + 1), x, y })), curves: pts.map((_, i) => ({ id: 'c' + (i + 1), type: 'line', p1: 'p' + (i + 1), p2: 'p' + ((i + 1) % 4 + 1), construction: false })), constraints: [] });
+    const s2 = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+    Object.assign(s2, { points: [{ id: 'q', x: -20, y: 0 }], curves: [{ id: 'k', type: 'circle', c: 'q', r: 4.25, construction: false }], constraints: [] });
+    d.features.push(s, M.createFeature(d, 'extrude', { sketch: s.id, depth: 12 }), s2, M.createFeature(d, 'extrude', { sketch: s2.id, op: 'cut', end: 'through2' }));
+    d.features.push(M.createFeature(d, 'thread', { op: 'cut', face: { p: [-20 + 4.25, 6, 0] } }));
+    const r = await k.rebuild(d, null, null);
+    if (r.errors?.length) return { ok: false, detail: JSON.stringify(r.errors) };
+    const turn = (P) => { let total = 0, most = 0; for (let i = 3; i + 3 < P.length; i += 3) { const a = [0, 1, 2].map((j) => P[i + j] - P[i - 3 + j]), b = [0, 1, 2].map((j) => P[i + 3 + j] - P[i + j]); const la = Math.hypot(...a), lb = Math.hypot(...b); if (la < 1e-12 || lb < 1e-12) continue; const t = Math.acos(Math.max(-1, Math.min(1, (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb)))); total += t; most = Math.max(most, t); } return { total, most }; };
+    const helices = r.body.edges.filter((e) => e.type !== 'LINE').map((e) => ({ n: e.pts.length / 3, ...turn(e.pts) })).filter((x) => x.total > 7);
+    const coarse = helices.filter((x) => x.most > 0.125);
+    return helices.length && !coarse.length ? { ok: true, detail: `${helices.length} helical edges, ${Math.min(...helices.map((x) => x.n))}–${Math.max(...helices.map((x) => x.n))} points, sharpest step ${Math.max(...helices.map((x) => x.most)).toFixed(3)} rad` }
+      : { ok: false, detail: `${helices.length} helical edges; coarse: ${JSON.stringify(coarse.slice(0, 3))}` };
   },
 
   async 'convert-sheet-corners'() {

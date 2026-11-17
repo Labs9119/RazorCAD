@@ -6,6 +6,10 @@ import * as S from './sketchmodel.js';
 export const MATERIALS = [
   { id: 'steel', name: 'Plain Carbon Steel', density: 7.8, color: 0xb5bcc6 },
   { id: 'stainless', name: 'AISI 304 Stainless', density: 8.0, color: 0xc9cfd6 },
+  { id: 'duplex2205', name: 'S2205 Duplex Stainless', density: 7.8, color: 0xbfc6cc },
+  { id: 'g250', name: 'AS/NZS 3678 Grade 250 Steel', density: 7.85, color: 0xb2b9c2 },
+  { id: 'g350', name: 'AS/NZS 3678 Grade 350 Steel', density: 7.85, color: 0xa9b1bb },
+  { id: 'corten', name: 'Corten-O Weathering Steel', density: 7.85, color: 0x9a6a4f },
   { id: 'al6061', name: '6061 Aluminum Alloy', density: 2.7, color: 0xd5dbe2 },
   { id: 'brass', name: 'Brass', density: 8.5, color: 0xd9b45a },
   { id: 'copper', name: 'Copper', density: 8.96, color: 0xc77b4f },

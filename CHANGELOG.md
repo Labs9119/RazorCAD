@@ -6,6 +6,32 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-18 07:15 — Convert to Sheet Metal with a radius of your own keeps the flanges in place; threads drawn smooth
+
+- **Sheet metal (GitHub issue 16):** Convert to Sheet Metal with **Use the body's bend radii** off moved the flanges:
+  the flat faces kept their size and the new bend pushed everything past it along, holes and all. Now the faces stay
+  where they are in the body and each bend is made again between them with the radius set: the faces either side run
+  on to meet it, or stop short of it, by the change in setback on the picked side (sheetmetal.js fromFaces, grows).
+  An L bracket made R10 from R4 keeps its outside and its hole; its flat is 2 × 49 + π/2 (10 + 0.44 × 2) long.
+- **Threads (GitHub issue 17):** Thread Cut and Thread Extrude were drawn with jagged edges: a helical edge had 160
+  points over the whole thread (20 a turn on an M10 × 12 deep). An edge that winds round more than once is now drawn
+  with a point at least every 0.1 rad of its turn (kernel.worker.js drawnEdgePoints, also after the kernel's own
+  edge points). Circles, arcs and other curves are drawn as before. The thread's geometry itself was already exact.
+- **Esc:** ends an assembly's Measure from its panel too (after ticking Keep the first item, say). A window or a
+  size box taken away without being closed no longer keeps Esc from the rest of the app (ui.js modal, quick sizes).
+- Tests: convert-sheet-set-radius, thread-edges-drawn; usability-fixes waits for the sketch panel instead of 100 ms
+  (it failed on the slower GitHub runners).
+
+---
+
+## 2026-11-17 — Grade 250, Grade 350 and Corten-O steel in the material list
+
+- **Materials:** **AS/NZS 3678 Grade 250 Steel**, **AS/NZS 3678 Grade 350 Steel** and **Corten-O Weathering Steel**
+  (each 7.85 g/cm³) join the list, for parts and bodies (Edit Material…, Body Properties). Mass Properties, bills of
+  materials and drawings take their density and name.
+
+---
+
 ## 2026-11-12 06:12 — Cuts across very narrow bends of a folded aerofoil blade
 
 - **Sheet metal:** a cut across a folded aerofoil blade (trimming its top to a shroud) could leave a strip of the

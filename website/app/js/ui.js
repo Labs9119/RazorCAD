@@ -4643,6 +4643,8 @@ export class UI {
     box._close = close;
     const outside = (e) => { if (!box.contains(e.target)) close(); };
     const onKey = (e) => {
+      // (the box taken away some other way: its handlers go, and keep no key from the rest of the app)
+      if (!box.isConnected) { close(); return; }
       // (Esc in a field showing its suggestions closes only them)
       if (e.key === 'Escape' && !e.target.closest?.('[data-own-escape]')) { e.stopPropagation(); close(); return; }
       // (Ctrl+Z / Ctrl+Y here undo and redo the model, not the typing; the box shows the sizes again)
@@ -6014,6 +6016,8 @@ export class UI {
       h.prepend(bk);
     }
     const onKey = (e) => {
+      // (the window taken away some other way: its handler goes, and keeps Esc from the rest of the app no more)
+      if (!back.isConnected) { close(); return; }
       if (e.key === 'Escape' && !e.target.closest?.('[data-own-escape]')) { e.stopPropagation(); close(); }
     };
     document.addEventListener('keydown', onKey, true);
