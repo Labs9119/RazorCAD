@@ -760,6 +760,10 @@ const PM_SCHEMAS = {
           onChange: (f, a) => { const d = convertDet(f, a); if (f.autoThickness === false && d?.t) f.thickness = +d.t.toFixed(4); } },
         { key: 'thickness', type: 'expr', label: (f, a) => (convertDet(f, a)?.kind === 'surface' ? 'Thickness' : 'Thickness (instead of the body\'s)'), unit: 'mm',
           show: (f, a) => f.autoThickness === false || convertDet(f, a)?.kind === 'surface' },
+        // (faces to keep: the far side of flanges that stays where it is, the thickness set going the other way there)
+        { key: 'keepFaces', type: 'faceList', keepPick: true, itemLabel: 'Kept face', show: (f, a) => f.autoThickness === false && convertDet(f, a)?.kind !== 'surface',
+          hint: 'Faces to keep (optional): click faces on the other side of the sheet from the fixed face that must stay where they are, for example the bottom of a flange that sets an overall height. There the thickness goes the other way; the bends next to them follow.',
+          empty: 'None: the thickness goes away from the fixed face everywhere' },
         { key: 'thickSide', type: 'select', label: 'Thickness', show: (f, a) => convertDet(f, a)?.kind === 'surface',
           options: [['one', 'Behind the surface'], ['other', 'In front of the surface'], ['mid', 'Both sides (symmetric)']] },
         { key: 'trimSelf', type: 'check', label: 'Trim where the sheet would run into itself', default: true, show: (f, a) => !!convertDet(f, a)?.curved },
@@ -6643,6 +6647,7 @@ export class UI {
     const key = fd.key || 'faces', pm = a.pm;
     if (!Array.isArray(f[key])) f[key] = [];
     if (fd.sweepSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.sweepSupportPick ? ' on' : ''), 'data-sweep-support': '', onclick: () => { pm.sweepSupportPick = !pm.sweepSupportPick; pm.planarEdges = false; if (pm.sweepSupportPick) pm.sweepCanvas = false; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, 'Select faces in canvas'));
+    if (fd.keepPick) body.appendChild(el('button', { class: 'pm-btn' + (pm.keepPick ? ' on' : ''), 'data-keep-pick': '', onclick: () => { pm.keepPick = !pm.keepPick; this.renderPM(); a.updateEdgeHighlights(); } }, pm.keepPick ? 'Done Picking Faces to Keep' : 'Pick Faces to Keep'));
     if (fd.shellThick) body.appendChild(el('button', { class: 'pm-btn' + (pm.shellThickPick ? ' on' : ''), 'data-shell-thick': '', onclick: () => { pm.shellThickPick = !pm.shellThickPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select walls in canvas'));
     if (fd.patchSupport) body.appendChild(el('button', { class: 'pm-btn' + (pm.patchSupportPick ? ' on' : ''), 'data-patch-support': '', onclick: () => { pm.patchSupportPick = !pm.patchSupportPick; this.renderPM(); a.updateEdgeHighlights(); } }, 'Select support faces'));
     if (fd.loftEnd) body.appendChild(el('button', { class: 'pm-btn' + (pm.loftEndSlot === key ? ' on' : ''), 'data-loft-end-faces': key, onclick: () => { pm.loftEndSlot = pm.loftEndSlot === key ? null : key; pm.loftDraft = null; this.renderPM(); a.updateSketchDisplay(); a.updateEdgeHighlights(); } }, `Select ${fd.loftEnd} support faces`));

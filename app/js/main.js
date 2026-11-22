@@ -3325,6 +3325,7 @@ class App {
     if (f.type === 'sketch3d') return 'vertex'; // (a clicked vertex adds a point)
     if (f.type === 'smUnfold') return 'flatface';
     if (f.type === 'smTabSlot') return f.edge ? 'flatface' : 'edge'; // (the tab edge first, then the slot face)
+    if (f.type === 'smConvert' && this.pm.keepPick) return 'faces'; // (faces to keep, behind flanges)
     if (f.type === 'smConvert') return 'anyface'; // (a curved surface can be converted too)
     if (f.type === 'smFlange' || f.type === 'smHem' || f.type === 'smProfileFlange') return 'edge';
     if (f.type === 'surfFill') return this.pm.patchSupportPick ? 'faces' : 'edge';
@@ -4567,7 +4568,7 @@ class App {
       const f = this.pm.feature, vp = this.viewport, gi = fh.hit.face;
       const face = vp.faceInfo(gi);
       if (['fillet', 'chamfer'].includes(f.type) && this.pm.faceEdgesPick) { this.addFaceEdges(fh); return; }
-      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep', 'boundarySurf'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : 'faces';
+      const key = ['loft', 'surfLoft'].includes(f.type) ? this.pm.loftEndSlot : ['surfFill', 'sweep', 'surfSweep', 'boundarySurf'].includes(f.type) ? 'supportFaces' : f.type === 'shell' && this.pm.shellThickPick ? 'thickFaces' : f.type === 'smConvert' ? 'keepFaces' : 'faces';
       if (!key) return;
       f[key] ||= [];
       const i = POINT_PLACED.has(f.type) && key === 'faces' ? f[key].findIndex((r) => this.screenGap(r.p, e) < 10) : f[key].findIndex((r) => vp.faceIndexNear(r.p) === gi);

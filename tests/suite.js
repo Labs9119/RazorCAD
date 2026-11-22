@@ -7248,6 +7248,58 @@ const h = await rc.sketch('top', (s) => { s.circle(-20, 0, 4); s.circle(20, 0, 4
       : { ok: false, detail: `${helices.length} helical edges; coarse: ${JSON.stringify(coarse.slice(0, 3))}` };
   },
 
+  // Faces to keep (GitHub issue 16): a Z section 2 mm thick, 20 mm high overall, made 3 mm thick from its top face with
+  // its bottom face kept stays 20 high (without it, 21): the bottom flange thickens upwards, every flange is 3 mm, the
+  // flat as worked out by hand (73.859; with R5 set as well 70.855)
+  async 'convert-sheet-keep-faces'() {
+    const k = window.app.kernel, bad = [];
+    const zdoc = (t, keep, R) => {
+      const d = M.newDoc();
+      const s = M.createFeature(d, 'sketch', { plane: { ref: 'front' } });
+      const P = [['a', -30, 20], ['b', -2, 20], ['c1', -2, 16], ['b2', 2, 16], ['c', 2, 4], ['c2', 4, 4], ['d', 4, 2], ['e', 30, 2], ['f', 30, 0], ['g', 4, 0], ['h', 0, 4], ['i', 0, 16], ['j', -2, 18], ['k', -30, 18]];
+      const C = [['l1', 'line', 'a', 'b'], ['o1', 'arc', 'b2', 'b', 'c1'], ['l2', 'line', 'b2', 'c'], ['i2', 'arc', 'c', 'd', 'c2'], ['l3', 'line', 'd', 'e'], ['l4', 'line', 'e', 'f'], ['l5', 'line', 'f', 'g'], ['o2', 'arc', 'h', 'g', 'c2'], ['l6', 'line', 'h', 'i'], ['i1', 'arc', 'i', 'j', 'c1'], ['l7', 'line', 'j', 'k'], ['l8', 'line', 'k', 'a']];
+      Object.assign(s, { points: P.map(([id, x, y]) => ({ id, x, y })), constraints: [], curves: C.map(([id, type, p1, p2, c]) => ({ id, type, p1, p2, ...(c ? { c } : {}), construction: false })) });
+      d.features.push(s, M.createFeature(d, 'extrude', { sketch: s.id, depth: 40 }));
+      d.features.push(M.createFeature(d, 'smConvert', { face: { p: [-15, 20, 20], n: [0, 1, 0] }, autoThickness: false, thickness: t, autoRadius: R == null, radius: R ?? 2, kFactor: 0.44, keepFaces: keep }));
+      return d;
+    };
+    const box = (r) => { const V = r.body.vertices, mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9]; for (let i = 0; i < V.length; i += 3) for (let j = 0; j < 3; j++) { mn[j] = Math.min(mn[j], V[i + j]); mx[j] = Math.max(mx[j], V[i + j]); } return [...mn, ...mx]; };
+    const keep = [{ p: [15, 0, 20], n: [0, -1, 0] }];
+    for (const [kept, R, wantY, wantL] of [[keep, null, 0, 73.859], [keep, 5, 0, 70.855], [[], null, -1, 74.859]]) {
+      const r = await k.rebuild(zdoc(3, kept, R), null, null), tag = `${kept.length ? 'kept' : 'not kept'}${R ? ` R${R}` : ''}`;
+      if (r.errors?.length) { bad.push(`${tag}: ${JSON.stringify(r.errors)}`); continue; }
+      const b = box(r);
+      if (Math.abs(b[1] - wantY) > 1e-3 || Math.abs(b[4] - 20) > 1e-3) bad.push(`${tag}: height ${b[1]} to ${b[4]}`);
+      const L = Math.max(...(await k.request('sheetFlat', { bodyId: r.body.bodies[0].id })).size);
+      if (Math.abs(L - wantL) > 2e-3) bad.push(`${tag}: flat ${L}, not ${wantL}`);
+      if (kept.length && !R) {
+        const m = async (p, q) => (await k.request('measure', { refs: [{ kind: 'vertex', p }, { kind: 'face', p: q }] })).distance;
+        const t1 = await m([20, 0, 20], [20, 3, 20]), t2 = await m([-20, 20, 20], [-20, 17, 20]), t3 = await m([2, 10, 20], [-1, 10, 20]);
+        if ([t1, t2, t3].some((x) => Math.abs(x - 3) > 1e-6)) bad.push(`kept: flanges ${t1}, ${t2}, web ${t3} thick`);
+      }
+    }
+    // (a face to keep behind the fixed face: refused, with what to do)
+    const r = await k.rebuild(zdoc(3, [{ p: [-15, 18, 20], n: [0, -1, 0] }], null), null, null);
+    if (!/behind the fixed face/.test(JSON.stringify(r.errors))) bad.push(`a kept face behind the fixed face: ${JSON.stringify(r.errors)}`);
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: '3 mm from 2 with its bottom kept: 20 high (21 without), every flange 3 mm, flats 73.859 and (R5) 70.855; a kept face behind the fixed one refused' };
+  },
+
+  // A radius set on a tray with closed corners, picked from outside (0.21.7 folded it apart): its flanges meet at the
+  // corners, so they keep their own sizes, the tray grows at its bends, and it is one body
+  async 'convert-sheet-radius-closed-corners'() {
+    const k = window.app.kernel;
+    const tray = JSON.parse(await (await fetch('/tests/parts/sheet-metal-tray.rcad')).text());
+    await k.rebuild(tray, null, null);
+    const step = new TextDecoder().decode(await k.request('export', { format: 'step' }));
+    const d = M.newDoc();
+    d.features.push(M.createFeature(d, 'import', { format: 'step', fileName: 'tray.step', data: step }));
+    d.features.push(M.createFeature(d, 'smConvert', { face: { p: [0, 0, 0], n: [0, -1, 0] }, autoRadius: false, radius: 4, kFactor: 0.44 }));
+    const r = await k.rebuild(d, null, null), note = r.notes?.[d.features[1].id] || '';
+    const V = r.body.vertices; let x = 0, y = 0; for (let i = 0; i < V.length; i += 3) { x = Math.max(x, V[i]); y = Math.max(y, V[i + 1]); }
+    const ok = !r.errors?.length && r.body.bodies.length === 1 && /closed corners/.test(note) && Math.abs(x - 62.5) < 1e-2 && Math.abs(y - 22.5) < 1e-2;
+    return ok ? { ok: true, detail: `one body, grown to ${x.toFixed(2)} × ${y.toFixed(2)} at its bends, the note says why` } : { ok: false, detail: `${JSON.stringify(r.errors)} · ${r.body.bodies.length} bodies · ${x} × ${y} · ${note}` };
+  },
+
   async 'convert-sheet-corners'() {
     // (the part's own kernel, with its threads)
     const k = window.app.kernel, pool = { request: (type, data) => k.request(type, data) }, aff = null;

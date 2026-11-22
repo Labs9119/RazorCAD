@@ -6,6 +6,21 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-22 21:37 — Convert to Sheet Metal: faces to keep with a thickness of your own; closed corners with a radius set (GitHub issue 16)
+
+- **Faces to keep:** with **Use the body's thickness** off, **Pick Faces to Keep** takes faces on the other side of
+  the sheet from the fixed face that must stay where they are (a flange's bottom that sets an overall height). There
+  the thickness goes the other way, and each bend next to it is made again where the faces' planes now meet: a Z
+  section 20 mm high made 3 mm thick from 2 mm stays 20 mm high (21 without), every flange 3 mm thick, its flat as
+  worked out by hand (sheetmetal.js fromSolidAs keep, shift; fromFaces: each face runs on by where the planes meet).
+- **Fixed:** since 0.21.7, a tray or box with closed corners converted from its outside with a radius set came out
+  folded apart (its flanges came together at the corners in the flat and were joined into one piece). Where keeping
+  the faces in place would bring faces together like that, they keep their own sizes as before 0.21.7 (the part grows
+  or shrinks at its bends) and the feature's note says so; faces to keep are refused there.
+- Tests: convert-sheet-keep-faces, convert-sheet-radius-closed-corners.
+
+---
+
 ## 2026-11-22 21:22 — Hide the ribbon (GitHub issue 20); macros kept as files in a folder you choose (GitHub issue 19)
 
 - **View ▸ Hide Ribbon / Show Ribbon** (also on the ribbon's right-click menu): only the ribbon's tabs stay, for room

@@ -3403,7 +3403,7 @@ export function fromSolid(solid, picked, opts) {
     try { return fromSolidAs(solid, picked, { ...opts, develop: true }); } catch { throw e; }
   }
 }
-function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, develop = false }) {
+function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, develop = false, keep = [] }) {
   const info = solid.faces.map((face, i) => ({ i, face, type: face.geomType }));
   for (const F of info) if (F.type === 'PLANE') { F.n = faceNormal(F.face); F.c = vec3(F.face.center); }
   const i0 = info.findIndex((F) => F.face.isSame(picked));
@@ -3538,7 +3538,20 @@ function fromSolidAs(solid, picked, { R: R0, K, t: tSet = null, Rset = null, dev
     });
     links.push({ i: ends[0].G, j: ends[1].G, ai: ends[0].a, bi: ends[0].b, aj: ends[1].a, bj: ends[1].b, axis: { o, d }, R: Math.max(Ru, 0), Rbody: Math.max(Rb, 0), rSide: r, outer, faces: g.faces.map((x) => x.face) });
   }
-  const faces = planes.map((F) => ({ face: F.face, n: F.n }));
+  // Faces to keep (a thickness set, GitHub issue 16): faces on the other side of the sheet that stay where they are, the
+  // thickness going the other way there (the flange keeps a size, an overall height say). Each is the far face of one
+  // of the picked side's flat faces, which moves out by the change in thickness; the bends next to it move with it.
+  const shiftOf = new Map();
+  for (const k of keep || []) {
+    if (!(tSet > 0) || Math.abs(tUse - t) < 1e-9) break; // (the body's own thickness: every face stays as it is anyway)
+    const p = k?.p;
+    const Q = p && info.find((q) => q.type === 'PLANE' && !side.has(q) && distTo(q.face, p) < tol);
+    const F = Q && planes.find((G) => dot3(G.n, Q.n) < -0.9999 && Math.abs(dot3(sub3(G.c, Q.c), G.n) - t) < tol && distTo(G.face, add3(p, mul3(G.n, t))) < tol);
+    if (!F) throw new Error('A face to keep is not a flat face on the other side of the sheet from the fixed face: click the face behind a flange');
+    if (F === P0) throw new Error('A face to keep is behind the fixed face: click that face as the fixed face instead (it is then the one that stays)');
+    shiftOf.set(F, tUse - t);
+  }
+  const faces = planes.map((F) => ({ face: F.face, n: F.n, shift: shiftOf.get(F) || 0 }));
   const jl = [...joints.values()];
   const idx = new Map([...planes.map((F, k) => [F, k]), ...jl.map((J, k) => [J, planes.length + k])]);
   for (const L of links) { L.i = idx.get(L.i); L.j = idx.get(L.j); }
@@ -4258,10 +4271,25 @@ function fitArcs(pts, tg, tol) {
 // (from fromSolid): { i, j, ai, bi / aj, bj (where the bend meets face i / j), axis { o, d }, R (inner
 // radius), outer (the faces are the outside of the bend), faces (its cylindrical faces) }. Link ends past
 // the faces (faces.length + k) are joints[k] ({ n }): where a bend runs straight on into the next.
-export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, links = [], joints = [] }) {
+// The flat sheet of flat faces (and bends between them, links). With a radius set other than the body's, or faces to
+// keep (shift), each face runs on or stops short at its bends so the faces stay where they are in the body (GitHub
+// issue 16). Where flanges meet at closed corners that can bring their faces together in the flat (one over the
+// other, or into the next bend's zone): such corners are not made again yet, so the faces keep their own sizes
+// instead (the part then grows or shrinks at its bends, as before 0.21.7), said in grewNot. Faces to keep need the
+// faces to move, so they are refused there.
+export function fromFaces(faces, fixed, opts) {
+  const moved = fromFacesAs(faces, fixed, opts);
+  if (!moved.overlap?.grown) { delete moved.overlap; return moved; }
+  const plain = fromFacesAs(faces, fixed, { ...opts, noGrow: true });
+  if (moved.overlap.area <= plain.overlap.area + 1e-3) { delete moved.overlap; delete plain.overlap; return moved; }
+  if (faces.some((f) => f.shift)) throw new Error('Faces to keep can\'t be used on this part: its flanges meet at closed corners, which are not made again for another thickness yet. Convert without faces to keep');
+  delete plain.overlap;
+  return { ...plain, grewNot: true };
+}
+function fromFacesAs(faces, fixed, { t, R: R0, K, connectedOnly = false, links = [], joints = [], noGrow = false }) {
   if (!faces.length) throw new Error('No flat faces to convert');
   const tol = Math.max(1e-4, t * 1e-3);
-  let info = faces.map((f, i) => ({ i, face: f.face, n: unit3(f.n), loops: [wireLoop(f.face.clone().outerWire(), 32), ...f.face.clone().innerWires().map((w) => wireLoop(w, 32))], edges: lineEdges(f.face) }));
+  let info = faces.map((f, i) => ({ i, face: f.face, n: unit3(f.n), shift: f.shift || 0, loops: [wireLoop(f.face.clone().outerWire(), 32), ...f.face.clone().innerWires().map((w) => wireLoop(w, 32))], edges: lineEdges(f.face) }));
   info.push(...joints.map((J, k) => ({ i: faces.length + k, joint: true, n: unit3(J.n), loops: null, edges: [] })));
   // shared straight edges between pairs of faces
   const shared = [];
@@ -4330,14 +4358,24 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
       // A radius other than the body's: the faces either side stay where they are (their holes too) and the bend
       // moves between them, as when the bend is made again with that radius. Each face runs on (or stops short) by
       // the change in its setback from where the faces' planes meet, on the side picked (its radius in the body:
-      // rSide; now: the radius set, plus the thickness on the outside of a bend)
-      const grow = L.rSide != null && L.R !== L.Rbody ? (L.rSide - (L.outer ? L.R + t : L.R)) * Math.tan(ang / 2) : 0;
-      T.set(j, mulM(transM([d[0] * (ba + 2 * grow), d[1] * (ba + 2 * grow), 0]), mulM(Ti, rot)));
-      if (Math.abs(grow) > 1e-9) {
-        const pj = a2(pa, m2(d, ba + 2 * grow));
-        grows.set(i, [...(grows.get(i) || []), { p: pa, e, d, w, depth: grow }]);
-        grows.set(j, [...(grows.get(j) || []), { p: pj, e, d: m2(d, -1), w, depth: grow }]);
+      // rSide; now: the radius set, plus the thickness on the outside of a bend). A face moved out (a face to keep
+      // behind it: shift) moves that meeting line too: along each face by what it takes to stay on both planes.
+      const sb = L.rSide != null ? (L.rSide - (L.outer ? L.R + t : L.R)) * Math.tan(ang / 2) : 0;
+      let gi = !noGrow && L.rSide != null && L.R !== L.Rbody ? sb : 0, gj = gi;
+      if (!noGrow && (Fi.shift || Fj.shift)) {
+        // (each face's direction in its plane, square to the bend, toward it)
+        const span = sub3(L.aj, L.ai), across = sub3(span, mul3(ax, dot3(span, ax)));
+        let ui = unit3(cross3(ax, Fi.n)), uj = unit3(cross3(ax, Fj.n));
+        if (dot3(ui, across) < 0) ui = mul3(ui, -1);
+        if (dot3(uj, across) > 0) uj = mul3(uj, -1);
+        const nn = dot3(Fi.n, Fj.n);
+        gi = sb + (Fj.shift - Fi.shift * nn) / dot3(Fj.n, ui);
+        gj = sb + (Fi.shift - Fj.shift * nn) / dot3(Fi.n, uj);
       }
+      T.set(j, mulM(transM([d[0] * (ba + gi + gj), d[1] * (ba + gi + gj), 0]), mulM(Ti, rot)));
+      if (Math.abs(gi) > 1e-9) grows.set(i, [...(grows.get(i) || []), { p: pa, e, d, w, depth: gi }]);
+      if (Math.abs(gj) > 1e-9) grows.set(j, [...(grows.get(j) || []), { p: a2(pa, m2(d, ba + gi + gj)), e, d: m2(d, -1), w, depth: gj }]);
+      const grow = gi;
       realBend.add('b' + nextBend);
       bends.push({ id: 'b' + nextBend++, p0: a2(pa, m2(d, grow)), e, d, w, ba, ang, up: L.outer, R: L.R });
       // unroll: a point of the bend goes to its place along the bend line, and across by the share of
@@ -4406,7 +4444,7 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
   if (links.some((L) => !usedLinks.has(L) && byI.has(L.i) && byI.has(L.j))) throw new Error('The sheet closes on itself (it goes all the way round)');
   if (bends.some((b) => b.ang > Math.PI - 1e-3)) throw new Error('Two faces fold flat onto each other (a hem): not supported when converting');
   let fixedFace = null;
-  const images = [];
+  const images = [], flats = [];
   for (const F of info) {
     if (F.joint) continue;
     const M = T.get(F.i);
@@ -4420,6 +4458,25 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
     }
     for (const tr of trims.get(F.i) || []) face = bop('cut', face, rectFace(tr.p, tr.e, tr.d, tr.w, tr.depth));
     for (const g of grows.get(F.i) || []) face = bop(g.depth > 0 ? 'fuse' : 'cut', face, rectFace(g.p, g.e, g.d, g.w, g.depth));
+    flats.push({ F, face });
+  }
+  // How much the faces overlap each other and the bends' zones in the flat (fromFaces compares it with and without
+  // the faces run on at their bends)
+  let overlap = { area: 0, grown: grows.size > 0 };
+  if (grows.size || noGrow) {
+    const pieces = [...flats.map((x) => ({ s: x.face })), ...bends.filter((b) => b.zone).map((b) => ({ s: b.zone, zone: true }))];
+    const boxOf = (sh) => { try { return sh?.boundingBox?.bounds || null; } catch { return null; } };
+    const apart = (p, q) => !p || !q || p[1][0] < q[0][0] - tol || q[1][0] < p[0][0] - tol || p[1][1] < q[0][1] - tol || q[1][1] < p[0][1] - tol;
+    for (let a = 0; a < pieces.length; a++) {
+      for (let b = a + 1; b < pieces.length; b++) {
+        if (pieces[a].zone && pieces[b].zone) continue;
+        if (!pieces[a].s || !pieces[b].s || apart(boxOf(pieces[a].s), boxOf(pieces[b].s))) continue;
+        const both = bop('common', pieces[a].s, pieces[b].s);
+        if (both) { overlap.area += areaOf(both); free(both); }
+      }
+    }
+  }
+  for (const { F, face } of flats) {
     if (F.i === fixed) fixedFace = face;
     images.push(imageOf(face, { i: F.i }, tol));
     region = bop('fuse', region, face);
@@ -4482,7 +4539,7 @@ export function fromFaces(faces, fixed, { t, R: R0, K, connectedOnly = false, li
   const c = facesOf(fixedFace)[0]?.center;
   const cc = !c ? [0, 0] : Array.isArray(c) ? c : c.toTuple ? c.toTuple() : [c.x, c.y];
   // (kept as rip marks: one cut line each in the flat pattern and its DXF, ripped when folded)
-  return { t, K, R: R0, frame: fr0, region, bends, ...(seams.length ? { marks: seams.map(([a, b]) => ({ kind: 'rip', a, b })) } : {}), rootPt: insidePoint(fixedFace || region, [cc[0], cc[1]]), flat: null, stale: null, nextBend };
+  return { t, K, R: R0, frame: fr0, region, bends, ...(seams.length ? { marks: seams.map(([a, b]) => ({ kind: 'rip', a, b })) } : {}), rootPt: insidePoint(fixedFace || region, [cc[0], cc[1]]), flat: null, stale: null, nextBend, overlap };
 }
 // A face laid flat, for finding where it touches another: its straight edges, each with its box, and its box
 // (to pass over the pairs far apart quickly; tol: how near counts as touching). extra: what it is (i: the face;
