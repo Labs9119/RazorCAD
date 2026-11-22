@@ -443,6 +443,16 @@ export const platform = {
     return window.RAZORCAD_WEB?.version || null;
   },
 
+  // ---- macros (macros.js). Desktop: a .js file each in a folder (Documents\RazorCAD\Macros unless another is chosen);
+  // the browser keeps them in its preferences (null here)
+  async macrosFolder() { return desktop ? api().macros_folder() : null; },
+  async listMacros() { return desktop ? api().list_macros() : null; },
+  async writeMacro(name, code) { if (!desktop) throw new Error('Only in the Windows app'); return api().write_macro(name, code); },
+  async deleteMacro(name) { if (!desktop) throw new Error('Only in the Windows app'); return api().delete_macro(name); },
+  async chooseMacrosFolder() { return desktop ? api().choose_macros_folder() : null; },
+  async defaultMacrosFolder() { return desktop ? api().default_macros_folder() : null; },
+  async openMacrosFolder() { if (desktop) return api().open_macros_folder(); },
+
   // A macro file (.js): { name, content } or null.
   async openMacro() {
     if (desktop) return api().open_macro();

@@ -5,6 +5,10 @@
 //
 // A macro is the body of an async function given `rc` (below) and `app`. Its changes to a part are one undo step,
 // rebuilt when it ends (or at rc.rebuild()). Macros can do anything RazorCAD can: run only the ones you trust.
+//
+// Where they are kept: in the Windows app, a .js file each in a folder (Documents\RazorCAD\Macros, or one chosen in
+// the Macros window, so they can be backed up with your documents: GitHub issue 19); in the browser, with the
+// preferences.
 import * as M from './model.js';
 import * as S from './sketchmodel.js';
 import { applyPlan } from './claudespec.js';
@@ -301,9 +305,51 @@ export class Macros {
     this.app = app;
     this.rec = null; // recording: { lines, vars, key (the part's history), last (its JSON), pending (a command) }
     this.running = false;
+    this.files = null; // (the Windows app: the macros of the folder, as last read or written)
+    this.folder = null; // { folder, default, exists }
   }
-  list() { const p = (this.app.ui.prefs ||= {}); return (p.macros ||= []); }
-  store(list) { this.app.ui.prefs.macros = list; this.app.ui.savePrefs(); }
+  list() { if (this.files) return this.files; const p = (this.app.ui.prefs ||= {}); return (p.macros ||= []); }
+  // The macros of the folder read (the Windows app; once the preferences are read). Macros kept in the preferences
+  // before are written into the folder first (those of the same name there are left as they are).
+  async load() {
+    const files = await platform.listMacros().catch(() => null);
+    if (!files) return;
+    this.folder = await platform.macrosFolder().catch(() => null);
+    const prefs = this.app.ui.prefs || {}, old = prefs.macros || [];
+    let moved = 0;
+    for (const m of old) {
+      if (files.some((x) => x.name === m.name)) continue;
+      try { await platform.writeMacro(m.name, m.code); files.push({ name: m.name, code: m.code }); moved++; } catch { return; } // (kept where they were)
+    }
+    if (old.length) { delete prefs.macros; this.app.ui.savePrefs(); }
+    this.files = files.map((x) => ({ id: 'f:' + x.name, name: x.name, code: x.code }));
+    if (moved) this.app.status(`${moved} macro${moved === 1 ? '' : 's'} moved into ${this.folder?.folder || 'the macros folder'}, a .js file each.`);
+  }
+  store(list) {
+    if (!this.files) { this.app.ui.prefs.macros = list; this.app.ui.savePrefs(); return; }
+    // (the folder: each new or changed macro written, each one gone (or renamed) deleted)
+    const before = new Map(this.files.map((m) => [m.name, m.code]));
+    this.files = list.map((m) => ({ ...m, id: 'f:' + m.name }));
+    const now = new Set(list.map((m) => m.name));
+    (async () => {
+      for (const m of list) if (before.get(m.name) !== m.code) await platform.writeMacro(m.name, m.code);
+      for (const name of before.keys()) if (!now.has(name)) await platform.deleteMacro(name);
+    })().catch((e) => this.app.toast('Could not save the macros: ' + (e?.message || e), true));
+  }
+  // Another folder for macros (the Windows app): the macros there are used from now on; those of the folder before
+  // are copied into it when it has none of that name (the files before are left where they were).
+  async changeFolder(useDefault = false) {
+    const old = this.files || [];
+    const to = useDefault ? await platform.defaultMacrosFolder() : await platform.chooseMacrosFolder();
+    if (!to) return false;
+    const files = (await platform.listMacros()) || [];
+    let copied = 0;
+    for (const m of old) if (!files.some((x) => x.name === m.name)) { await platform.writeMacro(m.name, m.code); files.push({ name: m.name, code: m.code }); copied++; }
+    this.files = files.map((x) => ({ id: 'f:' + x.name, name: x.name, code: x.code }));
+    this.folder = await platform.macrosFolder();
+    this.app.status(`Macros are kept in ${this.folder.folder}${copied ? ` (${copied} copied there)` : ''}.`);
+    return true;
+  }
   // menu items (added to every Tools menu)
   menuItems() {
     return [
@@ -453,7 +499,8 @@ export class Macros {
       <div class="mc-bar"><button class="primary mc-run">▶ Run</button><button class="mc-save">Save</button><button class="mc-del">Delete</button><span class="mc-gap"></span>
       <button class="mc-rec">● Record Macro</button><button class="mc-imp">Import…</button><button class="mc-exp">Export…</button><button class="mc-help">API</button></div>
       <pre class="mc-out"></pre><pre class="mc-api" hidden>${esc(API_HELP)}</pre>
-      <p class="pm-hint">Macros can do anything RazorCAD can (change and save files): run only macros you trust. Saved macros are in Tools ▸ Macro: and the command search, so they can have shortcuts.</p></div>`;
+      <p class="pm-hint">Macros can do anything RazorCAD can (change and save files): run only macros you trust. Saved macros are in Tools ▸ Macro: and the command search, so they can have shortcuts.</p>
+      <div class="mc-folder pm-hint" hidden>Kept in <b class="mc-path"></b>, a .js file each. <button class="mc-chfolder">Change Folder…</button> <button class="mc-openfolder">Open Folder</button> <button class="mc-deffolder">Default</button></div></div>`;
     const $ = (s) => body.querySelector(s);
     const nameIn = $('.mc-name'), code = $('.mc-code'), out = $('.mc-out');
     const show = (m) => { cur = m; nameIn.value = m.name; code.value = m.code; out.textContent = open?.unsaved && !m.id ? 'Recorded: Save keeps it, Run plays it back.' : ''; renderList(); };
@@ -509,6 +556,16 @@ export class Macros {
     $('.mc-imp').onclick = async () => { const m = await this.importMacro().catch((e) => { out.textContent = 'Could not open it: ' + e.message; return null; }); if (m) { show({ id: null, ...m }); out.textContent = `Opened "${m.name}": read it before you run it, then Save to keep it.`; } };
     $('.mc-exp').onclick = () => this.exportMacro({ name: nameIn.value.trim() || 'Macro', code: code.value });
     $('.mc-help').onclick = () => { const h = $('.mc-api'); h.hidden = !h.hidden; };
+    // (the Windows app: the folder the macros are kept in)
+    if (this.files && this.folder) {
+      $('.mc-folder').hidden = false;
+      $('.mc-path').textContent = this.folder.folder + (this.folder.exists ? '' : ' (not found)');
+      $('.mc-deffolder').hidden = !!this.folder.default;
+      const change = async (dflt) => { try { if (await this.changeFolder(dflt)) { dlg.close(); this.showDialog(); } } catch (e) { out.textContent = 'Could not use that folder: ' + (e?.message || e); } };
+      $('.mc-chfolder').onclick = () => change(false);
+      $('.mc-deffolder').onclick = () => change(true);
+      $('.mc-openfolder').onclick = () => platform.openMacrosFolder();
+    }
     const dlg = ui.modal('Macros', 'macro', body, [{ label: 'Close' }]);
     dlg.body.closest('.modal')?.classList.add('modal-wide');
     show(cur);

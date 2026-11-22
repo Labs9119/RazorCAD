@@ -168,6 +168,19 @@ function withPartLooks(mesh, doc, envelope = false) {
   }) };
 }
 
+// A part's mesh drawn see-through (a component made transparent): the same mesh with its bodies at 70 % transparency
+// (one copy per mesh, so its instances are drawn together)
+const GLASS = new WeakMap();
+function glassOf(mesh) {
+  let g = GLASS.get(mesh);
+  if (!g) {
+    const bodies = mesh.bodies?.length ? mesh.bodies : [{ faceStart: 0, faceCount: mesh.faceGroups.length }];
+    g = { ...mesh, bodies: bodies.map((b) => ({ ...b, transparency: Math.max(b.transparency || 0, 0.7) })), faceGroups: mesh.faceGroups.map((x) => (x.look?.t ? x : x.look ? { ...x, look: { ...x.look, t: 0.7 } } : x)) };
+    GLASS.set(mesh, g);
+  }
+  return g;
+}
+
 // a pose: { p: [x, y, z], q: THREE.Quaternion }
 const poseOf = (c) => ({ p: c.pos.slice(), q: new THREE.Quaternion(...c.rot) });
 const applyQ = (q, v) => new THREE.Vector3(...v).applyQuaternion(q).toArray();
@@ -985,6 +998,8 @@ export class AssemblyEditor {
   }
   detach() {
     this.pm = null;
+    // (an isolation is for working in this tab: it ends when another tab comes to the front)
+    if (this.isolated) { this.isolated = null; this.app.showBanner(null); }
     this.vp.setLeftRotate(true);
     this.vp.setFaceSet?.([]);
     this.vp.clearFaceHighlights();
@@ -1308,7 +1323,8 @@ export class AssemblyEditor {
       const key = l.chain.length ? null : l.comp.id;
       if (g?.mesh) { if (key) this._shownGk.set(key, l.gk); } else if (key && this._shownGk.has(key)) g = this.parts.get(this._shownGk.get(key));
       if (!g?.mesh) return null;
-      return { mesh: g.mesh, color: g.color ?? DEFAULT_BODY_COLOR, hidden: !!l.hidden, matrix: tops[l.ci].clone().multiply(l.M) };
+      const iso = this.isolated && !this.isolated.has(l.comp.id);
+      return { mesh: l.comp.transparent ? glassOf(g.mesh) : g.mesh, color: g.color ?? DEFAULT_BODY_COLOR, hidden: !!l.hidden || iso, matrix: tops[l.ci].clone().multiply(l.M) };
     }));
     this._exLines = drawExplodeLines(this.vp, this._exLines, this.showLines === false ? [] : [...offs].filter(([id, o]) => Math.hypot(...o) > 1e-9 && this.comp(id)).map(([id]) => explodePath(this.compCenter(this.comp(id)), offs, id)));
     this.highlight();
@@ -1479,6 +1495,56 @@ export class AssemblyEditor {
     this.measureMarks();
     this.renderAll();
     a.status('Ready');
+  }
+
+  // ---- the View menu's visibility commands (ui.js visibilityItems): the components selected (or those of the faces,
+  // edges and vertices selected), else the component under the cursor
+  visTargets() {
+    if (this.sel?.kind === 'comp') return [this.sel.id];
+    if (this.sel?.kind === 'refs') { const ids = [...new Set(this.sel.refs.map((r) => r.comp).filter((id) => id && id !== ORIGIN))]; if (ids.length) return ids; }
+    const at = this.vp.lastPointer;
+    if (!at || !this.vp.canvas.matches(':hover')) return [];
+    const ch = this.compAt(at);
+    return ch ? [ch.comp.id] : [];
+  }
+  visNone() { this.app.status('Select a component, or point at one, first.'); }
+  names(ids) { return ids.length === 1 ? this.comp(ids[0])?.name || 'Component' : `${ids.length} components`; }
+  visHide() {
+    const ids = this.visTargets();
+    if (!ids.length) return this.visNone();
+    this.begin();
+    for (const id of ids) { const c = this.comp(id); if (c) this.setComp(c, 'hidden', true); }
+    this.select(null);
+    this.change(`${this.names(ids)} hidden.`);
+  }
+  visShowAll() {
+    const hidden = this.doc.components.filter((c) => this.eff(c).hidden);
+    if (!hidden.length) { this.app.status('No component is hidden.'); return; }
+    this.begin();
+    for (const c of hidden) this.setComp(c, 'hidden', false);
+    this.change(`${hidden.length} hidden component${hidden.length === 1 ? '' : 's'} shown.`);
+  }
+  visTransparent(on) {
+    const ids = this.visTargets();
+    if (!ids.length) return this.visNone();
+    this.begin();
+    for (const id of ids) { const c = this.comp(id); if (!c) continue; if (on) c.transparent = true; else delete c.transparent; }
+    this.change(`${this.names(ids)} made ${on ? 'transparent' : 'opaque'}.`);
+  }
+  // Isolate: only these components shown while working (not kept in the assembly); again on what is isolated, or with
+  // nothing to isolate while isolated: back to all
+  visIsolate() {
+    const ids = this.visTargets(), iso = this.isolated, same = !!iso && iso.size === ids.length && ids.every((id) => iso.has(id));
+    if (!ids.length || same) { if (iso) this.visExitIsolate(); else this.visNone(); return; }
+    this.isolated = new Set(ids);
+    this.updateGeometry();
+    this.app.showBanner(`Isolated: ${this.names(ids)} — the other components are hidden while you work on ${ids.length === 1 ? 'it' : 'them'}.`, { label: 'Exit Isolate', action: () => this.visExitIsolate() });
+  }
+  visExitIsolate() {
+    if (!this.isolated) { this.app.status('Nothing is isolated.'); return; }
+    this.isolated = null;
+    this.app.showBanner(null);
+    this.updateGeometry();
   }
 
   // a selected reference the same as another
@@ -2556,6 +2622,8 @@ export class AssemblyEditor {
       c.fixed ? { label: 'Float', icon: 'float', action: () => this.setFixed(c.id, false) } : { label: 'Fix', icon: 'fix', action: () => this.setFixed(c.id, true) },
       this.eff(c).hidden ? { label: 'Show', icon: 'show', action: () => this.setHidden(c.id, false) } : { label: 'Hide', icon: 'hide', action: () => this.setHidden(c.id, true) },
       this.eff(c).suppressed ? { label: 'Unsuppress', icon: 'suppress', action: () => this.setSuppressed(c.id, false) } : { label: 'Suppress', icon: 'suppress', action: () => this.setSuppressed(c.id, true) },
+      { label: c.transparent ? 'Make Opaque' : 'Make Transparent', icon: 'transparent', action: () => { this.select({ kind: 'comp', id: c.id }); this.visTransparent(!c.transparent); } },
+      this.isolated?.has(c.id) ? { label: 'Exit Isolate', icon: 'isolate', action: () => this.visExitIsolate() } : { label: 'Isolate', icon: 'isolate', action: () => { this.select({ kind: 'comp', id: c.id }); this.visIsolate(); } },
       ...(this.partConfigs(this.part(c.part)).length > 1 ? ['sep', ...this.partConfigs(this.part(c.part)).map(([id, name]) => ({ label: `${(this.eff(c).config || null) === id ? '● ' : '　'}Configuration: ${name}`, icon: '', action: () => this.setCompConfig(c.id, id) }))] : []),
       ...(c.master && this.doc.components.filter((x) => x.part === c.part).length > 1 ? [{ label: 'Make Independent…', icon: 'part', action: () => this.app.b2p.makeIndependent(this, c) }] : []),
       { label: c.envelope ? 'Stop Being an Envelope' : 'Make Envelope', icon: 'part', action: () => this.setEnvelope(c.id, !c.envelope) },
@@ -3335,6 +3403,10 @@ export class AssemblyEditor {
         { label: 'Isometric', icon: 'views', key: 'Ctrl+7', action: () => this.vp.setStandardView('iso') },
         { label: 'Front', icon: 'views', key: 'Ctrl+1', action: () => this.vp.setStandardView('front') },
         { label: 'Top', icon: 'views', key: 'Ctrl+5', action: () => this.vp.setStandardView('top') },
+        'sep',
+        ...this.app.ui.visibilityItems(this),
+        'sep',
+        this.app.ui.ribbonItem(),
       ],
       Insert: [
         { label: 'Components…', icon: 'insertComponent', action: () => this.insertComponents() },

@@ -121,6 +121,78 @@ def plugins_dir():
     return path
 
 
+def default_macros_dir():
+    """Documents\\RazorCAD\\Macros: where macros are kept unless another folder is chosen."""
+    if os.environ.get('RAZORCAD_DATA_DIR'):
+        return os.path.join(data_dir(), 'Macros')  # (tests: inside their own data folder)
+    return os.path.join(documents_dir(), APP_NAME, 'Macros')
+
+
+def macros_setting_path():
+    return os.path.join(data_dir(), 'macros.json')
+
+
+def macros_dir():
+    """The folder macros are kept in, a .js file each: the one chosen (Tools ▸ Macros ▸ Change Folder…), else
+    Documents\\RazorCAD\\Macros. A chosen folder that is gone (a drive not there) is reported, not replaced."""
+    folder = None
+    try:
+        with open(macros_setting_path(), encoding='utf-8') as f:
+            folder = json.load(f).get('folder') or None
+    except Exception:
+        folder = None
+    if folder:
+        return folder
+    path = default_macros_dir()
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+MACRO_HEADER = re.compile(r'^\ufeff?// RazorCAD macro: (.*?)\r?\n')
+
+
+def macro_file_name(name):
+    """A macro's file name: its name with the characters Windows forbids replaced, and .js."""
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', '_', str(name or '').strip()).strip(' .') or 'Macro'
+    return base[:120] + '.js'
+
+
+def list_macros(folder):
+    """The macros in folder: [{ name (from the file's first line, else its name), code, file }]."""
+    out = []
+    if not os.path.isdir(folder):
+        return out
+    for fn in sorted(os.listdir(folder), key=str.lower):
+        path = os.path.join(folder, fn)
+        if not fn.lower().endswith('.js') or not os.path.isfile(path) or os.path.getsize(path) > 1 << 20:
+            continue
+        try:
+            with open(path, encoding='utf-8-sig') as f:
+                text = f.read()
+        except Exception:
+            continue
+        m = MACRO_HEADER.match(text)
+        out.append({'name': m.group(1).strip() if m else fn[:-3], 'code': text[m.end():] if m else text, 'file': fn})
+    return out
+
+
+def write_macro(folder, name, code):
+    """A macro written as folder\\<name>.js (its name on the first line). Returns the file's name."""
+    os.makedirs(folder, exist_ok=True)
+    fn = macro_file_name(name)
+    write_atomic(os.path.join(folder, fn), '// RazorCAD macro: %s\n%s' % (str(name).replace('\n', ' '), code or ''))
+    return fn
+
+
+def delete_macro(folder, name):
+    """The file of the macro of that name (as list_macros reads it) deleted; True when there was one."""
+    for m in list_macros(folder):
+        if m['name'] == name:
+            os.remove(os.path.join(folder, m['file']))
+            return True
+    return False
+
+
 PLUGIN_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
 PLUGIN_CODE_EXTS = ('.js', '.mjs')
 PLUGIN_MAX_BYTES = 8 << 20  # (a plug-in's code, all its modules together)
@@ -1358,6 +1430,40 @@ class Api:
 
     def open_templates_folder(self):
         os.startfile(templates_dir())
+        return True
+
+    # --- macros (a .js file each, in Documents\RazorCAD\Macros or a folder chosen; macros.js) ------
+    def macros_folder(self):
+        folder = macros_dir()
+        return {'folder': folder, 'default': os.path.normcase(os.path.abspath(folder)) == os.path.normcase(os.path.abspath(default_macros_dir())), 'exists': os.path.isdir(folder)}
+
+    def list_macros(self):
+        return list_macros(macros_dir())
+
+    def write_macro(self, name, code):
+        return write_macro(macros_dir(), name, code)
+
+    def delete_macro(self, name):
+        return delete_macro(macros_dir(), name)
+
+    def choose_macros_folder(self):
+        """A folder picked for macros, kept in macros.json; its path, or None."""
+        folder = first(self._file_dialog(webview.FileDialog.FOLDER))
+        if not folder:
+            return None
+        folder = os.path.abspath(folder)
+        write_atomic(macros_setting_path(), json.dumps({'folder': folder}))
+        return folder
+
+    def default_macros_folder(self):
+        try:
+            os.remove(macros_setting_path())
+        except FileNotFoundError:
+            pass
+        return macros_dir()
+
+    def open_macros_folder(self):
+        os.startfile(macros_dir())
         return True
 
     # --- plug-ins (Documents\RazorCAD\Plugins; plugins.js) ------------------

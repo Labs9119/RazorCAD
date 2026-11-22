@@ -1776,7 +1776,7 @@ export class UI {
     this.prefs = {};
     this.renderCommandManager();
     // the user's own toolbar layout (and other preferences), once the desktop app answers
-    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.app.setPerspective?.(!!this.prefs.perspective, true); this.renderCommandManager(); this.app.plugins?.start(); }).catch(() => {});
+    platform.ready.then(() => platform.getPrefs()).then((p) => { this.prefs = p || {}; setThemePref(this.prefs.theme); if (this.prefs.lang && this.prefs.lang !== 'en') setLanguage(this.prefs.lang); this.applyIconSize(); this.applyRibbon(); this.app.setPerspective?.(!!this.prefs.perspective, true); this.renderCommandManager(); this.app.macros?.load().then(() => this.renderCommandManager()).catch(() => {}); this.app.plugins?.start(); }).catch(() => {});
     // another language: everything drawn again in it
     window.addEventListener('razorcad-lang', () => {
       document.querySelectorAll('#menubar > button[data-menu]').forEach((b) => { b.textContent = tr(b.dataset.menu); });
@@ -1807,6 +1807,20 @@ export class UI {
 
   // ------------------------------------------------------------ menus
   // the menus of the document in front, with the theme and language in View and the macros in Tools
+  // Hide, Show All, Make Transparent, Make Opaque, Isolate, Exit Isolate: in the View menu of parts and assemblies
+  // alike (so a shortcut set for one works in both: Help ▸ Customize Shortcuts), on what is selected, else on what
+  // is under the cursor (GitHub issue 18: in and out of an assembly by the keyboard)
+  visibilityItems(t = this.app.mode === 'drawing' ? this.app.drawing : this.app) {
+    if (!t?.visHide) return [];
+    return [
+      { label: 'Hide', icon: 'hide', action: () => t.visHide() },
+      { label: 'Show All', icon: 'show', action: () => t.visShowAll() },
+      { label: 'Make Transparent', icon: 'transparent', action: () => t.visTransparent(true) },
+      { label: 'Make Opaque', icon: 'transparent', action: () => t.visTransparent(false) },
+      { label: 'Isolate', icon: 'isolate', action: () => t.visIsolate() },
+      { label: 'Exit Isolate', icon: 'isolate', action: () => t.visExitIsolate() },
+    ];
+  }
   menuDefs() {
     const defs = this.baseMenuDefs();
     if (defs) defs.View = [...(defs.View || []), 'sep', ...this.upAxisItems(), 'sep', ...this.themeItems(), 'sep', ...this.languageItems()];
@@ -2039,7 +2053,8 @@ export class UI {
         'sep',
         { label: 'Visibility…', icon: 'eye', action: () => { const r = $('#hud .vis-btn')?.getBoundingClientRect(); this.showVisMenu(r ? r.left : 300, r ? r.bottom + 4 : 120); } },
         { label: a.showHiddenMode ? 'Done Showing Hidden Bodies' : 'Show Hidden Bodies', icon: 'hiddenBodies', action: () => a.toggleShowHidden() },
-        ...(a.isolated ? [{ label: 'Exit Isolate', icon: 'isolate', action: () => a.exitIsolate() }] : []),
+        'sep',
+        ...this.visibilityItems(),
       ],
       Insert: [
         { label: 'Sketch', icon: 'sketch', action: () => a.startSketch() },
@@ -2755,9 +2770,32 @@ export class UI {
     this.applyIconSize();
     this.app.status(`Toolbar icons: ${size}.`);
   }
+  // ---- the ribbon hidden (GitHub issue 20, for working from the keyboard): its buttons go, its tabs stay; a click on
+  // a tab brings it back. Kept in the preferences.
+  ribbonHidden() { return !!this.prefs?.ribbonHidden; }
+  setRibbonHidden(on) {
+    this.prefs ||= {};
+    if (on) this.prefs.ribbonHidden = true; else delete this.prefs.ribbonHidden;
+    this.savePrefs();
+    this.applyRibbon();
+    this.app.status(on ? 'Ribbon hidden: click a tab (or View ▸ Show Ribbon) to bring it back. The menus, command search (Ctrl+K) and your own shortcuts reach every command.' : 'Ribbon shown.');
+  }
+  applyRibbon() {
+    const cm = $('#commandmanager');
+    if (!cm) return;
+    cm.classList.toggle('cm-hidden', this.ribbonHidden());
+    // (a tab clicked while the ribbon is hidden shows it again)
+    const tabs = $('#cm-tabs');
+    if (tabs && !tabs.dataset.ribbonClick) {
+      tabs.dataset.ribbonClick = '1';
+      tabs.addEventListener('click', () => { if (this.ribbonHidden()) this.setRibbonHidden(false); }, true);
+    }
+    window.dispatchEvent(new Event('resize'));
+  }
+  ribbonItem() { return this.ribbonHidden() ? { label: 'Show Ribbon', icon: 'show', action: () => this.setRibbonHidden(false) } : { label: 'Hide Ribbon', icon: 'hide', action: () => this.setRibbonHidden(true) }; }
   iconSizeItems() {
     const cur = this.prefs?.iconSize || 'medium';
-    return [['Small', 'small'], ['Medium', 'medium'], ['Large', 'large']].map(([l, v]) => ({ label: (cur === v ? '● ' : '　') + 'Toolbar Icons: ' + l, icon: '', action: () => this.setIconSize(v) }));
+    return [this.ribbonItem(), ...[['Small', 'small'], ['Medium', 'medium'], ['Large', 'large']].map(([l, v]) => ({ label: (cur === v ? '● ' : '　') + 'Toolbar Icons: ' + l, icon: '', action: () => this.setIconSize(v) }))];
   }
 
   toolbarButtonMenu(d) {
@@ -7403,7 +7441,7 @@ export class UI {
       const k = label.split('▸').pop().trim().toLowerCase();
       if (seen.has(k)) return;
       seen.add(k);
-      const aliases = k==='split body'?['split','split (with a surface)']:k==='split face'?['split line','split-line']:[];
+      const aliases = k==='split body'?['split','split (with a surface)']:k==='split face'?['split line','split-line']:k==='hide ribbon'?['show ribbon']:k==='show ribbon'?['hide ribbon']:[];
       const own = Object.entries(this.shortcutPrefs()).find(([, v]) => v.k === k || aliases.includes(v.k))?.[0];
       out.push({ label, where, aliases, icon: d.icon || '', key: own || d.key || '', action: d.action, k });
     };

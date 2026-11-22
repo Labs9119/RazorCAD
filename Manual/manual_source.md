@@ -131,6 +131,7 @@ Reopen it any time with **File ▸ Recent Parts / Start…**.
 The ribbon shows its buttons in two rows. When the window is too narrow for all of them, the ones that don't fit go under **More** at the end of the ribbon (its menu runs them as the buttons do); widen the window and they come back. {idx:toolbars, customising}{idx:ribbon, More}
 
 - **Icon size**: Small, Medium or Large, from **View ▸ Toolbar Icons** or by right-clicking the ribbon.
+- **Hide the ribbon** {idx:ribbon, hiding}: **View ▸ Hide Ribbon** (or right-click the ribbon) leaves only its tabs, for more room and for working from the keyboard: the menus, the command search ([[Ctrl+K]]) and your own shortcuts reach every command. Click a tab, or **View ▸ Show Ribbon**, to bring it back. Give it a key of your own (Help ▸ Customize Shortcuts): the same key hides and shows it. It stays as you left it the next time RazorCAD starts.
 - **Rearrange**: drag a button to a new place; the others slide aside.
 - **Your own toolbars**: click **+** after the tabs (or right-click a tab ▸ **New Toolbar…**). Add tools by dragging a button onto its tab or with right-click ▸ **Add to "…"**. Drag a button off to remove it.
 - Right-click a button on a built-in toolbar to hide it or add a separator after it. **Customize Toolbars…** shows hidden buttons again, and **Reset** puts a toolbar back as it was.
@@ -189,6 +190,7 @@ This manual is built into RazorCAD. **Help ▸ User Manual**, the **?** at the t
 **Help ▸ Customize Shortcuts…** (or **Customize…** in Help ▸ Keyboard Shortcuts) gives commands keys of your own. Find a command, click **Set** and press the keys, for example [[Ctrl+Shift+F]], [[G]] or [[F6]]. {idx:keyboard shortcuts, customising}{idx:shortcuts, your own}
 
 - A shortcut works wherever its command is, in the document in front.
+- **Hide**, **Show All**, **Make Transparent**, **Make Opaque**, **Isolate** and **Exit Isolate** (in the View menu) are for keys of your own: they work on what is selected, or, with nothing selected, on what is under the cursor, so you can point and press. They are the same commands in parts (bodies) and assemblies (components), so one key does the same in both. **Isolate** again on what is isolated shows everything again. {idx:keyboard shortcuts, visibility}
 - It takes the place of a key RazorCAD uses itself; the window says when it does (for example [[F]], Zoom to Fit). Giving a key to another command moves it there.
 - [[Esc]], [[Enter]], [[Tab]] and [[Backspace]] can't be used.
 - ✕ removes a shortcut; **Remove All** removes them all. Your shortcuts are listed at the top of Help ▸ Keyboard Shortcuts and shown in the command search. They are kept in `prefs.json`.
@@ -369,6 +371,7 @@ An **assembly** keeps its own up axis in the same way (View ▸ Up Axis, the sta
 - **View ▸ Show Hidden Bodies** shows hidden bodies so you can click them to show them again. Choose **Done Showing Hidden Bodies** to finish.
 - Right-click a body ▸ **Isolate** hides everything else. The isolated body can still be edited. **View ▸ Exit Isolate** returns. {idx:isolate}
 - Right-click a body, or any feature that made or changed it, ▸ **Make Transparent / Make Opaque**. Transparency is saved with the part and can be undone. {idx:transparency}
+- The same, from the keyboard: give **View ▸ Hide, Show All, Make Transparent, Make Opaque, Isolate** and **Exit Isolate** keys of your own (Help ▸ Customize Shortcuts). With nothing selected they work on the body under the cursor.
 
 ## Section view
 
@@ -2039,7 +2042,7 @@ The copies are components of their own (in the bill of materials, mateable), fix
 
 - Each component shows **(f)** when fixed or **(-)** while still free to move, its configuration, and an eye to hide or show it.
 - The **Mates** folder lists the mates; right-click one for **Edit**, **Flip**, **Suppress** or **Delete**.
-- Right-click a component for **Mate…**, **Open Part** (or double-click it), **Edit in Context…**, **Fix / Float**, **Hide / Show**, **Suppress / Unsuppress**, **Insert Another Instance**, **Rename** and **Delete**.
+- Right-click a component for **Mate…**, **Open Part** (or double-click it), **Edit in Context…**, **Fix / Float**, **Hide / Show**, **Suppress / Unsuppress**, **Make Transparent / Make Opaque** (kept in the assembly, undone with Undo), **Isolate** (the other components hidden while you work; **Exit Isolate** on the banner), **Insert Another Instance**, **Rename** and **Delete**.
 - **Make Flexible** (a sub-assembly component) {idx:flexible sub-assembly}: its parts move in this assembly as its own mates let them (a hinge opening, a slide moving), solved with this assembly's mates on them; where they end up is kept with this component, so the sub-assembly itself and its other uses do not change. **Make Rigid** puts it back as one piece. A component fixed inside it stays fixed only when the sub-assembly component is fixed.
 - **Number Parts** (Assembly tab) {idx:part numbers}{idx:Number Parts} gives each part and sub-assembly a **Part Number** property in the order of the bill of materials: a prefix, a first number, a step and a number of digits (P-0001, P-0002…). Those with a part number keep it unless you ask to number them again. Save parts kept in files of their own to keep their numbers there.
 - **Edit in Context** {idx:Edit in Context}{idx:top-down design} opens the part with the other parts you tick brought into it as transparent **context bodies** (the features *Context: …*), where they are in the assembly from it. Design the part to fit them: sketch on their faces, convert their edges, extrude up to them. Context bodies are references only: they are left out of the part where it is used (in the assembly, drawings, the bill of materials and exports). The context stays up to date: each time the part comes to the front with the assembly open, context bodies whose parts changed, changed configuration or moved are brought in again (a part taken out of the assembly has its context feature suppressed). Right-click a context feature ▸ **Update Context** to bring them all in again. Delete or suppress the context features when they are no longer needed. Save the part to update the assembly.
@@ -2103,6 +2106,8 @@ The motion is worked out step by step and the mates carry the other components a
 ✔ keeps the study in the assembly's **Motion Studies** folder: double-click one to play it; right-click to edit, rename or delete it. Closing the panel puts the assembly back as it was: a motion study never moves the assembly itself.
 
 ## Interference Check
+
+**Digging in by the keyboard** {idx:assemblies, isolate}{idx:assemblies, transparent components}: **View ▸ Hide, Show All, Make Transparent, Make Opaque, Isolate** and **Exit Isolate** work on the components selected, or on the one under the cursor. Give them keys of your own (Help ▸ Customize Shortcuts) to hide, see through or isolate components as fast as you point at them; the same keys work on bodies in parts.
 
 **Interference Check** (Assembly tab, or **Tools ▸ Interference Check…**) finds where components overlap. Each overlap shows in red and is listed with its two components (inside sub-assemblies as "Sub-assembly ▸ Part") and its volume. Faces that only touch, such as mated faces, are not counted, and nor are the bodies of one multi-body part against each other. An exploded assembly is collapsed first, so the check is of where the mates put the parts. {idx:Interference Check, assembly}
 
@@ -2407,6 +2412,8 @@ A value may start with `=`. Variable names start with a letter or underscore and
 
 Saved macros are in the Tools menu (**Macro: name**) and the command search, so they can have keyboard shortcuts. **Import…** / **Export…** share them as .js files.
 
+**Where they are kept** {idx:macros, folder}: in the Windows app each macro is a .js file of its own in **Documents\RazorCAD\Macros**. The Macros window shows the folder: **Change Folder…** keeps them in another one (a OneDrive or network folder, say, so they are backed up with your documents), **Open Folder** opens it in Explorer and **Default** goes back to Documents\RazorCAD\Macros. The macros of the folder before are copied into the new one (when it has none of that name); the files are left where they were. A .js file put into the folder yourself is listed too, by its file name. Macros saved by an earlier version (with the preferences) are moved into the folder the first time RazorCAD starts. In the browser version they stay with its preferences.
+
 > Warning: Macros can do anything RazorCAD can. Run only macros you trust.
 
 ## Plug-ins
@@ -2505,6 +2512,8 @@ Editing a feature meshes again only the faces and edges it changed, and a part r
 |---|---|
 | `%APPDATA%\RazorCAD\recent.json` | Recent files list |
 | `%APPDATA%\RazorCAD\claude.json` | Claude settings, API key and model |
+| `%APPDATA%\RazorCAD\macros.json` | The folder chosen for macros (when it isn't Documents\RazorCAD\Macros) |
+| `Documents\RazorCAD\Macros\` | Your macros, a .js file each (or the folder chosen in Tools ▸ Macros) |
 | `%APPDATA%\RazorCAD\prefs.json` | Toolbar layout, icon size, your keyboard shortcuts, whether the tour was taken, and other preferences |
 | `%APPDATA%\RazorCAD\update.json` | The update check: on or off, when it last looked, a version you chose to skip |
 | `%APPDATA%\RazorCAD\crashes\` | Crash reports |
@@ -2746,6 +2755,7 @@ A body or part with no material uses 1.00 g/cm³ for mass calculations.
 
 | Date | Software version | Changes |
 |---|---|---|
+| 2026-11-22 | 0.21.8-beta | Keys of your own for Hide, Show All, Make Transparent, Make Opaque, Isolate and Exit Isolate, in parts and assemblies; components made transparent and isolated. Hide Ribbon. Macros kept as .js files in a folder you choose. |
 | 2026-11-18 | 0.21.7-beta | Timber Works: timber frames from sketches and 3D sketches in the sizes of Australia, New Zealand and the United States, Timber Section, timber materials. Bodies to Parts: linked parts and an assembly from a multi-body master, the master as an envelope, published planes and sketches, Relink. Measure in assemblies. Lofts from model faces. Convert to Sheet Metal with a radius set keeps the flanges in place. Grade 250, Grade 350 and Corten-O steel. |
 | 2026-11-04 | 0.21.6-beta | Update Now runs the setup in a window of its own and a failed update always says so, with **Run the Setup** (Update Now). Sheet metal aerofoil blades with one bend at the nose and formed skins; linked circular sketch patterns; small circles drawn with two clicks; clicks that land on a point join it. |
 | 2026-11-03 | 0.21.5-beta | Plug-ins: tools of your own, each on a ribbon tab of its own (Plug-ins, Writing a plug-in). Explode lines follow each move round its corners. Lofted Bend cones in one piece, from two circles; cuts round a kept part of a bend; Sheet Metal Extrude profiles that start with a roll; surfaces from sketch splines convert to rolled sheet; pattern copies named after their body. |

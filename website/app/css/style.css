@@ -114,6 +114,8 @@ table.bom td.num { text-align: right; }
 .quick-dims .qd-id { color: var(--muted); font-size: 11px; }
 .cm-more { grid-row: 1 / span 2; height: auto; justify-content: center; }
 .cm-sep { width: 1px; background: var(--border-soft); margin: 3px 3px; grid-row: 1 / span 2; }
+/* the ribbon hidden (View ▸ Hide Ribbon): its tabs only */
+#commandmanager.cm-hidden #cm-buttons { display: none; }
 #cm-tabs { display: flex; padding: 0 6px; border-top: 1px solid var(--border-soft); background: var(--panel); }
 #cm-tabs button {
   border: 0; background: none; padding: 4px 14px; cursor: default; border-bottom: 2px solid transparent; color: var(--muted);

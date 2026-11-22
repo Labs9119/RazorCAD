@@ -4771,6 +4771,150 @@ const UI = {
     return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: `faces 30 apart, corners ${r6(Math.sqrt(1700))}, edge 20, a turned cube 8000 mm³ and ${r6(d3)} from a face, a plane 60 from a face; Esc ends it` };
   },
 
+  // Shortcuts of your own for Hide, Show All, Make Transparent, Make Opaque, Isolate and Exit Isolate (GitHub issue
+  // 18): in Customize Shortcuts for parts and assemblies alike; pressed, they work on the selection
+  async 'visibility-shortcuts'() {
+    const a = window.app, bad = [], ui = a.ui;
+    const keep = ui.prefs?.shortcuts ? JSON.parse(JSON.stringify(ui.prefs.shortcuts)) : null;
+    const map = ui.shortcutPrefs();
+    const labels = ['Hide', 'Show All', 'Make Transparent', 'Make Opaque', 'Isolate', 'Exit Isolate'];
+    labels.forEach((l, i) => { map[`Alt+F${i + 1}`] = { k: l.toLowerCase(), label: l }; });
+    const press = async (l) => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: `F${labels.indexOf(l) + 1}`, altKey: true, bubbles: true })); await wait(80); };
+    try {
+      // (a part of two blocks)
+      const d = M.newDoc();
+      const s = M.createFeature(d, 'sketch', { plane: { ref: 'top' } });
+      const sq = (x0, n) => [[x0, 0], [x0 + 10, 0], [x0 + 10, 10], [x0, 10]].map(([x, y], i) => ({ id: n + i, x, y }));
+      const P = [...sq(0, 'a'), ...sq(30, 'b')];
+      const lines = (n) => [0, 1, 2, 3].map((i) => ({ id: n + 'l' + i, type: 'line', p1: n + i, p2: n + ((i + 1) % 4), construction: false }));
+      Object.assign(s, { points: P, curves: [...lines('a'), ...lines('b')], constraints: [] });
+      d.features.push(s, M.createFeature(d, 'extrude', { sketch: s.id, depth: 10 }));
+      await a.setDoc(d); await until(() => a.result?.bodies?.length === 2, 30000, 100);
+      const cmds = ui.commandList().map((c) => c.label);
+      for (const l of labels) if (!cmds.includes(l)) bad.push(`part: no ${l} command`);
+      const [b1, b2] = a.result.bodies;
+      if (!b2) bad.push(`part: ${a.result.bodies.length} bodies`);
+      else {
+        a.select({ kind: 'body', id: b1.id });
+        await press('Make Transparent'); if (!a.isBodyTransparent(b1.id)) bad.push('part: not made transparent');
+        a.select({ kind: 'body', id: b1.id });
+        await press('Make Opaque'); if (a.isBodyTransparent(b1.id)) bad.push('part: not made opaque');
+        a.select({ kind: 'body', id: b2.id });
+        await press('Isolate'); if (!a.isolated?.has(b2.id) || a.isolated.has(b1.id)) bad.push('part: not isolated');
+        await press('Exit Isolate'); if (a.isolated) bad.push('part: still isolated');
+        a.select({ kind: 'body', id: b1.id });
+        await press('Hide'); if (!a.isBodyHidden(b1.id)) bad.push('part: not hidden');
+        await press('Show All'); if (a.isBodyHidden(b1.id)) bad.push('part: not shown again');
+      }
+      // (an assembly of two of them)
+      const p = M.newDoc(); p.name = 'Block';
+      const s2 = M.createFeature(p, 'sketch', { plane: { ref: 'top' } });
+      Object.assign(s2, { points: sq(0, 'a'), curves: lines('a'), constraints: [] });
+      p.features.push(s2, M.createFeature(p, 'extrude', { sketch: s2.id, depth: 10 }));
+      a.newAssembly(); await wait(400); closeModals();
+      const asm = a.drawing, pid = asm.addPart(p, null, null);
+      await asm.addComponent(pid); await asm.addComponent(pid);
+      const [c1, c2] = asm.doc.components;
+      await until(() => asm.doc.components.every((c) => asm.geo(c)?.mesh), 30000, 100);
+      const acmds = ui.commandList().map((c) => c.label);
+      for (const l of labels) if (!acmds.includes(l)) bad.push(`assembly: no ${l} command`);
+      const item = (c) => asm.display.items[asm._leaves.findIndex((l) => l.comp === c)];
+      asm.select({ kind: 'comp', id: c1.id });
+      await press('Make Transparent'); asm.flushGeometry?.();
+      if (!c1.transparent || !(item(c1)?.mesh?.bodies?.[0]?.transparency >= 0.7)) bad.push(`assembly: not made transparent (${c1.transparent})`);
+      asm.select({ kind: 'comp', id: c1.id });
+      await press('Make Opaque'); asm.flushGeometry?.();
+      if (c1.transparent || item(c1)?.mesh?.bodies?.[0]?.transparency) bad.push('assembly: not made opaque');
+      asm.select({ kind: 'comp', id: c2.id });
+      await press('Isolate'); asm.flushGeometry?.();
+      if (!item(c1)?.hidden || item(c2)?.hidden) bad.push(`assembly: not isolated (${item(c1)?.hidden}, ${item(c2)?.hidden})`);
+      // (Isolate again on it: back to all)
+      asm.select({ kind: 'comp', id: c2.id }); await press('Isolate');
+      if (asm.isolated) bad.push('assembly: Isolate again did not end it');
+      asm.select({ kind: 'comp', id: c2.id }); await press('Isolate');
+      await press('Exit Isolate'); asm.flushGeometry?.();
+      if (asm.isolated || item(c1)?.hidden) bad.push('assembly: still isolated');
+      asm.select({ kind: 'comp', id: c2.id });
+      await press('Hide'); if (!asm.eff(c2).hidden) bad.push('assembly: not hidden');
+      await press('Show All'); if (asm.eff(c2).hidden) bad.push('assembly: not shown again');
+      // (undone: transparency is kept in the assembly, as hiding is)
+      asm.select({ kind: 'comp', id: c1.id }); await press('Make Transparent'); asm.undo();
+      if (asm.comp(c1.id)?.transparent) bad.push('assembly: Make Transparent not undone');
+    } finally {
+      ui.prefs.shortcuts = keep || {};
+    }
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'six commands in both kinds of document; each pressed as a shortcut does its work on bodies and on components' };
+  },
+
+  // The ribbon hidden for working from the keyboard (GitHub issue 20): View ▸ Hide Ribbon (a command, so it can have a
+  // key; set on Hide Ribbon it shows it again too), the tabs kept, a click on one shows it; kept in the preferences
+  async 'ribbon-hidden'() {
+    const a = window.app, ui = a.ui, bad = [];
+    const keep = { hidden: ui.prefs?.ribbonHidden, shortcuts: ui.prefs?.shortcuts ? JSON.parse(JSON.stringify(ui.prefs.shortcuts)) : null };
+    const shown = () => getComputedStyle(document.querySelector('#cm-buttons')).display !== 'none';
+    try {
+      await a.setDoc(M.newDoc()); await wait(100);
+      if (!ui.commandList().some((c) => c.label === 'Hide Ribbon')) bad.push('no Hide Ribbon command');
+      ui.shortcutPrefs()['Alt+F9'] = { k: 'hide ribbon', label: 'Hide Ribbon' };
+      const press = async () => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', altKey: true, bubbles: true })); await wait(80); };
+      await press();
+      if (shown() || !ui.prefs.ribbonHidden) bad.push('not hidden by its key');
+      if (getComputedStyle(document.querySelector('#cm-tabs')).display === 'none') bad.push('the tabs went too');
+      if (!ui.commandList().some((c) => c.label === 'Show Ribbon')) bad.push('no Show Ribbon command while hidden');
+      await press();
+      if (!shown()) bad.push('the same key did not show it again');
+      await press();
+      document.querySelector('#cm-tabs button')?.click(); await wait(50);
+      if (!shown() || ui.prefs.ribbonHidden) bad.push('a click on a tab did not show it');
+    } finally {
+      if (keep.hidden) ui.prefs.ribbonHidden = true; else delete ui.prefs.ribbonHidden;
+      ui.prefs.shortcuts = keep.shortcuts || {};
+      ui.applyRibbon();
+    }
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'hidden and shown by one key, the tabs kept, a tab click shows it' };
+  },
+
+  // Macros kept as files in a folder (GitHub issue 19; the Windows app, here with the folder's calls stood in for):
+  // those in the preferences moved into it, a change written, a rename and a delete made there, another folder chosen
+  // gets the macros it hasn't got
+  async 'macros-folder'() {
+    const a = window.app, mc = a.macros, { platform } = await import('/js/platform.js'), bad = [];
+    const saved = { files: mc.files, folder: mc.folder, prefs: a.ui.prefs.macros };
+    const fns = ['listMacros', 'macrosFolder', 'writeMacro', 'deleteMacro', 'chooseMacrosFolder', 'defaultMacrosFolder'], old = Object.fromEntries(fns.map((k) => [k, platform[k]]));
+    const disks = { A: new Map([['On disk', 'rc.log(0);']]), B: new Map([['Second', 'rc.log(9);']]) };
+    let at = 'A';
+    Object.assign(platform, {
+      listMacros: async () => [...disks[at]].map(([name, code]) => ({ name, code })),
+      macrosFolder: async () => ({ folder: 'X:\\' + at, default: at === 'A', exists: true }),
+      writeMacro: async (n, c) => { disks[at].set(n, c); return n + '.js'; },
+      deleteMacro: async (n) => disks[at].delete(n),
+      chooseMacrosFolder: async () => { at = 'B'; return 'X:\\B'; },
+      defaultMacrosFolder: async () => { at = 'A'; return 'X:\\A'; },
+    });
+    const names = (m) => [...m.keys()].sort().join(', ');
+    try {
+      mc.files = null;
+      a.ui.prefs.macros = [{ id: 'm1', name: 'Old one', code: 'rc.log(1);' }];
+      await mc.load();
+      if (names(disks.A) !== 'Old one, On disk' || a.ui.prefs.macros) bad.push(`moved: ${names(disks.A)}; prefs ${JSON.stringify(a.ui.prefs.macros)}`);
+      if (mc.list().length !== 2) bad.push(`${mc.list().length} listed`);
+      // (changed, renamed and deleted, as the Macros window stores them)
+      mc.store([{ id: 'f:Old one', name: 'Renamed', code: 'rc.log(2);' }]); await wait(50);
+      if (names(disks.A) !== 'Renamed' || disks.A.get('Renamed') !== 'rc.log(2);') bad.push(`stored: ${names(disks.A)}`);
+      if (!a.ui.commandList().some((c) => c.label === 'Macro: Renamed')) bad.push('not in Tools ▸ Macro:');
+      // (another folder: it gets the one it hasn't got, and its own)
+      await mc.changeFolder(false);
+      if (names(disks.B) !== 'Renamed, Second' || mc.list().length !== 2 || mc.folder.folder !== 'X:\\B') bad.push(`other folder: ${names(disks.B)}, ${mc.list().length} listed`);
+      await mc.changeFolder(true);
+      if (mc.folder.folder !== 'X:\\A' || names(disks.A) !== 'Renamed, Second') bad.push(`back to the default: ${names(disks.A)}`);
+    } finally {
+      Object.assign(platform, old);
+      mc.files = saved.files; mc.folder = saved.folder;
+      if (saved.prefs) a.ui.prefs.macros = saved.prefs; else delete a.ui.prefs.macros;
+    }
+    return bad.length ? { ok: false, detail: bad.join('; ') } : { ok: true, detail: 'moved from the preferences, written, renamed and deleted in the folder, copied into another folder and back' };
+  },
+
   // gear and rack-pinion mates, through the assembly solver: gear A (R10) turned 30° turns gear B (R20) −15°,
   // the rack slides 2π·10 · 30/360 = 5.236 mm; then 200° more in four steps (turns past half a turn add up)
   async 'gear-rack-mates'() {

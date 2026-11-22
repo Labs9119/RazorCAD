@@ -1970,6 +1970,37 @@ class App {
     this.setBodyHidden(b.id, true);
   }
 
+  // ---- the View menu's visibility commands (ui.js visibilityItems): the bodies selected (or those of a selected
+  // face or edge), else the body under the cursor
+  visTargets() {
+    const ids = this.selectedBodyIds();
+    if (ids.length) return ids;
+    const bi = this.selection?.body, b0 = bi != null && this.result?.bodies?.[bi];
+    if (b0) return [b0.id];
+    const vp = this.viewport, at = vp.lastPointer;
+    if (!at || !vp.canvas.matches(':hover')) return [];
+    const fh = this.faceAt(at), b = fh && this.result?.bodies?.[vp.faceBody[fh.hit.face]];
+    return b ? [b.id] : [];
+  }
+  visNone() { this.status('Select a body, or point at one, first.'); }
+  visHide() { const ids = this.visTargets(); if (!ids.length) return this.visNone(); for (const id of ids) this.setBodyHidden(id, true); this.select(null); }
+  visShowAll() {
+    const ids = (this.result?.bodies || []).map((b) => b.id).filter((id) => this.isBodyHidden(id));
+    if (this.showHiddenMode) this.exitShowHidden(false);
+    if (!ids.length) { this.status('No body is hidden.'); return; }
+    for (const id of ids) delete M.ensureBodySettings(this.doc, id).hidden;
+    this.commit();
+    this.refreshBodyVisibility();
+    this.status(`${ids.length} hidden bod${ids.length === 1 ? 'y' : 'ies'} shown.`);
+  }
+  visTransparent(on) { const ids = this.visTargets(); if (!ids.length) return this.visNone(); this.setBodiesTransparent(ids, on); }
+  // (Isolate again on what is isolated, or with nothing to isolate while isolated: back to all)
+  visIsolate() {
+    const ids = this.visTargets(), iso = this.isolated, same = !!iso && iso.size === ids.length && ids.every((id) => iso.has(id));
+    if (ids.length && !same) this.isolateBodies(ids); else if (iso) this.exitIsolate(); else this.visNone();
+  }
+  visExitIsolate() { if (this.isolated) this.exitIsolate(); else this.status('Nothing is isolated.'); }
+
   isolateBodies(ids) {
     if (this.showHiddenMode) this.exitShowHidden(false);
     this.isolated = new Set(ids);

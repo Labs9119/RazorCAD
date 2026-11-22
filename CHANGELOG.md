@@ -6,6 +6,32 @@ Detailed status of the change-request documents: `Change requests\Progress.md`.
 
 ---
 
+## 2026-11-22 21:22 — Hide the ribbon (GitHub issue 20); macros kept as files in a folder you choose (GitHub issue 19)
+
+- **View ▸ Hide Ribbon / Show Ribbon** (also on the ribbon's right-click menu): only the ribbon's tabs stay, for room
+  and for working from the keyboard; a click on a tab brings it back. A command, so it can have a key of your own,
+  and one key both hides and shows it. Kept in the preferences.
+- **Macros as files:** in the Windows app each macro is a .js file in Documents\RazorCAD\Macros, or in a folder
+  chosen in Tools ▸ Macros (Change Folder…, Open Folder, Default), so they can be backed up with your documents.
+  Macros kept in the preferences before are moved into the folder on first start; a folder chosen gets the macros it
+  hasn't got from the one before; .js files put there by hand are listed by their names. The browser version keeps
+  them in its preferences as before. (razorcad.py macros_dir, list_macros, write_macro, delete_macro; macros.js)
+- Tests: ribbon-hidden, macros-folder, tests/test_macros.py.
+
+---
+
+## 2026-11-18 17:44 — Keys of your own for Hide, Make Transparent, Isolate and the rest (GitHub issue 18)
+
+- **View ▸ Hide, Show All, Make Transparent, Make Opaque, Isolate, Exit Isolate** in parts and assemblies alike, so
+  they are in Help ▸ Customize Shortcuts (and the command search) and one key does the same in both. They work on
+  what is selected, else on what is under the cursor: point and press. Isolate again on what is isolated shows all.
+- **Assemblies:** components can now be made transparent (right-click ▸ Make Transparent / Make Opaque; kept in the
+  assembly, undone with Undo) and isolated (right-click ▸ Isolate: the others hidden while you work, Exit Isolate on
+  the banner; it ends when another tab comes to the front).
+- Test: visibility-shortcuts (each command pressed as a shortcut, on bodies and on components).
+
+---
+
 ## 2026-11-18 07:15 — Convert to Sheet Metal with a radius of your own keeps the flanges in place; threads drawn smooth
 
 - **Sheet metal (GitHub issue 16):** Convert to Sheet Metal with **Use the body's bend radii** off moved the flanges:
